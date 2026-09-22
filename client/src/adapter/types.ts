@@ -3789,9 +3789,30 @@ export type DecisionPointKind =
   | "MayChoice"
   | "UnlessBreak";
 
-/** Mirrors `engine::analysis::decision_template::DecisionSlot` (`index` is Rust `u8`). */
+/**
+ * Mirrors `engine::analysis::decision_template::ChoicePoint` (serde unit variants ⇒ bare
+ * strings on the wire). WHICH CHOICE a slot names, as distinct from which instance of it.
+ */
+export type ChoicePoint =
+  | "AnnouncedTarget"
+  | "MayGate"
+  | "TriggerOrder"
+  | "TapCost"
+  | "ProliferateSet"
+  | "ResolutionSet"
+  | "ManaColor"
+  | "ConvokeTaps"
+  | "Mode"
+  | "UnlessBreak";
+
+/**
+ * Mirrors `engine::analysis::decision_template::DecisionSlot` (`index` is Rust `u8`).
+ * Three axes: who asked (`source`), which choice (`point`), which instance of that choice
+ * on that source (`index`).
+ */
 export interface DecisionSlot {
   source: DecisionSource;
+  point: ChoicePoint;
   index: number;
 }
 

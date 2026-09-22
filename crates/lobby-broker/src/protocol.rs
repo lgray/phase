@@ -412,6 +412,14 @@ pub struct TournamentRequestId(pub u64);
 ///      `#[serde(default)]`. A v75 peer parses a v76 `PendingCast` and a v76
 ///      peer parses every v75 one, so they ride this condition rather than
 ///      forcing it, and no persisted `PendingCast` changes shape.
+///      The same version also moves `DecisionSlot`, which reaches this wire
+///      through `WaitingFor::LoopShortcut`'s schema, its declaration and
+///      `GameState::decision_templates`: the slot gained a required
+///      `point: ChoicePoint` naming WHICH CR choice it identifies, and
+///      `PinnedDecision::Order` replaced its bare `source` with a full slot.
+///      Neither field carries a serde default, so this half is a PARSE break
+///      in both directions rather than a silent capability skew, and a
+///      snapshot written by either side is unreadable by the other.
 ///
 /// 75 — `ResolutionCastCleanup`, its delayed-trigger receipts, and every
 ///      receipt-eligible delayed-install origin now carry the producer-issued

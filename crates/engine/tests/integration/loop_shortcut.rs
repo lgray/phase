@@ -15,9 +15,9 @@
 //! `match` perturbed even one event. Because the golden is pre-edit, this is not circular.
 
 use engine::analysis::decision_template::{
-    AnnouncementSubject, DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind,
-    DecisionSlot, DecisionTemplate, IterationCount, PinnedDecision, Ranking, ReplayMode,
-    ShortcutDecisionSchema, TargetPin, TargetSchedule,
+    AnnouncementSubject, ChoicePoint, DecisionGroupKey, DecisionKind, DecisionPoint,
+    DecisionPointKind, DecisionSlot, DecisionTemplate, IterationCount, PinnedDecision, Ranking,
+    ReplayMode, ShortcutDecisionSchema, TargetPin, TargetSchedule,
 };
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
 use engine::analysis::resource::{
@@ -1870,6 +1870,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
     };
     let slot = DecisionSlot {
         source: source.clone(),
+        point: ChoicePoint::AnnouncedTarget,
         index: 0,
     };
     let schema = ShortcutDecisionSchema {
@@ -2080,9 +2081,10 @@ fn probe_drain_delta() -> i32 {
     delta
 }
 
-/// The one decision slot a single-source template addresses: sub-index 0 of its source.
+/// The one decision slot a single-source template addresses: the CR 601.2c announced
+/// target, instance 0 of that class on its source.
 fn pin_slot(source: YieldTarget) -> DecisionSlot {
-    DecisionSlot { source, index: 0 }
+    DecisionSlot::first(source, ChoicePoint::AnnouncedTarget)
 }
 
 /// Stage the live offer to PUBLISH the one CR 601.2c point a pinned declaration answers.
@@ -4594,6 +4596,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
             incarnation: None,
             trigger_description: None,
         },
+        point: ChoicePoint::AnnouncedTarget,
         index: 0,
     };
     let schema = ShortcutDecisionSchema {
@@ -4743,6 +4746,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                     decisions: vec![PinnedDecision::Targets {
                         slot: DecisionSlot {
                             source: source.clone(),
+                            point: ChoicePoint::AnnouncedTarget,
                             index: 0,
                         },
                         targets: pins,
@@ -5393,6 +5397,7 @@ fn recorded_loop_pins_are_redacted_for_a_viewer_who_cannot_see_the_pinned_object
                     incarnation: None,
                     trigger_description: None,
                 },
+                point: ChoicePoint::AnnouncedTarget,
                 index: 0,
             },
             targets: vec![
@@ -7700,6 +7705,7 @@ fn bounded_cycle_pin_slots_enumerates_the_emblem_slot() {
             incarnation: Some(emblem_incarnation),
             trigger_description: None,
         },
+        point: ChoicePoint::AnnouncedTarget,
         index: 0,
     };
     let expected_legal = vec![
@@ -7935,7 +7941,7 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
         measured_repetition_bound: None,
         deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
         points: vec![DecisionPoint {
-            slot: DecisionSlot { source, index: 0 },
+            slot: DecisionSlot::first(source, ChoicePoint::AnnouncedTarget),
             kind: DecisionPointKind::Targets {
                 legal_targets: vec![TargetRef::Player(P1)],
                 min_targets: 1,
@@ -15516,6 +15522,7 @@ fn g1_declare_verdict(
     let (a, b) = (source_of(obj_a), source_of(obj_b));
     let slot = DecisionSlot {
         source: a.clone(),
+        point: ChoicePoint::AnnouncedTarget,
         index: 0,
     };
     let mut legal_targets = vec![TargetRef::Object(obj_a)];
@@ -16958,11 +16965,14 @@ fn ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_publ
 ///   payload decodes with a fabricated declaration ⇒ the old-save arm's `matches!` fails.
 #[test]
 fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
-    let slot = DecisionSlot::target(YieldTarget::ThisObject {
-        source_id: ObjectId(881),
-        incarnation: Some(1),
-        trigger_description: None,
-    });
+    let slot = DecisionSlot::first(
+        YieldTarget::ThisObject {
+            source_id: ObjectId(881),
+            incarnation: Some(1),
+            trigger_description: None,
+        },
+        ChoicePoint::AnnouncedTarget,
+    );
     let offer = WaitingFor::LoopShortcut {
         proposer: P0,
         predicted_winner: None,

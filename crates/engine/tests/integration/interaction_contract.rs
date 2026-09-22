@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use engine::analysis::decision_template::{
-    DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount, ShortcutDecisionSchema,
+    ChoicePoint, DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount,
+    ShortcutDecisionSchema,
 };
 use engine::game::derived_views::{derive_filtered_views, ClientGameStateRef};
 use engine::game::engine::apply;
@@ -3226,14 +3227,20 @@ fn preview_offer_with_points(
     state
 }
 
-/// The announcement slots the synthetic preview offers speak through — one source, indexed,
-/// the shape `certified_bounded_cycle_offer` publishes.
-fn preview_slot(index: u8) -> DecisionSlot {
+/// The slots the synthetic preview offers speak through — one source, the shape
+/// `certified_bounded_cycle_offer` publishes.
+///
+/// It takes BOTH axes because its callers use both: most pair it with successive CR 601.2c
+/// announcements on that one source (the INSTANCE axis), while others pair it with that
+/// source's `ManaColor`, `Mode`, `UnlessBreak`, `ConvokeTaps` or `MayChoice` point (the
+/// CHOICE axis). One parameter could not have said which a call meant.
+fn preview_slot(point: ChoicePoint, index: u8) -> DecisionSlot {
     DecisionSlot {
         source: engine::types::game_state::YieldTarget::AllCopies {
             card_id: CardId(9001),
             trigger_description: None,
         },
+        point,
         index,
     }
 }
@@ -3244,7 +3251,7 @@ fn preview_slot(index: u8) -> DecisionSlot {
 fn player_targets_point(index: u8, seats: &[PlayerId]) -> DecisionPoint {
     let bound = u32::from(!seats.is_empty());
     DecisionPoint {
-        slot: preview_slot(index),
+        slot: preview_slot(ChoicePoint::AnnouncedTarget, index),
         kind: DecisionPointKind::Targets {
             legal_targets: seats.iter().copied().map(TargetRef::Player).collect(),
             min_targets: bound,
@@ -3913,7 +3920,7 @@ fn respond_window_on(
                 decisions,
                 replay: ReplayMode::Scheduled { count },
                 key: DecisionGroupKey::from_sources(
-                    &[preview_slot(0).source],
+                    &[preview_slot(ChoicePoint::AnnouncedTarget, 0).source],
                     DecisionKind::LoopChoice,
                 ),
             }),
@@ -4113,7 +4120,7 @@ fn declared_amounts(element: &InteractionShortcutPreview) -> Vec<u32> {
 fn the_declared_magnitudes_are_withheld_only_when_the_periods_charge_escapes_the_declaration() {
     const COUNT: u32 = 6;
     const STARTS: [u32; 2] = [0, 2];
-    let slot = preview_slot(0);
+    let slot = preview_slot(ChoicePoint::AnnouncedTarget, 0);
     let announced = [R_FIRST, R_SECOND];
 
     // ── LEG 1 — IT FIRES. One losing seat, charged through this very slot, and the
@@ -4383,9 +4390,13 @@ fn the_declared_allocation_belongs_to_the_first_announced_target_decision() {
         IterationCount::Fixed(COUNT),
         Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
         vec![
-            piecewise_pin(preview_slot(0), &FIRST_STARTS, &seat_subjects(&first_order)),
             piecewise_pin(
-                preview_slot(1),
+                preview_slot(ChoicePoint::AnnouncedTarget, 0),
+                &FIRST_STARTS,
+                &seat_subjects(&first_order),
+            ),
+            piecewise_pin(
+                preview_slot(ChoicePoint::AnnouncedTarget, 1),
                 &SECOND_STARTS,
                 &seat_subjects(&second_order),
             ),
@@ -4461,7 +4472,9 @@ fn the_declared_allocation_belongs_to_the_first_announced_target_decision() {
 /// and says so.
 #[test]
 fn the_allocation_group_is_the_allocated_decisions_own_published_group() {
-    use engine::analysis::decision_template::{DecisionSlot, MayChoiceOption, PinnedDecision};
+    use engine::analysis::decision_template::{
+        ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision,
+    };
     use engine::types::game_state::YieldTarget;
 
     const COUNT: u32 = 6;
@@ -4472,15 +4485,18 @@ fn the_allocation_group_is_the_allocated_decisions_own_published_group() {
         Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
         vec![
             PinnedDecision::MayChoice {
-                slot: DecisionSlot::may(YieldTarget::ThisObject {
-                    source_id: ObjectId(9_317),
-                    incarnation: Some(1),
-                    trigger_description: None,
-                }),
+                slot: DecisionSlot::first(
+                    YieldTarget::ThisObject {
+                        source_id: ObjectId(9_317),
+                        incarnation: Some(1),
+                        trigger_description: None,
+                    },
+                    ChoicePoint::MayGate,
+                ),
                 take: MayChoiceOption::Take,
             },
             piecewise_pin(
-                preview_slot(0),
+                preview_slot(ChoicePoint::AnnouncedTarget, 0),
                 &STARTS,
                 &seat_subjects(&[R_FIRST, R_SECOND]),
             ),
@@ -4527,7 +4543,7 @@ fn the_allocation_group_is_the_allocated_decisions_own_published_group() {
 ///
 /// # Both legs are latent in production, and that is stated rather than implied
 ///
-/// Both `DecisionSlot::may` call sites build their source through `object_decision_source`,
+/// Both `ChoicePoint::MayGate` call sites build their source through `object_decision_source`,
 /// which constructs a live-object source unconditionally, so leg A's card-identity branch is
 /// wired rather than exercised today; leg B's production reachability is unmeasured. Neither is
 /// a reason to leave the branch's behaviour untested — the branch is judged on what it does when
@@ -4542,7 +4558,7 @@ fn the_allocation_group_is_the_allocated_decisions_own_published_group() {
 #[test]
 fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_states_nothing() {
     use engine::analysis::decision_template::{
-        DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
+        ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
     };
     use engine::types::game_state::YieldTarget;
 
@@ -4559,7 +4575,7 @@ fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_state
         trigger_description: None,
     };
     let targets_first = piecewise_pin(
-        preview_slot(0),
+        preview_slot(ChoicePoint::AnnouncedTarget, 0),
         &STARTS,
         &seat_subjects(&[R_FIRST, R_SECOND]),
     );
@@ -4570,7 +4586,7 @@ fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_state
             vec![
                 targets_first.clone(),
                 PinnedDecision::MayChoice {
-                    slot: DecisionSlot::may(source),
+                    slot: DecisionSlot::first(source, ChoicePoint::MayGate),
                     take: MayChoiceOption::Take,
                 },
             ],
@@ -4636,7 +4652,7 @@ fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_state
             IterationCount::Fixed(COUNT),
             Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
             vec![PinnedDecision::Targets {
-                slot: preview_slot(0),
+                slot: preview_slot(ChoicePoint::AnnouncedTarget, 0),
                 targets: vec![TargetPin::ByIdentity(source)],
             }],
         )
@@ -4695,7 +4711,8 @@ fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_state
 #[test]
 fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
     use engine::analysis::decision_template::{
-        DecisionSlot, MayChoiceOption, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+        ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, Ranking, TargetPin,
+        TargetSchedule,
     };
     use engine::types::game_state::YieldTarget;
 
@@ -4714,7 +4731,7 @@ fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
             Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
             vec![
                 PinnedDecision::Targets {
-                    slot: preview_slot(0),
+                    slot: preview_slot(ChoicePoint::AnnouncedTarget, 0),
                     targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
                         step(STARTS[0], &[R_FIRST]),
                         step(STARTS[1], second_step),
@@ -4723,11 +4740,14 @@ fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
                 // A SECOND decision, so "the rest of the walk survives" is a fact this row can
                 // see: a refusal returns from the walk and takes this point with it.
                 PinnedDecision::MayChoice {
-                    slot: DecisionSlot::may(YieldTarget::ThisObject {
-                        source_id: ObjectId(9_318),
-                        incarnation: Some(1),
-                        trigger_description: None,
-                    }),
+                    slot: DecisionSlot::first(
+                        YieldTarget::ThisObject {
+                            source_id: ObjectId(9_318),
+                            incarnation: Some(1),
+                            trigger_description: None,
+                        },
+                        ChoicePoint::MayGate,
+                    ),
                     take: MayChoiceOption::Take,
                 },
             ],
@@ -4830,7 +4850,7 @@ fn a_multi_subject_schedule_states_the_head_its_drive_announces() {
             count.clone(),
             Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
             vec![PinnedDecision::Targets {
-                slot: preview_slot(0),
+                slot: preview_slot(ChoicePoint::AnnouncedTarget, 0),
                 targets: vec![TargetPin::Scheduled(schedule)],
             }],
         ))
@@ -4901,7 +4921,7 @@ fn a_step_announced_at_the_declared_count_takes_a_zero_length_segment() {
         IterationCount::Fixed(COUNT),
         Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
         vec![piecewise_pin(
-            preview_slot(0),
+            preview_slot(ChoicePoint::AnnouncedTarget, 0),
             &STARTS,
             &seat_subjects(&[R_FIRST, R_SECOND]),
         )],
@@ -4962,7 +4982,7 @@ fn an_order_only_declaration_publishes_its_announcement_order_and_no_magnitude()
             count,
             Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
             vec![piecewise_pin(
-                preview_slot(0),
+                preview_slot(ChoicePoint::AnnouncedTarget, 0),
                 &STARTS,
                 &seat_subjects(&[R_FIRST, R_SECOND]),
             )],
@@ -5056,7 +5076,8 @@ fn an_order_only_declaration_publishes_its_announcement_order_and_no_magnitude()
 #[test]
 fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     use engine::analysis::decision_template::{
-        DecisionSlot, MayChoiceOption, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+        ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, Ranking, TargetPin,
+        TargetSchedule,
     };
     use engine::types::game_state::YieldTarget;
 
@@ -5068,11 +5089,14 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     let stated =
         |slot: DecisionSlot| piecewise_pin(slot, &STARTS, &seat_subjects(&[R_FIRST, R_SECOND]));
     let optional = || PinnedDecision::MayChoice {
-        slot: DecisionSlot::may(YieldTarget::ThisObject {
-            source_id: ObjectId(9_401),
-            incarnation: Some(1),
-            trigger_description: None,
-        }),
+        slot: DecisionSlot::first(
+            YieldTarget::ThisObject {
+                source_id: ObjectId(9_401),
+                incarnation: Some(1),
+                trigger_description: None,
+            },
+            ChoicePoint::MayGate,
+        ),
         take: MayChoiceOption::Take,
     };
     let window = |decisions: Vec<PinnedDecision>| {
@@ -5087,9 +5111,9 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     // ── The paired positive, once: the same three decisions all stated. Both legs are compared
     //    against it, and it is also what a wrongly-skipped FIRST decision would publish.
     let whole = window(vec![
-        stated(preview_slot(0)),
+        stated(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
         PinnedDecision::Targets {
-            slot: preview_slot(1),
+            slot: preview_slot(ChoicePoint::AnnouncedTarget, 1),
             targets: vec![TargetPin::Player(R_DRAINED)],
         },
         optional(),
@@ -5119,8 +5143,8 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     //    the last board below cannot refuse for want of a publishable arrangement.
     let optional_first = window(vec![
         optional(),
-        stated(preview_slot(0)),
-        stated(preview_slot(1)),
+        stated(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+        stated(preview_slot(ChoicePoint::AnnouncedTarget, 1)),
     ]);
     assert_eq!(
         kinds(&optional_first),
@@ -5170,8 +5194,8 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
 
         // ── LATER: the domain is already the first decision's, so the skip moves nothing.
         let skipped = window(vec![
-            stated(preview_slot(0)),
-            unstatable(preview_slot(1)),
+            stated(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 1)),
             optional(),
         ]);
         assert_eq!(
@@ -5198,8 +5222,8 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
         //    sequence is refused. This board is the positive above with its two announced-target
         //    decisions swapped, so a skipping producer publishes here.
         let refused = window(vec![
-            unstatable(preview_slot(0)),
-            stated(preview_slot(1)),
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+            stated(preview_slot(ChoicePoint::AnnouncedTarget, 1)),
             optional(),
         ]);
         assert!(
@@ -5213,7 +5237,10 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
         // ── NO SUCCESSOR: the same hole with no other announced-target decision anywhere. No
         //    domain exists for the skip to move, so the refusal above is not owed and the
         //    responder keeps every statement the declaration can still make.
-        let alone = window(vec![unstatable(preview_slot(0)), optional()]);
+        let alone = window(vec![
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+            optional(),
+        ]);
         assert_eq!(
             kinds(&alone),
             vec![InteractionShortcutPointKind::MayChoice],
@@ -5235,9 +5262,9 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
         // ── FIRST, THEN AGAIN LATER: the second hole is behind the fixed domain and settles for
         //    itself alone; the first one's debt is still owed at the end of the walk.
         let twice = window(vec![
-            unstatable(preview_slot(0)),
-            stated(preview_slot(1)),
-            unstatable(preview_slot(2)),
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+            stated(preview_slot(ChoicePoint::AnnouncedTarget, 1)),
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 2)),
         ]);
         assert!(
             twice.points.is_empty() && twice.declared.is_none(),
@@ -5249,9 +5276,9 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
         // ── Its paired positive, ONE decision apart: the same board with the leading hole
         //    stated, so the trailing hole is not what refuses above.
         let trailing = window(vec![
-            stated(preview_slot(0)),
-            stated(preview_slot(1)),
-            unstatable(preview_slot(2)),
+            stated(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+            stated(preview_slot(ChoicePoint::AnnouncedTarget, 1)),
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 2)),
         ]);
         assert_eq!(
             kinds(&trailing),
@@ -5271,8 +5298,8 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
         //    over, so the stated decision behind the hole would still inherit its domain.
         let after_optional = window(vec![
             optional(),
-            unstatable(preview_slot(0)),
-            stated(preview_slot(1)),
+            unstatable(preview_slot(ChoicePoint::AnnouncedTarget, 0)),
+            stated(preview_slot(ChoicePoint::AnnouncedTarget, 1)),
         ]);
         assert!(
             after_optional.points.is_empty() && after_optional.declared.is_none(),
@@ -5320,7 +5347,7 @@ fn a_pin_stating_nothing_publishes_no_point_and_disturbs_nothing_beside_it() {
     };
     let stated = || {
         piecewise_pin(
-            preview_slot(0),
+            preview_slot(ChoicePoint::AnnouncedTarget, 0),
             &STARTS,
             &seat_subjects(&[R_FIRST, R_SECOND]),
         )
@@ -5349,20 +5376,20 @@ fn a_pin_stating_nothing_publishes_no_point_and_disturbs_nothing_beside_it() {
     // ── The same decision with two statement-less pins on either side of it.
     let sandwiched = window(vec![
         PinnedDecision::ManaColor {
-            slot: preview_slot(1),
+            slot: preview_slot(ChoicePoint::ManaColor, 0),
             color: ManaColor::Blue,
         },
         PinnedDecision::Mode {
-            slot: preview_slot(3),
+            slot: preview_slot(ChoicePoint::Mode, 0),
             indices: vec![0],
         },
         stated(),
         PinnedDecision::UnlessBreak {
-            slot: preview_slot(4),
+            slot: preview_slot(ChoicePoint::UnlessBreak, 0),
             pay: UnlessPaymentOption::Pay,
         },
         PinnedDecision::ConvokeTaps {
-            slot: preview_slot(2),
+            slot: preview_slot(ChoicePoint::ConvokeTaps, 0),
         },
     ]);
     assert_eq!(
@@ -5409,7 +5436,7 @@ fn the_respond_side_projection_publishes_nothing_for_a_redacted_declaration() {
             zone,
         );
         let pin = PinnedDecision::Targets {
-            slot: preview_slot(0),
+            slot: preview_slot(ChoicePoint::AnnouncedTarget, 0),
             targets: vec![TargetPin::ByIdentity(
                 engine::types::game_state::YieldTarget::ThisObject {
                     source_id: card,
@@ -5467,7 +5494,9 @@ fn the_respond_side_projection_publishes_nothing_for_a_redacted_declaration() {
 /// `PayloadTooLarge` assertion fails.
 #[test]
 fn an_oversized_declared_sequence_is_charged_rather_than_emitted() {
-    use engine::analysis::decision_template::{DecisionSlot, MayChoiceOption, PinnedDecision};
+    use engine::analysis::decision_template::{
+        ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision,
+    };
 
     /// Below the ceiling with the spec charge applied.
     const ACCEPTED_POINTS: u32 = 1_000;
@@ -5477,11 +5506,14 @@ fn an_oversized_declared_sequence_is_charged_rather_than_emitted() {
     let answered = |count: u32| -> Vec<PinnedDecision> {
         (0..count)
             .map(|index| PinnedDecision::MayChoice {
-                slot: DecisionSlot::may(engine::types::game_state::YieldTarget::ThisObject {
-                    source_id: ObjectId(u64::from(index) + 9_000),
-                    incarnation: Some(1),
-                    trigger_description: None,
-                }),
+                slot: DecisionSlot::first(
+                    engine::types::game_state::YieldTarget::ThisObject {
+                        source_id: ObjectId(u64::from(index) + 9_000),
+                        incarnation: Some(1),
+                        trigger_description: None,
+                    },
+                    ChoicePoint::MayGate,
+                ),
                 take: MayChoiceOption::Take,
             })
             .collect()
@@ -6024,7 +6056,7 @@ fn the_allocation_is_empty_exactly_when_the_first_targets_point_holds_no_candida
         Some(4),
         Some(preview_period_delta()),
         vec![DecisionPoint {
-            slot: preview_slot(0),
+            slot: preview_slot(ChoicePoint::MayGate, 0),
             kind: DecisionPointKind::MayChoice,
         }],
         Vec::new(),
@@ -6056,7 +6088,7 @@ fn the_allocation_is_empty_exactly_when_the_first_targets_point_holds_no_candida
         Some(4),
         Some(charged),
         vec![player_targets_point(0, &[])],
-        vec![(preview_slot(0), rate)],
+        vec![(preview_slot(ChoicePoint::AnnouncedTarget, 0), rate)],
     ));
     let point = empty_point
         .points
@@ -6163,7 +6195,7 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
             Some(4),
             Some(period(life)),
             vec![player_targets_point(0, &seats)],
-            vec![(preview_slot(0), charge)],
+            vec![(preview_slot(ChoicePoint::AnnouncedTarget, 0), charge)],
         ))
     };
     // The magnitude production announces for a charged slot, derived here the way
@@ -6457,10 +6489,10 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
         card_id: CardId(9001),
         trigger_description: None,
     };
-    let slot = |index| DecisionSlot {
-        source: source.clone(),
-        index,
-    };
+    // Six distinct choice points on ONE source. The parameter names WHICH CHOICE, which is
+    // this row's subject stated directly: before the typed point the six were told apart only
+    // by six ordinals, and the number carried the kind half.
+    let slot = |point| DecisionSlot::first(source.clone(), point);
     runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
         proposer: P0,
         predicted_winner: Some(P0),
@@ -6479,7 +6511,7 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
             deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
             points: vec![
                 DecisionPoint {
-                    slot: slot(0),
+                    slot: slot(ChoicePoint::AnnouncedTarget),
                     kind: DecisionPointKind::Targets {
                         legal_targets: vec![TargetRef::Object(target), TargetRef::Player(P1)],
                         min_targets: 1,
@@ -6488,13 +6520,13 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
                     },
                 },
                 DecisionPoint {
-                    slot: slot(1),
+                    slot: slot(ChoicePoint::ConvokeTaps),
                     kind: DecisionPointKind::ConvokeTaps {
                         tappable: vec![target],
                     },
                 },
                 DecisionPoint {
-                    slot: slot(2),
+                    slot: slot(ChoicePoint::Mode),
                     kind: DecisionPointKind::Mode {
                         available_modes: vec![0, 2],
                         min_modes: 1,
@@ -6503,15 +6535,15 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
                     },
                 },
                 DecisionPoint {
-                    slot: slot(3),
+                    slot: slot(ChoicePoint::MayGate),
                     kind: DecisionPointKind::MayChoice,
                 },
                 DecisionPoint {
-                    slot: slot(4),
+                    slot: slot(ChoicePoint::UnlessBreak),
                     kind: DecisionPointKind::UnlessBreak,
                 },
                 DecisionPoint {
-                    slot: slot(5),
+                    slot: slot(ChoicePoint::ManaColor),
                     kind: DecisionPointKind::ManaColor {
                         color: ManaColor::Blue,
                     },
@@ -6522,6 +6554,40 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
         declaration: None,
     };
     bind(runner.state_mut(), "loop-point-kinds");
+
+    // ── R9 leg 6: six choice points on ONE source stay six, and the POINT is what says so.
+    //    Re-grounded from the ordinal: the slots must be pairwise distinct, each slot's
+    //    `point` must be the one its own `kind` names, and every one of them is instance `0`
+    //    — its original subject stated directly instead of through a number.
+    let WaitingFor::LoopShortcut { schema, .. } = &runner.state().waiting_for else {
+        panic!("reach-guard: the board parks on the loop-shortcut offer");
+    };
+    let published: Vec<&DecisionSlot> = schema.points.iter().map(|point| &point.slot).collect();
+    assert_eq!(
+        published.len(),
+        6,
+        "reach-guard: six points publish, so 'pairwise distinct' is a claim about six slots"
+    );
+    let distinct: std::collections::BTreeSet<&DecisionSlot> = published.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        published.len(),
+        "six choice points on one source are six distinct slots: {published:?}"
+    );
+    for point in &schema.points {
+        assert_eq!(
+            point.slot.point,
+            point_of_published_kind(&point.kind),
+            "each slot names the choice its own published kind means: {:?}",
+            point.kind
+        );
+        assert_eq!(
+            point.slot.index, 0,
+            "each is the FIRST instance of its own class on this source, so the ordinal \
+             carries no part of the kind: {:?}",
+            point.slot
+        );
+    }
 
     let view = priority_view(runner.state());
     let InteractionOpportunityResponse::Schema {
@@ -6656,6 +6722,7 @@ fn loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_s
             incarnation: Some(incarnation),
             trigger_description: None,
         },
+        point: ChoicePoint::AnnouncedTarget,
         index: 0,
     };
     runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
@@ -7931,8 +7998,24 @@ fn activate_mana_source_labels_fixed_and_flexible_sacrificial_sources() {
 // the until-lethal withdrawal, the wire charge, serde additivity, and the progress window.
 // ═════════════════════════════════════════════════════════════════════════════════════════
 
-/// One staged loop-shortcut offer whose points are exactly `kinds`, each on its own slot index
-/// over a live battlefield creature read at its CURRENT incarnation (CR 400.7).
+/// CR 732.2a: which [`ChoicePoint`] a PUBLISHED point's own kind names. Written here rather
+/// than imported so the rows compare the engine's published slot against an independent
+/// statement of the pairing instead of against the producer's own copy of it.
+fn point_of_published_kind(kind: &DecisionPointKind) -> ChoicePoint {
+    match kind {
+        DecisionPointKind::Targets { .. } => ChoicePoint::AnnouncedTarget,
+        DecisionPointKind::MayChoice => ChoicePoint::MayGate,
+        DecisionPointKind::ConvokeTaps { .. } => ChoicePoint::ConvokeTaps,
+        DecisionPointKind::Mode { .. } => ChoicePoint::Mode,
+        DecisionPointKind::UnlessBreak => ChoicePoint::UnlessBreak,
+        DecisionPointKind::ManaColor { .. } => ChoicePoint::ManaColor,
+    }
+}
+
+/// One staged loop-shortcut offer whose points are exactly `kinds`, each on its own slot over
+/// a live battlefield creature read at its CURRENT incarnation (CR 400.7). Each slot's CHOICE
+/// POINT comes from its own published kind, and its ordinal counts instances WITHIN that
+/// point — so two points of different kinds are two slots without either reserving a number.
 ///
 /// The slot source is a live battlefield object for the reason
 /// [`loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_seat`] records
@@ -7949,14 +8032,23 @@ fn stage_sequenced_offer(
     let source = scenario.add_creature(P0, "P4 Ability Source", 1, 1).id();
     let mut runner = scenario.build();
     let incarnation = runner.state().objects[&source].incarnation;
-    let slots: Vec<DecisionSlot> = (0..kinds.len())
-        .map(|index| DecisionSlot {
-            source: engine::types::game_state::YieldTarget::ThisObject {
-                source_id: source,
-                incarnation: Some(incarnation),
-                trigger_description: None,
-            },
-            index: index as u8,
+    let mut seen: std::collections::BTreeMap<ChoicePoint, u8> = std::collections::BTreeMap::new();
+    let slots: Vec<DecisionSlot> = kinds
+        .iter()
+        .map(|kind| {
+            let point = point_of_published_kind(kind);
+            let index = seen.entry(point).or_insert(0);
+            let slot = DecisionSlot {
+                source: engine::types::game_state::YieldTarget::ThisObject {
+                    source_id: source,
+                    incarnation: Some(incarnation),
+                    trigger_description: None,
+                },
+                point,
+                index: *index,
+            };
+            *index += 1;
+            slot
         })
         .collect();
     runner.state_mut().waiting_for = WaitingFor::LoopShortcut {

@@ -58,15 +58,15 @@ const CYCLES_DRIVEN: usize = 3;
 /// Beat cap for every drive loop here. Read by no assertion; it bounds a runaway drive.
 const BEAT_CAP: usize = 240;
 
-struct PrestonBoard {
-    runner: GameRunner,
-    felidar: ObjectId,
-    animate_dead: ObjectId,
-    preston: ObjectId,
-    altar: ObjectId,
+pub(super) struct PrestonBoard {
+    pub(super) runner: GameRunner,
+    pub(super) felidar: ObjectId,
+    pub(super) animate_dead: ObjectId,
+    pub(super) preston: ObjectId,
+    pub(super) altar: ObjectId,
 }
 
-fn build_board_b() -> Option<PrestonBoard> {
+pub(super) fn build_board_b() -> Option<PrestonBoard> {
     let db = load_db()?;
     let mut scenario = GameScenario::new_n_player(4, 42);
     scenario.at_phase(Phase::PreCombatMain);

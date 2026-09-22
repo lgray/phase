@@ -4358,7 +4358,8 @@ fn persistent_order_template(
     card_id: u64,
 ) -> crate::analysis::decision_template::DecisionTemplate {
     use crate::analysis::decision_template::{
-        DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+        ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+        PinnedDecision, ReplayMode,
     };
     use crate::types::game_state::YieldTarget;
     let src = YieldTarget::AllCopies {
@@ -4368,7 +4369,7 @@ fn persistent_order_template(
     DecisionTemplate {
         owner,
         decisions: vec![PinnedDecision::Order {
-            source: src.clone(),
+            slot: DecisionSlot::first(src.clone(), ChoicePoint::TriggerOrder),
             pos: 0,
         }],
         replay: ReplayMode::Static,

@@ -617,7 +617,7 @@ fn mana_engine_off_mode_is_byte_identical() {
 #[test]
 fn loop_action_sequence_conditional_load_migration() {
     use engine::analysis::decision_template::{
-        DecisionSlot, PinnedDecision, ShortcutDecisionSchema,
+        ChoicePoint, DecisionSlot, PinnedDecision, ShortcutDecisionSchema,
     };
     use engine::analysis::loop_check::LoopCertificate;
     use engine::analysis::resource::BoardDelta;
@@ -631,6 +631,7 @@ fn loop_action_sequence_conditional_load_migration() {
                 incarnation: None,
                 trigger_description: None,
             },
+            point: ChoicePoint::ManaColor,
             index: 1,
         },
         color: ManaColor::Blue,

@@ -9603,6 +9603,7 @@ mod tests {
         );
     }
     use super::*;
+    use crate::analysis::decision_template::ChoicePoint;
     use crate::game::game_object::GameObject;
     use crate::types::ability::TriggerDefinitionRef;
     use crate::types::identifiers::{
@@ -12102,7 +12103,7 @@ mod tests {
             bounded_cycle_pin_slots(&current, PlayerId(0)).is_empty(),
             "and the mint therefore publishes nothing rather than under-describing it"
         );
-        let slot = churn_src_slot(&current, 0);
+        let slot = churn_src_slot(&current, ChoicePoint::AnnouncedTarget);
         for pinned in [&[][..], std::slice::from_ref(&slot)] {
             assert!(
                 !loop_states_cover_modulo_growth_scoped(
@@ -12305,7 +12306,7 @@ mod tests {
             bounded_cycle_pin_slots(&current, PlayerId(0)).is_empty(),
             "and the mint publishes no point rather than one describing a different choice"
         );
-        let slot = churn_src_slot(&current, 0);
+        let slot = churn_src_slot(&current, ChoicePoint::AnnouncedTarget);
         for pinned in [&[][..], std::slice::from_ref(&slot)] {
             assert!(
                 !loop_states_cover_modulo_growth_scoped(
@@ -12525,7 +12526,7 @@ mod tests {
 
         // ── (c) the CR 603.5 gate SURVIVES the withhold ──
         // Withholding the forced target must not suppress the entry: a "may" on the same
-        // source is a real per-iteration choice with its own sub-index.
+        // source is a real per-iteration choice with its own choice point.
         let (_pm, cm) = grown_window(2, optional_drain);
         let pins = entry_publishes_pin_slots(&cm, &cm.stack[2], PlayerId(0))
             .expect("an optional entry still publishes its CR 603.5 gate");
@@ -13502,14 +13503,15 @@ mod tests {
 
     /// A slot an OFFER would publish for `CHURN_SRC`'s entries — built through the same
     /// authority the gates rebuild it with, so the rows prove the KEY matches rather than
-    /// asserting a hand-written literal. `index: 0` is the CR 115.2 target choice,
-    /// `index: 1` the CR 603.5 "may" gate.
-    fn churn_src_slot(state: &GameState, index: u8) -> DecisionSlot {
-        DecisionSlot {
-            source: crate::game::engine::object_decision_source(state, ObjectId(CHURN_SRC))
+    /// asserting a hand-written literal. The parameter names WHICH CHOICE, because the
+    /// callers mean different ones: CR 601.2c/CR 115.2 `AnnouncedTarget` at one call and the
+    /// CR 603.5 `MayGate` at another.
+    fn churn_src_slot(state: &GameState, point: ChoicePoint) -> DecisionSlot {
+        DecisionSlot::first(
+            crate::game::engine::object_decision_source(state, ObjectId(CHURN_SRC))
                 .expect("fixture: the churn source is on the battlefield"),
-            index,
-        }
+            point,
+        )
     }
 
     /// The published-pin channel as a P0 offer would carry it.
@@ -13629,7 +13631,7 @@ mod tests {
             ),
             "UNPINNED: an open per-opponent target choice is a free choice ⇒ reject"
         );
-        let target_slot = churn_src_slot(&current, 0);
+        let target_slot = churn_src_slot(&current, ChoicePoint::AnnouncedTarget);
         assert!(
             loop_states_cover_modulo_growth_scoped(
                 &prior,
@@ -13671,7 +13673,10 @@ mod tests {
             ),
             "UNPINNED: an optional trigger's take/decline is a free choice ⇒ reject"
         );
-        let may_slots = [churn_src_slot(&c_may, 0), churn_src_slot(&c_may, 1)];
+        let may_slots = [
+            churn_src_slot(&c_may, ChoicePoint::AnnouncedTarget),
+            churn_src_slot(&c_may, ChoicePoint::MayGate),
+        ];
         assert!(
             loop_states_cover_modulo_growth_scoped(
                 &p_may,
@@ -13711,7 +13716,10 @@ mod tests {
             // Publish EVERYTHING this entry could publish — target slot and, when the
             // ability is optional, its CR 603.5 gate. The proliferate choice still has no
             // published pin, so no relief may be granted.
-            let slots = [churn_src_slot(&c6, 0), churn_src_slot(&c6, 1)];
+            let slots = [
+                churn_src_slot(&c6, ChoicePoint::AnnouncedTarget),
+                churn_src_slot(&c6, ChoicePoint::MayGate),
+            ];
             for pinned in [&slots[..0], &slots[..1], &slots[..]] {
                 assert!(
                     !loop_states_cover_modulo_growth_scoped(
@@ -13740,7 +13748,7 @@ mod tests {
             "reach-guard: P1 has two opponents ⇒ not forced-unique ⇒ gate (3) rejects"
         );
         assert_eq!(
-            churn_src_slot(&c_foreign, 0),
+            churn_src_slot(&c_foreign, ChoicePoint::AnnouncedTarget),
             target_slot,
             "the foreign entry's source is BYTE-IDENTICAL to arm 1's pinned slot — the pin \
              list cannot discriminate it, only the controller conjunct can"
@@ -13793,7 +13801,7 @@ mod tests {
                     !stack_entry_has_no_ordering_input(&c5, &c5.stack[2]),
                     "reach-guard: {label} is therefore item 3's SOLE rejector"
                 );
-                let slot = churn_src_slot(&c5, 0);
+                let slot = churn_src_slot(&c5, ChoicePoint::AnnouncedTarget);
                 for pinned in [&[][..], std::slice::from_ref(&slot)] {
                     assert!(
                         !loop_states_cover_modulo_growth_scoped(
@@ -13819,7 +13827,7 @@ mod tests {
             // the field is `None`; that bounds the exposure, it does not make it
             // unreachable.)
             let (p_pend, c_pend) = grown_window(2, |id| drain_entry(id, vec![]));
-            let pend_slot = churn_src_slot(&c_pend, 0);
+            let pend_slot = churn_src_slot(&c_pend, ChoicePoint::AnnouncedTarget);
             assert!(
                 loop_states_cover_modulo_growth_scoped(
                     &p_pend,
@@ -13901,7 +13909,10 @@ mod tests {
                 "reach-guard: the installed optional def makes the CR 614.1a surface \
                  prompt-capable for a LifeLoss event (arm 2's bare board does not)"
             );
-            let slots = [churn_src_slot(&c_life, 0), churn_src_slot(&c_life, 1)];
+            let slots = [
+                churn_src_slot(&c_life, ChoicePoint::AnnouncedTarget),
+                churn_src_slot(&c_life, ChoicePoint::MayGate),
+            ];
             assert!(
                 !loop_states_cover_modulo_growth_scoped(
                     &p_life,
@@ -13921,6 +13932,7 @@ mod tests {
                 incarnation: Some(0),
                 trigger_description: None,
             },
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         for (p, c, label) in [(&prior, &current, "gate (3)"), (&p_may, &c_may, "gate (6)")] {
@@ -13942,6 +13954,7 @@ mod tests {
                 incarnation: Some(u64::MAX),
                 trigger_description: None,
             },
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         assert!(
@@ -18336,14 +18349,17 @@ mod tests {
         v
     }
 
+    /// The parameter names the SOURCE, not the choice or the instance: it also mints the
+    /// slot's own `card_id`, so no two of these slots share a source and each is instance `0`
+    /// of its CR 601.2c announcement class.
     fn slot(index: u8) -> DecisionSlot {
-        DecisionSlot {
-            source: crate::types::game_state::YieldTarget::AllCopies {
+        DecisionSlot::first(
+            crate::types::game_state::YieldTarget::AllCopies {
                 card_id: CardId(u64::from(index) + 900),
                 trigger_description: None,
             },
-            index,
-        }
+            ChoicePoint::AnnouncedTarget,
+        )
     }
 
     /// One [`SlotCharge`] per spec — `(magnitude, seats it REACHES, seat the window saw it
@@ -18991,11 +19007,14 @@ mod tests {
     /// live on the battlefield to replay a seat pin against.
     fn announced_target_slot(board: &mut GameState, id: u64) -> DecisionSlot {
         let source_id = battlefield_creature(board, id, 0);
-        DecisionSlot::target(crate::types::game_state::YieldTarget::ThisObject {
-            source_id,
-            incarnation: None,
-            trigger_description: None,
-        })
+        DecisionSlot::first(
+            crate::types::game_state::YieldTarget::ThisObject {
+                source_id,
+                incarnation: None,
+                trigger_description: None,
+            },
+            ChoicePoint::AnnouncedTarget,
+        )
     }
 
     /// CR 115.2: the published point for `slot`, legal on exactly `seats`.
@@ -23876,7 +23895,9 @@ mod tests {
     /// (`skip_serializing_if`), asserted in the third block.
     #[test]
     fn periodic_delta_survives_the_serde_json_wire() {
-        use crate::analysis::decision_template::{DecisionSlot, ShortcutDecisionSchema};
+        use crate::analysis::decision_template::{
+            ChoicePoint, DecisionSlot, ShortcutDecisionSchema,
+        };
         use crate::analysis::loop_check::{LoopCertificate, WinKind};
         use crate::types::game_state::{WaitingFor, YieldTarget};
 
@@ -23886,6 +23907,7 @@ mod tests {
                 incarnation: Some(7),
                 trigger_description: None,
             },
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
 
@@ -36163,8 +36185,9 @@ mod tests {
     // PeriodicDelta::conforms / slot_charged_life / ResourceVector::period
     // -----------------------------------------------------------------------
 
-    /// A distinct announced decision SOURCE. The rows below separate slots by their SOURCE half
-    /// and by their SUB-INDEX half independently, so the two must be varied one at a time.
+    /// A distinct announced decision SOURCE. The rows below separate slots by their SOURCE half,
+    /// by their CHOICE POINT half and by their INSTANCE half independently, so the three must be
+    /// varied one at a time.
     fn charged_source(tag: u64) -> crate::types::game_state::YieldTarget {
         crate::types::game_state::YieldTarget::AllCopies {
             card_id: CardId(9_000 + tag),
@@ -36244,7 +36267,7 @@ mod tests {
     /// fails it.
     #[test]
     fn conforms_refuses_everything_the_bound_did_not_reserve() {
-        let charged = DecisionSlot::target(charged_source(0));
+        let charged = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
         let pins = [aimed_pin(charged.clone())];
         let expected = charged_signature(victim_life(&[(1, -3)]), &[(charged.clone(), 3)], SEATS);
 
@@ -36437,7 +36460,7 @@ mod tests {
 
         // (d) A RELOCATION OUTSIDE THE RESERVED DOMAIN stays refused at any population: CR 704.5a
         // reserved no headroom there, so that loss is not liftable.
-        let charged = DecisionSlot::target(charged_source(0));
+        let charged = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
         let narrow_domain =
             charged_signature(victim_life(&[(1, -3)]), &[(charged.clone(), 3)], &[1, 2]);
         let outside: BTreeSet<PlayerId> = [1, 2, 5].iter().copied().map(PlayerId).collect();
@@ -36729,16 +36752,18 @@ mod tests {
     /// (i) reds if `slots == 0` stops being the identity, or if the count is taken over `pins`
     /// unfiltered; (vi) if it is taken over the pins that name a charged slot, which sizes the
     /// lift at TWO where `victim_slot` sizes it at one; (iii) if the pins are ignored, if any
-    /// non-empty pin list sizes the lift, or if the slot match is weakened to its SUB-INDEX
-    /// alone; (iv) if the pin-KIND match is dropped; (v) if the slot match is weakened to its
-    /// SOURCE alone — every other leg separates "different slot" by changing the SOURCE, so
-    /// that rival survives all of them.
+    /// non-empty pin list sizes the lift, or if the slot match is weakened to its CHOICE POINT
+    /// and INSTANCE alone; (iv) if the pin-KIND match is dropped; (v) if the slot match is
+    /// weakened to its SOURCE alone, in either of the two directions that weakening admits —
+    /// the leg ships one rival a POINT apart and one an INSTANCE apart, so the three axes the
+    /// predicate compares are each separated by a leg of their own: source at (iii), point and
+    /// instance at (v).
     #[test]
     fn conforms_lifts_nothing_without_a_targets_pin_on_a_charged_slot() {
         use crate::analysis::decision_template::{MayChoiceOption, PinnedDecision};
 
         let source = charged_source(0);
-        let charged = DecisionSlot::target(source.clone());
+        let charged = DecisionSlot::first(source.clone(), ChoicePoint::AnnouncedTarget);
         let observed = victim_life(&[(2, -3)]);
         let delta = victim_life(&[(1, -3)]);
 
@@ -36766,7 +36791,10 @@ mod tests {
         assert!(
             !charged_sig.conforms(
                 &observed,
-                &[aimed_pin(DecisionSlot::target(charged_source(1)))]
+                &[aimed_pin(DecisionSlot::first(
+                    charged_source(1),
+                    ChoicePoint::AnnouncedTarget
+                ))]
             ),
             "a pin on a slot of a DIFFERENT SOURCE confines a different decision and must not \
              size this lift"
@@ -36785,14 +36813,34 @@ mod tests {
             "a `MayChoice` pin naming the charged slot itself is not the CR 601.2c confinement"
         );
 
-        // (v) THE SUB-INDEX SEPARATOR: the right KIND on the SAME SOURCE, one sub-index over.
-        // `DecisionSlot::target` is sub-index 0 and `::may` is sub-index 1 on one source, so a
-        // filter comparing only `pinned.source == slot.source` would size the lift from a pin
-        // that confines a different decision of the same source.
+        // (v) THE NON-SOURCE SEPARATORS, one assertion per axis. `conforms_in` compares WHOLE
+        // slots, so a filter comparing only `pinned.source == slot.source` would size the lift
+        // from a pin that confines a different decision of the same source — and "a different
+        // decision" has two spellings: a different CHOICE POINT, and a different INSTANCE of the
+        // same point. Both ship, because no other leg of this battery varies either one, so a
+        // rival that compared source alone in one of the two directions would survive.
         assert!(
-            !charged_sig.conforms(&observed, &[aimed_pin(DecisionSlot::may(source))]),
-            "a `Targets` pin on ANOTHER SUB-INDEX of the charged slot's source names a different \
-             slot and must not size the lift"
+            !charged_sig.conforms(
+                &observed,
+                &[aimed_pin(DecisionSlot::first(
+                    source.clone(),
+                    ChoicePoint::MayGate
+                ))]
+            ),
+            "a `Targets` pin at ANOTHER CHOICE POINT on the charged slot's source names a \
+             different slot and must not size the lift"
+        );
+        assert!(
+            !charged_sig.conforms(
+                &observed,
+                &[aimed_pin(DecisionSlot {
+                    source,
+                    point: ChoicePoint::AnnouncedTarget,
+                    index: 1,
+                })]
+            ),
+            "a `Targets` pin at ANOTHER INSTANCE of the charged slot's own point names a \
+             different slot and must not size the lift"
         );
 
         // (vi) TWO PINS NAMING ONE CHARGED SLOT — `validate_pins` carries no duplicate-slot
@@ -36831,8 +36879,8 @@ mod tests {
     /// if the filter refuses more than the out-of-domain relocation.
     #[test]
     fn conforms_refuses_a_relocation_outside_the_reserved_domain() {
-        let first = DecisionSlot::target(charged_source(0));
-        let second = DecisionSlot::target(charged_source(1));
+        let first = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
+        let second = DecisionSlot::first(charged_source(1), ChoicePoint::AnnouncedTarget);
         let pins = [aimed_pin(first.clone()), aimed_pin(second.clone())];
         let slots = [(first, 5), (second, 1)];
         let signature =
@@ -36876,7 +36924,7 @@ mod tests {
     /// member with it.
     #[test]
     fn slot_charged_life_resolves_a_tie_that_spans_the_domain_boundary() {
-        let charged = DecisionSlot::target(charged_source(0));
+        let charged = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
         let pins = [aimed_pin(charged.clone())];
         // Seats 1 and 4 tie at the maximum; only seat 1 lies in the reserved domain.
         let tied_across = charged_signature(
@@ -36914,7 +36962,7 @@ mod tests {
     /// domain stopped admitting the byte-identical period.
     #[test]
     fn conforms_fails_closed_on_a_signature_deserialized_without_a_domain() {
-        let charged = DecisionSlot::target(charged_source(0));
+        let charged = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
         let pins = [aimed_pin(charged.clone())];
         let populated = charged_signature(victim_life(&[(1, -3)]), &[(charged, 3)], &[1, 2]);
 
@@ -37034,8 +37082,8 @@ mod tests {
     /// term is dropped.
     #[test]
     fn conforms_compares_two_pinned_slots_as_one_total() {
-        let first = DecisionSlot::target(charged_source(0));
-        let second = DecisionSlot::target(charged_source(1));
+        let first = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
+        let second = DecisionSlot::first(charged_source(1), ChoicePoint::AnnouncedTarget);
         let pins = [aimed_pin(first.clone()), aimed_pin(second.clone())];
         let expected = charged_signature(
             victim_life(&[(1, -2), (2, -2)]),
@@ -37078,7 +37126,7 @@ mod tests {
     /// strictly-negative filter is deleted.
     #[test]
     fn slot_charged_life_is_bounded_ordered_losses_only_and_undefined_at_a_tie() {
-        let charged = DecisionSlot::target(charged_source(0));
+        let charged = DecisionSlot::first(charged_source(0), ChoicePoint::AnnouncedTarget);
         let pins = [aimed_pin(charged.clone())];
         let sign = |entries: &[(u8, i64)]| {
             charged_signature(victim_life(entries), &[(charged.clone(), 3)], SEATS)

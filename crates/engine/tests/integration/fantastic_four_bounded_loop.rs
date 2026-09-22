@@ -1939,19 +1939,21 @@ fn r27_a1_the_f4_dumps_recorded_sample_keeps_a_live_half_normalization_would_hav
 /// object's CURRENT incarnation, `trigger_description` held `None`) and is reconstructed
 /// here rather than called because the engine's helper is `pub(crate)`; every row that uses
 /// it asserts the reconstruction is faithful by requiring the production write site to have
-/// stored something under it. The SUB-INDEX half is not reconstructed at all — it comes from
-/// the engine's own `DecisionSlot::may`, the same constructor the publisher and the
-/// `DecideOptionalEffect` writer use, so this key cannot drift from theirs.
+/// stored something under it. The CHOICE POINT half is not reconstructed at all — it is
+/// `ChoicePoint::MayGate` through the engine's own `DecisionSlot::first`, the same constructor
+/// the publisher and the `DecideOptionalEffect` writer mint with, so this key cannot drift from
+/// theirs.
 fn may_source_key(
     state: &GameState,
     source_id: ObjectId,
 ) -> engine::analysis::decision_template::DecisionSlot {
-    engine::analysis::decision_template::DecisionSlot::may(
+    engine::analysis::decision_template::DecisionSlot::first(
         engine::types::game_state::YieldTarget::ThisObject {
             source_id,
             incarnation: Some(state.objects[&source_id].incarnation),
             trigger_description: None,
         },
+        engine::analysis::decision_template::ChoicePoint::MayGate,
     )
 }
 
@@ -2067,9 +2069,9 @@ fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_
     );
 
     let (proposer, _certificate, schema) = offer_parts(&state);
-    // The WHOLE published slot, sub-index included — the journal is keyed on it, so
-    // projecting it down to `slot.source` here would test a coarser identity than the one
-    // production writes and reads.
+    // The WHOLE published slot, choice point and instance ordinal included — the journal is
+    // keyed on it, so projecting it down to `slot.source` here would test a coarser identity
+    // than the one production writes and reads.
     let may_slots: Vec<_> = schema
         .points
         .iter()
@@ -4429,8 +4431,8 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
 #[test]
 fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
     use engine::analysis::decision_template::{
-        AnnouncementSubject, DecisionGroupKey, DecisionSlot, DecisionTemplate, PinnedDecision,
-        Ranking, ReplayMode, TargetPin, TargetSchedule,
+        AnnouncementSubject, ChoicePoint, DecisionGroupKey, DecisionSlot, DecisionTemplate,
+        PinnedDecision, Ranking, ReplayMode, TargetPin, TargetSchedule,
     };
 
     let mut state = load_f4();
@@ -4538,6 +4540,7 @@ fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
 
     let unknown = DecisionSlot {
         source: charged_slot.source.clone(),
+        point: charged_slot.point,
         index: charged_slot.index.wrapping_add(1),
     };
     assert!(
@@ -4554,7 +4557,7 @@ fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
 
     assert_eq!(
         declare(vec![PinnedDecision::Order {
-            source: charged_slot.source.clone(),
+            slot: DecisionSlot::first(charged_slot.source.clone(), ChoicePoint::TriggerOrder),
             pos: 0,
         }])
         .waiting_for
@@ -4597,7 +4600,7 @@ fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
 /// `analysis::decision_template::tests::gate_coverage_is_kind_aware`.
 #[test]
 fn an_order_pin_is_not_an_answer_to_the_f4_offers_published_choices() {
-    use engine::analysis::decision_template::PinnedDecision;
+    use engine::analysis::decision_template::{ChoicePoint, DecisionSlot, PinnedDecision};
 
     let mut state = load_f4();
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
@@ -4641,7 +4644,7 @@ fn an_order_pin_is_not_an_answer_to_the_f4_offers_published_choices() {
     );
 
     let ordering = PinnedDecision::Order {
-        source: target_source,
+        slot: DecisionSlot::first(target_source, ChoicePoint::TriggerOrder),
         pos: 0,
     };
     let swapped: Vec<PinnedDecision> = conformant

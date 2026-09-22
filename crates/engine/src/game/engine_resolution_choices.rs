@@ -6161,6 +6161,19 @@ pub(super) fn handle_resolution_choice(
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
+            // CR 608.2d + CR 732.2a: record the chosen SET onto a trigger-driven step, gated on
+            // the step kind by `record_trigger_step_pin`. Nothing is recorded when the prompt is
+            // a COST PAYMENT (CR 118.1 — "an action or payment necessary to take another
+            // action"), which is not one of the choices CR 608.2d places at resolution; the same
+            // field the replay's own arm refuses on, read off the prompt in hand.
+            crate::game::engine::record_resolution_set_pin(
+                state,
+                player,
+                source_id,
+                is_cost_payment,
+                chosen.as_slice(),
+            );
+
             let legacy_optional_attach_empty = chosen.is_empty()
                 && matches!(effect_kind, EffectKind::Attach)
                 && !up_to

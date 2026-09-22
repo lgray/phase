@@ -9402,7 +9402,8 @@ mod tests {
         declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
     ) -> GameState {
         use crate::analysis::decision_template::{
-            DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount, ShortcutDecisionSchema,
+            ChoicePoint, DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount,
+            ShortcutDecisionSchema,
         };
         let mut state = GameState::new_two_player(42);
         state.waiting_for = WaitingFor::LoopShortcut {
@@ -9420,7 +9421,7 @@ mod tests {
                 measured_repetition_bound: Some(5),
                 deliverable_capacity: 5,
                 points: vec![DecisionPoint {
-                    slot: DecisionSlot::target(d6n_source()),
+                    slot: DecisionSlot::first(d6n_source(), ChoicePoint::AnnouncedTarget),
                     kind: DecisionPointKind::Targets {
                         legal_targets: vec![TargetRef::Player(PlayerId(0))],
                         min_targets: 1,
@@ -9467,8 +9468,8 @@ mod tests {
     #[test]
     fn d6n_a_points_carrying_offer_without_a_declaration_enumerates_only_decline() {
         use crate::analysis::decision_template::{
-            DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount,
-            PinnedDecision, ReplayMode, TargetPin,
+            ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+            IterationCount, PinnedDecision, ReplayMode, TargetPin,
         };
 
         // ── the negative arm ──
@@ -9497,7 +9498,7 @@ mod tests {
         let declaration = DecisionTemplate {
             owner: D6N_PROPOSER,
             decisions: vec![PinnedDecision::Targets {
-                slot: DecisionSlot::target(d6n_source()),
+                slot: DecisionSlot::first(d6n_source(), ChoicePoint::AnnouncedTarget),
                 targets: vec![TargetPin::Player(PlayerId(0))],
             }],
             replay: ReplayMode::Scheduled {

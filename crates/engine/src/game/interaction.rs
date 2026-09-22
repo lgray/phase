@@ -3584,7 +3584,7 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
             // and no per-iteration creature is latched, so the pin states no answer to publish.
             PinnedDecision::ConvokeTaps { .. } => {}
             // CR 603.3b trigger ordering under the static replay mode, not a loop-shortcut
-            // per-iteration decision — and the one variant with no `slot`.
+            // per-iteration decision, so this projection publishes nothing for it.
             PinnedDecision::Order { .. } => {}
         }
     }

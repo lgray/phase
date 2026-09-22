@@ -1452,8 +1452,11 @@ pub(crate) fn bind_resolving_ability_referents(
 /// off-stack mana recorder and the on-stack activation arm in `game::engine` — and is the one at
 /// which no player acts: CR 603.3 puts a triggered ability on the stack with nobody electing it,
 /// which is why the step it records declares itself NOT voluntarily repeatable and why the road
-/// that period opens stops at the producer's CR 104.4b gate. The set is
-/// `GameState::last_loop_action_sequence`'s writers, named rather than counted.
+/// that period opens stops at the producer's CR 104.4b gate. Those four, THIS ONE INCLUDED, are
+/// the field's APPENDERS — the sites that call `game::engine::accumulate_loop_action_step`, a
+/// strict subset of its writers, which also clear it, replace it whole and push pins onto its
+/// last step. Regenerate the writer set with
+/// `grep -rn 'last_loop_action_sequence' crates/engine/src/`.
 ///
 /// PLACEMENT (CR 603.4 / CR 608.2b): called past the intervening-if recheck and past the
 /// target-validation branch, before the entry's effects run — so a trigger whose condition fails
@@ -1520,7 +1523,9 @@ fn arm_trigger_driven_loop_period(
             occurrence: def_ref.occurrence.clone(),
         },
         convoke: None,
-        // This beat records no choice a step's resolution asks.
+        // The arming beat precedes every prompt this trigger's resolution raises, so the
+        // vector starts empty; `engine::record_trigger_step_pin` appends each choice as it is
+        // answered, into the step this beat appended.
         pins: Vec::new(),
     };
     // The ONE accumulator, with its controller-change reset and its length cap. No second

@@ -137,29 +137,74 @@ pub struct DecisionTemplate {
     pub key: DecisionGroupKey,
 }
 
-/// Identifies one free choice within a group: which source raised it (CR 400.7-stable
-/// [`DecisionSource`]) plus a sub-index disambiguating multiple choices from one source
-/// (e.g. two target slots on one ability). It derives a canonical order because
+/// CR 732.2a: WHICH CHOICE a [`DecisionSlot`] names, typed rather than numbered. One
+/// variant per choice point a producer constructs a slot for, and the set is closed by
+/// [`pin_answers_point`]'s exhaustive, wildcard-free ([`PinnedDecision`] x
+/// [`DecisionPointKind`]) product: this enum is that product's point half, so a variant
+/// added to either paired enum build-breaks there, where the decision about this enum is
+/// then taken explicitly.
+///
+/// The four variants sharing the [`PinnedDecision::Targets`] pin are why the type exists:
+/// one object can be a mana ability's cost source AND a resolving trigger's source, so a
+/// pin variant plus a source is not an identity.
+///
+/// DECLARATION ORDER IS A DESIGN CONSTRAINT, not an accident: [`DecisionSlot`] derives
+/// `Ord` and `GameAction::DeclareShortcut` participates in deterministic AI action
+/// ordering, so `AnnouncedTarget` is declared BEFORE `MayGate` to reproduce the order a
+/// source's announced-target slot and its "may" slot compared in while the ordinal
+/// carried the kind half. That pair is the only one any published set compares; the
+/// remaining variants' relative order is free but fixed by this declaration.
+///
+/// `Copy` — which [`DecisionSlot`] itself cannot derive, since [`DecisionSource`] is not
+/// `Copy` — so points compare and pass by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ChoicePoint {
+    /// CR 601.2c (reached for a triggered ability via CR 603.3d) + CR 115.2: a target
+    /// announced as the spell or ability is put on the stack.
+    AnnouncedTarget,
+    /// CR 603.5: the optional "may" a triggered ability's effect offers as it resolves.
+    MayGate,
+    /// CR 603.3b: the position its controller puts one simultaneously-triggered ability at
+    /// on the stack.
+    TriggerOrder,
+    /// CR 602.2b -> CR 601.2h: which permanents the player chose to tap to PAY an
+    /// activation cost. Activating follows the casting process of CR 601.2b-i, and
+    /// CR 601.2h is where the total cost is paid.
+    TapCost,
+    /// CR 701.34a: the permanents and/or players a proliferate chooses — a merely CHOSEN
+    /// set, not a targeted one.
+    ProliferateSet,
+    /// CR 608.2d: a set of objects an effect instructs a player to choose as the spell or
+    /// ability RESOLVES — a choice other than one already made as part of casting.
+    ResolutionSet,
+    /// CR 608.2d + CR 605.3b: the color an "add one mana of any color" mana ability
+    /// produces. CR 605.3b is why that choice never reaches the stack.
+    ManaColor,
+    /// CR 702.51a: which untapped creatures are tapped to pay convoke.
+    ConvokeTaps,
+    /// CR 700.2: which modes of a modal spell or ability were chosen.
+    Mode,
+    /// CR 732.6: the pay-or-decline choice an "[A] unless [B]" effect offers inside a loop.
+    UnlessBreak,
+}
+
+/// Identifies one free choice within a group, on three axes answering three different
+/// questions: WHO asked (the CR 400.7-stable [`DecisionSource`]), WHICH CHOICE they asked
+/// ([`ChoicePoint`]), and WHICH INSTANCE of that choice on that source this slot names
+/// (`index` — e.g. the second of two announced-target points one ability publishes).
+/// Neither of the last two means the other's thing. It derives a canonical order because
 /// `GameAction::DeclareShortcut` participates in deterministic AI action ordering.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DecisionSlot {
     pub source: DecisionSource,
+    pub point: ChoicePoint,
     pub index: u8,
 }
 
 impl DecisionSlot {
-    /// CR 601.2c (reached for a triggered ability via CR 603.3d) + CR 115.2: the
-    /// ANNOUNCEMENT target slot a BOUNDED-CYCLE ENTRY publishes.
-    ///
-    /// SCOPE OF THE AUTHORITY, stated narrowly because the number 0 is not globally
-    /// reserved: these two constructors are the single authority for the SUB-INDEX SHARED
-    /// BY `game::engine::entry_publishes_pin_slots` AND `GameState::loop_answer_journal` —
-    /// the publisher and the journal writers must agree, the way
-    /// `game::engine::object_decision_source` already makes them agree on the source half.
-    /// The `record_loop_pin` recast-template producer runs its OWN sub-index namespace over
-    /// the same source (0 for its `Targets`/`ConvokeTaps` pin, 1 for its `ManaColor` pin)
-    /// and deliberately does NOT route through here — its indices answer a different
-    /// question and coincide numerically only by accident.
+    /// The FIRST slot of `point` on `source` — instance `0` of that class. Every producer
+    /// naming one choice of a kind per source mints through here; a SECOND instance of one
+    /// (source, point) class is the only reason to build the literal directly.
     ///
     /// `pub`, not `pub(crate)`: `crates/engine/tests/integration/` is a SEPARATE CRATE, and
     /// a `pub(crate)` constructor is unnameable there, so the integration rows would
@@ -168,15 +213,12 @@ impl DecisionSlot {
     /// `fantastic_four_bounded_loop.rs` and on `decision_source` in `natural_balance.rs`).
     /// Every field of this `pub` struct in this `pub` module is already `pub`, so this adds
     /// no reachability the type does not already have — it only removes the literal.
-    pub fn target(source: DecisionSource) -> Self {
-        Self { source, index: 0 }
-    }
-
-    /// CR 603.5: the "may" gate on the SAME source — a second choice of one ability
-    /// instance, which is exactly what the sub-index exists to disambiguate. Same scoped
-    /// authority and same visibility rationale as [`DecisionSlot::target`].
-    pub fn may(source: DecisionSource) -> Self {
-        Self { source, index: 1 }
+    pub fn first(source: DecisionSource, point: ChoicePoint) -> Self {
+        Self {
+            source,
+            point,
+            index: 0,
+        }
     }
 }
 
@@ -198,7 +240,7 @@ pub enum UnlessPaymentOption {
 /// The observed answer to ONE published decision slot, from ONE seat, across the current
 /// loop-detection window. Journalled under the key `(DecisionSlot, PlayerId)`
 /// (`GameState::record_loop_answer`), so a seat can only ever answer for itself and the
-/// sub-index keeps the two slots one source can publish (CR 601.2c target, CR 603.5 "may")
+/// CHOICE POINT keeps the two slots one source can publish (CR 601.2c target, CR 603.5 "may")
 /// in two entries rather than collapsing them into one latched conflict.
 ///
 /// CR 732.2a says a shortcut proposal describes "a sequence of game choices, for all
@@ -258,8 +300,10 @@ pub enum LoopAnswerValue {
 /// modal / optional-"may" / "[A] unless [B]" break), not a parameterization axis.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PinnedDecision {
-    /// CR 603.3b: place this source's trigger at ordering position `pos`.
-    Order { source: DecisionSource, pos: u8 },
+    /// CR 603.3b: place this slot's trigger at ordering position `pos`. Its slot is minted
+    /// at [`ChoicePoint::TriggerOrder`] and nowhere else, which is what keeps an ordering
+    /// pin outside a declaration's slot space: no PUBLISHED point carries `TriggerOrder`.
+    Order { slot: DecisionSlot, pos: u8 },
     /// CR 608.2b: targets for a slot; each re-resolved to a live legal ObjectId per
     /// iteration.
     Targets {
@@ -294,8 +338,10 @@ pub enum PinnedDecision {
     /// LATCHED to the color the player produced in the demonstrated iteration and copied
     /// through unchanged every replay (the color is a constant, not a per-iteration re-binding —
     /// CR 732.2a "predictable results"). Distinct CR choice KIND (color selection, CR 608.2d),
-    /// not a parameterization of the target/modal/may axes. `slot.index` disambiguates it from a
-    /// tap-cost `Targets` pin on the SAME mana-ability source.
+    /// not a parameterization of the target/modal/may axes. `slot.point` disambiguates it from a
+    /// tap-cost `Targets` pin on the SAME mana-ability source —
+    /// [`ChoicePoint::ManaColor`] against [`ChoicePoint::TapCost`], a type fact rather than a
+    /// numbering convention.
     ManaColor {
         slot: DecisionSlot,
         color: ManaColor,
@@ -639,10 +685,10 @@ pub enum TargetSchedule {
 /// A pin resolved to concrete live values for one iteration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConcreteDecision {
-    Order {
-        source: ObjectId,
-        pos: u8,
-    },
+    /// CR 603.3b + CR 400.7: `slot` is the RECORDED identity this decision answers, and it is
+    /// the whole identity — there is no live binding to carry, because by CR 400.7 the object
+    /// that asked is not the one standing there at the next repetition.
+    Order { slot: DecisionSlot, pos: u8 },
     Targets {
         slot: DecisionSlot,
         targets: Vec<ConcreteTarget>,
@@ -689,22 +735,14 @@ pub enum ConcreteTarget {
 pub enum ReplayFailure {
     /// CR 608.2b: a TARGET pin no longer resolves to a legal live target (left its zone /
     /// ceased to exist / CR 800.4 + CR 102.1 left the game). Raised whenever a *target* is
-    /// illegal-or-absent, in ANY `ReplayMode` — a `Static`-mode `Targets` pin with a
-    /// removed target yields THIS, not `MissingSource`. ⇒ abort the auto-shortcut, hand
-    /// back to manual.
+    /// illegal-or-absent, in ANY `ReplayMode`. ⇒ abort the auto-shortcut, hand back to
+    /// manual.
     ///
     /// Carries the [`TargetPin`] itself rather than a `DecisionSource`: `Player` and
     /// `Scheduled` pins are equally capable of going illegal, and a `DecisionSource` can
     /// name neither. Parameterizing the existing variant keeps ONE "target went illegal"
     /// failure instead of growing a per-pin-kind sibling cluster.
     IllegalTarget { slot: DecisionSlot, pin: TargetPin },
-    /// CR 400.7: an ORDER pin's source does not re-bind to a live ability instance —
-    /// [`resolve_ability_instance`] finds no object of that identity at that incarnation in a
-    /// zone it admits (`Battlefield`; also `Command` for a `ThisObject` source) ⇒ the ordering
-    /// template no longer matches
-    /// ⇒ fall through to a normal manual prompt. Raised ONLY for the `Order` pin kind, in any
-    /// `ReplayMode`.
-    MissingSource { source: DecisionSource },
     /// A `RoundRobin`/`Piecewise` schedule has no entry covering this iteration index.
     ScheduleExhausted { slot: DecisionSlot },
     /// CR 702.51b: no legal untapped-creature tap-set covers the live convoke
@@ -733,10 +771,145 @@ pub fn resolve(
         .collect()
 }
 
-/// Resolve one pin. The failure kind is selected HERE by the pin kind (G2): an `Order`
-/// source that is absent yields `MissingSource` (CR 400.7); an absent target yields
-/// `IllegalTarget` (CR 608.2b) — the SAME missing identity, different failure, chosen by
-/// where it sits, not by `ReplayMode`.
+/// CR 732.2a: which of a template's recorded answers the prompts already met in THIS drive
+/// have taken. Indexes `DecisionTemplate::decisions` itself — [`take_answer`] selects over that
+/// vector, so the cursor is sized against the vector it indexes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StepAnswers {
+    taken: Vec<bool>,
+}
+
+impl StepAnswers {
+    /// One cursor per drive of one step, sized to the template that drive was handed.
+    pub(crate) fn for_template(template: &DecisionTemplate) -> Self {
+        Self {
+            taken: vec![false; template.decisions.len()],
+        }
+    }
+
+    /// Out-of-range reads as UNTAKEN and out-of-range marks GROW, so a cursor sized against a
+    /// template that no longer matches degrades to the declared identity rather than panicking
+    /// mid-drive or silently re-answering.
+    fn is_taken(&self, index: usize) -> bool {
+        self.taken.get(index).copied().unwrap_or(false)
+    }
+
+    fn mark(&mut self, index: usize) {
+        if self.taken.len() <= index {
+            self.taken.resize(index + 1, false);
+        }
+        self.taken[index] = true;
+    }
+
+    /// CR 732.2a: every entry this drive was handed has been taken by a prompt occurrence.
+    pub(crate) fn every_entry_taken(&self) -> bool {
+        self.taken.iter().all(|t| *t)
+    }
+}
+
+/// CR 400.7 + CR 732.2a: which conjuncts identify ONE recorded answer. Decided by the STEP KIND
+/// at `game::engine::drive_loop_action_iteration`'s opener dispatch, never by a seam and never by
+/// a flag: a declaration is a proposal about a frozen board, a priority-side step's interval is
+/// opened by an action its own source offers, and a trigger-driven step's interval is one CR 400.7
+/// replaces every zone-changing object inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordedAnswerKey {
+    /// CR 601.2a / CR 602.2 / CR 605.3a: the prompts of this interval are the ones the step's own
+    /// source offers, so the source is part of the key.
+    PointAndSource,
+    /// CR 603.3 + CR 400.7: the asking object is gone by the next repetition, so the key is the
+    /// place in the sequence.
+    Point,
+}
+
+/// CR 732.2a: how a template's recorded answers are matched to the prompts they answer.
+pub(crate) enum AnswerIdentity<'a> {
+    /// A player's `DeclareShortcut`. `game::engine::bounded_cycle_pin_slots` publishes ONE
+    /// decision point per slot — a second stack entry from one source is the same open
+    /// choice — so a declaration holds one answer per point, and CR 732.2a's "sequence of
+    /// game choices … and the predictable results of the sequence" applies that one answer
+    /// at every occurrence of the point's prompt.
+    PerDeclaredPoint,
+    /// A recorded step's replay. `game::engine::record_loop_pin` appends ONE entry per
+    /// answered prompt occurrence, so a class names a SEQUENCE and each occurrence of its
+    /// prompt takes the next entry not already taken in this drive. WHICH conjuncts make up
+    /// that class is `key`'s question, and it is the step kind's answer.
+    PerOccurrence {
+        answers: &'a mut StepAnswers,
+        key: RecordedAnswerKey,
+    },
+}
+
+impl AnswerIdentity<'_> {
+    /// CR 732.2a: every entry this drive was handed has been taken by a prompt occurrence.
+    ///
+    /// Read by the settle, so the drive never re-borrows the cursor mid-loop.
+    pub(crate) fn every_entry_taken(&self) -> bool {
+        match self {
+            // A declaration holds ONE answer per point and re-applies it at every occurrence, so
+            // it marks nothing and claims no bijection.
+            AnswerIdentity::PerDeclaredPoint => true,
+            AnswerIdentity::PerOccurrence { answers, .. } => answers.every_entry_taken(),
+        }
+    }
+}
+
+/// CR 732.2a + CR 608.2b: the recorded answer THIS prompt occurrence owns, RESOLVED against this
+/// iteration's board. The two refusals are different questions and both become `Err(RecastAbort)`
+/// at every seam, never a default: `None` is "the record does not answer this prompt", `Err` is
+/// "the pin that answers it is illegal this iteration". Selecting and resolving in ONE call is
+/// what keeps a pin's CR 608.2b re-check on the beat that answers it — no seam can select without
+/// resolving, or resolve a pin it did not select.
+///
+/// The CHOICE POINT is supplied by the BEAT, never hard-coded by the seam: one seam can serve
+/// two beats (the mana-ability tap cost and the CR 701.34a proliferate choice both reach
+/// `pinned_targets_for_source`), and a seam hard-coding one point for both would be the same
+/// lossiness the typed point removes, one level down.
+///
+/// Under `PerOccurrence` it returns the first entry of (point, source) not already taken and
+/// marks it taken; under `PerDeclaredPoint` it returns the first entry of that class and marks
+/// nothing, which is the declared identity in full.
+pub(crate) fn take_answer(
+    template: &DecisionTemplate,
+    iteration: IterationIndex,
+    state: &GameState,
+    point: ChoicePoint,
+    source_is_the_prompts: impl Fn(&DecisionSource) -> bool,
+    identity: &mut AnswerIdentity<'_>,
+) -> Option<Result<ConcreteDecision, ReplayFailure>> {
+    let pins = &template.decisions;
+    let selected = match identity {
+        AnswerIdentity::PerDeclaredPoint => pins.iter().find(|pin| {
+            let slot = pin.slot();
+            slot.point == point && source_is_the_prompts(&slot.source)
+        })?,
+        AnswerIdentity::PerOccurrence { answers, key } => {
+            let of_this_class = |pin: &PinnedDecision| {
+                let slot = pin.slot();
+                slot.point == point
+                    && match key {
+                        RecordedAnswerKey::PointAndSource => source_is_the_prompts(&slot.source),
+                        // CR 400.7: no object identity can be the key here — every object the
+                        // interval asks about is replaced before the next repetition, so the
+                        // place in the sequence is the whole of the class.
+                        RecordedAnswerKey::Point => true,
+                    }
+            };
+            let index = pins
+                .iter()
+                .enumerate()
+                .find(|(i, pin)| !answers.is_taken(*i) && of_this_class(pin))
+                .map(|(i, _)| i)?;
+            answers.mark(index);
+            &pins[index]
+        }
+    };
+    Some(resolve_pin(selected, iteration, state))
+}
+
+/// Resolve one pin. The failure kind is selected HERE by the pin kind (G2): an absent target
+/// yields `IllegalTarget` (CR 608.2b), chosen by where the missing identity sits, not by
+/// `ReplayMode`.
 fn resolve_pin(
     pin: &PinnedDecision,
     iteration: IterationIndex,
@@ -744,85 +917,24 @@ fn resolve_pin(
 ) -> Result<ConcreteDecision, ReplayFailure> {
     match pin {
         // CR 603.3b: replay this source's trigger at its pinned ordering position. The pin
-        // re-binds to the SAME live ability instance (CR 400.7 incarnation) still present in
-        // a zone the accessor admits — `Battlefield`, plus `Command` for a `ThisObject`
-        // source — not merely to something still on the battlefield. `Command` is admitted
-        // because a whole CLASS of sources functions from there (emblems CR 114.4; plane /
-        // scheme / conspiracy cards CR 113.6p; face-up plane and phenomenon cards CR 901.7;
-        // Eminence commanders CR 113.6b), but the accessor tests zone presence and identity
-        // only — whether a given ability functions is `game::functioning_abilities`'
-        // question, not this accessor's.
+        // does NOT re-bind to a live ability instance, and must not: by CR 400.7 the object
+        // that asked is replaced between repetitions of a loop's cycle, so a re-bind would
+        // name an object the rules say is not there. The recorded slot IS the identity; the
+        // source it names is provenance.
         //
-        // Resolving an `Order` pin GRANTS NO CAPABILITY, and the six points that consume
-        // `resolve`'s output split two ways. FIVE read the vec's ELEMENTS, and not one of them
-        // reads a `ConcreteDecision::Order`'s PAYLOAD: `inject_pinned_answer`'s two arms
-        // `find_map` for their own kind, `pinned_targets_for_source` and
-        // `pinned_mana_color_for_source` skip it in an `if let`, and the `ManaPayment` beat's
-        // exhaustive match aborts on its mere presence (`Order { .. }`, fields discarded). ONE
-        // — the per-cycle re-check in `materialize_fixed_shortcut` — reads only the `is_err()`
-        // VERDICT and discards the vec entirely. (LABELED CODE READ: the six consumption
-        // points, enumerated and read at both revisions.)
-        //
-        // At the five ELEMENT readers an ORDER-ONLY template still fails closed; what the
-        // re-bind changes is only WHERE: the abort moves out of `resolve()` and into the
-        // consumer — the trailing `Err(RecastAbort)` of the two `pinned_*` seams, the
-        // `find_map`'s `ok_or(RecastAbort)` in the injector, the match arm at the
-        // `ManaPayment` beat.
-        //
-        // At the VERDICT reader nothing moves downstream, because there is nothing downstream
-        // to move to: that gate consults only `resolve`'s `Result`. A pin that fails to
-        // re-bind breaks the cycle loop AT THAT ITERATION, committing only the cycles before
-        // it — and for a source the accessor never admits, that is iteration 0, so no cycle
-        // commits at all. Once every pin re-binds, the gate stops breaking; what happens after
-        // it is governed by the element readers above, not by this gate. That is true for
-        // every template shape, Order-only and mixed alike, because the gate never looks at an
-        // element.
-        //
-        // For a mixed template whose OTHER pins themselves resolve, the payoff lands at an
-        // element reader that has an element of its own kind. Two of the five answer from a
-        // `Targets` element — `pinned_targets_for_source` and the injector's
-        // `TriggerTargetSelection` arm — and the one measured here is
-        // `pinned_targets_for_source`: on the measured value `[Order @ command zone,
-        // Targets @ battlefield]`, with the `Order` pin re-binding and the `Targets` pin itself
-        // resolving, it now returns that `Targets` pin's own answer, where before the
-        // command-zone `Order` pin discarded it and the seam aborted. Where a pin does NOT
-        // resolve, the template still fails whole at every one of the six consumers, because
-        // `resolve` is a per-pin `Result` collect that each consumer gates on before reading
-        // anything: a mixed template carrying a `Targets` pin whose own target is not on the
-        // battlefield (CR 608.2b) aborts after this commit exactly as before it. It is NOT
-        // that every element reader succeeds on such a template: a reader that finds no
-        // element of its own kind (`pinned_mana_color_for_source`, the injector's `MayChoice`
-        // arm) still reaches its `Err(RecastAbort)`, and the `ManaPayment` beat still aborts on
-        // the `Order` element's mere presence — after this commit exactly as before it, for
-        // every mixed template.
-        //
-        // The bound that makes this capability-neutral at the `DeclareShortcut` wire is DRIVE
-        // EQUALITY, not submittability. When an `Order` element re-binds, resolving WITH it
-        // yields the identical answer to resolving without it at every one of the six
-        // consumers, EXCEPT at the `ManaPayment` beat, where its presence forces
-        // `Err(RecastAbort)` — strictly more fail-closed, never more permissive. When it does
-        // NOT re-bind, the `Result` collect fails the whole template at every consumer; this
-        // commit changes which sources re-bind, never that disposition. Where the same
-        // template minus its `Order` pins is itself submittable, that drive was therefore
-        // already expressible by omitting them — and since `validate_pins` refuses an `Order`
-        // pin outright (CR 603.3b), omitting them is the only submittable spelling.
-        //
-        // No template's ACCEPTANCE changes here: `declaration_conforms` is
-        // `predictability_gate` + `validate_pins`, and neither reaches `resolve_pin`. What
-        // changes is what an already-accepted template does. (Pinned by
-        // `game::engine::stage2_injector_tests::a_command_zone_order_pin_stops_poisoning_the_template_without_gaining_capability`
-        // rows R/N/N2/P/P-minus; the structural clauses above are labeled code reads.)
-        PinnedDecision::Order { source, pos } => {
-            let id = resolve_ability_instance(source, state).ok_or_else(|| {
-                ReplayFailure::MissingSource {
-                    source: source.clone(),
-                }
-            })?;
-            Ok(ConcreteDecision::Order {
-                source: id,
-                pos: *pos,
-            })
-        }
+        // WHAT IS LOAD-BEARING AND STILL HOLDS: an `Order` element grants no capability at the
+        // `DeclareShortcut` wire, and the ground is `validate_pins`, not a claim about who
+        // reads the payload. `validate_pins` returns `PinValidation::NotALoopDecision` for ANY
+        // `Order` pin in a declared template (CR 603.3b), so an ordering payload is readable
+        // only on the engine-written record path and never from anything a player submits. No
+        // PUBLISHED point carries `ChoicePoint::TriggerOrder` and `pinned_decisions_to_points`
+        // mints none, so the `Order` pin stays unaddressable by a declaration. The record
+        // drive's identity-aware `OrderTriggers` arm DOES read an `Order` element's `pos` —
+        // from the step's own record, which no player wrote.
+        PinnedDecision::Order { slot, pos } => Ok(ConcreteDecision::Order {
+            slot: slot.clone(),
+            pos: *pos,
+        }),
         // CR 608.2b: re-resolve each target to a live legal object THIS iteration.
         PinnedDecision::Targets { slot, targets } => {
             let concrete = targets
@@ -980,8 +1092,7 @@ fn resolve_target(
 /// Re-bind a stored `DecisionSource` to a live battlefield `ObjectId`. The battlefield
 /// analogue of `GameState::is_priority_yielded`'s matching arms. KIND-AGNOSTIC: returns
 /// `None` on no match, and the CALLER maps that to the pin-kind-appropriate
-/// `ReplayFailure` (`Order` ⇒ `MissingSource`, a target ⇒ `IllegalTarget`) — G2's
-/// per-pin-kind failure selection.
+/// `ReplayFailure` — G2's per-pin-kind failure selection.
 ///
 /// The `Order` pin and the two `game::engine` slot seams enter through
 /// [`resolve_ability_instance`] rather than here; this function is that accessor's
@@ -1020,13 +1131,12 @@ pub(crate) fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<
 /// INSTANCE it identifies — a different question from [`resolve_source`]'s, and the reason
 /// this accessor exists rather than a second spelling at each caller.
 ///
-/// THE ONLY SPELLING of that question, as of the commit that migrated the last two callers.
-/// Every production asker routes here: `resolve_pin`'s `Order` arm and `evaluate_schedule`'s
-/// `Seat` arm call it directly, and `game::engine::slot_source_prompted` is the `bool`-valued
-/// wrapper its four seams use — `inject_pinned_answer`'s `TriggerTargetSelection` and
-/// `MayChoice` `find_map` guards, `pinned_targets_for_source`, and
-/// `pinned_mana_color_for_source`. There is no bare `resolve_source` slot comparison left in
-/// `game::engine`.
+/// THE ONLY SPELLING of that question. Every production asker routes here: `resolve_pin`'s
+/// `Order` arm and `evaluate_schedule`'s `Seat` arm call it directly, and
+/// `game::engine::slot_source_prompted` is the `bool`-valued wrapper every seam in that module
+/// asks through — each of them by way of [`take_answer`], which owns the selection. There is no
+/// bare `resolve_source` slot comparison left in `game::engine`. Regenerate the asker set with
+/// `grep -rn 'resolve_ability_instance\|slot_source_prompted' crates/engine/src/`.
 ///
 /// A *pin's* source identifies a TARGET, so [`resolve_source`] is deliberately
 /// BATTLEFIELD-ONLY and that filter IS the CR 608.2b legality re-check: a pinned target that
@@ -1225,22 +1335,30 @@ pub fn predictability_gate(
     Ok(())
 }
 
-/// The loop-declaration slot a pin addresses, or `None` when it addresses none.
-///
-/// CR 603.3b: an `Order` pin is a choice about the APNAP order simultaneously-triggered
-/// abilities are put on the stack in — not one of the per-iteration choices a CR 732.2a
-/// shortcut declaration answers — so it addresses no slot here. Synthesizing
-/// `{source, index: 0}` for it collided with the sub-index [`DecisionSlot::target`]
-/// reserves, which let one ordering pin cover a published targeting point.
-fn pin_slot(pin: &PinnedDecision) -> Option<&DecisionSlot> {
-    match pin {
-        PinnedDecision::Order { .. } => None,
-        PinnedDecision::Targets { slot, .. }
-        | PinnedDecision::Mode { slot, .. }
-        | PinnedDecision::MayChoice { slot, .. }
-        | PinnedDecision::UnlessBreak { slot, .. }
-        | PinnedDecision::ManaColor { slot, .. }
-        | PinnedDecision::ConvokeTaps { slot } => Some(slot),
+impl PinnedDecision {
+    /// CR 732.2a: the slot this pin addresses. TOTAL — every variant carries one, so a new
+    /// variant build-breaks here rather than defaulting.
+    ///
+    /// CR 603.3b: an `Order` pin is a choice about the APNAP order simultaneously-triggered
+    /// abilities are put on the stack in, not one of the per-iteration choices a CR 732.2a
+    /// shortcut declaration answers. That ground is now carried by the POINT rather than by
+    /// the absence of a slot: an `Order` pin's slot is minted at
+    /// [`ChoicePoint::TriggerOrder`], and no PUBLISHED point carries `TriggerOrder`
+    /// (`bounded_cycle_pin_slots` mints only `AnnouncedTarget` and `MayGate`;
+    /// `pinned_decisions_to_points` mints no point for an `Order` pin at all). So the old
+    /// collision — a synthesized `{source, index: 0}` letting one ordering pin cover a
+    /// published targeting point — is unrepresentable, `TriggerOrder != AnnouncedTarget`
+    /// being a type fact rather than a numbering convention.
+    pub fn slot(&self) -> &DecisionSlot {
+        match self {
+            PinnedDecision::Order { slot, .. }
+            | PinnedDecision::Targets { slot, .. }
+            | PinnedDecision::Mode { slot, .. }
+            | PinnedDecision::MayChoice { slot, .. }
+            | PinnedDecision::UnlessBreak { slot, .. }
+            | PinnedDecision::ManaColor { slot, .. }
+            | PinnedDecision::ConvokeTaps { slot } => slot,
+        }
     }
 }
 
@@ -1249,7 +1367,7 @@ fn pin_slot(pin: &PinnedDecision) -> Option<&DecisionSlot> {
 /// pin x point-kind product, so a new variant on either enum build-breaks into an explicit
 /// decision instead of silently satisfying coverage.
 fn pin_answers_point(pin: &PinnedDecision, point: &DecisionPoint) -> bool {
-    if pin_slot(pin) != Some(&point.slot) {
+    if pin.slot() != &point.slot {
         return false;
     }
     match (pin, &point.kind) {
@@ -1260,8 +1378,9 @@ fn pin_answers_point(pin: &PinnedDecision, point: &DecisionPoint) -> bool {
         | (PinnedDecision::ManaColor { .. }, DecisionPointKind::ManaColor { .. })
         | (PinnedDecision::ConvokeTaps { .. }, DecisionPointKind::ConvokeTaps { .. }) => true,
         // A right-slot pin of the wrong kind answers a different question than the point
-        // asks. `Order` is unreachable here (`pin_slot` returned `None` above) and is listed
-        // so the product stays total.
+        // asks. An `Order` pin now reaches this match — its slot is total — and is refused
+        // by the slot test above, because no published point carries
+        // `ChoicePoint::TriggerOrder`; it is listed here so the product stays total.
         (
             PinnedDecision::Order { .. }
             | PinnedDecision::Targets { .. }
@@ -1496,9 +1615,9 @@ pub fn validate_pins(
             // CR 603.3b: a trigger-ordering pin is not a loop-declaration point, so it can
             // never be a legal answer here. Refused rather than ignored, which is what keeps
             // it out of `proposal.template`, where `resolve` would still resolve it.
-            PinnedDecision::Order { source, .. } => {
+            PinnedDecision::Order { slot, .. } => {
                 return Err(PinValidation::NotALoopDecision {
-                    source: source.clone(),
+                    source: slot.source.clone(),
                 })
             }
         }
@@ -1772,6 +1891,7 @@ mod tests {
             points: vec![DecisionPoint {
                 slot: DecisionSlot {
                     source: all_copies(7),
+                    point: ChoicePoint::AnnouncedTarget,
                     index: 0,
                 },
                 kind: DecisionPointKind::Targets {
@@ -1852,9 +1972,14 @@ mod tests {
         state.objects.insert(oid, o);
     }
 
+    /// The source an `Order` element names — read off the RECORDED slot, since the element
+    /// carries no re-bound live id (CR 400.7).
     fn order_source(out: &ConcreteDecision) -> ObjectId {
         match out {
-            ConcreteDecision::Order { source, .. } => *source,
+            ConcreteDecision::Order { slot, .. } => match &slot.source {
+                YieldTarget::ThisObject { source_id, .. } => *source_id,
+                other => panic!("expected a ThisObject slot source, got {other:?}"),
+            },
             other => panic!("expected Order, got {other:?}"),
         }
     }
@@ -1884,15 +2009,15 @@ mod tests {
             owner: PlayerId(0),
             decisions: vec![
                 PinnedDecision::Order {
-                    source: this_obj(12, None),
+                    slot: DecisionSlot::first(this_obj(12, None), ChoicePoint::TriggerOrder),
                     pos: 0,
                 },
                 PinnedDecision::Order {
-                    source: this_obj(10, None),
+                    slot: DecisionSlot::first(this_obj(10, None), ChoicePoint::TriggerOrder),
                     pos: 1,
                 },
                 PinnedDecision::Order {
-                    source: this_obj(11, None),
+                    slot: DecisionSlot::first(this_obj(11, None), ChoicePoint::TriggerOrder),
                     pos: 2,
                 },
             ],
@@ -1921,15 +2046,15 @@ mod tests {
             owner: PlayerId(0),
             decisions: vec![
                 PinnedDecision::Order {
-                    source: this_obj(10, None),
+                    slot: DecisionSlot::first(this_obj(10, None), ChoicePoint::TriggerOrder),
                     pos: 0,
                 },
                 PinnedDecision::Order {
-                    source: this_obj(11, None),
+                    slot: DecisionSlot::first(this_obj(11, None), ChoicePoint::TriggerOrder),
                     pos: 1,
                 },
                 PinnedDecision::Order {
-                    source: this_obj(12, None),
+                    slot: DecisionSlot::first(this_obj(12, None), ChoicePoint::TriggerOrder),
                     pos: 2,
                 },
             ],
@@ -1958,6 +2083,7 @@ mod tests {
 
         let slot = DecisionSlot {
             source: this_obj(99, None),
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         let template = DecisionTemplate {
@@ -1992,7 +2118,8 @@ mod tests {
         let state = GameState::new_two_player(7);
         let slot = DecisionSlot {
             source: this_obj(404, None),
-            index: 1,
+            point: ChoicePoint::ManaColor,
+            index: 0,
         };
         let template = DecisionTemplate {
             owner: PlayerId(0),
@@ -2031,6 +2158,7 @@ mod tests {
 
         let slot = DecisionSlot {
             source: this_obj(99, None),
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         let template = DecisionTemplate {
@@ -2075,9 +2203,8 @@ mod tests {
     }
 
     /// T5 (G2): a **`Static`**-mode template whose `Targets` `ByIdentity` target has left
-    /// the battlefield yields `IllegalTarget` (CR 608.2b), NOT `MissingSource` — proving
-    /// failure selection is by PIN KIND, not `ReplayMode` (a mode-keyed impl would emit
-    /// `MissingSource` under `Static`). Control (target present) ⇒ Ok.
+    /// the battlefield yields `IllegalTarget` (CR 608.2b) — failure selection is by PIN
+    /// KIND, not `ReplayMode`. Control (target present) ⇒ Ok.
     #[test]
     fn static_targets_pin_removed_target_yields_illegal_target_608_2b() {
         let src = this_obj(30, Some(1));
@@ -2086,6 +2213,7 @@ mod tests {
             decisions: vec![PinnedDecision::Targets {
                 slot: DecisionSlot {
                     source: src.clone(),
+                    point: ChoicePoint::AnnouncedTarget,
                     index: 0,
                 },
                 targets: vec![TargetPin::ByIdentity(src)],
@@ -2097,10 +2225,6 @@ mod tests {
         let absent = GameState::new_two_player(7);
         let err = resolve(&template, 0, &absent).unwrap_err();
         assert!(matches!(err, ReplayFailure::IllegalTarget { .. }));
-        assert!(
-            !matches!(err, ReplayFailure::MissingSource { .. }),
-            "a Static-mode target failure is IllegalTarget (per pin kind), not MissingSource"
-        );
         // Control: target present ⇒ Ok (not a silent stale id).
         let mut present = GameState::new_two_player(7);
         bf_object(&mut present, 30, 30, 1);
@@ -2128,6 +2252,7 @@ mod tests {
     fn a_dead_player_pin_is_illegal() {
         let pin_slot = DecisionSlot {
             source: this_obj(70, Some(0)),
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         let template = |victim: u8| DecisionTemplate {
@@ -2195,6 +2320,7 @@ mod tests {
     fn a_phased_out_player_pin_is_illegal() {
         let pin_slot = DecisionSlot {
             source: this_obj(71, Some(0)),
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         let template = DecisionTemplate {
@@ -2330,6 +2456,7 @@ mod tests {
         // 2. ADMIT half: the CHOICE seam still resolves the same seat.
         let pin_slot = DecisionSlot {
             source: this_obj(92, None),
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         let template = DecisionTemplate {
@@ -2354,31 +2481,71 @@ mod tests {
         );
     }
 
-    /// T5b (G2 sibling): the SAME `Static` mode with an `Order` pin (different pin kind)
-    /// whose source is removed yields `MissingSource` (CR 400.7), NOT `IllegalTarget`.
-    /// Together T5+T5b prove failure selection is per pin kind, not per mode.
+    /// T5b (G2 sibling): an `Order` pin whose recorded source is GONE does not fail at all,
+    /// and does not take the rest of the template down with it.
+    ///
+    /// CR 400.7: the object that asked is replaced between repetitions, so an ordering pin's
+    /// source is provenance and a dead one is not an error. `resolve` is a per-pin `Result`
+    /// collect, so the pair matters: the live `Targets` pin beside it still resolves, which a
+    /// re-binding `Order` arm would have discarded before any consumer saw it. Together
+    /// T5+T5b prove failure selection is per pin kind — a `Targets` pin still fails closed
+    /// (CR 608.2b) on the very same board.
     #[test]
-    fn static_order_pin_removed_source_yields_missing_source_400_7() {
-        let src = this_obj(40, Some(2));
-        let template = DecisionTemplate {
+    fn static_order_pin_with_a_dead_source_resolves_and_spares_the_template_400_7() {
+        let dead = this_obj(40, Some(2));
+        let live = this_obj(41, Some(1));
+        let template = |decisions: Vec<PinnedDecision>| DecisionTemplate {
             owner: PlayerId(0),
-            decisions: vec![PinnedDecision::Order {
-                source: src,
-                pos: 0,
-            }],
+            decisions,
             replay: ReplayMode::Static,
             key: tri_key(),
         };
-        let absent = GameState::new_two_player(7);
-        let err = resolve(&template, 0, &absent).unwrap_err();
-        assert!(matches!(err, ReplayFailure::MissingSource { .. }));
+        let order_pin = PinnedDecision::Order {
+            slot: DecisionSlot::first(dead.clone(), ChoicePoint::TriggerOrder),
+            pos: 0,
+        };
+        let targets_pin = PinnedDecision::Targets {
+            slot: DecisionSlot {
+                source: live.clone(),
+                point: ChoicePoint::AnnouncedTarget,
+                index: 0,
+            },
+            targets: vec![TargetPin::ByIdentity(live)],
+        };
+
+        let mut state = GameState::new_two_player(7);
+        bf_object(&mut state, 41, 41, 1);
         assert!(
-            !matches!(err, ReplayFailure::IllegalTarget { .. }),
-            "an Order-pin source failure is MissingSource, not IllegalTarget"
+            !state.objects.contains_key(&ObjectId(40)),
+            "reach-guard: the Order pin's recorded source really is absent from this board"
         );
-        let mut present = GameState::new_two_player(7);
-        bf_object(&mut present, 40, 40, 2);
-        assert!(resolve(&template, 0, &present).is_ok());
+
+        let out = resolve(
+            &template(vec![order_pin.clone(), targets_pin.clone()]),
+            0,
+            &state,
+        )
+        .expect("a dead Order source is provenance, not a failure");
+        assert_eq!(
+            out.len(),
+            2,
+            "both pins are carried: the dead Order source discards nobody's answer"
+        );
+        assert!(
+            matches!(out[1], ConcreteDecision::Targets { .. }),
+            "the live Targets pin beside it still resolved"
+        );
+
+        // The sibling half: a `Targets` pin still fails closed on the same board.
+        let mut absent = GameState::new_two_player(7);
+        bf_object(&mut absent, 40, 40, 2);
+        assert!(
+            matches!(
+                resolve(&template(vec![order_pin, targets_pin]), 0, &absent).unwrap_err(),
+                ReplayFailure::IllegalTarget { .. }
+            ),
+            "failure selection is per pin kind: a Targets pin whose target left still fails"
+        );
     }
 
     /// T6 (CR 400.7, multi-authority): a re-entered permanent (same `ObjectId`,
@@ -2432,10 +2599,12 @@ mod tests {
     fn gate_rejects_unpinned_choice() {
         let slot_a = DecisionSlot {
             source: this_obj(70, None),
+            point: ChoicePoint::MayGate,
             index: 0,
         };
         let slot_b = DecisionSlot {
             source: this_obj(71, None),
+            point: ChoicePoint::AnnouncedTarget,
             index: 0,
         };
         let required = vec![
@@ -2502,7 +2671,7 @@ mod tests {
     /// `validate_pins` instead.
     #[test]
     fn gate_coverage_is_kind_aware() {
-        let slot = DecisionSlot::target(this_obj(80, None));
+        let slot = DecisionSlot::first(this_obj(80, None), ChoicePoint::AnnouncedTarget);
         let required = vec![DecisionPoint {
             slot: slot.clone(),
             kind: DecisionPointKind::Targets {
@@ -2551,7 +2720,7 @@ mod tests {
         assert_eq!(
             predictability_gate(
                 &template(vec![PinnedDecision::Order {
-                    source: slot.source.clone(),
+                    slot: DecisionSlot::first(slot.source.clone(), ChoicePoint::TriggerOrder),
                     pos: 0,
                 }]),
                 &required
@@ -2615,6 +2784,7 @@ mod tests {
 
         let slot = DecisionSlot {
             source: this_obj(99, None),
+            point: ChoicePoint::ConvokeTaps,
             index: 0,
         };
         let pin = PinnedDecision::ConvokeTaps { slot: slot.clone() };
@@ -2712,6 +2882,7 @@ mod tests {
             decisions: vec![PinnedDecision::Targets {
                 slot: DecisionSlot {
                     source: slot_source,
+                    point: ChoicePoint::AnnouncedTarget,
                     index: 0,
                 },
                 targets: vec![TargetPin::Scheduled(sched)],
@@ -2924,8 +3095,12 @@ mod tests {
             .clone();
         bf_object(&mut state, 20, 20, 0);
         let src = this_obj(20, None);
+        // The parameter names the INSTANCE, not the choice: every caller pairs the slot with a
+        // `Targets` pin announcing a different seat on the one source, so the point is fixed
+        // here and the number is which instance of it.
         let slot_at = |index: u8| DecisionSlot {
             source: src.clone(),
+            point: ChoicePoint::AnnouncedTarget,
             index,
         };
         let pin_at = |index: u8, seat: PlayerId| PinnedDecision::Targets {
@@ -3156,75 +3331,48 @@ mod tests {
         );
     }
 
-    /// **T4 — an `Order` pin resolves from the command zone through the PUBLIC [`resolve`],
-    /// and still fails closed everywhere else.**
+    /// **T4 — [`resolve_ability_instance`] re-binds from the command zone, and still fails
+    /// closed everywhere else.**
     ///
-    /// CR 603.3b is the pin's framing (replay this source's trigger at its pinned ordering
-    /// position); what changed is that "this source" is now re-bound by
-    /// [`resolve_ability_instance`] — same identity, same CR 400.7 incarnation, present in a
-    /// zone it admits (`Battlefield`, plus `Command` for a `ThisObject` source) — rather than
-    /// by `resolve_source`'s battlefield-only filter.
-    ///
-    /// **Resolving an `Order` pin grants NO capability.** No production consumer of
-    /// `resolve`'s output reads an `Order` element's payload: four element readers
-    /// discriminate on the variant and skip it, the `ManaPayment` beat aborts on its mere
-    /// presence, and the per-cycle re-check reads only the `is_err()` verdict. What the
-    /// re-bind buys is that a command-zone `Order` pin stops discarding every OTHER pin's
-    /// answer in the same template — `resolve` is a per-pin `Result` collect. That payoff and
-    /// its bound are pinned by
-    /// `game::engine::stage2_injector_tests::a_command_zone_order_pin_stops_poisoning_the_template_without_gaining_capability`,
-    /// whose five rows are the measurement; this row measures only the re-bind itself.
+    /// The accessor answers "which live ability instance does this recorded source name",
+    /// admitting `Battlefield` plus `Command` for a `ThisObject` source (emblems CR 114.4;
+    /// plane / scheme / conspiracy cards CR 113.6p; face-up plane and phenomenon cards
+    /// CR 901.7; Eminence commanders CR 113.6b). This row drives the accessor directly
+    /// because an `Order` pin is no longer one of its askers: by CR 400.7 an ordering pin
+    /// carries its recorded slot and re-binds nothing. Its remaining askers are
+    /// `game::engine::slot_source_prompted` and `evaluate_schedule`'s `Seat` arm.
     ///
     /// # Non-vacuity / discrimination
     ///
-    /// Rows a and b are one field apart (the zone) and both `Ok`; rows b/c and b/d are one
+    /// Rows a and b are one field apart (the zone) and both `Some`; rows b/c and b/d are one
     /// field apart and OPPOSITE; rows e and f are one field apart — the SAME object, moved —
     /// and OPPOSITE. Each negative row asserts its subject exists in the intended state
     /// before the negative assertion.
     ///
-    /// REVERT-PROBES: revert the `Order` arm to `resolve_source` ⇒ row **b** fails alone;
-    /// widen the accessor's command disjunct to any zone ⇒ row **c** fails; drop the CR 400.7
-    /// incarnation conjunct ⇒ row **d** fails; widen the `AllCopies` arm to the command zone
-    /// ⇒ row **f** fails.
+    /// REVERT-PROBES: narrow the accessor to `resolve_source`'s battlefield-only filter ⇒ row
+    /// **b** fails alone; widen the command disjunct to any zone ⇒ row **c** fails; drop the
+    /// CR 400.7 incarnation conjunct ⇒ row **d** fails; widen the `AllCopies` arm to the
+    /// command zone ⇒ row **f** fails.
     #[test]
-    fn an_order_pin_resolves_from_the_command_zone_and_still_fails_closed_elsewhere() {
+    fn an_ability_instance_re_binds_from_the_command_zone_and_still_fails_closed_elsewhere() {
         let mut state = GameState::new_two_player(7);
         let battlefield = zoned_object(&mut state, 900, Zone::Battlefield);
         let command = zoned_object(&mut state, 901, Zone::Command);
         let graveyard = zoned_object(&mut state, 902, Zone::Graveyard);
         let copy = zoned_object(&mut state, 910, Zone::Battlefield);
 
-        let template = |source: DecisionSource| DecisionTemplate {
-            owner: PlayerId(0),
-            decisions: vec![PinnedDecision::Order { source, pos: 0 }],
-            replay: ReplayMode::Static,
-            key: tri_key(),
-        };
-        let order_source = |out: &[ConcreteDecision]| match out {
-            [ConcreteDecision::Order { source, .. }] => *source,
-            other => panic!("expected exactly one Order decision, got {other:?}"),
-        };
-
-        // row a — the shipped battlefield arm, and the control that `resolve` can answer Ok.
+        // row a — the shipped battlefield arm, and the control that the accessor answers Some.
         assert_eq!(
-            order_source(
-                &resolve(&template(this_obj(battlefield.0, Some(3))), 0, &state)
-                    .expect("row a: a live battlefield source still re-binds")
-            ),
-            battlefield,
+            resolve_ability_instance(&this_obj(battlefield.0, Some(3)), &state),
+            Some(battlefield),
             "row a: control"
         );
 
         // row b — THE FIX. One field from a: the source's zone.
         assert_eq!(
-            order_source(
-                &resolve(&template(this_obj(command.0, Some(3))), 0, &state).expect(
-                    "row b: CR 114.4 — an ability functioning in the command zone \
-                             re-binds there"
-                )
-            ),
-            command,
-            "row b: the CR 603.3b ordering pin no longer needs its source on the battlefield"
+            resolve_ability_instance(&this_obj(command.0, Some(3)), &state),
+            Some(command),
+            "row b: CR 114.4 — an ability functioning in the command zone re-binds there"
         );
 
         // row c — one field from b: the zone again, the other way.
@@ -3238,11 +3386,9 @@ mod tests {
             "reach-guard: row c's source exists and is in the graveyard, so its failure is \
              about the ZONE and not about an absent object"
         );
-        assert!(
-            matches!(
-                resolve(&template(this_obj(graveyard.0, Some(3))), 0, &state),
-                Err(ReplayFailure::MissingSource { .. })
-            ),
+        assert_eq!(
+            resolve_ability_instance(&this_obj(graveyard.0, Some(3)), &state),
+            None,
             "row c: the zone set is {{Battlefield, Command}} and nothing else"
         );
 
@@ -3256,11 +3402,9 @@ mod tests {
             2,
             "reach-guard: the LIVE incarnation differs from the pinned one"
         );
-        assert!(
-            matches!(
-                resolve(&template(this_obj(command.0, Some(2))), 0, &state),
-                Err(ReplayFailure::MissingSource { .. })
-            ),
+        assert_eq!(
+            resolve_ability_instance(&this_obj(command.0, Some(2)), &state),
+            None,
             "row d: CR 400.7 — a re-created source is a new object with no relation to the \
              pinned one, in the command zone exactly as on the battlefield"
         );
@@ -3273,11 +3417,8 @@ mod tests {
             trigger_description: None,
         };
         assert_eq!(
-            order_source(
-                &resolve(&template(by_card.clone()), 0, &state)
-                    .expect("row e: the card's only copy is on the battlefield")
-            ),
-            copy,
+            resolve_ability_instance(&by_card, &state),
+            Some(copy),
             "row e: the `AllCopies` arm's control positive"
         );
         state
@@ -3294,14 +3435,202 @@ mod tests {
             CardId(910),
             "reach-guard: row f differs from row e in ZONE ONLY — same object, same card id"
         );
-        assert!(
-            matches!(
-                resolve(&template(by_card), 0, &state),
-                Err(ReplayFailure::MissingSource { .. })
-            ),
+        assert_eq!(
+            resolve_ability_instance(&by_card, &state),
+            None,
             "row f: DISCLOSED RESIDUAL — the command disjunct is `ThisObject`-only, so a \
              command-zone source named by CARD identity (a conspiracy, an Eminence \
              commander) still fails closed. Disclosed, not closed."
+        );
+    }
+
+    // ── R9 — the shape move offers nothing new, and moves no order ────────────────────────
+
+    /// **R9 leg 3 — an `Order` pin is refused by its POINT, not by an absent slot.**
+    ///
+    /// CR 603.3b. `PinnedDecision::slot` is total after this move, so `pin_answers_point`'s
+    /// slot test is what refuses an ordering pin: no PUBLISHED point carries
+    /// `ChoicePoint::TriggerOrder`. `validate_pins` still returns `NotALoopDecision` for it,
+    /// exactly as at the base.
+    ///
+    /// # Reach-guard / discrimination
+    ///
+    /// Both polarities in one test: the `Targets` pin against its own point answers `true` on
+    /// the same instrument that answers `false` for the `Order` pin, so an always-false
+    /// comparison cannot satisfy this row.
+    #[test]
+    fn r9_an_order_pin_is_refused_by_its_point_and_a_targets_pin_is_not() {
+        let source = all_copies(7);
+        let announced = DecisionSlot::first(source.clone(), ChoicePoint::AnnouncedTarget);
+        let point = DecisionPoint {
+            slot: announced.clone(),
+            kind: DecisionPointKind::Targets {
+                legal_targets: vec![crate::types::ability::TargetRef::Player(PlayerId(1))],
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+        };
+        let ordering = PinnedDecision::Order {
+            slot: DecisionSlot::first(source.clone(), ChoicePoint::TriggerOrder),
+            pos: 0,
+        };
+        let targeting = PinnedDecision::Targets {
+            slot: announced.clone(),
+            targets: vec![TargetPin::Player(PlayerId(1))],
+        };
+
+        assert!(
+            !pin_answers_point(&ordering, &point),
+            "CR 603.3b: an ordering pin answers no published point — its slot names \
+             TriggerOrder, which nothing publishes"
+        );
+        assert!(
+            pin_answers_point(&targeting, &point),
+            "positive control on the same instrument: the announcement pin DOES answer it"
+        );
+        assert_eq!(
+            ordering.slot().point,
+            ChoicePoint::TriggerOrder,
+            "and the refusal is carried by the POINT, which the total accessor now returns"
+        );
+
+        let schema = ShortcutDecisionSchema {
+            iteration_count: IterationCount::Fixed(1),
+            measured_repetition_bound: Some(1),
+            deliverable_capacity: 1,
+            convoke_tappable_count: 0,
+            points: vec![point],
+        };
+        let declared = |pin: PinnedDecision| DecisionTemplate {
+            owner: PlayerId(0),
+            decisions: vec![pin],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::Fixed(1),
+            },
+            key: DecisionGroupKey::from_sources(
+                std::slice::from_ref(&source),
+                DecisionKind::LoopChoice,
+            ),
+        };
+        let state = GameState::new_two_player(1);
+        assert!(
+            matches!(
+                validate_pins(&schema, &declared(ordering), 1, &state),
+                Err(PinValidation::NotALoopDecision { .. })
+            ),
+            "CR 603.3b: a declared ordering pin is still NotALoopDecision"
+        );
+        assert!(
+            validate_pins(&schema, &declared(targeting), 1, &state).is_ok(),
+            "positive control: the announcement pin declared against its own point validates"
+        );
+    }
+
+    /// **R9 leg 5 — repetition is ANSWERED under a declared identity, not refused.**
+    ///
+    /// CR 732.2a: `bounded_cycle_pin_slots` publishes ONE point per slot, so a declaration
+    /// holds one answer per point and that answer applies at EVERY occurrence of the point's
+    /// prompt. This is the leg that goes red under a `PerOccurrence` cursor wrongly applied to
+    /// the declared path — the single most likely wrong implementation of the identity split.
+    #[test]
+    fn r9_a_declared_point_answers_every_occurrence_of_its_prompt() {
+        let source = all_copies(7);
+        let state = GameState::new_two_player(1);
+        let template = DecisionTemplate {
+            owner: PlayerId(0),
+            decisions: vec![PinnedDecision::Targets {
+                slot: DecisionSlot::first(source.clone(), ChoicePoint::AnnouncedTarget),
+                targets: vec![TargetPin::Player(PlayerId(1))],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::Fixed(1),
+            },
+            key: DecisionGroupKey::from_sources(
+                std::slice::from_ref(&source),
+                DecisionKind::LoopChoice,
+            ),
+        };
+        let mut declared = AnswerIdentity::PerDeclaredPoint;
+        for occurrence in 0..3 {
+            let taken = take_answer(
+                &template,
+                0,
+                &state,
+                ChoicePoint::AnnouncedTarget,
+                |candidate| candidate == &source,
+                &mut declared,
+            );
+            assert!(
+                matches!(
+                    taken,
+                    Some(Ok(ConcreteDecision::Targets { ref targets, .. }))
+                        if targets == &[ConcreteTarget::Player(PlayerId(1))]
+                ),
+                "occurrence {occurrence}: a declared point answers from its one entry"
+            );
+        }
+        // The paired refusal on the same instrument, so "always Some" cannot satisfy it: a
+        // point the declaration does not carry is unanswered at every occurrence.
+        assert!(
+            take_answer(
+                &template,
+                0,
+                &state,
+                ChoicePoint::MayGate,
+                |candidate| candidate == &source,
+                &mut declared,
+            )
+            .is_none(),
+            "a point the declaration never pinned is still unanswered"
+        );
+    }
+
+    /// CR 400.7 + CR 603.3b: **which conjuncts `RecordedAnswerKey` puts in the class, at the one
+    /// seam that reads it.** An ordering pin whose slot source names a SPENT incarnation is the
+    /// case CR 400.7 describes — the object that asked was replaced — and the two keys answer it
+    /// oppositely: `Point` takes the entry at its place in the sequence, `PointAndSource` finds no
+    /// entry of the class at all.
+    ///
+    /// The same template, board and predicate on both legs, so the key is the only difference.
+    #[test]
+    fn a_stale_ordering_source_is_refused_only_when_the_source_is_part_of_the_key() {
+        let state = GameState::new_two_player(1);
+        // The recorded slot names incarnation 9; the prompt in hand carries incarnation 1.
+        let recorded = this_obj(30, Some(9));
+        let prompts = this_obj(30, Some(1));
+        let template = DecisionTemplate {
+            owner: PlayerId(0),
+            decisions: vec![PinnedDecision::Order {
+                slot: DecisionSlot::first(recorded, ChoicePoint::TriggerOrder),
+                pos: 0,
+            }],
+            replay: ReplayMode::Static,
+            key: tri_key(),
+        };
+        let ask = |key, answers: &mut StepAnswers| {
+            take_answer(
+                &template,
+                0,
+                &state,
+                ChoicePoint::TriggerOrder,
+                |candidate| candidate == &prompts,
+                &mut AnswerIdentity::PerOccurrence { answers, key },
+            )
+        };
+        let mut under_point = StepAnswers::for_template(&template);
+        assert!(
+            matches!(
+                ask(RecordedAnswerKey::Point, &mut under_point),
+                Some(Ok(ConcreteDecision::Order { pos: 0, .. }))
+            ),
+            "a trigger-driven step's key is the place in the sequence, so the spent incarnation \
+             still answers"
+        );
+        let mut under_both = StepAnswers::for_template(&template);
+        assert!(
+            ask(RecordedAnswerKey::PointAndSource, &mut under_both).is_none(),
+            "the other key puts the source in the class, and then this same entry answers nothing"
         );
     }
 }

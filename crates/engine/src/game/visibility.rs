@@ -344,8 +344,11 @@ pub(crate) fn capture_library_search_card_view(
 
 /// Which of the three viewer-visible pin carriers is asking, so the `slot.source` leg of
 /// [`pins_name_hidden_source`] runs only where it guards something. Carrier 1 co-publishes the
-/// identical `DecisionSlot` unredacted beside its own schema, so dropping the declaration for it
-/// would hide nothing that arm hands over anyway; carriers 2 and 3 publish NO schema.
+/// same `DecisionSlot.source` unredacted beside its own schema, as `schema.points[].slot.source`,
+/// so dropping the declaration for it would hide nothing that arm hands over anyway; carriers 2
+/// and 3 publish NO schema. Grounded on the SOURCE because that is the axis the leg itself reads
+/// — a pin and the point it answers need not be whole-slot equal, since a declaration may pin a
+/// choice the schema publishes under a different [`ChoicePoint`] on one source.
 ///
 /// Private, and an ARGUMENT to the one predicate rather than a second predicate: splitting
 /// `pins_name_hidden_source` in two would mint the second hidden-information authority this
@@ -376,10 +379,13 @@ enum PinCarrier {
 ///    same readers, carrying the declaration carrier 1 publishes.
 /// 3. `GameState::last_loop_action_sequence[].pins` — the recorded loop period. It is serialized
 ///    whenever non-empty (`skip_serializing_if = "Vec::is_empty"`, not `skip`) and has no other
-///    redaction seam. Its three writers (the `game::engine::record_loop_pin` call sites: a
-///    mana-ability tap cost, a mana-color choice, a proliferate target) can only name battlefield
-///    permanents and seats today, so that call redacts nothing on any board the engine currently
-///    mints — it is wired so a fourth writer cannot open the leak silently.
+///    redaction seam. Its writers are `game::engine::record_loop_pin`'s call sites, regenerated
+///    by `grep -rnP '(?<![a-z_])record_loop_pin\s*\(' crates/engine/src/`. What is load-bearing
+///    is not what they happen to name: it is that every one of them reaches the viewer through
+///    THIS authority, so a writer that names a card in a hidden zone drops the whole vector
+///    rather than exposing it. One does — the CR 608.2d resolution-set writer is keyed on
+///    `WaitingFor::EffectZoneChoice`, whose `zone` is the source zone of the eligible objects and
+///    is not restricted to the battlefield.
 ///
 /// `GameState::decision_templates` is one more carrier and deliberately does NOT route here: it
 /// is redacted wholesale by the private-access retain
@@ -457,10 +463,13 @@ fn pins_name_hidden_source(
     // identity gets a compile-time visit here instead of leaking silently.
     //
     // `slot` IS inspected, and only on the carriers where inspecting it guards something.
-    // `PinCarrier::OfferWithSchema` skips the leg: that arm co-publishes the identical
-    // `DecisionSlot` unredacted as `schema.points[].slot`, so dropping the declaration there
-    // would hide nothing the same arm hands over anyway, and it would start dropping offers from
-    // their own proposer for no gain. `PinCarrier::PinsOnly` runs it: carriers 2 and 3 publish NO
+    // `PinCarrier::OfferWithSchema` skips the leg: that arm co-publishes the same
+    // `DecisionSlot.source` unredacted as `schema.points[].slot.source`, so dropping the
+    // declaration there would hide nothing the same arm hands over anyway, and it would start
+    // dropping offers from their own proposer for no gain. The SOURCE is the right ground, and
+    // the only one available: this leg calls `slot_source_hidden`, which reads
+    // `slot.source` and nothing else, and a pin need not be whole-slot equal to the point it
+    // answers now that the slot carries a typed choice point. `PinCarrier::PinsOnly` runs it: carriers 2 and 3 publish NO
     // schema, so the slot's source reaches the viewer with no other seam to drop it. Naming the
     // decision each answer belongs to is exactly what a responder-facing render of the answered
     // decisions does, which is what turns a latent exposure into a rendered one.
@@ -481,10 +490,10 @@ fn pins_name_hidden_source(
         PinnedDecision::Targets { slot, targets } => {
             slot_source_hidden(slot) || targets.iter().any(&pin_hidden)
         }
-        // The one variant with no `slot`: its `source` is the value leg's own subject and is
-        // already inspected on every carrier.
-        PinnedDecision::Order { source, .. } => source_hidden(source),
-        PinnedDecision::Mode { slot, .. }
+        // Every variant carries a slot, so every carrier's source reaches the one
+        // slot-keyed test — no variant is an exception to it.
+        PinnedDecision::Order { slot, .. }
+        | PinnedDecision::Mode { slot, .. }
         | PinnedDecision::MayChoice { slot, .. }
         | PinnedDecision::UnlessBreak { slot, .. }
         | PinnedDecision::ConvokeTaps { slot }
@@ -4934,7 +4943,8 @@ mod tests {
     #[test]
     fn filters_other_players_decision_templates() {
         use crate::analysis::decision_template::{
-            DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+            ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+            PinnedDecision, ReplayMode,
         };
         use crate::types::game_state::YieldTarget;
 
@@ -4946,7 +4956,7 @@ mod tests {
             DecisionTemplate {
                 owner,
                 decisions: vec![PinnedDecision::Order {
-                    source: src.clone(),
+                    slot: DecisionSlot::first(src.clone(), ChoicePoint::TriggerOrder),
                     pos: 0,
                 }],
                 replay: ReplayMode::Static,
@@ -4990,7 +5000,8 @@ mod tests {
     #[test]
     fn r1j_a_controlling_player_sees_the_controlled_seats_decision_template() {
         use crate::analysis::decision_template::{
-            DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+            ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+            PinnedDecision, ReplayMode,
         };
         use crate::types::game_state::YieldTarget;
 
@@ -5003,7 +5014,7 @@ mod tests {
         let template = DecisionTemplate {
             owner: controlled,
             decisions: vec![PinnedDecision::Order {
-                source: src.clone(),
+                slot: DecisionSlot::first(src.clone(), ChoicePoint::TriggerOrder),
                 pos: 0,
             }],
             replay: ReplayMode::Static,
@@ -9572,8 +9583,8 @@ mod tests {
         ) -> Vec<crate::analysis::decision_template::PinnedDecision>,
     ) -> GameState {
         use crate::analysis::decision_template::{
-            DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind, DecisionSlot,
-            DecisionTemplate, IterationCount, ReplayMode, ShortcutDecisionSchema,
+            ChoicePoint, DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind,
+            DecisionSlot, DecisionTemplate, IterationCount, ReplayMode, ShortcutDecisionSchema,
         };
         let mut state = GameState::new_two_player(42);
         let hidden = create_object(
@@ -9583,7 +9594,7 @@ mod tests {
             "Secret Card".to_string(),
             Zone::Hand,
         );
-        let slot = DecisionSlot::target(slot_source(hidden));
+        let slot = DecisionSlot::first(slot_source(hidden), ChoicePoint::AnnouncedTarget);
         state.waiting_for = WaitingFor::LoopShortcut {
             proposer: D5H_PROPOSER,
             predicted_winner: None,
@@ -9748,13 +9759,14 @@ mod tests {
     ///
     /// # The multi-pin shape is the ORDINARY production shape, not an exotic one
     ///
-    /// `game::engine::record_loop_pin` appends up to three pins onto ONE `LoopActionContext.pins`
-    /// in temporal order — a mana-ability tap-cost `Targets` pin (`index: 0`), a `ManaColor` pin
-    /// (`index: 1`), then a proliferate `Targets` pin — and `game::engine::build_recast_template`
-    /// clones that very vector (`decisions = ctx.pins.clone()`) into the offer's declaration
-    /// before pushing a `ConvokeTaps` pin. A public pin sitting ahead of a hidden one is therefore
-    /// exactly what those producers mint; this row builds `[ManaColor, Targets{hidden}]`, i.e.
-    /// pins 2 and 3 of that production sequence.
+    /// `game::engine::record_loop_pin` appends ONE pin per answered prompt onto ONE
+    /// `LoopActionContext.pins` in the temporal order the step's own beats ask them, so a step
+    /// asking more than one prompt mints a multi-pin vector (regenerate the writer set with
+    /// `grep -rnP '(?<![a-z_])record_(loop|trigger_step)_pin\s*\(' crates/engine/src/`), and
+    /// `game::engine::build_recast_template` clones that very vector
+    /// (`decisions = ctx.pins.clone()`) into the offer's declaration before pushing a
+    /// `ConvokeTaps` pin. A public pin sitting ahead of a hidden one is therefore exactly what
+    /// those producers mint; this row builds `[ManaColor, Targets{hidden}]`, that ordering.
     ///
     /// # Non-vacuity / discrimination
     ///
@@ -9771,14 +9783,19 @@ mod tests {
     /// row in `game::visibility::tests` stays green; restored ⇒ it passes.
     #[test]
     fn d5h2_a_public_pin_ahead_of_a_hidden_one_still_drops_the_whole_declaration() {
-        use crate::analysis::decision_template::{PinnedDecision, TargetPin};
+        use crate::analysis::decision_template::{
+            ChoicePoint, DecisionSlot, PinnedDecision, TargetPin,
+        };
         use crate::types::mana::ManaColor;
 
         // ── the hostile arm: pin 1 carries no identity, pin 2 names the hidden hand card ──
         let hidden_state = d5h_offer_decisions(|hidden, slot| {
             vec![
+                // CR 608.2d: a colour choice is not the announcement the helper publishes, so it
+                // mints its own slot from that source at its own point; the `Targets` sibling
+                // below does mean the published choice and keeps the helper's slot.
                 PinnedDecision::ManaColor {
-                    slot: slot.clone(),
+                    slot: DecisionSlot::first(slot.source.clone(), ChoicePoint::ManaColor),
                     color: ManaColor::Blue,
                 },
                 PinnedDecision::Targets {
@@ -9984,8 +10001,8 @@ mod tests {
         ) -> Vec<crate::analysis::decision_template::PinnedDecision>,
     ) -> GameState {
         use crate::analysis::decision_template::{
-            DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount,
-            ReplayMode,
+            ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+            IterationCount, ReplayMode,
         };
         let mut state = GameState::new_two_player(42);
         let hidden = create_object(
@@ -10002,7 +10019,7 @@ mod tests {
             "Open Permanent".to_string(),
             Zone::Battlefield,
         );
-        let slot = DecisionSlot::target(slot_source(hidden, permanent));
+        let slot = DecisionSlot::first(slot_source(hidden, permanent), ChoicePoint::MayGate);
         let decisions = decisions(hidden, &slot);
         let declaration = DecisionTemplate {
             owner: D5H_PROPOSER,
@@ -10162,9 +10179,12 @@ mod tests {
     /// declaration to a non-proposer.**
     ///
     /// This is the member the repair must REFUSE to admit, and it is what makes the extension
-    /// carrier-scoped rather than global. The offer arm re-states the identical `DecisionSlot`
-    /// as `schema.points[].slot`, unredacted, so dropping the declaration for it would hide
-    /// nothing that same arm hands over — and would start dropping offers for no gain.
+    /// carrier-scoped rather than global. The offer arm re-states the same `DecisionSlot.source`
+    /// as `schema.points[].slot.source`, unredacted, so dropping the declaration for it would
+    /// hide nothing that same arm hands over — and would start dropping offers for no gain. The
+    /// SOURCE is the axis both the predicate and the assertion below read; the pin here answers a
+    /// CR 603.5 "may" while the schema publishes a CR 601.2c announcement, so the two slots
+    /// deliberately do NOT coincide whole.
     ///
     /// # Non-vacuity / discrimination
     ///
@@ -10179,7 +10199,7 @@ mod tests {
     #[test]
     fn the_offer_carrier_keeps_a_declaration_whose_slot_source_its_schema_copublishes() {
         use crate::analysis::decision_template::{
-            DecisionPointKind, MayChoiceOption, PinnedDecision,
+            ChoicePoint, DecisionPointKind, DecisionSlot, MayChoiceOption, PinnedDecision,
         };
         use crate::types::game_state::YieldTarget;
 
@@ -10190,15 +10210,18 @@ mod tests {
         };
 
         let state = d5h_offer_decisions_slotted(hidden_slot, |_hidden, slot| {
+            // CR 603.5. The helper leaves the CHOICE closed — it hard-codes its published kind as
+            // `Targets` — so a pin that means a different choice mints its own slot from the
+            // helper's source rather than cloning a slot whose point it does not mean.
             vec![PinnedDecision::MayChoice {
-                slot: slot.clone(),
+                slot: DecisionSlot::first(slot.source.clone(), ChoicePoint::MayGate),
                 take: MayChoiceOption::Take,
             }]
         });
         let (declaration, schema) = d5h_projected_offer(&state, D5H_VIEWER);
         let kept = declaration.as_ref().expect(
             "CR 732.2b: carrier 1 keeps its declaration — the slot leg is skipped where the \
-             offer's own schema re-states the identical `DecisionSlot` unredacted",
+             offer's own schema re-states the same `DecisionSlot.source` unredacted",
         );
         let PinnedDecision::MayChoice { slot, .. } = &kept.decisions[0] else {
             panic!(
@@ -10268,7 +10291,7 @@ mod tests {
     /// vanished" cannot pass for "the pins were cleared".
     #[test]
     fn a_recorded_loop_step_whose_pin_slot_names_a_hidden_source_is_cleared() {
-        use crate::analysis::decision_template::{DecisionSlot, PinnedDecision};
+        use crate::analysis::decision_template::{ChoicePoint, DecisionSlot, PinnedDecision};
         use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext, YieldTarget};
         use crate::types::mana::ManaColor;
 
@@ -10297,7 +10320,7 @@ mod tests {
                 },
                 convoke: None,
                 pins: vec![PinnedDecision::ManaColor {
-                    slot: DecisionSlot::target(source(hidden, permanent)),
+                    slot: DecisionSlot::first(source(hidden, permanent), ChoicePoint::ManaColor),
                     color: ManaColor::Blue,
                 }],
             }];
@@ -10344,6 +10367,117 @@ mod tests {
         assert!(
             !projected_pins(&visible_state).is_empty(),
             "and it is genuinely kept, not two matching empties"
+        );
+    }
+
+    /// **R7 — the record's redaction FIRES on a writer that can name a hidden card.**
+    ///
+    /// The row above is built on a `ManaColor` pin, whose writer names a battlefield mana
+    /// source. This phase adds the CR 608.2d resolution-set writer, keyed on
+    /// `WaitingFor::EffectZoneChoice`, whose `zone` is the source zone of the eligible objects
+    /// and is NOT restricted to the battlefield — so the pin it records can name a card in a
+    /// hidden zone. That makes the wiring the carrier's doc describes something this row can
+    /// SHOW firing rather than assert.
+    ///
+    /// The identity is named in the pin's VALUE (`TargetPin::ByIdentity`), not in its slot
+    /// source, which is the other half: this pin's slot names the public trigger source, so a
+    /// redactor that only inspected slots would pass the hidden card straight through.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// CR 732.2b is all-or-nothing, so the assertion is on the WHOLE vector. The paired
+    /// positive is the same period projected for the pin's own controller, which keeps it; the
+    /// omitted member is the same period whose pin names a BATTLEFIELD permanent, which
+    /// survives the opponent's projection. Both arms assert the step still EXISTS, so "the
+    /// sequence vanished" cannot pass for "the pins were cleared".
+    #[test]
+    fn a_recorded_resolution_set_pin_naming_a_hidden_card_drops_the_whole_vector() {
+        use crate::analysis::decision_template::{
+            ChoicePoint, DecisionSlot, PinnedDecision, TargetPin,
+        };
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        use crate::types::game_state::{LoopAction, LoopActionContext, YieldTarget};
+
+        let recorded = |chosen_is_hidden: bool| {
+            let mut state = GameState::new_two_player(42);
+            let trigger_source = create_object(
+                &mut state,
+                CardId(4241),
+                D5H_PROPOSER,
+                "Public Trigger Source".to_string(),
+                Zone::Battlefield,
+            );
+            let hidden = create_object(
+                &mut state,
+                CardId(4242),
+                D5H_PROPOSER,
+                "Secret Card".to_string(),
+                Zone::Hand,
+            );
+            let permanent = create_object(
+                &mut state,
+                CardId(4243),
+                D5H_PROPOSER,
+                "Open Permanent".to_string(),
+                Zone::Battlefield,
+            );
+            let chosen = if chosen_is_hidden { hidden } else { permanent };
+            let named = |id: ObjectId| YieldTarget::ThisObject {
+                source_id: id,
+                incarnation: Some(1),
+                trigger_description: None,
+            };
+            state.last_loop_action_sequence = vec![LoopActionContext {
+                card_id: CardId(4241),
+                controller: D5H_PROPOSER,
+                action: LoopAction::ResolveTrigger {
+                    source_id: trigger_source,
+                    occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                        base_set: TriggerBaseSetInstanceRef::INITIAL,
+                        printed_index: 0,
+                    },
+                },
+                convoke: None,
+                pins: vec![PinnedDecision::Targets {
+                    // The SLOT names the public trigger source; only the VALUE names the card.
+                    slot: DecisionSlot::first(named(trigger_source), ChoicePoint::ResolutionSet),
+                    targets: vec![TargetPin::ByIdentity(named(chosen))],
+                }],
+            }];
+            state
+        };
+        let projected_pins = |state: &GameState, viewer: PlayerId| -> Vec<PinnedDecision> {
+            let filtered = filter_state_for_viewer(state, viewer);
+            let [step] = filtered.last_loop_action_sequence.as_slice() else {
+                panic!("the recorded sequence keeps its single step through the projection");
+            };
+            step.pins.clone()
+        };
+
+        let hidden_state = recorded(true);
+        assert!(
+            matches!(
+                hidden_state.last_loop_action_sequence[0].pins.as_slice(),
+                [PinnedDecision::Targets { .. }]
+            ),
+            "reach-guard: the UNPROJECTED step really carries the resolution-set pin"
+        );
+        assert!(
+            projected_pins(&hidden_state, D5H_VIEWER).is_empty(),
+            "CR 732.2b: a recorded resolution-set pin naming a card this viewer may not see \
+             drops the WHOLE vector — the record has no other redaction seam"
+        );
+        assert!(
+            !projected_pins(&hidden_state, D5H_PROPOSER).is_empty(),
+            "paired positive: the pin's own controller still receives it"
+        );
+
+        let visible_state = recorded(false);
+        assert_eq!(
+            projected_pins(&visible_state, D5H_VIEWER),
+            visible_state.last_loop_action_sequence[0].pins,
+            "omitted member: the same pin naming a BATTLEFIELD permanent survives the \
+             opponent's projection — without it a clearer that emptied every step would pass"
         );
     }
 

@@ -1398,10 +1398,16 @@ impl LoopAction {
             // repeating it is not a choice anyone makes at priority. Such a cycle DOES carry a
             // voluntary action in its cards' own words ("you may exile"; "exile any number",
             // where zero is a number) and CR 104.4b's closing sentence therefore keeps it off
-            // the CR 732.4 draw path — but that choice is made AS an ability resolves, and this
-            // shape records no choice a step's resolution asks, so it cannot declare on its
-            // behalf. Fail-closed: `false` withholds an offer a shape that DID record those
-            // choices might be owed, and can never grant one.
+            // the CR 732.4 draw path — and such a step now DOES record the choices its
+            // resolution asks (`game::engine::record_trigger_step_pin`). What still holds, and
+            // is the whole of this `false`, is that it cannot DECLARE on their behalf: a
+            // declaration is a CR 732.2a proposal a player makes at priority, and nobody elects
+            // a trigger. Fail-closed: `false` withholds an offer such a shape might be owed, and
+            // can never grant one.
+            //
+            // Read by [`GameState::loop_period_is_priority_driven`] and by its slice-level peer
+            // [`loop_period_is_priority_driven_of`], which the drive's collapse ingress asks of
+            // a sequence that never passed through this state's own field.
             LoopAction::ResolveTrigger { .. } => false,
         }
     }
@@ -1428,7 +1434,9 @@ pub struct LoopActionContext {
     /// (`None` when the recast pays no convoke cost, and always `None` for an `Activate`).
     pub convoke: Option<ConvokeMode>,
     /// CR 732.2a (FIX-1): the fixed in-cycle player choices recorded during the demonstrated
-    /// iteration (tap-cost target, mana-color, proliferate target), replayed by the object-growth
+    /// iteration — every choice a beat inside this step asks of its controller, whichever kind of
+    /// step it is; regenerate the writer set with
+    /// `grep -rnP '(?<![a-z_])record_(loop|trigger_step)_pin\s*\(' crates/engine/src/`. Replayed by the object-growth
     /// detection drive via `build_recast_template` → `decision_template::resolve`. Round-trips via
     /// serde for an offer-save KEPT by the conditional load migration (FIX-3); a save captured
     /// outside an object-growth shortcut window drops the whole sequence on load and re-records the
@@ -13561,11 +13569,7 @@ impl GameState {
     /// The homogeneity clause is a backstop, not a live case: `accumulate_loop_action_step` clears
     /// the sequence on a controller change, so a heterogeneous run should be unreachable in play.
     pub(crate) fn loop_period_controller(&self) -> Option<PlayerId> {
-        let owner = self.last_loop_action_sequence.first()?.controller;
-        self.last_loop_action_sequence
-            .iter()
-            .all(|step| step.controller == owner)
-            .then_some(owner)
+        loop_period_controller_of(&self.last_loop_action_sequence)
     }
 
     /// CR 732.2a: whether every step of the recorded period is an action its controller takes at
@@ -13579,9 +13583,7 @@ impl GameState {
     /// detect. Vacuously true for an empty period, which every consumer already fails closed on
     /// through its own emptiness test.
     pub(crate) fn loop_period_is_priority_driven(&self) -> bool {
-        self.last_loop_action_sequence
-            .iter()
-            .all(|step| step.action.is_voluntarily_repeatable())
+        loop_period_is_priority_driven_of(&self.last_loop_action_sequence)
     }
 
     /// CR 732.2a: the seat the object-growth route is live for — [`GameState::loop_period_controller`]
@@ -13593,9 +13595,51 @@ impl GameState {
     /// period is `None` on both. Which sites read which is the call set's own answer, regenerated
     /// by the command on [`GameState::loop_period_controller`]; this doc states no list of them.
     pub(crate) fn loop_period_driver(&self) -> Option<PlayerId> {
-        self.loop_period_controller()
-            .filter(|_| self.loop_period_is_priority_driven())
+        loop_period_driver_of(&self.last_loop_action_sequence)
     }
+}
+
+/// CR 732.2a: whose record this SEQUENCE is — the whole-period ownership test of
+/// [`GameState::loop_period_controller`], asked of a slice rather than of the state's own field.
+///
+/// Its question is OWNERSHIP and nothing else: a record is evidence about the seat that recorded
+/// it, and it says nothing about whether that seat could take those steps again — which is
+/// [`loop_period_is_priority_driven_of`]'s question, not this one's. `None` for an empty slice
+/// through its own `first()?`, and `None` for a heterogeneous one.
+///
+/// The slice form exists because a consumer can hold a sequence that is NOT
+/// `GameState::last_loop_action_sequence` — a stash-carried period serializes, and shipped
+/// fixtures graft such payloads by hand — and for such a slice the homogeneity clause is LIVE
+/// rather than the backstop it is for the state's field, since a grafted payload never passed
+/// through `accumulate_loop_action_step`'s clear-on-controller-change.
+pub(crate) fn loop_period_controller_of(seq: &[LoopActionContext]) -> Option<PlayerId> {
+    let owner = seq.first()?.controller;
+    seq.iter()
+        .all(|step| step.controller == owner)
+        .then_some(owner)
+}
+
+/// CR 732.2a: whether every step of THIS SEQUENCE is one its controller takes at priority —
+/// [`LoopAction::is_voluntarily_repeatable`] quantified over the slice.
+///
+/// Its question is the PER-STEP PREMISE and nothing else: it says nothing about whose record the
+/// slice is, which is [`loop_period_controller_of`]'s question. Vacuously true for an empty
+/// slice, exactly as the state-level form is — every consumer fails closed on emptiness through
+/// its own test, or through [`loop_period_driver_of`]'s ownership half.
+pub(crate) fn loop_period_is_priority_driven_of(seq: &[LoopActionContext]) -> bool {
+    seq.iter()
+        .all(|step| step.action.is_voluntarily_repeatable())
+}
+
+/// CR 732.2a + CR 104.4b: the seat a SEQUENCE may be driven for — the two questions above
+/// together, and the answer a consumer holding a sequence rather than the state's field must ask.
+///
+/// It is not either neighbour: ownership alone admits a slice holding a step no player takes at
+/// priority, and the premise alone admits a slice whose steps name DIFFERENT controllers — which
+/// a driver would then run whole for its first step's seat, activating a later step's object as a
+/// player CR 602.2 admits only when the object says otherwise.
+pub(crate) fn loop_period_driver_of(seq: &[LoopActionContext]) -> Option<PlayerId> {
+    loop_period_controller_of(seq).filter(|_| loop_period_is_priority_driven_of(seq))
 }
 
 /// Decodes both current trusted snapshots and historical raw `GameState`
@@ -20313,18 +20357,20 @@ declare_game_state! {
     /// pin the choice each iteration actually made instead of guessing one. Both published
     /// axes ride ONE journal: the CR 603.5 "may" gate and the CR 601.2c target
     /// announcement, distinguished by the value's own kind ([`LoopAnswerValue`]) and by the
-    /// slot's sub-index — a parallel target journal would double the eight ring-clear
+    /// slot's CHOICE POINT — a parallel target journal would double the eight ring-clear
     /// sites and widen their census for no capability this field lacks.
     ///
-    /// KEYED BY THE PAIR `(slot, seat)`, not by the source alone. The SUB-INDEX half is
+    /// KEYED BY THE PAIR `(slot, seat)`, not by the source alone. The CHOICE-POINT half is
     /// what keeps the two slots one source can publish apart: `entry_publishes_pin_slots`
-    /// binds `source` ONCE and builds both `DecisionSlot::target(source)` (CR 601.2c) and
-    /// `DecisionSlot::may(source)` (CR 603.5) from it, and the shipped unit test
+    /// binds `source` ONCE and builds both
+    /// `DecisionSlot::first(source, ChoicePoint::AnnouncedTarget)` (CR 601.2c) and
+    /// `DecisionSlot::first(source, ChoicePoint::MayGate)` (CR 603.5) from it, and the
+    /// shipped unit test
     /// `bounded_cycle_pin_slots_publishes_the_may_gate_of_an_optional_trigger` asserts an
     /// optional targeted trigger publishes both. Under a source-only key those two writes
     /// would land in ONE entry with different values and latch `Conflicted`. NON-CLAIM,
     /// measured: no board in this lane exercises that collision — every published point on
-    /// the three tracked F4 dumps carries a distinct source — so the sub-index is adopted
+    /// the three tracked F4 dumps carries a distinct source — so the point is adopted
     /// because it aligns the journal's identity with the engine's own published one
     /// (`DecisionPoint.slot`, which is what the consumer looks up), never because a
     /// measured board needs it.
@@ -43777,9 +43823,9 @@ mod tests {
         }
     }
 
-    /// **Row T2 — the SUB-INDEX half of the key.** CR 601.2c and CR 603.5 are two choices
+    /// **Row T2 — the CHOICE POINT half of the key.** CR 601.2c and CR 603.5 are two choices
     /// of ONE ability instance, and `entry_publishes_pin_slots` publishes both from a
-    /// single bound `source`. They must occupy TWO journal entries.
+    /// single bound `source` at one instance ordinal. They must occupy TWO journal entries.
     ///
     /// # Discrimination
     ///
@@ -43807,7 +43853,7 @@ mod tests {
     #[test]
     fn c2a_row_t2_one_source_two_sub_indices_occupy_two_journal_entries() {
         use crate::analysis::decision_template::{
-            DecisionSlot, LoopAnswer, LoopAnswerValue, MayChoiceOption, TargetPin,
+            ChoicePoint, DecisionSlot, LoopAnswer, LoopAnswerValue, MayChoiceOption, TargetPin,
         };
 
         let mut state = journal_state();
@@ -43821,12 +43867,12 @@ mod tests {
         let seat = PlayerId(0);
 
         state.record_loop_answer(
-            DecisionSlot::may(source.clone()),
+            DecisionSlot::first(source.clone(), ChoicePoint::MayGate),
             seat,
             LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
         );
         state.record_loop_answer(
-            DecisionSlot::target(source.clone()),
+            DecisionSlot::first(source.clone(), ChoicePoint::AnnouncedTarget),
             seat,
             LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(PlayerId(
                 1,
@@ -43840,14 +43886,20 @@ mod tests {
              must keep them in two entries. A source-only key holds 1"
         );
         assert_eq!(
-            state.loop_answer(&DecisionSlot::may(source.clone()), seat),
+            state.loop_answer(
+                &DecisionSlot::first(source.clone(), ChoicePoint::MayGate),
+                seat
+            ),
             Some(LoopAnswer::Uniform(LoopAnswerValue::May(
                 MayChoiceOption::Take
             ))),
             "the CR 603.5 gate's own answer survives the CR 601.2c write on the same source"
         );
         assert_eq!(
-            state.loop_answer(&DecisionSlot::target(source), seat),
+            state.loop_answer(
+                &DecisionSlot::first(source, ChoicePoint::AnnouncedTarget),
+                seat
+            ),
             Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
                 TargetPin::Player(PlayerId(1))
             ]))),
@@ -43884,7 +43936,7 @@ mod tests {
     #[test]
     fn c2a_row_t3_a_differing_target_answer_latches_conflicted_idempotently_and_seat_locally() {
         use crate::analysis::decision_template::{
-            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+            ChoicePoint, DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
         };
 
         let mut state = journal_state();
@@ -43893,7 +43945,7 @@ mod tests {
             0,
             "reach-guard: a fresh board starts with an EMPTY journal"
         );
-        let slot = DecisionSlot::target(journal_source(911));
+        let slot = DecisionSlot::first(journal_source(911), ChoicePoint::AnnouncedTarget);
         let (seat, other_seat) = (PlayerId(0), PlayerId(1));
         let aimed_at_1 = LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(
             PlayerId(1),
@@ -43954,7 +44006,7 @@ mod tests {
     #[test]
     fn c2a_row_t4_two_seats_answering_one_target_slot_occupy_two_independent_entries() {
         use crate::analysis::decision_template::{
-            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+            ChoicePoint, DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
         };
 
         let mut state = journal_state();
@@ -43963,7 +44015,7 @@ mod tests {
             0,
             "reach-guard: a fresh board starts with an EMPTY journal"
         );
-        let slot = DecisionSlot::target(journal_source(912));
+        let slot = DecisionSlot::first(journal_source(912), ChoicePoint::AnnouncedTarget);
         let (seat_a, seat_b) = (PlayerId(0), PlayerId(1));
         assert_ne!(
             seat_a, seat_b,
@@ -44036,8 +44088,8 @@ mod tests {
     #[test]
     fn c2a_row_t3r_the_conflicted_latch_is_unchanged_by_the_migrated_seat_spelling() {
         use crate::analysis::decision_template::{
-            AnnouncementSubject, DecisionSlot, LoopAnswer, LoopAnswerValue, Ranking, TargetPin,
-            TargetSchedule,
+            AnnouncementSubject, ChoicePoint, DecisionSlot, LoopAnswer, LoopAnswerValue, Ranking,
+            TargetPin, TargetSchedule,
         };
 
         let ranked = |subjects: Vec<AnnouncementSubject>| {
@@ -44051,7 +44103,7 @@ mod tests {
 
         // ── (a) two rankings naming DIFFERENT seats ⇒ Conflicted ──
         let mut state = journal_state();
-        let slot_a = DecisionSlot::target(journal_source(913));
+        let slot_a = DecisionSlot::first(journal_source(913), ChoicePoint::AnnouncedTarget);
         let aimed_at_1 = ranked(vec![seat(1)]);
         let aimed_at_2 = ranked(vec![seat(2)]);
         assert_ne!(
@@ -44079,7 +44131,7 @@ mod tests {
         // The recorded answer is the whole announcement sequence (CR 732.2a), not just the
         // head, so two proposals that agree only on the head are not the same answer. This is
         // the arm a head-only equality would lose.
-        let slot_b = DecisionSlot::target(journal_source(914));
+        let slot_b = DecisionSlot::first(journal_source(914), ChoicePoint::AnnouncedTarget);
         let head1_tail2 = ranked(vec![seat(1), seat(2)]);
         let head1_tail3 = ranked(vec![seat(1), seat(3)]);
         state.record_loop_answer(slot_b.clone(), PlayerId(0), head1_tail2.clone());
@@ -44097,7 +44149,7 @@ mod tests {
         );
 
         // ── (c) the SAME ranking twice ⇒ still Uniform ──
-        let slot_c = DecisionSlot::target(journal_source(915));
+        let slot_c = DecisionSlot::first(journal_source(915), ChoicePoint::AnnouncedTarget);
         state.record_loop_answer(slot_c.clone(), PlayerId(0), aimed_at_1.clone());
         state.record_loop_answer(slot_c.clone(), PlayerId(0), aimed_at_1.clone());
         assert_eq!(

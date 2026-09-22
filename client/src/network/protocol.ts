@@ -113,6 +113,11 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *       deny_unknown_fields, so the skew is silent in both directions rather
  *       than a parse error and first contact is the only place it can be
  *       refused. Bumped in lockstep with full-game protocol 110.
+ *       The same version also moves DecisionSlot, which rides the same
+ *       GameState: the slot gained a required `point` naming which CR choice
+ *       it identifies, and PinnedDecision::Order replaced its bare `source`
+ *       with a full slot. Neither has a serde default, so that half is a
+ *       parse break in both directions rather than a silent skew.
  *  91 — GameState carries the CR 201.5a granter binding (ObjectScope
  *       GrantingObject / SpecificObject, TargetFilter GrantingObject.bound,
  *       PlayerFilter GrantingObjectCaster and the granting_object stamps).

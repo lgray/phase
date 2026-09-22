@@ -18,8 +18,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use engine::analysis::decision_template::{
-    AnnouncementSubject, DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount,
-    PinnedDecision, TargetPin, TargetSchedule,
+    AnnouncementSubject, ChoicePoint, DecisionPoint, DecisionPointKind, DecisionSlot,
+    IterationCount, PinnedDecision, TargetPin, TargetSchedule,
 };
 use engine::game::engine::apply;
 use engine::types::ability::TargetRef;
@@ -648,11 +648,14 @@ fn declarable_victims_are_empty_when_restored_and_populated_when_live() {
 #[test]
 fn only_a_published_targets_slot_off_the_charged_set_is_unbacked() {
     fn slot(source_id: u64) -> DecisionSlot {
-        DecisionSlot::target(YieldTarget::ThisObject {
-            source_id: ObjectId(source_id),
-            incarnation: Some(0),
-            trigger_description: None,
-        })
+        DecisionSlot::first(
+            YieldTarget::ThisObject {
+                source_id: ObjectId(source_id),
+                incarnation: Some(0),
+                trigger_description: None,
+            },
+            ChoicePoint::AnnouncedTarget,
+        )
     }
     fn targets(slot: DecisionSlot) -> DecisionPoint {
         DecisionPoint {

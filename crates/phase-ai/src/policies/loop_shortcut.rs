@@ -487,8 +487,8 @@ mod tests {
     use crate::session::AiSession;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
     use engine::analysis::decision_template::{
-        AnnouncementSubject, DecisionGroupKey, DecisionPointKind, DecisionSlot, PinnedDecision,
-        Ranking, ReplayMode, ShortcutDecisionSchema, TargetPin, TargetSchedule,
+        AnnouncementSubject, ChoicePoint, DecisionGroupKey, DecisionPointKind, DecisionSlot,
+        PinnedDecision, Ranking, ReplayMode, ShortcutDecisionSchema, TargetPin, TargetSchedule,
     };
     use engine::analysis::loop_check::{LoopCertificate, WinKind};
     use engine::analysis::resource::{BoardDelta, PeriodicDelta, ResourceVector};
@@ -1046,11 +1046,14 @@ mod tests {
             "Drain Engine".to_string(),
             Zone::Battlefield,
         );
-        DecisionSlot::target(YieldTarget::ThisObject {
-            source_id,
-            incarnation: None,
-            trigger_description: None,
-        })
+        DecisionSlot::first(
+            YieldTarget::ThisObject {
+                source_id,
+                incarnation: None,
+                trigger_description: None,
+            },
+            ChoicePoint::AnnouncedTarget,
+        )
     }
 
     /// The published CR 115.2 legal set of a slot that may name either seat.

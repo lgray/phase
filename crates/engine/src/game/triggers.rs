@@ -7552,7 +7552,7 @@ fn permute_group_by_pins(
 fn is_specific_persistent_order_template(
     template: &crate::analysis::decision_template::DecisionTemplate,
 ) -> bool {
-    use crate::analysis::decision_template::PinnedDecision;
+    use crate::analysis::decision_template::{DecisionSlot, PinnedDecision};
     use crate::types::game_state::YieldTarget;
 
     if !template.key.is_persistent()
@@ -7584,9 +7584,13 @@ fn is_specific_persistent_order_template(
         .iter()
         .filter_map(|decision| match decision {
             PinnedDecision::Order {
-                source:
-                    source @ YieldTarget::AllCopies {
-                        trigger_description: Some(description),
+                slot:
+                    DecisionSlot {
+                        source:
+                            source @ YieldTarget::AllCopies {
+                                trigger_description: Some(description),
+                                ..
+                            },
                         ..
                     },
                 pos,
@@ -7628,7 +7632,8 @@ fn record_submitted_trigger_order(
     submitted_order_was_identity: bool,
 ) {
     use crate::analysis::decision_template::{
-        DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+        ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+        PinnedDecision, ReplayMode,
     };
 
     if submitted_order_was_identity {
@@ -7648,7 +7653,9 @@ fn record_submitted_trigger_order(
         .cloned()
         .enumerate()
         .map(|(position, source)| PinnedDecision::Order {
-            source,
+            // CR 603.3b: one ordering slot per source in this batch — instance `0` of its
+            // (source, TriggerOrder) class.
+            slot: DecisionSlot::first(source, ChoicePoint::TriggerOrder),
             pos: u8::try_from(position).expect("source count fits Order position"),
         })
         .collect();
@@ -7671,7 +7678,8 @@ fn build_ephemeral_order_template(
     triggers: &[PendingTriggerContext],
 ) -> crate::analysis::decision_template::DecisionTemplate {
     use crate::analysis::decision_template::{
-        DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+        ChoicePoint, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+        PinnedDecision, ReplayMode,
     };
     use crate::types::game_state::YieldTarget;
     let sources = group_thisobject_sources(triggers);
@@ -7679,11 +7687,16 @@ fn build_ephemeral_order_template(
         .iter()
         .enumerate()
         .map(|(pos, ctx)| PinnedDecision::Order {
-            source: YieldTarget::ThisObject {
-                source_id: ctx.pending.source_id,
-                incarnation: ctx.pending.ability.trigger_source_incarnation(),
-                trigger_description: None,
-            },
+            // CR 603.3b: one ordering slot per trigger in this batch, at instance `0` of its
+            // own (source, TriggerOrder) class.
+            slot: DecisionSlot::first(
+                YieldTarget::ThisObject {
+                    source_id: ctx.pending.source_id,
+                    incarnation: ctx.pending.ability.trigger_source_incarnation(),
+                    trigger_description: None,
+                },
+                ChoicePoint::TriggerOrder,
+            ),
             pos: pos as u8,
         })
         .collect();
@@ -7753,7 +7766,7 @@ fn apply_trigger_order_template(
             .decisions
             .iter()
             .filter_map(|d| match d {
-                PinnedDecision::Order { source, pos } => Some((source.clone(), *pos)),
+                PinnedDecision::Order { slot, pos } => Some((slot.source.clone(), *pos)),
                 // CR 603.3b (N3 structural guard): a `TriggerOrdering` template carries ONLY
                 // `Order` pins; a targeting / modal / may / unless-break pin never belongs in a
                 // trigger-ordering group. EXHAUSTIVE (no `_`) so a future `PinnedDecision`
