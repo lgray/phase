@@ -1266,6 +1266,16 @@ impl GameFormat {
         }
     }
 
+    /// Whether a card in this game could be an Arena-only card. The
+    /// classification keys off the built-in `LegalityFormat` table; a format
+    /// outside that table — `Custom(_)` included, whose pool lives in
+    /// `custom_rules.legality` — is not classified here and so is not
+    /// restricted here.
+    pub fn admits_digital_only_cards(self) -> bool {
+        self.legality_format()
+            .is_none_or(LegalityFormat::admits_digital_only_cards)
+    }
+
     /// CR 100.4a: Per-format sideboard policy.
     ///
     /// Returns `Forbidden` for Commander/Brawl/Historic Brawl (no sideboard),
@@ -3545,6 +3555,51 @@ mod tests {
     #[test]
     fn limited_legality_format_is_none() {
         assert_eq!(GameFormat::Limited.legality_format(), None);
+    }
+
+    /// The digital-only partition. `LegalityFormat::ALL` is a hand-written array;
+    /// what forces a new variant to be classified is `admits_digital_only_cards`'s
+    /// wildcard-free match. A game format outside that table enforces no built-in
+    /// pool and is therefore unrestricted.
+    #[test]
+    fn digital_only_admission_partitions_every_legality_format() {
+        let admitting: Vec<LegalityFormat> = LegalityFormat::ALL
+            .into_iter()
+            .filter(|f| f.admits_digital_only_cards())
+            .collect();
+        assert_eq!(
+            admitting,
+            vec![
+                LegalityFormat::Historic,
+                LegalityFormat::Brawl,
+                LegalityFormat::Timeless
+            ],
+            "only the Arena pools admit digital-only cards"
+        );
+
+        assert!(GameFormat::Historic.admits_digital_only_cards());
+        assert!(GameFormat::Timeless.admits_digital_only_cards());
+        assert!(GameFormat::HistoricBrawl.admits_digital_only_cards());
+        assert!(!GameFormat::Standard.admits_digital_only_cards());
+        assert!(!GameFormat::Commander.admits_digital_only_cards());
+        // `GameFormat::Brawl` maps to the Standard-legal pool.
+        assert!(!GameFormat::Brawl.admits_digital_only_cards());
+
+        // No enforced pool ⇒ open, including `Oathbreaker`, whose `GameFormat`
+        // maps to `None` even though a `LegalityFormat::Oathbreaker` exists.
+        for format in [
+            GameFormat::FreeForAll,
+            GameFormat::Oathbreaker,
+            GameFormat::Limited,
+            GameFormat::Momir,
+            GameFormat::Custom(CustomFormatId(0)),
+        ] {
+            assert_eq!(format.legality_format(), None);
+            assert!(
+                format.admits_digital_only_cards(),
+                "{format:?} enforces no built-in pool, so it must stay open"
+            );
+        }
     }
 
     #[test]

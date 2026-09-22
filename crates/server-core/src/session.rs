@@ -8728,7 +8728,19 @@ mod tests {
 
         let restored_registry = |pool_face: engine::types::card::CardFace| {
             let mut mgr = SessionManager::new();
-            let (code, _) = mgr.create_game(make_deck(), None);
+            // Historic rather than the default Standard: a conjure face is
+            // digital-only, and a Standard pool seeds no such face.
+            let (code, _) = mgr
+                .create_game_n_players(
+                    make_deck(),
+                    None,
+                    String::new(),
+                    None,
+                    2,
+                    MatchConfig::default(),
+                    Some(FormatConfig::historic()),
+                )
+                .expect("Historic must admit a 2-seat session");
             let mut session = mgr.try_session(&code).unwrap();
             session.state.deck_pools = vec![PlayerDeckPool {
                 player: PlayerId(0),
