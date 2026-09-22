@@ -11588,7 +11588,13 @@ fn quantity_expr_binding_diverges(expr: &QuantityExpr) -> bool {
 /// deletes a real ability.
 fn object_scope_unbound_at_fire_time(scope: ObjectScope) -> bool {
     match scope {
-        ObjectScope::Source | ObjectScope::EventSource | ObjectScope::EventTarget => false,
+        ObjectScope::Source
+        | ObjectScope::EventSource
+        | ObjectScope::EventTarget
+        // CR 201.5a: a bound incarnation is context-free, and the unbound symbol reads as
+        // `Source` in counters (0 on both legs elsewhere).
+        | ObjectScope::GrantingObject
+        | ObjectScope::SpecificObject { .. } => false,
         ObjectScope::Target
         | ObjectScope::Recipient
         | ObjectScope::CostPaidObject
@@ -24373,6 +24379,23 @@ pub mod tests {
              creature card in the controller's graveyard), so a fire-time deletion would \
              have destroyed an ability that was supposed to resolve"
         );
+    }
+
+    /// CR 201.5a + CR 603.4: unbound, `GrantingObject` counters read exactly `Source`'s, so
+    /// they must hoist to fire time the same way.
+    #[test]
+    fn granting_object_counters_bind_at_fire_time_like_source() {
+        let counters = |scope| QuantityRef::CountersOn {
+            scope,
+            counter_type: None,
+        };
+        assert_eq!(
+            quantity_ref_binding_diverges(&counters(ObjectScope::GrantingObject)),
+            quantity_ref_binding_diverges(&counters(ObjectScope::Source)),
+        );
+        assert!(!quantity_ref_binding_diverges(&counters(
+            ObjectScope::GrantingObject
+        )));
     }
 
     /// CR 608.2c + CR 603.4: a RESOLUTION-SCOPED quantity leaf carries no scope,

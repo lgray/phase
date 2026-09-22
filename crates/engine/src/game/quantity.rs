@@ -33,7 +33,7 @@ use crate::types::game_state::{
     BattlefieldDepartureSourceContext, CastOccurrence, DamageRecord, GameState,
     LinkedExileSnapshot, TargetSelectionConstraint, TriggerSourceContext,
 };
-use crate::types::identifiers::ObjectId;
+use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::player::PlayerId;
 use crate::types::statics::StaticMode;
@@ -1755,7 +1755,10 @@ pub(crate) fn quantity_expr_uses_recipient(expr: &QuantityExpr) -> bool {
 pub(crate) fn quantity_expr_uses_resolution_only_object_scope(expr: &QuantityExpr) -> bool {
     fn scope_is_resolution_only(scope: ObjectScope) -> bool {
         match scope {
-            ObjectScope::Source | ObjectScope::Recipient => false,
+            // CR 201.5a: a bound incarnation carries its own identity, so a static CDA may read it.
+            ObjectScope::Source | ObjectScope::Recipient | ObjectScope::SpecificObject { .. } => {
+                false
+            }
             ObjectScope::Target
             | ObjectScope::EventSource
             | ObjectScope::EventTarget
@@ -1773,6 +1776,8 @@ pub(crate) fn quantity_expr_uses_resolution_only_object_scope(expr: &QuantityExp
             // the ability's own carried context during resolution, never as a
             // static CDA read.
             | ObjectScope::ChainRootTarget
+            // Unbound, it is never produced in these characteristic refs; their reads fail closed.
+            | ObjectScope::GrantingObject
             // CR 120.1: the per-iteration damage source of an
             // `EachSourceDealsDamage` batch is bound per batch member only at
             // resolution time, never as a static CDA read.
@@ -1892,7 +1897,10 @@ fn resolution_only_scope_referent_present(
     match scope {
         // Not resolution-only — always bound to the ability's own permanent /
         // recipient. Never reached via the classifier, answered `true` for safety.
-        ObjectScope::Source | ObjectScope::Recipient => true,
+        // A bound incarnation's readers own their live-or-LKI ladder.
+        ObjectScope::Source | ObjectScope::Recipient | ObjectScope::SpecificObject { .. } => true,
+        // Unbound, a characteristic read has no referent: its readers fail closed to 0.
+        ObjectScope::GrantingObject => false,
         ObjectScope::Target => targets.iter().any(|t| matches!(t, TargetRef::Object(_))),
         ObjectScope::EventSource => {
             object_id_for_scope(state, ObjectScope::EventSource, ctx, targets).is_some()
@@ -6929,7 +6937,13 @@ fn object_for_scope<'a>(
         // ability and therefore unavailable to this ability-free helper; it is
         // resolved in `resolve_counters_on_scope`.
         | ObjectScope::ChainRootTarget
+        | ObjectScope::GrantingObject
         | ObjectScope::AmassedArmy => None,
+        // CR 400.7: only the bound incarnation itself, in whatever zone it is.
+        ObjectScope::SpecificObject { object } => state
+            .objects
+            .get(&object.object_id)
+            .filter(|o| ObjectIncarnationRef::from_object(o) == object),
         // CR 120.1: the per-iteration damage source of an `EachSourceDealsDamage`
         // batch is bound per batch member by the per-source resolver.
         ObjectScope::BatchSource => ctx.damage_source.and_then(|id| state.objects.get(&id)),
@@ -7010,7 +7024,12 @@ pub(crate) fn object_id_for_scope(
         // CR 601.2c: identity is `ability.context.chain_root_targets` — see the
         // matching arm in `object_for_scope`.
         | ObjectScope::ChainRootTarget
+        | ObjectScope::GrantingObject
         | ObjectScope::AmassedArmy => None,
+        // CR 400.7: live only; a departed incarnation has no current id.
+        ObjectScope::SpecificObject { object } => {
+            object.is_current(state).then_some(object.object_id)
+        }
         // CR 120.1: the per-iteration damage source of an `EachSourceDealsDamage`
         // batch is bound per batch member by the per-source resolver.
         ObjectScope::BatchSource => ctx.damage_source,
@@ -7337,6 +7356,25 @@ fn resolve_counters_on_scope(
                     .unwrap_or(0)
             })
             .unwrap_or(0),
+        // CR 201.5a + CR 113.7: unbound, the granting-object symbol reads the ability's source.
+        ObjectScope::GrantingObject => resolve_counters_on_scope(
+            state,
+            ObjectScope::Source,
+            ctx,
+            targets,
+            ability,
+            counter_type,
+        ),
+        // CR 400.7 + CR 608.2h + CR 122.2: the bound incarnation's counters; once it has
+        // changed zones its counters ceased to exist, so only a resolution reads its LKI.
+        ObjectScope::SpecificObject { object } => read_specific_object(
+            state,
+            object,
+            ability,
+            &|o| Some(counter_count_from_map(&o.counters, counter_type)),
+            &|l| Some(counter_count_from_map(&l.counters, counter_type)),
+        )
+        .unwrap_or(0),
         _ => object_for_scope(state, scope, ctx, targets)
             .map(|obj| counter_count_from_map(&obj.counters, counter_type))
             .unwrap_or(0),
@@ -7536,6 +7574,37 @@ where
             None
         }
     })
+}
+
+/// CR 400.7 + CR 608.2h: reads the bound incarnation live wherever it is, else its LKI only for
+/// a resolution that carries its ability.
+fn read_specific_object<F, G>(
+    state: &GameState,
+    object: ObjectIncarnationRef,
+    ability: Option<&ResolvedAbility>,
+    obj_extract: &F,
+    lki_extract: &G,
+) -> Option<i32>
+where
+    F: Fn(&crate::game::game_object::GameObject) -> Option<i32>,
+    G: Fn(&crate::types::game_state::LKISnapshot) -> Option<i32>,
+{
+    state
+        .objects
+        .get(&object.object_id)
+        .filter(|o| ObjectIncarnationRef::from_object(o) == object)
+        .and_then(obj_extract)
+        .or_else(|| {
+            ability.and_then(|_| {
+                read_object_pt_by_id_for_incarnation(
+                    state,
+                    object.object_id,
+                    Some(object.incarnation),
+                    obj_extract,
+                    lki_extract,
+                )
+            })
+        })
 }
 
 fn trigger_event_source_identity(state: &GameState) -> Option<(ObjectId, Option<u64>)> {
@@ -7860,7 +7929,11 @@ where
         // `resolve_counters_on_scope` arm against
         // `ability.context.chain_root_targets`; `game/coverage.rs` reports these
         // characteristic readers as `Unhandled` until then.
-        ObjectScope::ChainRootTarget => 0,
+        ObjectScope::ChainRootTarget | ObjectScope::GrantingObject => 0,
+        // CR 400.7 + CR 608.2h: the bound incarnation's P/T, LKI only while resolving.
+        ObjectScope::SpecificObject { object } => {
+            read_specific_object(state, object, ability, &obj_extract, &lki_extract).unwrap_or(0)
+        }
         // CR 120.1 + CR 208.3 + CR 608.2h: the per-iteration damage source of an
         // `EachSourceDealsDamage` batch reads its OWN characteristic ("deals
         // damage equal to ITS power"). Guarded live-then-LKI read (a batch
@@ -8193,7 +8266,20 @@ fn resolve_object_mana_value(
         // fail-closed placeholder — never a silent wildcard. Extend by mirroring
         // the `resolve_counters_on_scope` arm against
         // `ability.context.chain_root_targets`.
-        ObjectScope::ChainRootTarget => 0,
+        ObjectScope::ChainRootTarget | ObjectScope::GrantingObject => 0,
+        // CR 400.7 + CR 608.2h: the bound incarnation's mana value, LKI only while resolving.
+        ObjectScope::SpecificObject { object } => read_specific_object(
+            state,
+            object,
+            ability,
+            &|o| {
+                Some(u32_to_i32_saturating(
+                    o.mana_cost.mana_value_with_x(o.zone, o.cost_x_paid),
+                ))
+            },
+            &|l| Some(u32_to_i32_saturating(l.mana_value)),
+        )
+        .unwrap_or(0),
         // CR 120.1 + CR 202.3 + CR 608.2h: the per-iteration damage source of an
         // `EachSourceDealsDamage` batch reads its OWN mana value. Live object
         // first, LKI fallback (mirrors the `EventSource` arm), so a batch member

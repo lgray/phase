@@ -3442,6 +3442,9 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
         // resolving ability's context — no event/sibling projected axis
         // (mirrors Target/Demonstrative).
         ObjectScope::ChainRootTarget => Axes::NONE,
+        // CR 201.5a: the granting-object symbol reads as `Source`; a bound incarnation
+        // carries its own identity. Neither has an event/sibling axis.
+        ObjectScope::GrantingObject | ObjectScope::SpecificObject { .. } => Axes::NONE,
         ObjectScope::EventTarget => Axes {
             event: true,
             sibling: false,

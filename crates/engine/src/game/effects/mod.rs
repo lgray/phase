@@ -18142,6 +18142,8 @@ pub(crate) fn evaluate_condition(
             | crate::types::ability::ObjectScope::EventTarget
             | crate::types::ability::ObjectScope::AmassedArmy
             | crate::types::ability::ObjectScope::ChainRootTarget
+            | crate::types::ability::ObjectScope::GrantingObject
+            | crate::types::ability::ObjectScope::SpecificObject { .. }
             | crate::types::ability::ObjectScope::BatchSource => false,
         },
         AbilityCondition::AlternativeManaCostPaid => ability.context.alternative_mana_cost_paid,
@@ -18396,6 +18398,8 @@ pub(crate) fn evaluate_condition(
                 | crate::types::ability::ObjectScope::EventTarget
                 | crate::types::ability::ObjectScope::AmassedArmy
                 | crate::types::ability::ObjectScope::ChainRootTarget
+                | crate::types::ability::ObjectScope::GrantingObject
+                | crate::types::ability::ObjectScope::SpecificObject { .. }
                 | crate::types::ability::ObjectScope::BatchSource => None,
             };
             object_id

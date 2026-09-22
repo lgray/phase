@@ -8286,6 +8286,16 @@ pub enum ObjectScope {
     /// (Dismantle, Rite of the Serpent); every object-characteristic reader
     /// fail-closes to 0 and is marked `Unhandled` in `game/coverage.rs`.
     ChainRootTarget,
+    /// CR 201.5a: a granted ability's by-name reference to its granting object; unbound,
+    /// it reads as `Source` in counter reads (the one position produced) and fails closed
+    /// everywhere else.
+    GrantingObject,
+    /// CR 201.5a + CR 400.7: one exact object incarnation, read live while it exists in
+    /// any zone. After it changes zones, counter, power/toughness and mana-value reads use
+    /// its last known information only in a resolution that carries its ability
+    /// (CR 608.2h) and read 0 otherwise; color, name, typeline and mana-symbol reads are
+    /// live only and read 0.
+    SpecificObject { object: ObjectIncarnationRef },
 }
 
 /// CR 601.2a: A per-turn action journal — a chronological record of a kind of

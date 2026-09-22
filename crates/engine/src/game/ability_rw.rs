@@ -2285,6 +2285,8 @@ fn legacy_object_scope(s: &ObjectScope) -> bool {
         // CR 601.2c: the chain-root spell's declared target is resolution-local,
         // not one of the retained legacy refs (mirrors AmassedArmy).
         | ObjectScope::ChainRootTarget
+        | ObjectScope::GrantingObject
+        | ObjectScope::SpecificObject { .. }
         | ObjectScope::EventTarget => false,
     }
 }
@@ -3757,9 +3759,10 @@ fn reads_src_of(k: StateKind) -> RwProfile {
 fn current_pt_scope(scope: &ObjectScope) -> CurrentPtReads {
     match scope {
         ObjectScope::Source => CurrentPtReads::SOURCE,
-        ObjectScope::Target | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
-            CurrentPtReads::BOARD
-        }
+        ObjectScope::Target
+        | ObjectScope::Anaphoric
+        | ObjectScope::Demonstrative
+        | ObjectScope::SpecificObject { .. } => CurrentPtReads::BOARD,
         // CR 120.1 + CR 208.3: a batch-source P/T read is a live board
         // characteristic read, so counter writes to the batch population feed it.
         ObjectScope::BatchSource => CurrentPtReads::BOARD,
@@ -3772,6 +3775,7 @@ fn current_pt_scope(scope: &ObjectScope) -> CurrentPtReads {
         // CR 601.2c: no P/T read is wired for the chain-root target (fail-closed
         // `=> 0` in `game/quantity.rs::resolve_object_pt`).
         | ObjectScope::ChainRootTarget
+        | ObjectScope::GrantingObject
         | ObjectScope::OwnedLinkedExileCard => CurrentPtReads::default(),
     }
 }
@@ -4032,11 +4036,14 @@ fn board_value_aggregate_read(filter: &TargetFilter, value: StateKind) -> RwProf
 /// ⇒ `reads_event_live`; other object scopes ⇒ `reads_board`.
 fn read_object_scope(scope: &ObjectScope, kind: StateKind) -> RwProfile {
     match scope {
-        ObjectScope::Source => reads_src_of(kind),
+        // CR 201.5a: unbound, the granting-object symbol reads the source (counters).
+        ObjectScope::Source | ObjectScope::GrantingObject => reads_src_of(kind),
         ObjectScope::Recipient => RwProfile::empty(),
-        ObjectScope::Target | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
-            reads_board_of(kind)
-        }
+        // CR 400.7: a bound incarnation's identity is in the scope value itself.
+        ObjectScope::Target
+        | ObjectScope::Anaphoric
+        | ObjectScope::Demonstrative
+        | ObjectScope::SpecificObject { .. } => reads_board_of(kind),
         ObjectScope::AmassedArmy => member_bound_read(),
         // CR 607.2a: a source-persistent exile-pile member read across resolutions
         // (not a per-resolution reveal-local like `OtherRevealedCard`). It must be
@@ -8648,6 +8655,26 @@ mod tests {
             empty,
             "Target is a live-board ref — proves the empty checks discriminate"
         );
+    }
+
+    /// CR 201.5a: unbound `GrantingObject` counters read exactly `Source`'s, so they classify
+    /// the same.
+    #[test]
+    fn granting_object_counters_classify_like_source() {
+        let counters = |scope| QuantityRef::CountersOn {
+            scope,
+            counter_type: None,
+        };
+        let dbg = |p: RwProfile| format!("{p:?}");
+        let granter = counters(ObjectScope::GrantingObject);
+        let source = counters(ObjectScope::Source);
+        assert_eq!(
+            dbg(rw_quantity_ref(&granter)),
+            dbg(rw_quantity_ref(&source))
+        );
+        assert_ne!(dbg(rw_quantity_ref(&granter)), dbg(RwProfile::empty()));
+        assert_eq!(legacy_quantity_ref(&granter), legacy_quantity_ref(&source));
+        assert!(!legacy_quantity_ref(&granter));
     }
 
     // ===================== PR-6.75 commit-4 read/write levers =====================

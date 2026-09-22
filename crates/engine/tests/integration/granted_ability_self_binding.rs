@@ -1021,3 +1021,224 @@ that would be dealt to this creature by Torrent of Lava this turn.\"";
 fn torrent_of_lava_damage_source_channel_not_masked() {
     assert_masker_noop(TORRENT_OF_LAVA, "Torrent of Lava");
 }
+
+/// CR 201.5a + CR 400.7 + CR 608.2h: `ObjectScope::SpecificObject` reads one exact
+/// object incarnation; the unbound `ObjectScope::GrantingObject` reads as `Source` in
+/// counter reads.
+mod object_scope_reads {
+    use engine::game::layers::evaluate_layers;
+    use engine::game::quantity::{resolve_quantity, resolve_quantity_with_targets};
+    use engine::game::scenario::{GameScenario, P0};
+    use engine::game::zones::move_to_zone;
+    use engine::types::ability::{
+        ContinuousModification, Effect, ObjectScope, QuantityExpr, QuantityRef, ResolvedAbility,
+        StaticDefinition, TargetFilter,
+    };
+    use engine::types::counter::CounterType;
+    use engine::types::game_state::GameState;
+    use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
+    use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
+    use engine::types::zones::Zone;
+
+    fn slime() -> CounterType {
+        CounterType::Generic("slime".to_string())
+    }
+
+    fn qty(qty: QuantityRef) -> QuantityExpr {
+        QuantityExpr::Ref { qty }
+    }
+
+    fn counters(scope: ObjectScope) -> QuantityExpr {
+        qty(QuantityRef::CountersOn {
+            scope,
+            counter_type: Some(slime()),
+        })
+    }
+
+    fn bound(object: ObjectIncarnationRef) -> ObjectScope {
+        ObjectScope::SpecificObject { object }
+    }
+
+    /// Host 1/1 {1}{W} white with 1 slime; granter 2/2 {2}{G}{U} green-blue with 3
+    /// slime. With `bind_cda`, the host's P/T is a CDA counting slime on the granter.
+    fn setup(bind_cda: bool) -> (GameState, ObjectId, ObjectId) {
+        let mut scenario = GameScenario::new();
+        let granter = {
+            let mut b = scenario.add_creature(P0, "Granter", 2, 2);
+            b.with_mana_cost(ManaCost::Cost {
+                shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+                generic: 2,
+            })
+            .with_color(vec![ManaColor::Green, ManaColor::Blue]);
+            b.id()
+        };
+        let host = {
+            let mut b = scenario.add_creature(P0, "Host", 1, 1);
+            b.with_mana_cost(ManaCost::Cost {
+                shards: vec![ManaCostShard::White],
+                generic: 1,
+            })
+            .with_color(vec![ManaColor::White]);
+            b.id()
+        };
+        scenario.with_counter(host, slime(), 1);
+        scenario.with_counter(granter, slime(), 3);
+        let mut state = scenario.build().state().clone();
+        if bind_cda {
+            let value = counters(bound(ObjectIncarnationRef::from_object(
+                &state.objects[&granter],
+            )));
+            let def = StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .cda()
+                .modifications(vec![
+                    ContinuousModification::SetDynamicPower {
+                        value: value.clone(),
+                    },
+                    ContinuousModification::SetDynamicToughness { value },
+                ]);
+            let obj = state.objects.get_mut(&host).unwrap();
+            obj.static_definitions.push(def.clone());
+            std::sync::Arc::make_mut(&mut obj.base_static_definitions).push(def);
+        }
+        recompute(&mut state);
+        (state, host, granter)
+    }
+
+    fn recompute(state: &mut GameState) {
+        state.layers_dirty.mark_full();
+        evaluate_layers(state);
+    }
+
+    fn resolving(host: ObjectId) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::unimplemented("granted", "granted ability read"),
+            vec![],
+            host,
+            P0,
+        )
+    }
+
+    fn host_pt(state: &GameState, host: ObjectId) -> (Option<i32>, Option<i32>) {
+        let obj = &state.objects[&host];
+        (obj.power, obj.toughness)
+    }
+
+    fn current(state: &GameState, id: ObjectId) -> ObjectScope {
+        bound(ObjectIncarnationRef::from_object(&state.objects[&id]))
+    }
+
+    #[test]
+    fn bound_object_scope_cda_reads_the_granter_not_the_host() {
+        let (state, host, granter) = setup(true);
+        let g0 = current(&state, granter);
+
+        assert_eq!(host_pt(&state, host), (Some(3), Some(3)));
+        let read = |q| resolve_quantity(&state, &qty(q), P0, host);
+        assert_eq!(read(QuantityRef::Power { scope: g0 }), 2);
+        assert_eq!(read(QuantityRef::ObjectManaValue { scope: g0 }), 4);
+        assert_eq!(read(QuantityRef::ObjectColorCount { scope: g0 }), 2);
+        assert_eq!(
+            read(QuantityRef::ManaSymbolsInManaCost {
+                scope: g0,
+                color: None
+            }),
+            2
+        );
+    }
+
+    #[test]
+    fn bound_object_scope_departed_reads_zero_statically_lki_when_resolving() {
+        let (mut state, host, granter) = setup(true);
+        let g0 = current(&state, granter);
+        move_to_zone(&mut state, granter, Zone::Graveyard, &mut Vec::new());
+        recompute(&mut state);
+
+        assert_eq!(host_pt(&state, host), (Some(0), Some(0)));
+        assert_eq!(resolve_quantity(&state, &counters(g0), P0, host), 0);
+
+        let ability = resolving(host);
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &counters(g0), &ability),
+            3
+        );
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &qty(QuantityRef::Power { scope: g0 }), &ability),
+            2
+        );
+
+        let g_gy = current(&state, granter);
+        assert_eq!(
+            resolve_quantity(&state, &qty(QuantityRef::Power { scope: g_gy }), P0, host),
+            2
+        );
+    }
+
+    #[test]
+    fn bound_object_scope_blinked_granter_is_a_new_object() {
+        let (mut state, host, granter) = setup(true);
+        let g0 = current(&state, granter);
+        move_to_zone(&mut state, granter, Zone::Exile, &mut Vec::new());
+        move_to_zone(&mut state, granter, Zone::Battlefield, &mut Vec::new());
+        state
+            .objects
+            .get_mut(&granter)
+            .unwrap()
+            .counters
+            .insert(slime(), 5);
+        recompute(&mut state);
+        let returned = current(&state, granter);
+        let color_count = |scope| qty(QuantityRef::ObjectColorCount { scope });
+
+        assert_eq!(resolve_quantity(&state, &counters(returned), P0, host), 5);
+        assert_eq!(
+            resolve_quantity(&state, &color_count(returned), P0, host),
+            2
+        );
+
+        assert_eq!(host_pt(&state, host), (Some(0), Some(0)));
+        assert_eq!(resolve_quantity(&state, &counters(g0), P0, host), 0);
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &counters(g0), &resolving(host)),
+            3
+        );
+        assert_eq!(resolve_quantity(&state, &color_count(g0), P0, host), 0);
+        let pips = qty(QuantityRef::ManaSymbolsInManaCost {
+            scope: g0,
+            color: None,
+        });
+        assert_eq!(resolve_quantity(&state, &pips, P0, host), 0);
+    }
+
+    #[test]
+    fn unbound_granting_object_counters_read_the_source() {
+        let (mut state, host, _granter) = setup(false);
+        let unbound = counters(ObjectScope::GrantingObject);
+
+        assert_eq!(resolve_quantity(&state, &unbound, P0, host), 1);
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &unbound, &resolving(host)),
+            1
+        );
+
+        move_to_zone(&mut state, host, Zone::Graveyard, &mut Vec::new());
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &unbound, &resolving(host)),
+            1
+        );
+    }
+
+    #[test]
+    fn object_scope_granter_values_round_trip() {
+        let g0 = bound(ObjectIncarnationRef::of(ObjectId(7), 2));
+        let json = serde_json::to_string(&g0).unwrap();
+        assert!(json.contains("\"SpecificObject\""), "{json}");
+        assert_eq!(serde_json::from_str::<ObjectScope>(&json).unwrap(), g0);
+
+        let json = serde_json::to_string(&ObjectScope::GrantingObject).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ObjectScope>(&json).unwrap(),
+            ObjectScope::GrantingObject
+        );
+    }
+}
