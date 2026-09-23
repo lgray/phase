@@ -22370,17 +22370,18 @@ declare_game_state! {
     /// recast, CR 601.2a, is a 1-element sequence; a multi-activation engine, CR 602.2a, accumulates
     /// one element per driving activation), each carrying the fixed in-cycle player choices recorded
     /// during the demonstrated iteration (FIX-1 `LoopActionContext.pins`). EMPTY = unarmed. Set at
-    /// each driving beat, read at the post-resolution empty-stack `Priority` window.
+    /// each driving beat; `try_offer_object_growth_shortcut` reads it where
+    /// `recorded_period_at_frame` answers — for a priority-driven period at an empty stack, for a
+    /// trigger-driven one with its trigger on top.
     ///
     /// Deserializes NORMALLY (so an offer-save's `pins` round-trip), but the PRODUCTION restore hook
     /// `GameState::migrate_transient_loop_sequence` (called from `PersistedGameState::into_game_state`)
     /// DROPS it on load UNLESS the save was captured inside an object-growth shortcut
     /// proposal/response window (`WaitingFor::LoopShortcut` / `RespondToShortcut`), where the pending
     /// accept→materialize resolution re-derives the ∞ pile from it (`current_period_fodder` →
-    /// `materialize_object_growth_shortcut`). Everywhere else the sole load-time consumer is the live
-    /// detection re-drive (`try_offer_object_growth_shortcut`, which requires `Priority` + an empty
-    /// stack); a stale loaded prefix can only ABORT that drive (the Kilo bug), so dropping is strictly
-    /// safe and the sequence re-accumulates from live play. This REPLACES Design A's blanket
+    /// `materialize_object_growth_shortcut`). Everywhere else dropping is safe for the reason
+    /// `migrate_transient_loop_sequence` states, and the sequence re-accumulates from live play.
+    /// This REPLACES Design A's blanket
     /// `#[serde(skip)]`, which regressed the predecessor object-growth offer-saves by starving
     /// accept→materialize of the pile. Pre-FIX-3 back-compat (`deserialize_loop_action_sequence`
     /// single-object shape + the two key aliases) is preserved. Rules-neutral (no permanent, counter,

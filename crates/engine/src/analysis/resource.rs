@@ -397,7 +397,7 @@ pub struct LoopDetectCost {
     /// CR 104.4b Path C — the revocable-unbounded ring walk, reached only when it is not.
     pub recurrence_scan_optional_ns: u64,
     pub recurrence_scan_optional_calls: u32,
-    /// The empty-stack dual of the bridge, below the reconcile block.
+    /// The recorded road, below the reconcile block.
     pub object_growth_ns: u64,
     pub object_growth_calls: u32,
     /// The sampler's two clone calls, counted rather than timed.
@@ -5308,9 +5308,10 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     }
     a.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
     b.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
-                           // The stack leaves the remainder with its per-entry tables, and the LKI and departed-spell
-                           // records only they carry go with them. CR 405.5 + CR 608.2h: an entry beneath the
-                           // recurrence resolves only after it and reads its LKI then.
+
+    // The stack leaves the remainder with its per-entry tables, and the LKI and departed-spell
+    // records only they carry go with them. CR 405.5 + CR 608.2h: an entry beneath the
+    // recurrence resolves only after it and reads its LKI then.
     crate::game::stack::clear_stack_with_entry_tables(&mut a);
     crate::game::stack::clear_stack_with_entry_tables(&mut b);
     a.retain_carrier_referenced_lki();
