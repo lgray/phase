@@ -5269,8 +5269,10 @@ fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bo
 
 /// The growth-invariant non-object remainder of the two projected frames, through
 /// `impl PartialEq for GameState`: strip the grown ids from both object maps and clear the
-/// battlefield ordering + stack (the grown ids live there, and those axes are covered by
-/// `board_covers` / the stack gate), so what is left for `PartialEq` to answer is
+/// battlefield ordering + stack, with its per-entry tables and the incarnation LKI and
+/// departed-spell records only they carry
+/// (the grown ids live there, and those axes are covered by `board_covers` / the stack gate), so
+/// what is left for `PartialEq` to answer is
 /// `objects.len()` plus the non-object axes it compares.
 ///
 /// WHICH axes those are is `impl PartialEq for GameState`'s own decision, and
@@ -5306,8 +5308,15 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     }
     a.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
     b.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
-    a.stack.clear();
-    b.stack.clear();
+                           // The stack leaves the remainder with its per-entry tables, and the LKI and departed-spell
+                           // records only they carry go with them. CR 405.5 + CR 608.2h: an entry beneath the
+                           // recurrence resolves only after it and reads its LKI then.
+    crate::game::stack::clear_stack_with_entry_tables(&mut a);
+    crate::game::stack::clear_stack_with_entry_tables(&mut b);
+    a.retain_carrier_referenced_lki();
+    b.retain_carrier_referenced_lki();
+    a.retain_trigger_referenced_departed_spells();
+    b.retain_trigger_referenced_departed_spells();
     // AFTER the battlefield/stack clears, which makes those two arms no-ops by construction —
     // the fodder half of `grown` lives there and needs nothing further. `zones::remove_from_zone`
     // is the shipped single authority for the operation and is exhaustive over `Zone`, so no
@@ -36018,6 +36027,201 @@ mod tests {
             !fodder_cover(&prior, &current),
             "an unnamed card's drift is refused even though a certificate exists for 900"
         );
+    }
+
+    #[derive(Clone, Copy)]
+    enum LkiCarrier {
+        StackEntryEvent,
+        PendingTriggerEventBatch,
+        StackTriggerEventBatch,
+    }
+
+    /// A frame with one triggered stack entry and one entrant's LKI snapshot at `incarnation`,
+    /// named by `carrier` (or by nothing).
+    fn accumulated_entry_frame(incarnation: u64, carrier: Option<LkiCarrier>) -> GameState {
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility, TargetFilter};
+        use crate::types::game_state::{LKISnapshot, StackEntryKind, ZoneChangeRecord};
+        let entrant = ObjectId(50);
+        let mut record =
+            ZoneChangeRecord::test_minimal(entrant, Some(Zone::Exile), Zone::Battlefield);
+        record.entered_incarnation = Some(incarnation);
+        let event = crate::types::events::GameEvent::ZoneChanged {
+            object_id: entrant,
+            from: Some(Zone::Exile),
+            to: Zone::Battlefield,
+            record: Box::new(record),
+        };
+        let ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(5),
+            PlayerId(0),
+        );
+        let mut s = GameState::new_two_player(7);
+        s.stack.push_back(StackEntry {
+            id: ObjectId(20),
+            source_id: ObjectId(5),
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: ObjectId(5),
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: matches!(carrier, Some(LkiCarrier::StackEntryEvent))
+                    .then(|| event.clone()),
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+                provenance: None,
+            },
+        });
+        match carrier {
+            Some(LkiCarrier::PendingTriggerEventBatch) => {
+                s.pending_trigger_event_batch = vec![event];
+            }
+            Some(LkiCarrier::StackTriggerEventBatch) => {
+                s.stack_trigger_event_batches
+                    .insert(ObjectId(20), vec![event.clone(), event]);
+            }
+            Some(LkiCarrier::StackEntryEvent) | None => {}
+        }
+        s.lki_by_incarnation.entry(entrant).or_default().insert(
+            incarnation,
+            LKISnapshot {
+                name: "Loop Entrant".to_string(),
+                token_image_ref: None,
+                power: Some(2),
+                toughness: Some(2),
+                base_power: Some(2),
+                base_toughness: Some(2),
+                mana_value: 2,
+                controller: PlayerId(0),
+                owner: PlayerId(0),
+                card_types: vec![crate::types::card_type::CoreType::Creature],
+                subtypes: Vec::new(),
+                supertypes: Vec::new(),
+                keywords: Vec::new(),
+                colors: Vec::new(),
+                chosen_attributes: Vec::new(),
+                counters: HashMap::new(),
+                tapped: false,
+                is_suspected: false,
+                attachments: Vec::new(),
+            },
+        );
+        s
+    }
+
+    /// CR 405.5 + CR 608.2h: the stack leaves `eq_except_growable`'s remainder with its per-entry
+    /// tables and the LKI only they carry; LKI a non-stack carrier names stays compared.
+    #[test]
+    fn eq_except_growable_drops_the_stack_with_its_entry_tables_and_the_lki_only_they_carry() {
+        let entrant = ObjectId(50);
+        let normalized_pair = |carrier| {
+            let pa = accumulated_entry_frame(7, Some(carrier)).normalize_for_loop();
+            let pb = accumulated_entry_frame(9, Some(carrier)).normalize_for_loop();
+            assert!(
+                pa.lki_by_incarnation.contains_key(&entrant)
+                    && pb.lki_by_incarnation.contains_key(&entrant)
+            );
+            (pa, pb)
+        };
+
+        let (pa, pb) = normalized_pair(LkiCarrier::StackEntryEvent);
+        assert!(eq_except_growable(&pa, &pb, &HashSet::new()));
+
+        let (pa, pb) = normalized_pair(LkiCarrier::PendingTriggerEventBatch);
+        assert!(!eq_except_growable(&pa, &pb, &HashSet::new()));
+
+        let (pa, pb) = normalized_pair(LkiCarrier::StackTriggerEventBatch);
+        assert!(eq_except_growable(&pa, &pb, &HashSet::new()));
+    }
+
+    /// CR 104.4b + CR 608.2h: a departed-spell record only a stack entry's spell-cast trigger names
+    /// leaves `eq_except_growable`'s remainder with the stack.
+    #[test]
+    fn eq_except_growable_drops_a_departed_spell_record_only_a_stack_entry_names() {
+        use crate::types::ability::{Effect, ResolvedAbility};
+        use crate::types::game_state::{DepartedStackSpell, StackEntryKind};
+        use crate::types::identifiers::{CardId, ObjectIncarnationRef};
+        let spell = ObjectId(30);
+        let trigger_source = ObjectId(31);
+        let frame = |power: i32| {
+            let mut ability =
+                ResolvedAbility::new(Effect::NoOp, vec![], trigger_source, PlayerId(0));
+            ability.context.triggering_spell = Some(ObjectIncarnationRef::of(spell, 3));
+            let mut s = GameState::new_two_player(7);
+            s.stack.push_back(StackEntry {
+                id: ObjectId(40),
+                source_id: trigger_source,
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: trigger_source,
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: Some(crate::types::events::GameEvent::SpellCast {
+                        controller: PlayerId(0),
+                        object_id: spell,
+                        card_id: CardId(1),
+                        cast_mana_value: None,
+                    }),
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+            let mut object = GameObject::new(
+                spell,
+                CardId(1),
+                PlayerId(0),
+                "Departed Spell".to_string(),
+                Zone::Hand,
+            );
+            object.power = Some(power);
+            let entry = StackEntry {
+                id: ObjectId(41),
+                source_id: spell,
+                controller: PlayerId(0),
+                kind: StackEntryKind::ActivatedAbility {
+                    source_id: spell,
+                    ability: Box::new(ResolvedAbility::new(
+                        Effect::NoOp,
+                        vec![],
+                        spell,
+                        PlayerId(0),
+                    )),
+                },
+            };
+            s.departed_stack_spells.insert(
+                spell,
+                im::HashMap::from_iter([(
+                    3,
+                    DepartedStackSpell {
+                        entry,
+                        object: Box::new(object),
+                    },
+                )]),
+            );
+            s.normalize_for_loop()
+        };
+        let (pa, pb) = (frame(2), frame(4));
+        assert_ne!(pa.departed_stack_spells, pb.departed_stack_spells);
+        assert!(eq_except_growable(&pa, &pb, &HashSet::new()));
+    }
+
+    #[test]
+    fn eq_except_growable_drops_a_departed_entrys_paid_facts_row() {
+        let mut a = accumulated_entry_frame(7, None);
+        a.stack_paid_facts.insert(ObjectId(20), Default::default());
+        let pa = a.normalize_for_loop();
+        let pb = accumulated_entry_frame(7, None).normalize_for_loop();
+        assert_ne!(pa.stack_paid_facts, pb.stack_paid_facts);
+        assert!(eq_except_growable(&pa, &pb, &HashSet::new()));
     }
 
     /// **`eq_except_growable` strips an accounted id from the per-player zone COLLECTION its

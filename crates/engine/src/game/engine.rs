@@ -1521,11 +1521,7 @@ fn apply_action_boundary_core(
     // Clear transient inter-effect state at the start of each player action.
     // last_effect_count is set by interactive handlers (e.g., DiscardChoice) and
     // consumed by sub_ability continuations via EventContextAmount fallback.
-    state.last_effect_count = None;
-    state.last_effect_counts_by_player.clear();
-    state.exiled_from_hand_this_resolution = 0;
-    state.die_result_this_resolution = None;
-    state.consumed_before_priority_trigger_events.clear();
+    state.clear_player_action_transients();
     if authorize_actor && recovered_stale_priority_pass && !pre_recovery_pass_was_authorized {
         lifecycle.discard();
         return Err(EngineError::WrongPlayer);
@@ -6082,9 +6078,8 @@ fn shortcut_route(
         Some((seat, LoopPeriodKind::PriorityDriven)) if seat == proposer => {
             ShortcutRoute::PriorityPeriod
         }
-        Some((seat, LoopPeriodKind::TriggerDriven))
-            if seat == proposer
-                && road == crate::analysis::loop_check::OfferRoad::RecordedPeriod =>
+        _ if road == crate::analysis::loop_check::OfferRoad::RecordedPeriod
+            && recorded_trigger_slice(state, proposer).is_some() =>
         {
             ShortcutRoute::TriggerReplay
         }
@@ -6150,8 +6145,9 @@ fn materialize_fixed_shortcut(
     match shortcut_route(state, proposal.proposer, proposal.road) {
         ShortcutRoute::TriggerReplay => {
             // CR 732.2a: performed and never elided, because the elision's licence is an unbounded
-            // collapse and a replay stashes nothing. A record that does not stand at this frame
-            // delivers nothing.
+            // collapse and a replay stashes nothing. `TriggerReplay` implies the replayed slice
+            // stands at this frame, so `None` is unreachable through `shortcut_route`: a frame whose
+            // record does not stand routes `Ring`, where SITE F rejects the template-free declare.
             let period = recorded_period_at_frame(state, proposal.proposer).map(<[_]>::to_vec);
             let delivered = period.map(|period| drive_persistent_axis_collapse(state, &period, n));
             state.last_loop_action_sequence.clear();
@@ -7420,21 +7416,34 @@ fn recorded_trigger_occurrence(
         })
 }
 
+/// CR 732.2a: the steps a proposal at this frame replays — from the recorded occurrence whose own
+/// trigger stands on top through the record's end — when every one is `holder`'s trigger
+/// resolution. A slice that mixes kinds answers `None`: prover incomplete here, no route replays a
+/// slice that mixes kinds.
+fn recorded_trigger_slice(
+    state: &GameState,
+    holder: PlayerId,
+) -> Option<&[crate::types::game_state::LoopActionContext]> {
+    use crate::types::game_state::LoopPeriodKind;
+    let seq = &state.last_loop_action_sequence;
+    let slice = &seq[recorded_trigger_occurrence(state, seq)?.step..];
+    (crate::types::game_state::loop_period_kind_of(slice)
+        == Some((holder, LoopPeriodKind::TriggerDriven)))
+    .then_some(slice)
+}
+
 /// CR 732.2a: the slice of `holder`'s recorded period a proposal at this frame replays.
 fn recorded_period_at_frame(
     state: &GameState,
     holder: PlayerId,
 ) -> Option<&[crate::types::game_state::LoopActionContext]> {
     use crate::types::game_state::LoopPeriodKind;
-    match state.loop_period_kind()? {
-        (seat, LoopPeriodKind::PriorityDriven) if seat == holder && state.stack.is_empty() => {
-            Some(&state.last_loop_action_sequence)
-        }
-        (seat, LoopPeriodKind::TriggerDriven) if seat == holder => {
-            recorded_trigger_occurrence(state, &state.last_loop_action_sequence)
-                .map(|occurrence| &state.last_loop_action_sequence[occurrence.step..])
-        }
-        _ => None,
+    match state.loop_period_kind() {
+        Some((seat, LoopPeriodKind::PriorityDriven)) if seat == holder => state
+            .stack
+            .is_empty()
+            .then_some(state.last_loop_action_sequence.as_slice()),
+        _ => recorded_trigger_slice(state, holder),
     }
 }
 
@@ -7964,6 +7973,9 @@ fn normalize_recast_frame(
     s.last_revealed_ids.clear();
     s.last_zone_changed_ids.clear();
     s.exile_rider_countered_ids.clear();
+    // apply() resets these at the start of every player action, so a frame is compared as the
+    // next player action starts from it.
+    s.clear_player_action_transients();
     s
 }
 
@@ -8303,8 +8315,8 @@ fn try_offer_object_growth_shortcut(
     };
     // CR 732.2a: the period this frame's proposal replays — the priority holder's own record,
     // whole for a priority-driven period and from the occurrence on top for a trigger-driven one.
-    // A foreign, mixed or heterogeneous record, and a frame the record does not stand at, refuse
-    // here, before any drive.
+    // A foreign or heterogeneous record, a window whose replayed slice mixes kinds, and a frame the
+    // record does not stand at, refuse here, before any drive.
     let seq = recorded_period_at_frame(state, caster)?.to_vec();
     // CR 602.2a / CR 732.2a (G4): the per-step ability def each `Activate` step names, so the drive
     // can re-validate its positional `ability_index` by `Eq` each iteration; `None` for `Recast`.

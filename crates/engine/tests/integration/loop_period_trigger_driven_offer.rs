@@ -3,7 +3,8 @@
 //!
 //! Board A is `abdel_adrian_animate_dead_altar_board`'s and Board B is
 //! `loop_period_trigger_driven_arming::build_board_b`'s, both driven through `apply()` and never
-//! rebuilt. Both answer the CR 603.3b ordering prompt with `altar_resolves_first`.
+//! rebuilt. Both answer the CR 603.3b ordering prompt with `altar_resolves_first`, except where a
+//! row names `identity_order`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,9 +39,12 @@ const BOARDS: [Board; 2] = [Board::A, Board::B];
 
 type Policy = Box<dyn FnMut(&GameState) -> Option<GameAction>>;
 
+type Ordering = fn(&GameState) -> Option<GameAction>;
+
 struct Drive {
     runner: GameRunner,
     minting: ObjectId,
+    order: Ordering,
     policy: Policy,
 }
 
@@ -63,9 +67,23 @@ fn cast_animate_dead(runner: &mut GameRunner, animate_dead: ObjectId, target: Ob
         .expect("Animate Dead is castable from the built board");
 }
 
+/// CR 603.3b: every ordering prompt answered with the identity permutation.
+fn identity_order(state: &GameState) -> Option<GameAction> {
+    let WaitingFor::OrderTriggers { triggers, .. } = &state.waiting_for else {
+        return None;
+    };
+    Some(GameAction::OrderTriggers {
+        order: (0..triggers.len()).collect(),
+    })
+}
+
+fn start(board: Board) -> Option<Drive> {
+    start_ordered(board, altar_resolves_first)
+}
+
 /// Board A exiles only Animate Dead at Abdel Adrian's exile while accepts remain; Board B aims
 /// each enters trigger at Felidar Guardian and accepts its exile while accepts remain.
-fn start(board: Board) -> Option<Drive> {
+fn start_ordered(board: Board, order: Ordering) -> Option<Drive> {
     match board {
         Board::A => {
             let built = crate::abdel_adrian_animate_dead_altar_board::build()?;
@@ -77,6 +95,7 @@ fn start(board: Board) -> Option<Drive> {
             Some(Drive {
                 runner,
                 minting: built.abdel,
+                order,
                 policy: Box::new(move |state| {
                     let WaitingFor::EffectZoneChoice { cards, .. } = &state.waiting_for else {
                         return None;
@@ -109,6 +128,7 @@ fn start(board: Board) -> Option<Drive> {
             Some(Drive {
                 runner,
                 minting: built.preston,
+                order,
                 policy: Box::new(move |state| {
                     let legal = engine::ai_support::legal_actions(state);
                     if left > 0 {
@@ -206,7 +226,7 @@ impl Drive {
         if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
             return GameAction::PassPriority;
         }
-        altar_resolves_first(state)
+        (self.order)(state)
             .or_else(|| (self.policy)(state))
             .unwrap_or_else(|| {
                 engine::ai_support::legal_actions(state)
@@ -360,10 +380,96 @@ fn a_trigger_driven_period_is_offered_at_its_first_recurrence_window_and_taken()
     );
 }
 
-/// CR 732.2a: a period that mixes a land tap into the trigger-driven record has no kind, so no
-/// window of the rest of the game offers it.
+/// The names of the sources of the stack entries beneath the top one.
+fn sources_beneath_top(state: &GameState) -> Vec<String> {
+    state
+        .stack
+        .iter()
+        .take(state.stack.len().saturating_sub(1))
+        .map(|entry| {
+            state
+                .objects
+                .get(&entry.source_id)
+                .map_or_else(String::new, |object| object.name.clone())
+        })
+        .collect()
+}
+
+fn all_altar_triggers(sources: &[String]) -> bool {
+    sources.iter().all(|name| name == "Altar of the Brood")
+}
+
+/// CR 603.3b + CR 732.2a + CR 732.2c: under identity ordering Board A's Altar of the Brood
+/// triggers accumulate beneath the recurrence, and the period is offered and taken.
 #[test]
-fn a_mixed_period_is_never_offered() {
+fn an_accumulating_stack_beneath_the_recurrence_is_offered_and_taken() {
+    let Some(mut drive) = start_ordered(Board::A, identity_order) else {
+        return;
+    };
+    let mut offer_apply = None;
+    for _ in 0..BEAT_CAP {
+        let action = drive.next_action();
+        let apply = drive.apply(action);
+        if is_offer(drive.state()) {
+            offer_apply = Some(apply);
+            break;
+        }
+        if matches!(drive.state().waiting_for, WaitingFor::GameOver { .. }) {
+            break;
+        }
+    }
+    let offer_apply =
+        offer_apply.expect("identity-ordered Board A is offered before the game ends");
+    let state = drive.state();
+    assert!(
+        matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut { proposer, road: OfferRoad::RecordedPeriod, .. }
+                if proposer == P0
+        ),
+        "the offer is a recorded-period offer to P0"
+    );
+    assert_eq!(offer_apply.cost.object_growth_calls, 1);
+    let beneath = sources_beneath_top(state);
+    assert!(
+        !beneath.is_empty() && all_altar_triggers(&beneath),
+        "reach guard: Altar of the Brood triggers accumulate beneath the recurrence; {beneath:?}"
+    );
+    let tokens = token_count(state);
+    let libraries: Vec<usize> = state
+        .players
+        .iter()
+        .map(|player| player.library.len())
+        .collect();
+
+    drive.take(IterationCount::Fixed(3));
+    let state = drive.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "the take ends at priority; got {}",
+        state.waiting_for.variant_name()
+    );
+    assert_eq!(token_count(state), tokens + 3);
+    for (seat, player) in state.players.iter().enumerate().skip(1) {
+        assert_eq!(
+            player.library.len(),
+            libraries[seat],
+            "seat {seat}'s mills wait beneath the recurrence"
+        );
+    }
+    let after = sources_beneath_top(state);
+    assert!(
+        after.len() > beneath.len() && all_altar_triggers(&after),
+        "the take left more Altar of the Brood triggers beneath the recurrence; {after:?}"
+    );
+    assert!(state.last_loop_action_sequence.is_empty());
+}
+
+/// CR 605.3a + CR 732.2a: a land tap between two occurrences of the recurrence lies in the slice a
+/// proposal there replays, which is refused at the admission; once the tap is history, the pure
+/// slice is offered and taken.
+#[test]
+fn a_land_tap_withholds_the_offer_only_while_it_lies_in_the_replayed_slice() {
     let Some(mut drive) = start(Board::A) else {
         return;
     };
@@ -386,31 +492,85 @@ fn a_mixed_period_is_never_offered() {
         .find(|action| matches!(action, GameAction::TapLandForMana { .. }))
         .expect("P0 can tap a land at its first window with a record");
     drive.apply(tap);
-    let record = &drive.state().last_loop_action_sequence;
+
+    let mixed_window = drive.drive_to_window();
+    let state = drive.state();
     assert!(
-        record
-            .iter()
-            .any(|step| matches!(step.action, LoopAction::ResolveTrigger { .. }))
-            && record
+        recurrence_window(state, drive.minting),
+        "the next window is a P0 recurrence window; got {}",
+        state.waiting_for.variant_name()
+    );
+    let record = &state.last_loop_action_sequence;
+    let tapped_after_recurrence = record
+        .iter()
+        .position(|step| {
+            matches!(step.action, LoopAction::ResolveTrigger { source_id, .. }
+                if source_id == drive.minting)
+        })
+        .is_some_and(|recurrence| {
+            record.len() > recurrence + 1
+                && matches!(
+                    record.last().map(|step| &step.action),
+                    Some(LoopAction::TapLandForMana { .. })
+                )
+        });
+    assert!(
+        tapped_after_recurrence,
+        "reach guard: the replayed slice holds the recurrence, then the tap"
+    );
+    assert_eq!(state.loop_period_controller_for_tests(), Some(P0));
+    assert!(!state.loop_period_is_priority_driven_for_tests());
+    assert_eq!(
+        mixed_window
+            .last()
+            .expect("the window apply")
+            .cost
+            .object_growth_calls,
+        0,
+        "a slice that mixes kinds is refused at the admission, before any drive"
+    );
+
+    let mut offer_apply = None;
+    for _ in 0..BEAT_CAP {
+        let action = drive.next_action();
+        let apply = drive.apply(action);
+        if is_offer(drive.state()) {
+            offer_apply = Some(apply);
+            break;
+        }
+        if matches!(drive.state().waiting_for, WaitingFor::GameOver { .. }) {
+            break;
+        }
+    }
+    let offer_apply = offer_apply.expect("the post-tap pure slice is offered before the game ends");
+    let state = drive.state();
+    assert!(
+        matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut { proposer, road: OfferRoad::RecordedPeriod, .. }
+                if proposer == P0
+        ),
+        "the offer is a recorded-period offer to P0"
+    );
+    assert_eq!(offer_apply.cost.object_growth_calls, 1);
+    assert!(
+        !state.loop_period_is_priority_driven_for_tests()
+            && state
+                .last_loop_action_sequence
                 .iter()
                 .any(|step| matches!(step.action, LoopAction::TapLandForMana { .. })),
-        "reach guard: the record mixes a trigger resolution with a land tap"
+        "reach guard: the whole record still holds the tap"
     );
-    assert_eq!(drive.state().loop_period_controller_for_tests(), Some(P0));
-
-    for _ in 0..BEAT_CAP {
-        if matches!(drive.state().waiting_for, WaitingFor::GameOver { .. }) {
-            return;
-        }
-        assert!(
-            !is_offer(drive.state()),
-            "a mixed period is offered at a {:?}-top window",
-            top_trigger_source(drive.state())
-        );
-        let action = drive.next_action();
-        drive.apply(action);
-    }
-    panic!("the drive did not reach the end of the game in {BEAT_CAP} beats");
+    let tokens = token_count(state);
+    drive.take(IterationCount::Fixed(3));
+    let state = drive.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "the take ends at priority; got {}",
+        state.waiting_for.variant_name()
+    );
+    assert_eq!(token_count(state), tokens + 3);
+    assert!(state.last_loop_action_sequence.is_empty());
 }
 
 /// CR 603.3d + CR 732.2a: a record that no longer answers the target prompt is refused by the
@@ -553,8 +713,8 @@ fn each_apply_evaluates_the_loop_shortcut_at_most_once() {
         );
         if let Board::A = board {
             assert!(
-                matches!(drive.state().waiting_for, WaitingFor::Priority { .. }),
-                "Board A: the post-take window's cover refuses; got {}",
+                is_offer(drive.state()),
+                "Board A: the post-take window is offered again; got {}",
                 drive.state().waiting_for.variant_name()
             );
         }

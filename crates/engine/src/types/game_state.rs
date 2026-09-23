@@ -29278,37 +29278,9 @@ impl GameState {
                 occurrence.turn_journal_index = 0;
             }
         }
-        // CR 104.4b + CR 608.2h: which `departed_stack_spells` records a live
-        // spell-cast trigger can still name — read BEFORE the stack-carrier loop
-        // below clears each trigger's pin (`clear_trigger_identity_recursive`),
-        // because that clear is what this capture must read past. Mirrors
-        // `targeting::triggering_spell`'s on-stack/pin/no-pin-highest-key answer
-        // so the retained set agrees with what a live trigger could still read.
-        let mut retained_departed_spells: HashSet<ObjectIncarnationRef> = HashSet::new();
-        for entry in clone.stack.iter().chain(clone.resolving_stack_entry.iter()) {
-            if let StackEntryKind::TriggeredAbility {
-                ability,
-                trigger_event: Some(GameEvent::SpellCast { object_id, .. }),
-                ..
-            } = &entry.kind
-            {
-                match ability.context.triggering_spell {
-                    Some(pin) if pin.object_id == *object_id => {
-                        retained_departed_spells.insert(pin);
-                    }
-                    _ => {
-                        if let Some(key) = clone
-                            .departed_stack_spells
-                            .get(object_id)
-                            .and_then(|records| records.keys().max())
-                        {
-                            retained_departed_spells
-                                .insert(ObjectIncarnationRef::of(*object_id, *key));
-                        }
-                    }
-                }
-            }
-        }
+        // CR 104.4b + CR 608.2h: BEFORE the stack-carrier loop below clears each
+        // trigger's pin (`clear_trigger_identity_recursive`), which the prune reads.
+        clone.retain_trigger_referenced_departed_spells();
 
         // CR 104.4b + CR 400.7: the all-zone incarnation bump advances a source's
         // epoch on every zone change, so a mandatory loop that cycles its source's
@@ -29383,6 +29355,20 @@ impl GameState {
             epic.spell.clear_trigger_identity_recursive();
         }
 
+        clone.retain_carrier_referenced_lki();
+        clone
+    }
+
+    /// The inter-effect transients `apply()` resets at the start of every player action.
+    pub(crate) fn clear_player_action_transients(&mut self) {
+        self.last_effect_count = None;
+        self.last_effect_counts_by_player.clear();
+        self.exiled_from_hand_this_resolution = 0;
+        self.die_result_this_resolution = None;
+        self.consumed_before_priority_trigger_events.clear();
+    }
+
+    pub(crate) fn retain_carrier_referenced_lki(&mut self) {
         // CR 104.4b + CR 732.2a: incarnation-versioned LKI is historical support
         // state, not independently loop-material state. Retain only snapshots
         // reachable from trigger-event carriers that can still resume or resolve:
@@ -29403,7 +29389,7 @@ impl GameState {
             }
         };
 
-        for entry in &clone.stack {
+        for entry in &self.stack {
             if let StackEntryKind::TriggeredAbility {
                 trigger_event: Some(event),
                 ..
@@ -29412,7 +29398,7 @@ impl GameState {
                 record_event(event);
             }
         }
-        if let Some(entry) = clone.resolving_stack_entry.as_ref() {
+        if let Some(entry) = self.resolving_stack_entry.as_ref() {
             if let StackEntryKind::TriggeredAbility {
                 trigger_event: Some(event),
                 ..
@@ -29421,15 +29407,15 @@ impl GameState {
                 record_event(event);
             }
         }
-        if let Some(pending) = clone.pending_trigger.as_ref() {
+        if let Some(pending) = self.pending_trigger.as_ref() {
             if let Some(event) = pending.trigger_event.as_ref() {
                 record_event(event);
             }
         }
-        for event in &clone.pending_trigger_event_batch {
+        for event in &self.pending_trigger_event_batch {
             record_event(event);
         }
-        for context in &clone.deferred_triggers {
+        for context in &self.deferred_triggers {
             if let Some(event) = context.pending.trigger_event.as_ref() {
                 record_event(event);
             }
@@ -29437,7 +29423,7 @@ impl GameState {
                 record_event(event);
             }
         }
-        if let Some(order) = clone.pending_trigger_order.as_ref() {
+        if let Some(order) = self.pending_trigger_order.as_ref() {
             for context in order.groups.iter().flat_map(|group| group.triggers.iter()) {
                 if let Some(event) = context.pending.trigger_event.as_ref() {
                     record_event(event);
@@ -29447,24 +29433,24 @@ impl GameState {
                 }
             }
         }
-        if let Some(event) = clone.current_trigger_event.as_ref() {
+        if let Some(event) = self.current_trigger_event.as_ref() {
             record_event(event);
         }
-        for event in &clone.current_trigger_events {
+        for event in &self.current_trigger_events {
             record_event(event);
         }
-        for events in clone.stack_trigger_event_batches.values() {
+        for events in self.stack_trigger_event_batches.values() {
             for event in events {
                 record_event(event);
             }
         }
-        if let Some(event) = clone
+        if let Some(event) = self
             .active_optional_effect_frame()
             .and_then(|frame| frame.trigger_event.as_ref())
         {
             record_event(event);
         }
-        if let Some(context) = clone
+        if let Some(context) = self
             .active_ability_continuation_frame()
             .and_then(|frame| frame.choose_zone_trigger_context.as_ref())
         {
@@ -29475,7 +29461,7 @@ impl GameState {
                 record_event(event);
             }
         }
-        if let Some(context) = clone
+        if let Some(context) = self
             .active_ability_continuation()
             .and_then(|continuation| continuation.trigger_context.as_ref())
         {
@@ -29487,7 +29473,7 @@ impl GameState {
             }
         }
 
-        clone.lki_by_incarnation = std::mem::take(&mut clone.lki_by_incarnation)
+        self.lki_by_incarnation = std::mem::take(&mut self.lki_by_incarnation)
             .into_iter()
             .filter_map(|(object_id, mut history)| {
                 history.retain(|incarnation, _| {
@@ -29496,20 +29482,46 @@ impl GameState {
                 (!history.is_empty()).then_some((object_id, history))
             })
             .collect();
-        // CR 104.4b + CR 608.2h: records no live spell-cast trigger can reach are
-        // history, not position — prune the same way as `lki_by_incarnation`,
-        // against the set captured above before it was cleared.
-        clone.departed_stack_spells = std::mem::take(&mut clone.departed_stack_spells)
+    }
+
+    /// CR 104.4b + CR 608.2h: keeps only the `departed_stack_spells` records a spell-cast
+    /// trigger on the stack or resolving can still name; the rest are history, not position.
+    /// Mirrors `targeting::triggering_spell`: a pinned trigger keeps its pinned record, an
+    /// unpinned one the highest key.
+    pub(crate) fn retain_trigger_referenced_departed_spells(&mut self) {
+        let mut retained: HashSet<ObjectIncarnationRef> = HashSet::new();
+        for entry in self.stack.iter().chain(self.resolving_stack_entry.iter()) {
+            if let StackEntryKind::TriggeredAbility {
+                ability,
+                trigger_event: Some(GameEvent::SpellCast { object_id, .. }),
+                ..
+            } = &entry.kind
+            {
+                match ability.context.triggering_spell {
+                    Some(pin) if pin.object_id == *object_id => {
+                        retained.insert(pin);
+                    }
+                    _ => {
+                        if let Some(key) = self
+                            .departed_stack_spells
+                            .get(object_id)
+                            .and_then(|records| records.keys().max())
+                        {
+                            retained.insert(ObjectIncarnationRef::of(*object_id, *key));
+                        }
+                    }
+                }
+            }
+        }
+        self.departed_stack_spells = std::mem::take(&mut self.departed_stack_spells)
             .into_iter()
             .filter_map(|(object_id, mut history)| {
                 history.retain(|incarnation, _| {
-                    retained_departed_spells
-                        .contains(&ObjectIncarnationRef::of(object_id, *incarnation))
+                    retained.contains(&ObjectIncarnationRef::of(object_id, *incarnation))
                 });
                 (!history.is_empty()).then_some((object_id, history))
             })
             .collect();
-        clone
     }
 
     /// PR-3 (Option C): push one NORMALIZED post-resolution snapshot onto the
