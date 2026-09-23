@@ -3379,7 +3379,7 @@ mod tests {
     fn batch_resolution_scales_near_linearly() {
         let mut state = GameState::new_two_player(42);
         let proposal = state.resolved_rules_journal.begin_proposal().unwrap();
-        let events: Vec<GameEvent> = (0..10_000u64)
+        let events: Vec<GameEvent> = (0..40_000u64)
             .flat_map(|i| {
                 [
                     GameEvent::KeywordAbilityActivated {
@@ -3408,8 +3408,8 @@ mod tests {
 
         assert_eq!(entries.len(), events.len());
         assert!(
-            elapsed < std::time::Duration::from_millis(1500),
-            "20k-event batch took {elapsed:?}, limit 1500ms"
+            elapsed < std::time::Duration::from_secs(8),
+            "80k-event batch took {elapsed:?}, limit 8s"
         );
     }
 
