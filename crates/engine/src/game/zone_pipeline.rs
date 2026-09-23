@@ -163,6 +163,10 @@ pub struct EntryMods {
     pub chain_referent: crate::types::zones::ChainReferentIntent,
     /// CR 303.4f pre-resolved aura host.
     pub attach_to: Option<AttachTarget>,
+    /// CR 608.2c: the player performing the instruction that moves the object;
+    /// seeded onto `ProposedEvent::ZoneChange.performed_by` so delivery records
+    /// who exiled it (CR 406.6). `None` when no player performs the move.
+    pub performed_by: Option<PlayerId>,
 }
 
 /// Exile-link context carried through the delivery tail. Replaces the old
@@ -246,6 +250,7 @@ impl ZoneMoveRequest {
             face_down_profile: self.mods.face_down_profile,
             chain_referent: self.mods.chain_referent,
             attach_to: self.mods.attach_to,
+            performed_by: self.mods.performed_by,
             library_placement: self.placement,
             exile_duration: self.exile_links.duration,
             exile_controller: self.exile_links.controller,
@@ -292,6 +297,7 @@ impl ZoneMoveRequest {
                 face_down_profile: pending.face_down_profile,
                 chain_referent: pending.chain_referent,
                 attach_to: pending.attach_to,
+                performed_by: pending.performed_by,
             },
             placement: pending.library_placement,
             exile_links: ExileLinkSpec {
@@ -531,6 +537,13 @@ impl ZoneMoveRequest {
     /// applied to its originating event.
     pub fn with_replacement_applied(mut self, applied: HashSet<AppliedReplacementKey>) -> Self {
         self.replacement_applied = applied;
+        self
+    }
+
+    /// CR 608.2c + CR 406.6: name the player performing this move, so a
+    /// delivery that settles the object in exile records who exiled it.
+    pub fn performed_by(mut self, player: PlayerId) -> Self {
+        self.mods.performed_by = Some(player);
         self
     }
 
@@ -856,10 +869,12 @@ pub(crate) fn move_object_with_terminal(
             if let ProposedEvent::ZoneChange {
                 applied,
                 chain_referent,
+                performed_by,
                 ..
             } = &mut proposed
             {
                 *chain_referent = req.mods.chain_referent;
+                *performed_by = req.mods.performed_by;
                 *applied = req.replacement_applied.clone();
             }
             return match replacement::replace_event(state, proposed, events) {
@@ -936,10 +951,12 @@ pub(crate) fn move_object_with_terminal(
         if let ProposedEvent::ZoneChange {
             applied,
             chain_referent,
+            performed_by,
             ..
         } = &mut proposed
         {
             *chain_referent = req.mods.chain_referent;
+            *performed_by = req.mods.performed_by;
             *applied = req.replacement_applied;
             applied.extend(seed_applied);
         }
@@ -1034,10 +1051,12 @@ pub(crate) fn move_object_with_terminal(
             enter_with_counters,
             face_down_profile,
             chain_referent,
+            performed_by,
             applied,
             ..
         } = &mut proposed
         {
+            *performed_by = req.mods.performed_by;
             *enter_transformed = req.mods.enter_transformed;
             if !req.mods.enter_tapped.is_unspecified() {
                 *enter_tapped = req.mods.enter_tapped;
@@ -1093,6 +1112,7 @@ pub(crate) fn move_object_with_terminal(
         None,
         None,
         exile_links.controller,
+        req.mods.performed_by,
         req.replacement_applied,
         events,
     )
@@ -1475,10 +1495,12 @@ fn anticipated_zone_change_delivery(
         face_down_profile,
         chain_referent,
         attach_to,
+        performed_by,
         applied,
         ..
     } = &mut expected_event
     {
+        *performed_by = request.mods.performed_by;
         *enter_tapped = request.mods.enter_tapped;
         *enters_attacking = request.mods.enters_attacking;
         *enter_transformed = request.mods.enter_transformed;
@@ -3377,6 +3399,7 @@ pub(crate) fn deliver_replaced_zone_change(
         chain_referent,
         enter_as_copy,
         discard_frame,
+        performed_by,
         applied,
         ..
     } = event
@@ -3618,6 +3641,17 @@ pub(crate) fn deliver_replaced_zone_change(
         // unrelated move. Purely synchronous lifetime (set → consumed → cleared in
         // this one delivery), so it never crosses a pause.
         state.merged_card_component_route = None;
+        // CR 406.6 + CR 400.8 + CR 608.2c: an object that settles in exile —
+        // including one exiled again from exile, which becomes a new object
+        // that has just been exiled — records the player who performed this
+        // move as the player who exiled it. `move_to_zone` cleared any prior
+        // record on the way out (CR 400.7), so only this delivery's performer
+        // survives.
+        if to == Zone::Exile {
+            if let Some(player) = performed_by {
+                crate::game::exile_links::record_exiling_player(state, object_id, player);
+            }
+        }
         // CR 614.1d: determine whether the object actually entered the battlefield.
         // `move_to_zone` rejects a battlefield entry without moving the object when
         // a `CantEnterBattlefieldFrom` static (e.g. Grafdigger's Cage) matches, so
@@ -4069,6 +4103,7 @@ pub(crate) fn execute_zone_move_with_controller(
     library_placement: Option<LibraryPosition>,
     enter_attached_to: Option<AttachTarget>,
     exile_controller: Option<PlayerId>,
+    performed_by: Option<PlayerId>,
     events: &mut Vec<GameEvent>,
 ) -> ZoneMoveResult {
     execute_zone_move_with_terminal_and_controller(
@@ -4088,6 +4123,7 @@ pub(crate) fn execute_zone_move_with_controller(
         library_placement,
         enter_attached_to,
         exile_controller,
+        performed_by,
         events,
     )
     .into_zone_move_result()
@@ -4129,6 +4165,7 @@ pub(crate) fn execute_zone_move_with_terminal(
         library_placement,
         enter_attached_to,
         None,
+        None,
         events,
     )
 }
@@ -4151,6 +4188,7 @@ pub(crate) fn execute_zone_move_with_terminal_and_controller(
     library_placement: Option<LibraryPosition>,
     enter_attached_to: Option<AttachTarget>,
     exile_controller: Option<PlayerId>,
+    performed_by: Option<PlayerId>,
     events: &mut Vec<GameEvent>,
 ) -> ZoneMoveTerminalResult {
     execute_zone_move_with_applied_terminal(
@@ -4171,6 +4209,7 @@ pub(crate) fn execute_zone_move_with_terminal_and_controller(
         library_placement,
         enter_attached_to,
         exile_controller,
+        performed_by,
         HashSet::new(),
         events,
     )
@@ -4199,6 +4238,8 @@ fn execute_zone_move_with_applied_terminal(
     library_placement: Option<LibraryPosition>,
     enter_attached_to: Option<AttachTarget>,
     exile_controller: Option<PlayerId>,
+    // CR 608.2c + CR 406.6: the player performing this move, if any.
+    performed_by: Option<PlayerId>,
     replacement_applied: HashSet<AppliedReplacementKey>,
     events: &mut Vec<GameEvent>,
 ) -> ZoneMoveTerminalResult {
@@ -4225,11 +4266,13 @@ fn execute_zone_move_with_applied_terminal(
     if let ProposedEvent::ZoneChange {
         applied,
         chain_referent: ref mut intent,
+        performed_by: ref mut performer,
         ..
     } = &mut proposed
     {
         *applied = replacement_applied;
         *intent = chain_referent;
+        *performer = performed_by;
     }
 
     // CR 712.14a: Set enter_transformed on the proposed event so replacement effects
@@ -6420,5 +6463,98 @@ mod face_down_entry_referent_tests {
                 "the characteristics helper must not touch the referent slot (zone {zone:?})"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod exiling_player_record_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::ability::{Effect, ResolvedAbility, TargetFilter, TargetRef};
+    use crate::types::identifiers::CardId;
+
+    /// A card already in exile that P1 exiled.
+    fn card_p1_exiled(state: &mut GameState) -> ObjectId {
+        let card = create_object(
+            state,
+            CardId(1),
+            PlayerId(0),
+            "Exiled Card".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&card).unwrap().exiled_by = Some(PlayerId(1));
+        card
+    }
+
+    /// CR 400.8 + CR 406.6: exiling an object that is already in exile makes a
+    /// new object that has just been exiled; the delivery records the player
+    /// who performed this exile, replacing the old record.
+    #[test]
+    fn re_exiling_an_exiled_card_records_the_new_performer() {
+        let mut state = GameState::new_two_player(42);
+        let card = card_p1_exiled(&mut state);
+        let mut events = Vec::new();
+
+        move_object(
+            &mut state,
+            ZoneMoveRequest::effect(card, Zone::Exile, ObjectId(100)).performed_by(PlayerId(0)),
+            &mut events,
+        );
+
+        assert_eq!(state.objects[&card].zone, Zone::Exile);
+        assert_eq!(state.objects[&card].exiled_by, Some(PlayerId(0)));
+    }
+
+    /// CR 400.7 + CR 400.8: a re-exile no player performs leaves the new object
+    /// with no exiling player — never the previous object's record.
+    #[test]
+    fn re_exile_without_performer_clears_the_old_record() {
+        let mut state = GameState::new_two_player(42);
+        let card = card_p1_exiled(&mut state);
+        let mut events = Vec::new();
+
+        move_object(
+            &mut state,
+            ZoneMoveRequest::effect(card, Zone::Exile, ObjectId(100)),
+            &mut events,
+        );
+
+        assert_eq!(state.objects[&card].zone, Zone::Exile);
+        assert_eq!(state.objects[&card].exiled_by, None);
+    }
+
+    /// CR 608.2c + CR 400.8 + CR 406.6: the shared `ChangeZone` resolver
+    /// delivers through the pipeline with its controller as the performer, so
+    /// an exile-to-exile `ChangeZone` records the controller.
+    #[test]
+    fn change_zone_exile_to_exile_records_its_controller() {
+        let mut state = GameState::new_two_player(42);
+        let card = card_p1_exiled(&mut state);
+        let ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Exile),
+                destination: Zone::Exile,
+                target: TargetFilter::Any,
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            vec![TargetRef::Object(card)],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        crate::game::effects::change_zone::resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.objects[&card].zone, Zone::Exile);
+        assert_eq!(state.objects[&card].exiled_by, Some(PlayerId(0)));
     }
 }

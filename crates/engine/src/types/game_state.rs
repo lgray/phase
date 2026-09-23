@@ -81,6 +81,7 @@ use crate::analysis::resource::{
 use crate::game::bracket_estimate::CommanderBracketTier;
 use crate::game::combat::{AttackTarget, BlockHistoryPair, CombatState};
 use crate::game::deck_loading::DeckEntry;
+use crate::game::triggers::trigger_source_context_for_latch;
 
 use crate::game::game_object::{AttachTarget, BackFaceData, CaseState, GameObject, PhaseStatus};
 
@@ -5699,6 +5700,9 @@ pub struct PendingBatchZoneMoveRequest {
     pub chain_referent: ChainReferentIntent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attach_to: Option<AttachTarget>,
+    /// CR 608.2c + CR 406.6: the player performing this parked move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performed_by: Option<PlayerId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_placement: Option<LibraryPosition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -13966,6 +13970,12 @@ pub enum WaitingFor {
     /// CR 608.2d: Player must choose whether to perform an optional effect ("You may X").
     OptionalEffectChoice {
         player: PlayerId,
+        /// Display-only identity of the single object this optional instruction
+        /// operates on. This is latched from the resolved ability; `source_id`
+        /// remains the ability source and the resolution authority remains the
+        /// parked optional-effect frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision_subject_id: Option<ObjectId>,
         source_id: ObjectId,
         /// Human-readable description of the effect (e.g. "draw a card").
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -14019,6 +14029,11 @@ pub enum WaitingFor {
     /// Prompts opponents in APNAP order. First accept wins; remaining are not prompted.
     OpponentMayChoice {
         player: PlayerId,
+        /// Display-only, latched identity of the single object the opponents
+        /// are deciding about. Re-prompts preserve it unchanged; `source_id`
+        /// remains the ability source and provenance authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision_subject_id: Option<ObjectId>,
         source_id: ObjectId,
         /// Human-readable description of the effect.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21008,6 +21023,13 @@ pub struct TransientContinuousEffect {
     /// non-current sentinel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_subject: Option<ObjectIncarnationRef>,
+    /// CR 611.2a + CR 400.7: the source context a `Duration::UntilEvent`
+    /// effect's event is matched against, captured when the effect is created
+    /// (as a `WhenNextEvent` delayed trigger carries one). `None` for every
+    /// other duration. Rides inside the journaled
+    /// `ResolvedContinuousEffectCommand`, so replay installs it verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_event_source: Option<Box<TriggerSourceContext>>,
     /// CR 116.2c: see [`EndEffectPermission`]. `None` for every effect with no
     /// printed termination permission. Set inside the single construction
     /// authority (`add_transient_continuous_effect_with_end_permission`), so it
@@ -25937,6 +25959,30 @@ impl GameState {
             .map(|o| o.name.clone())
             .or_else(|| self.lki_cache.get(&source_id).map(|lki| lki.name.clone()))
             .unwrap_or_default();
+        // CR 611.2a + CR 400.7: an event deadline is matched against its source
+        // as it was when the effect began, so the context is captured here and
+        // never re-read from `objects`. CR 113.7a: an activated or triggered
+        // ability resolves even when its source is gone; if the source has
+        // ceased to exist (CR 704.5d / CR 704.5e), its terminal battlefield
+        // departure record is the authority for it (CR 608.2i).
+        let duration_event_source = match duration {
+            Duration::UntilEvent { .. } => self
+                .objects
+                .get(&source_id)
+                .map(|source| trigger_source_context_for_latch(self, source))
+                .or_else(|| {
+                    let record = terminal_battlefield_departure_row(self, source_id)?;
+                    match battlefield_departure_source_context_from_record(record) {
+                        BattlefieldDepartureSourceContext::Present(context) => {
+                            Some(context.clone())
+                        }
+                        BattlefieldDepartureSourceContext::Absent
+                        | BattlefieldDepartureSourceContext::Malformed => None,
+                    }
+                })
+                .map(Box::new),
+            _ => None,
+        };
         let command = ResolvedContinuousEffectCommand {
             effect: TransientContinuousEffect {
                 id,
@@ -25949,6 +25995,7 @@ impl GameState {
                 modifications,
                 condition,
                 duration_subject: bindings.duration_subject,
+                duration_event_source,
                 end_permission,
                 source_name,
             },
@@ -27181,6 +27228,7 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
         && x.goaded_by == y.goaded_by // CR 701.15c goad set
         && x.detained_by == y.detained_by // CR 701.35a detain set
         && x.casting_permissions == y.casting_permissions // CR 715.3d exile-grant Vec
+        && x.exiled_by == y.exiled_by // CR 406.6 + CR 607.2b exiling player
         && x.saddled_by == y.saddled_by // CR 702.171c saddle set
         // #6865: a cast occurrence is resolution-semantic provenance while the
         // spell remains on the stack. Comparing it is fail-safe for loop detection.
@@ -28219,6 +28267,7 @@ mod forced_cascade_window_tests {
                 WaitingFor::OptionalEffectChoice {
                     player: PlayerId(0),
                     source_id: ObjectId(1),
+                    decision_subject_id: None,
                     description: None,
                     may_trigger_key: None,
                     same_card_may_trigger_choice_available: false,
@@ -29798,6 +29847,7 @@ mod tests {
             condition: None,
             duration_subject: Some(ObjectIncarnationRef::of(ObjectId(9), 3)),
             end_permission: None,
+            duration_event_source: None,
             source_name: String::new(),
         };
         let mut legacy = serde_json::to_value(effect).expect("effect serializes");

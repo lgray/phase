@@ -18,11 +18,11 @@ use crate::parser::oracle_ir::diagnostic::{ClauseGap, OracleDiagnostic};
 use crate::parser::oracle_util::normalize_card_name_refs;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityUseTally,
-    ActivationRestriction, AdditionalCost, AggregateFunction, AttackSubject, CardTypeSetSource,
-    ChoiceType, CoinFlipResult, CombatHistoryScope, CommanderOwnership, Comparator,
-    ContinuousModification, ControllerRef, CountScope, CounterKindChooser, CounterKindDomain,
-    CounterSourceRider, DelayedTriggerCondition, DieRollModifier, DoublePTMode, Duration,
-    EachDamageRecipient, Effect, EffectOutcomeSignal, EffectScope, FilterProp,
+    ActivationRestriction, AdditionalCost, AggregateFunction, AttackSubject, AttackedYouScope,
+    CardTypeSetSource, ChoiceType, CoinFlipResult, CombatHistoryScope, CommanderOwnership,
+    Comparator, ContinuousModification, ControllerRef, CountScope, CounterKindChooser,
+    CounterKindDomain, CounterSourceRider, DelayedTriggerCondition, DieRollModifier, DoublePTMode,
+    Duration, EachDamageRecipient, Effect, EffectOutcomeSignal, EffectScope, FilterProp,
     ForEachCategoryAction, GameRestriction, LibraryPosition, ManaProduction,
     MassLibraryShuffleMode, ObjectProperty, ObjectScope, ObjectSelectionCardinality,
     ObjectSelectionEligibility, ParsedCondition, PerpetualModification, PlayerFilter,
@@ -1333,6 +1333,7 @@ fn fmt_duration(d: &Duration) -> String {
             )
         }
         Duration::ForAsLongAs { .. } => "for as long as condition".to_string(),
+        Duration::UntilEvent { event } => format!("until event ({:?})", event.mode),
         Duration::Permanent => "permanent".to_string(),
     }
 }
@@ -2655,8 +2656,12 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             count,
             position,
             face_down,
+            actor,
         } => {
             d.push(("player".into(), fmt_target(player)));
+            if !actor.is_controller() {
+                d.push(("actor".into(), format!("{actor:?}")));
+            }
             d.push(("count".into(), fmt_quantity(count)));
             if !matches!(position, crate::types::ability::LibraryPosition::Top) {
                 d.push(("position".into(), format!("{position:?}")));
@@ -4874,7 +4879,12 @@ fn fmt_static_condition(cond: &StaticCondition) -> String {
         SC::SpellCastWithVariantThisTurn { .. } => {
             "a spell was cast with this variant this turn".into()
         }
-        SC::AnyPlayerAttackedYouLastTurn => "a player attacked you during their last turn".into(),
+        SC::AnyPlayerAttackedYouLastTurn {
+            scope: AttackedYouScope::AnyPlayer,
+        } => "a player attacked you during their last turn".into(),
+        SC::AnyPlayerAttackedYouLastTurn {
+            scope: AttackedYouScope::AttackedPlayer,
+        } => "the attacked player attacked you during their last turn".into(),
         SC::OpponentPoisonAtLeast { count } => format!("an opponent has {count}+ poison"),
         SC::UnlessPay { .. } => "unless a cost is paid".into(),
         SC::Unrecognized { .. } => "unrecognized".into(),
@@ -7115,7 +7125,7 @@ fn check_static_definition(
     // the condition text wasn't decomposed into typed building blocks.
     // Recurse through And/Or/Not (`contains_unrecognized`/`unrecognized_texts`)
     // so a nested `Not(Unrecognized)` fallback (e.g. an unbindable
-    // recipient-scoped `unless` gate) is labeled instead of silently
+    // anaphor-scoped `unless` gate) is labeled instead of silently
     // passing as supported.
     if let Some(condition) = &def.condition {
         for text in condition.unrecognized_texts() {
@@ -9144,9 +9154,9 @@ fn extract_static_condition_features(
         // `Handled`, correctly, because negation itself is implemented) and
         // SWALLOWED the operand, so an unhandled leaf under a negation was
         // reported as supported. That is a fail-open in the direction coverage
-        // must never fail: `Not(IsMonarch { ScopedPlayer })` — the "unless that
-        // player is the monarch" shape the `layers` entry gate hard-rejects to
-        // `false` — would advertise a restriction that silently never applies.
+        // must never fail: `Not(IsMonarch { ScopedPlayer })` is the un-rebound
+        // anaphor shape, whose subject the `layers` entry gate cannot bind.
+        // Swallowing the leaf would advertise an inert restriction as supported.
         StaticCondition::Not { condition } => {
             extract_static_condition_features(condition, features);
         }
@@ -9949,12 +9959,12 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         StaticCondition::SourceIsAttacking => ("SourceIsAttacking", Handled),
         StaticCondition::SourceIsBlocking => ("SourceIsBlocking", Handled),
         StaticCondition::SourceIsBlocked => ("SourceIsBlocked", Handled),
-        // CR 725.1: only the controller subject has a static-side evaluator.
-        // `layers::evaluate_condition{,_with_recipient}` rejects every other
-        // scope at its entry boundary (no trigger event, no combat anchor), so
-        // coverage must report those `Unhandled` rather than claim support.
+        // CR 725.1: Controller binds at every mode; RecipientController binds
+        // at CantUntap (CR 502.3 + CR 303.4m). A mode that cannot bind this
+        // subject is replaced by `gate_static_condition`'s gap marker before
+        // reaching coverage, and export integrity checks that gate again.
         StaticCondition::IsMonarch {
-            player: PlayerScope::Controller,
+            player: PlayerScope::Controller | PlayerScope::RecipientController,
         } => ("IsMonarch", Handled),
         StaticCondition::IsMonarch { .. } => ("IsMonarch", Unhandled),
         StaticCondition::IsInitiative => ("IsInitiative", Handled),
@@ -9970,8 +9980,16 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
             ("SpellCastWithVariantThisTurn", Handled)
         }
         // CR 508.6: runtime-handled by `layers::evaluate_condition` over the
-        // cleanup-time attack snapshot (drives Avenge's cost reduction).
-        StaticCondition::AnyPlayerAttackedYouLastTurn => ("AnyPlayerAttackedYouLastTurn", Handled),
+        // cleanup-time attack snapshot. BOTH scopes are Handled: the default
+        // scope drives Avenge's cost reduction today, and the anchored scope has
+        // its own evaluator arm in the same walker. Deliberately ONE arm, not
+        // the `IsMonarch` two-arm asymmetry above: that asymmetry exists because
+        // the non-`Controller` monarch scopes are REJECTED at the evaluator's
+        // entry boundary and have no runtime support at all, whereas the
+        // anchored revenge scope is evaluated.
+        StaticCondition::AnyPlayerAttackedYouLastTurn { .. } => {
+            ("AnyPlayerAttackedYouLastTurn", Handled)
+        }
         StaticCondition::OpponentPoisonAtLeast { .. } => ("OpponentPoisonAtLeast", Unhandled),
         StaticCondition::UnlessPay { .. } => ("UnlessPay", Handled),
         // CR 903.3d: the RUNTIME does evaluate this static
@@ -9996,11 +10014,11 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         // Throne's intervening-`if` is an `AbilityCondition`, classified `Handled`
         // in `condition_feature` above.
         StaticCondition::ControlsCommander { .. } => ("ControlsCommander", Unhandled),
-        // SourceIsEquipped resolved by layers::evaluate_condition (layers.rs:1057)
+        // SourceIsEquipped resolved by layers::evaluate_condition_inner.
         StaticCondition::SourceIsEquipped => ("SourceIsEquipped", Handled),
-        // SourceIsEnchanted resolved by layers::evaluate_condition (layers.rs:1066)
+        // SourceIsEnchanted resolved by layers::evaluate_condition_inner.
         StaticCondition::SourceIsEnchanted => ("SourceIsEnchanted", Handled),
-        // SourceIsMonstrous resolved by layers::evaluate_condition (layers.rs:1071)
+        // SourceIsMonstrous resolved by layers::evaluate_condition_inner.
         StaticCondition::SourceIsMonstrous => ("SourceIsMonstrous", Handled),
         // SourceIsHarnessed resolved by layers::evaluate_condition (the ∞ gate).
         StaticCondition::SourceIsHarnessed => ("SourceIsHarnessed", Handled),
@@ -13098,9 +13116,9 @@ mod tests {
 
     /// Regression for PR #8012 (Bombur, Gentle Dreamer) — maintainer review
     /// rounds 2 and 3: `extract_cant_untap_condition` falls back to
-    /// `Not(Unrecognized{..})` for a recipient-scoped `unless` tail with no
+    /// `Not(Unrecognized{..})` for an anaphor-scoped `unless` tail with no
     /// runtime binding authority (see
-    /// `oracle_static::tests::static_cant_untap_unless_recipient_scoped_designation_is_unrecognized`
+    /// `oracle_static::tests::static_cant_untap_unless_anaphor_scoped_designation_is_unrecognized`
     /// for the AST-shape proof). That prior test only proves the SHAPE is
     /// produced — it says nothing about whether coverage honors it. This test
     /// closes that gap: it feeds the exact nested shape into the actual
@@ -13125,7 +13143,7 @@ mod tests {
             }),
         });
         let face = CardFace {
-            name: "Test Recipient-Scoped Untap Gate".to_string(),
+            name: "Test Anaphor-Scoped Untap Gate".to_string(),
             static_abilities: vec![def],
             ..Default::default()
         };
@@ -14431,6 +14449,57 @@ mod tests {
         assert!(gaps.is_empty());
     }
 
+    /// C1.5: the anchored revenge scope's COVERAGE LABELLING IS FINAL AT PHASE 1.
+    /// Both walkers are synthesized-condition asserted here because no card emits
+    /// the anchored scope yet, which makes a corpus-level "coverage unchanged"
+    /// assertion vacuous for it.
+    ///
+    /// The two `fmt_static_condition` arms must stay DISTINCT: the coverage
+    /// receipt is read at card granularity, so collapsing two runtime-distinct
+    /// predicates into one signature is exactly the defect
+    /// `player_filter_signatures_keep_every_behavior_bearing_field` exists to
+    /// prevent. The `static_condition_feature` half is deliberately ONE `{ .. }`
+    /// arm — both scopes are runtime-evaluated — and is a FORWARD REGRESSION
+    /// GUARD, not a discriminator.
+    #[test]
+    fn attacked_you_last_turn_scope_labels_are_final_at_this_phase() {
+        use crate::types::ability::AttackedYouScope;
+
+        let default = StaticCondition::AnyPlayerAttackedYouLastTurn {
+            scope: AttackedYouScope::AnyPlayer,
+        };
+        let anchored = StaticCondition::AnyPlayerAttackedYouLastTurn {
+            scope: AttackedYouScope::AttackedPlayer,
+        };
+
+        let default_label = fmt_static_condition(&default);
+        let anchored_label = fmt_static_condition(&anchored);
+        assert_eq!(
+            default_label, "a player attacked you during their last turn",
+            "the default scope's description is byte-unchanged from base"
+        );
+        assert_eq!(
+            anchored_label,
+            "the attacked player attacked you during their last turn"
+        );
+        assert_ne!(
+            default_label, anchored_label,
+            "two runtime-distinct predicates must not collapse to one coverage \
+             signature"
+        );
+
+        assert_eq!(
+            static_condition_feature(&default),
+            ("AnyPlayerAttackedYouLastTurn", FeatureSupport::Handled)
+        );
+        assert_eq!(
+            static_condition_feature(&anchored),
+            ("AnyPlayerAttackedYouLastTurn", FeatureSupport::Handled),
+            "the anchored scope has its own evaluator arm, so Handled is the \
+             deliberate end-state verdict — not an inherited one"
+        );
+    }
+
     /// CR 903.3d: the Lieutenant STATIC's `Unhandled` coverage tag is a
     /// deliberate mask, not an oversight — this pins both halves so the flip
     /// cannot be smuggled in as a rider on an unrelated change.
@@ -15571,7 +15640,7 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
     /// must not be swallowed by a generic "spend only " prefix check when SpendOnlyOnX does not match.
     ///
     /// Tests both the `check_silent_drops` pipeline guard and the discriminating `audit_card_lines`
-    /// coverage authority at `crates/engine/src/game/coverage.rs:11058-11073` for supported and
+    /// coverage authority in `audit_card_lines` for supported and
     /// unrecognized spend-only lines.
     #[test]
     fn unrecognized_spend_only_line_is_still_a_silent_drop() {
@@ -19031,9 +19100,9 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
     /// Revert-failing: restore the `_ =>` catch-all for `Not` and the first
     /// assertion fails — the map holds only `static_condition:Not` (Handled) and
     /// the `IsMonarch` leaf disappears, so
-    /// `Not(IsMonarch { player: ScopedPlayer })` — the "unless that player is
-    /// the monarch" shape `layers`' entry gate hard-rejects to `false` — would
-    /// be advertised as fully supported.
+    /// `Not(IsMonarch { player: ScopedPlayer })` — an un-rebound anaphor whose
+    /// subject `layers` cannot bind — would be advertised as fully supported.
+    /// The printed Fall from Favor line binds `RecipientController` instead.
     #[test]
     fn static_condition_not_recurses_into_its_operand() {
         let feature_map = |cond: &StaticCondition| {
@@ -19100,6 +19169,40 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
             .get("static_condition:IsMonarch"),
             Some(&FeatureSupport::Handled)
         );
+    }
+
+    #[test]
+    fn monarch_scope_handled_set_matches_its_justifying_mode() {
+        use crate::types::statics::StaticMode;
+
+        for scope in [PlayerScope::Controller, PlayerScope::RecipientController] {
+            assert_eq!(
+                static_condition_feature(&StaticCondition::IsMonarch {
+                    player: scope.clone(),
+                })
+                .1,
+                FeatureSupport::Handled,
+            );
+            let mode = StaticMode::CantUntap;
+            assert!(mode.binds_designation_scope(&scope));
+        }
+        for scope in [
+            PlayerScope::ScopedPlayer,
+            PlayerScope::DefendingPlayer,
+            PlayerScope::Target,
+            PlayerScope::Opponent {
+                aggregate: AggregateFunction::Max,
+            },
+        ] {
+            assert_eq!(
+                static_condition_feature(&StaticCondition::IsMonarch {
+                    player: scope.clone(),
+                })
+                .1,
+                FeatureSupport::Unhandled,
+            );
+            assert!(!StaticMode::CantUntap.binds_designation_scope(&scope));
+        }
     }
 
     /// CR 614.1b + CR 614.10: `SkipStep { step: Draw }` must be recognised by
@@ -19472,7 +19575,7 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
     }
 
     /// Regression for PR #8012 (Bombur, Gentle Dreamer) — maintainer review
-    /// round 3, which cited this exact `is_static_supported` gate: a recipient-scoped
+    /// round 3, which cited this exact `is_static_supported` gate: an anaphor-scoped
     /// `unless` tail with no runtime binding authority falls back to
     /// `Not(Unrecognized{..})`, a NESTED unrecognized leaf. Before the fix,
     /// `is_static_supported` matched only a TOP-LEVEL

@@ -1072,6 +1072,8 @@ pub fn resolve(
                 None,
                 None,
                 Some(ability.controller),
+                // CR 608.2c: the controller follows the instruction, so it performs the move.
+                Some(ability.controller),
                 events,
             ) {
                 ZoneMoveResult::Done => {
@@ -1157,6 +1159,8 @@ pub fn resolve(
                 track_exiled_by_source,
                 None,
                 None,
+                Some(ability.controller),
+                // CR 608.2c: the controller follows the instruction, so it performs the move.
                 Some(ability.controller),
                 events,
             ) {
@@ -1758,6 +1762,8 @@ pub(crate) fn process_one_zone_move_with_terminal(
         ctx.library_placement.clone(),
         ctx.enter_attached_to,
         Some(ctx.controller),
+        // CR 608.2c: the controller follows the instruction, so it performs the move.
+        Some(ctx.controller),
         events,
     );
 
@@ -2256,6 +2262,8 @@ pub fn resolve_all(
             track_exiled_by_source,
             member_library_placement.clone(),
             None,
+            Some(ability.controller),
+            // CR 608.2c: the controller follows the instruction, so it performs the move.
             Some(ability.controller),
             events,
         ) {

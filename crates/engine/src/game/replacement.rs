@@ -1887,6 +1887,7 @@ fn discard_applier(
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
             enter_as_copy: None,
             discard_frame,
+            performed_by: None,
             applied,
         }),
         other => ApplyResult::Modified(other),
@@ -12841,6 +12842,7 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: HashSet::new(),
             face_down_profile: None,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
@@ -15548,6 +15550,7 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: HashSet::new(),
             face_down_profile: None,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
@@ -16769,6 +16772,7 @@ mod tests {
             enter_transformed: false,
             enter_as_copy: None,
             discard_frame: None,
+            performed_by: None,
             applied: HashSet::new(),
             face_down_profile: None,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
@@ -19975,6 +19979,7 @@ mod tests {
             face_down_profile: None,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
             discard_frame: None,
+            performed_by: None,
             applied: HashSet::new(),
         };
         let cast_matches = find_applicable_replacements(&state, &cast_event, &registry);
@@ -20023,6 +20028,7 @@ mod tests {
             face_down_profile: None,
             chain_referent: crate::types::zones::ChainReferentIntent::Silent,
             discard_frame: None,
+            performed_by: None,
             applied: HashSet::new(),
         };
         let put_matches = find_applicable_replacements(&state, &put_event, &registry);
