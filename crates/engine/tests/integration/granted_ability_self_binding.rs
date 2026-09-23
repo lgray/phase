@@ -1242,3 +1242,1088 @@ mod object_scope_reads {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// CR 201.5a concretizer seams: every channel through which a granted body names
+// its granter, bound at each attachment seam (Layer-6 grants, token creation).
+// Card fixtures use verbatim Oracle text with the parser's host leaf rewritten to
+// the granter symbol.
+// ---------------------------------------------------------------------------
+
+mod concretizer_seams {
+    use std::sync::Arc;
+
+    use engine::game::combat::AttackTarget;
+    use engine::game::effects::resolve_ability_chain;
+    use engine::game::filter::{matches_target_filter, FilterContext};
+    use engine::game::game_object::AttachTarget;
+    use engine::game::layers::evaluate_layers;
+    use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+    use engine::game::zones::move_to_zone;
+    use engine::parser::oracle::parse_oracle_text;
+    use engine::types::ability::{
+        AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, Comparator,
+        ContinuousModification, Effect, EffectKind, FilterProp, ObjectScope, QuantityExpr,
+        QuantityRef, ResolvedAbility, StaticDefinition, TargetFilter, TargetRef, TypeFilter,
+        TypedFilter,
+    };
+    use engine::types::actions::GameAction;
+    use engine::types::card_type::CoreType;
+    use engine::types::counter::CounterType;
+    use engine::types::events::GameEvent;
+    use engine::types::game_state::{GameState, WaitingFor};
+    use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
+    use engine::types::keywords::Keyword;
+    use engine::types::mana::{ManaType, ManaUnit};
+    use engine::types::phase::Phase;
+    use engine::types::zones::Zone;
+
+    use super::{ARCHERY_TRAINING, SPARE_DAGGER, TRUSTY_BOOMERANG};
+
+    const GUTTER_GRIME: &str = "Whenever a nontoken creature you control dies, put a slime \
+counter on this enchantment, then create a green Ooze creature token with \"This token's power \
+and toughness are each equal to the number of slime counters on Gutter Grime.\"";
+    const DIRE_BLUNDERBUSS: &str = "Equipped creature gets +3/+0 and has \"Whenever this creature \
+attacks, you may sacrifice an artifact other than Dire Blunderbuss. When you do, this creature \
+deals damage equal to its power to target creature.\"\nEquip {1}";
+    const NETTLEVINE_BLIGHT: &str = "Enchant creature or land\nEnchanted permanent has \"At the \
+beginning of your end step, sacrifice this permanent and attach Nettlevine Blight to a creature \
+or land you control.\"";
+    const HELIODS_PUNISHMENT: &str = "Enchant creature\nThis Aura enters with four task counters \
+on it.\nEnchanted creature can't attack or block. It loses all abilities and has \"{T}: Remove a \
+task counter from Heliod's Punishment. Then if it has no task counters on it, destroy Heliod's \
+Punishment.\"";
+
+    fn counter(kind: &str) -> CounterType {
+        CounterType::Generic(kind.to_string())
+    }
+
+    fn counters_on(scope: ObjectScope, kind: &str) -> QuantityExpr {
+        QuantityExpr::Ref {
+            qty: QuantityRef::CountersOn {
+                scope,
+                counter_type: Some(counter(kind)),
+            },
+        }
+    }
+
+    fn incarnation(state: &GameState, id: ObjectId) -> ObjectIncarnationRef {
+        ObjectIncarnationRef::from_object(&state.objects[&id])
+    }
+
+    fn bound(state: &GameState, id: ObjectId) -> ObjectScope {
+        ObjectScope::SpecificObject {
+            object: incarnation(state, id),
+        }
+    }
+
+    /// Rewrites the parser's host counter read to the granter symbol.
+    fn to_granter(expr: &mut QuantityExpr) {
+        match expr {
+            QuantityExpr::Ref {
+                qty: QuantityRef::CountersOn { scope, .. },
+            } if *scope == ObjectScope::Source => *scope = ObjectScope::GrantingObject,
+            other => panic!("expected a Source counter read, got {other:?}"),
+        }
+    }
+
+    fn grant_static(oracle: &str, name: &str, core: &str, subtype: &str) -> StaticDefinition {
+        parse_oracle_text(
+            oracle,
+            name,
+            &[],
+            &[core.to_string()],
+            &[subtype.to_string()],
+        )
+        .statics
+        .into_iter()
+        .find(|s| {
+            s.modifications.iter().any(|m| {
+                matches!(
+                    m,
+                    ContinuousModification::GrantAbility { .. }
+                        | ContinuousModification::GrantTrigger { .. }
+                )
+            })
+        })
+        .expect("a static granting an ability or trigger")
+    }
+
+    fn granted_ability(grant: &mut StaticDefinition) -> &mut AbilityDefinition {
+        grant
+            .modifications
+            .iter_mut()
+            .find_map(|m| match m {
+                ContinuousModification::GrantAbility { definition } => Some(definition.as_mut()),
+                _ => None,
+            })
+            .expect("GrantAbility")
+    }
+
+    fn granted_execute(grant: &mut StaticDefinition) -> &mut AbilityDefinition {
+        grant
+            .modifications
+            .iter_mut()
+            .find_map(|m| match m {
+                ContinuousModification::GrantTrigger { trigger } => trigger.execute.as_deref_mut(),
+                _ => None,
+            })
+            .expect("GrantTrigger execute")
+    }
+
+    fn relayer(state: &mut GameState) {
+        state.layers_dirty.mark_full();
+        evaluate_layers(state);
+    }
+
+    /// Makes `granter` a `core` `subtype` attached to `host` that carries `grant`.
+    fn attach(
+        runner: &mut GameRunner,
+        granter: ObjectId,
+        host: ObjectId,
+        core: CoreType,
+        subtype: &str,
+        grant: StaticDefinition,
+    ) {
+        let st = runner.state_mut();
+        let obj = st.objects.get_mut(&granter).unwrap();
+        obj.card_types.core_types = vec![core];
+        obj.card_types.subtypes = vec![subtype.to_string()];
+        obj.base_card_types = obj.card_types.clone();
+        obj.power = None;
+        obj.toughness = None;
+        obj.base_power = None;
+        obj.base_toughness = None;
+        obj.attached_to = Some(AttachTarget::Object(host));
+        obj.static_definitions.push(grant.clone());
+        Arc::make_mut(&mut obj.base_static_definitions).push(grant);
+        relayer(st);
+    }
+
+    fn make_artifact(state: &mut GameState, id: ObjectId) {
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types = vec![CoreType::Artifact];
+        obj.base_card_types = obj.card_types.clone();
+        obj.power = None;
+        obj.toughness = None;
+        obj.base_power = None;
+        obj.base_toughness = None;
+    }
+
+    fn pass_to_declare_attackers(runner: &mut GameRunner) {
+        for _ in 0..8 {
+            if matches!(
+                runner.state().waiting_for,
+                WaitingFor::DeclareAttackers { .. }
+            ) {
+                return;
+            }
+            runner.act(GameAction::PassPriority).unwrap();
+        }
+        panic!(
+            "never reached DeclareAttackers: {:?}",
+            runner.state().waiting_for
+        );
+    }
+
+    fn attack_with(runner: &mut GameRunner, attacker: ObjectId) {
+        pass_to_declare_attackers(runner);
+        runner
+            .declare_attackers(&[(attacker, AttackTarget::Player(P1))])
+            .unwrap();
+    }
+
+    /// Drives priority, "you may" prompts and trigger ordering until the engine asks
+    /// for anything else, answering a trigger target with `target`.
+    fn drive(runner: &mut GameRunner, target: Option<TargetRef>) {
+        for _ in 0..40 {
+            let action = match &runner.state().waiting_for {
+                WaitingFor::Priority { .. } if !runner.state().stack.is_empty() => {
+                    GameAction::PassPriority
+                }
+                WaitingFor::OptionalEffectChoice { .. } => {
+                    GameAction::DecideOptionalEffect { accept: true }
+                }
+                WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+                    order: (0..triggers.len()).collect(),
+                },
+                WaitingFor::TriggerTargetSelection { .. } if target.is_some() => {
+                    GameAction::ChooseTarget {
+                        target: target.clone(),
+                    }
+                }
+                _ => return,
+            };
+            runner.act(action).unwrap();
+        }
+        panic!("drive did not settle: {:?}", runner.state().waiting_for);
+    }
+
+    fn activate(runner: &mut GameRunner, host: ObjectId, index: usize, target: Option<ObjectId>) {
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: host,
+                ability_index: index,
+            })
+            .unwrap();
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ) {
+            runner
+                .act(GameAction::SelectTargets {
+                    targets: target.into_iter().map(TargetRef::Object).collect(),
+                })
+                .unwrap();
+        }
+        if let Some(t) = target {
+            let top = runner.state().stack.last().and_then(|e| e.ability());
+            assert_eq!(
+                top.map(|a| a.targets.clone()),
+                Some(vec![TargetRef::Object(t)])
+            );
+        }
+    }
+
+    /// Resolves the whole stack, returning every event it produced.
+    fn resolve_stack(runner: &mut GameRunner) -> Vec<GameEvent> {
+        let mut events = Vec::new();
+        for _ in 0..40 {
+            if runner.state().stack.is_empty() {
+                return events;
+            }
+            events.extend(runner.act(GameAction::PassPriority).unwrap().events);
+        }
+        panic!("stack never emptied: {:?}", runner.state().waiting_for);
+    }
+
+    /// Host carries 1 arrow counter; each Archery Training carries `arrows[i]`.
+    fn archery_training(arrows: &[u32]) -> (GameRunner, ObjectId, Vec<ObjectId>, ObjectId) {
+        let mut grant = grant_static(ARCHERY_TRAINING, "Archery Training", "Enchantment", "Aura");
+        match granted_ability(&mut grant).effect.as_mut() {
+            Effect::DealDamage { amount, .. } => to_granter(amount),
+            other => panic!("expected DealDamage, got {other:?}"),
+        }
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let raider = scenario.add_creature(P0, "Raider", 1, 20).id();
+        scenario.with_counter(host, counter("arrow"), 1);
+        let trainings: Vec<ObjectId> = arrows
+            .iter()
+            .map(|&n| {
+                let id = scenario.add_creature(P0, "Archery Training", 0, 0).id();
+                scenario.with_counter(id, counter("arrow"), n);
+                id
+            })
+            .collect();
+        let mut runner = scenario.build();
+        for &at in &trainings {
+            attach(
+                &mut runner,
+                at,
+                host,
+                CoreType::Enchantment,
+                "Aura",
+                grant.clone(),
+            );
+        }
+        attack_with(&mut runner, raider);
+        drive(&mut runner, None);
+        (runner, host, trainings, raider)
+    }
+
+    fn granted_damage_indices(runner: &GameRunner, host: ObjectId) -> Vec<usize> {
+        runner.state().objects[&host]
+            .abilities
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(*a.effect, Effect::DealDamage { .. }))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn archery_training_damage_reads_the_granter_counters() {
+        let (mut runner, host, trainings, raider) = archery_training(&[2]);
+        let idx = granted_damage_indices(&runner, host);
+        assert_eq!(idx.len(), 1);
+        match runner.state().objects[&host].abilities[idx[0]]
+            .effect
+            .as_ref()
+        {
+            Effect::DealDamage { amount, .. } => assert_eq!(
+                *amount,
+                counters_on(bound(runner.state(), trainings[0]), "arrow")
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_ne!(trainings[0], host);
+        activate(&mut runner, host, idx[0], Some(raider));
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().objects[&raider].damage_marked, 2);
+    }
+
+    #[test]
+    fn archery_training_two_granters_each_read_their_own() {
+        let (mut runner, host, _trainings, raider) = archery_training(&[3, 2]);
+        let idx = granted_damage_indices(&runner, host);
+        assert_eq!(idx.len(), 2, "one granted ability per granter");
+        let mut dealt = Vec::new();
+        for i in idx {
+            let before = runner.state().objects[&raider].damage_marked;
+            runner.state_mut().objects.get_mut(&host).unwrap().tapped = false;
+            activate(&mut runner, host, i, Some(raider));
+            runner.advance_until_stack_empty();
+            dealt.push(runner.state().objects[&raider].damage_marked - before);
+        }
+        dealt.sort_unstable();
+        assert_eq!(dealt, vec![2, 3]);
+    }
+
+    #[test]
+    fn archery_training_removed_in_response_uses_last_known_counters() {
+        let (mut runner, host, trainings, raider) = archery_training(&[2]);
+        let idx = granted_damage_indices(&runner, host);
+        activate(&mut runner, host, idx[0], Some(raider));
+        assert_eq!(runner.state().stack.len(), 1);
+        move_to_zone(
+            runner.state_mut(),
+            trainings[0],
+            Zone::Graveyard,
+            &mut Vec::new(),
+        );
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().objects[&raider].damage_marked, 2);
+    }
+
+    fn add_gutter_grime(scenario: &mut GameScenario, slime: u32) -> ObjectId {
+        let mut trigger = parse_oracle_text(
+            GUTTER_GRIME,
+            "Gutter Grime",
+            &[],
+            &["Enchantment".to_string()],
+            &[],
+        )
+        .triggers
+        .remove(0);
+        let token = trigger
+            .execute
+            .as_mut()
+            .and_then(|e| e.sub_ability.as_mut())
+            .expect("token sub-ability");
+        match token.effect.as_mut() {
+            Effect::Token {
+                static_abilities, ..
+            } => {
+                for m in static_abilities[0].modifications.iter_mut() {
+                    match m {
+                        ContinuousModification::SetDynamicPower { value }
+                        | ContinuousModification::SetDynamicToughness { value } => {
+                            to_granter(value)
+                        }
+                        other => panic!("unexpected modification {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected Token, got {other:?}"),
+        }
+        let id = scenario
+            .add_creature(P0, "Gutter Grime", 0, 0)
+            .as_enchantment()
+            .with_trigger_definition(trigger)
+            .id();
+        scenario.with_counter(id, counter("slime"), slime);
+        id
+    }
+
+    fn oozes(state: &GameState) -> Vec<ObjectId> {
+        state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| state.objects[id].name == "Ooze")
+            .collect()
+    }
+
+    /// Kills a nontoken creature and stops with the Gutter Grime trigger(s) on the stack.
+    fn kill_victim_to_triggers(
+        scenario: GameScenario,
+        victim: ObjectId,
+        bolt: ObjectId,
+    ) -> GameRunner {
+        let mut runner = scenario.build();
+        {
+            let _cast = runner.cast(bolt).free_cast().target_object(victim).commit();
+        }
+        for _ in 0..8 {
+            if matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }) {
+                drive(&mut runner, None);
+            }
+            if runner.state().objects[&victim].zone == Zone::Graveyard
+                && !runner.state().stack.is_empty()
+            {
+                return runner;
+            }
+            runner.act(GameAction::PassPriority).unwrap();
+        }
+        panic!(
+            "trigger never reached the stack: {:?}",
+            runner.state().waiting_for
+        );
+    }
+
+    #[test]
+    fn gutter_grime_token_survives_at_the_granters_count() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let gg = add_gutter_grime(&mut scenario, 2);
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        runner.advance_until_stack_empty();
+        let tokens = oozes(runner.state());
+        assert_eq!(tokens.len(), 1);
+        let token = &runner.state().objects[&tokens[0]];
+        assert_eq!((token.power, token.toughness), (Some(3), Some(3)));
+        assert_ne!(tokens[0], gg);
+    }
+
+    #[test]
+    fn gutter_grime_two_granters_each_latch_their_own() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        add_gutter_grime(&mut scenario, 2);
+        add_gutter_grime(&mut scenario, 5);
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        runner.advance_until_stack_empty();
+        let mut sizes: Vec<_> = oozes(runner.state())
+            .iter()
+            .map(|id| runner.state().objects[id].power)
+            .collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![Some(3), Some(6)]);
+    }
+
+    #[test]
+    fn gutter_grime_blinked_before_resolution_latches_the_old_object() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let gg = add_gutter_grime(&mut scenario, 2);
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        {
+            let st = runner.state_mut();
+            move_to_zone(st, gg, Zone::Exile, &mut Vec::new());
+            move_to_zone(st, gg, Zone::Battlefield, &mut Vec::new());
+            st.objects
+                .get_mut(&gg)
+                .unwrap()
+                .counters
+                .insert(counter("slime"), 4);
+        }
+        let events = resolve_stack(&mut runner);
+        let token = events
+            .iter()
+            .find_map(|e| match e {
+                GameEvent::TokenCreated {
+                    object_id, name, ..
+                } if name == "Ooze" => Some(*object_id),
+                _ => None,
+            })
+            .expect("the trigger created the token");
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::ZoneChanged { object_id, from: Some(Zone::Battlefield), .. } if *object_id == token
+        )));
+        assert!(oozes(runner.state()).is_empty());
+    }
+
+    #[test]
+    fn gutter_grime_existing_token_dies_when_its_creator_is_blinked() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let gg = add_gutter_grime(&mut scenario, 2);
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        runner.advance_until_stack_empty();
+        let token = oozes(runner.state())[0];
+        assert_eq!(runner.state().objects[&token].power, Some(3));
+        {
+            let st = runner.state_mut();
+            move_to_zone(st, gg, Zone::Exile, &mut Vec::new());
+            move_to_zone(st, gg, Zone::Battlefield, &mut Vec::new());
+            st.objects
+                .get_mut(&gg)
+                .unwrap()
+                .counters
+                .insert(counter("slime"), 4);
+        }
+        relayer(runner.state_mut());
+        assert_eq!(runner.state().objects[&token].power, Some(0));
+    }
+
+    #[test]
+    fn gutter_grime_leaving_makes_its_token_zero() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let gg = add_gutter_grime(&mut scenario, 2);
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        runner.advance_until_stack_empty();
+        let token = oozes(runner.state())[0];
+        assert_eq!(runner.state().objects[&token].power, Some(3));
+        move_to_zone(runner.state_mut(), gg, Zone::Graveyard, &mut Vec::new());
+        relayer(runner.state_mut());
+        assert_eq!(runner.state().objects[&token].power, Some(0));
+    }
+
+    fn charge_power_grant() -> StaticDefinition {
+        let inner = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::SetDynamicPower {
+                value: counters_on(ObjectScope::GrantingObject, "charge"),
+            }]);
+        StaticDefinition::continuous()
+            .affected(TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::EquippedBy]),
+            ))
+            .modifications(vec![ContinuousModification::GrantStaticAbility {
+                definition: Box::new(inner),
+            }])
+    }
+
+    #[test]
+    fn granted_static_reads_its_granters_counters() {
+        let mut scenario = GameScenario::new();
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let other_host = scenario.add_creature(P0, "Other Bearer", 2, 2).id();
+        let granter = scenario.add_creature(P0, "Charger", 0, 0).id();
+        let other = scenario.add_creature(P0, "Other Charger", 0, 0).id();
+        scenario.with_counter(host, counter("charge"), 1);
+        scenario.with_counter(granter, counter("charge"), 3);
+        scenario.with_counter(other, counter("charge"), 5);
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            granter,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            charge_power_grant(),
+        );
+        attach(
+            &mut runner,
+            other,
+            other_host,
+            CoreType::Artifact,
+            "Equipment",
+            charge_power_grant(),
+        );
+        let st = runner.state();
+        assert_eq!(st.objects[&host].power, Some(3));
+        assert_eq!(st.objects[&other_host].power, Some(5));
+        let installed = st.objects[&host]
+            .static_definitions
+            .as_slice()
+            .iter()
+            .flat_map(|s| s.modifications.iter())
+            .find_map(|m| match m {
+                ContinuousModification::SetDynamicPower { value } => Some(value.clone()),
+                _ => None,
+            })
+            .expect("the granted static is installed on the host");
+        assert_eq!(installed, counters_on(bound(st, granter), "charge"));
+    }
+
+    fn blunderbuss_grant() -> StaticDefinition {
+        let mut grant = grant_static(
+            DIRE_BLUNDERBUSS,
+            "Dire Blunderbuss",
+            "Artifact",
+            "Equipment",
+        );
+        match granted_execute(&mut grant).effect.as_mut() {
+            Effect::Sacrifice {
+                target: TargetFilter::Typed(typed),
+                ..
+            } => {
+                let another = typed
+                    .properties
+                    .iter()
+                    .position(|p| matches!(p, FilterProp::Another))
+                    .expect("the parser's Another leaf");
+                typed.properties[another] = FilterProp::DistinctFrom {
+                    reference: Box::new(TargetFilter::GrantingObject),
+                };
+            }
+            other => panic!("expected a typed Sacrifice, got {other:?}"),
+        }
+        grant
+    }
+
+    #[test]
+    fn dire_blunderbuss_cannot_sacrifice_itself() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let db = scenario.add_creature(P0, "Dire Blunderbuss", 0, 0).id();
+        let relic = scenario.add_creature(P0, "Relic", 0, 0).id();
+        let idol = scenario.add_creature(P0, "Idol", 0, 0).id();
+        let mut runner = scenario.build();
+        make_artifact(runner.state_mut(), relic);
+        make_artifact(runner.state_mut(), idol);
+        attach(
+            &mut runner,
+            db,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            blunderbuss_grant(),
+        );
+        attack_with(&mut runner, host);
+        drive(&mut runner, None);
+        let choices = match &runner.state().waiting_for {
+            WaitingFor::EffectZoneChoice {
+                cards,
+                effect_kind: EffectKind::Sacrifice,
+                ..
+            } => cards.clone(),
+            other => panic!("expected a sacrifice choice, got {other:?}"),
+        };
+        assert!(
+            choices.contains(&relic) && choices.contains(&idol),
+            "{choices:?}"
+        );
+        assert!(!choices.contains(&db), "{choices:?}");
+    }
+
+    #[test]
+    fn distinct_from_a_bound_granter_excludes_it_across_trigger_batches() {
+        let mut scenario = GameScenario::new();
+        let host = scenario.add_creature(P0, "Host", 2, 2).id();
+        let granter = scenario.add_creature(P0, "Granter", 0, 0).id();
+        let other = scenario.add_creature(P0, "Other", 0, 0).id();
+        let mut runner = scenario.build();
+        make_artifact(runner.state_mut(), granter);
+        make_artifact(runner.state_mut(), other);
+        let st = runner.state_mut();
+        st.current_trigger_events = vec![
+            GameEvent::PermanentTapped {
+                object_id: host,
+                caused_by: None,
+            },
+            GameEvent::PermanentTapped {
+                object_id: other,
+                caused_by: None,
+            },
+        ];
+        let st = runner.state();
+        let specific = Box::new(TargetFilter::SpecificObject { id: granter });
+        let distinct =
+            TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact).properties(vec![
+                FilterProp::DistinctFrom {
+                    reference: specific.clone(),
+                },
+            ]));
+        let control = TargetFilter::And {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+                TargetFilter::Not { filter: specific },
+            ],
+        };
+        let ctx = FilterContext::from_source(st, host);
+        for filter in [&distinct, &control] {
+            assert!(!matches_target_filter(st, granter, filter, &ctx));
+            assert!(matches_target_filter(st, other, filter, &ctx));
+        }
+    }
+
+    #[test]
+    fn nettlevine_blight_attach_moves_the_granter() {
+        let mut grant = grant_static(
+            NETTLEVINE_BLIGHT,
+            "Nettlevine Blight",
+            "Enchantment",
+            "Aura",
+        );
+        match granted_execute(&mut grant)
+            .sub_ability
+            .as_mut()
+            .map(|s| s.effect.as_mut())
+        {
+            Some(Effect::Attach { attachment, .. }) => {
+                assert_eq!(*attachment, TargetFilter::SelfRef);
+                *attachment = TargetFilter::GrantingObject;
+            }
+            other => panic!("expected Attach, got {other:?}"),
+        }
+        let mut scenario = GameScenario::new();
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let blight = scenario.add_creature(P0, "Nettlevine Blight", 0, 0).id();
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            blight,
+            host,
+            CoreType::Enchantment,
+            "Aura",
+            grant,
+        );
+        let attachment = runner.state().objects[&host]
+            .trigger_definitions
+            .as_slice()
+            .iter()
+            .find_map(|t| {
+                match t
+                    .definition
+                    .execute
+                    .as_ref()?
+                    .sub_ability
+                    .as_ref()?
+                    .effect
+                    .as_ref()
+                {
+                    Effect::Attach { attachment, .. } => Some(attachment.clone()),
+                    _ => None,
+                }
+            })
+            .expect("the granted trigger is on the host");
+        assert_eq!(attachment, TargetFilter::SpecificObject { id: blight });
+        assert_ne!(blight, host);
+    }
+
+    fn heliods_punishment_grant() -> StaticDefinition {
+        let mut grant = grant_static(
+            HELIODS_PUNISHMENT,
+            "Heliod's Punishment",
+            "Enchantment",
+            "Aura",
+        );
+        let def = granted_ability(&mut grant);
+        match def.effect.as_mut() {
+            Effect::RemoveCounter { target, .. } if *target == TargetFilter::SelfRef => {
+                *target = TargetFilter::GrantingObject
+            }
+            other => panic!("expected RemoveCounter on SelfRef, got {other:?}"),
+        }
+        let sub = def.sub_ability.as_mut().expect("the destroy clause");
+        match sub.effect.as_mut() {
+            Effect::Destroy { target, .. } if *target == TargetFilter::SelfRef => {
+                *target = TargetFilter::GrantingObject
+            }
+            other => panic!("expected Destroy on SelfRef, got {other:?}"),
+        }
+        match sub.condition.as_mut() {
+            Some(AbilityCondition::QuantityCheck { lhs, .. }) => to_granter(lhs),
+            other => panic!("expected a QuantityCheck, got {other:?}"),
+        }
+        grant
+    }
+
+    #[test]
+    fn heliods_punishment_counts_and_destroys_the_granter() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let hp = scenario.add_creature(P0, "Heliod's Punishment", 0, 0).id();
+        scenario.with_counter(hp, counter("task"), 2);
+        scenario.with_counter(host, counter("task"), 1);
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            hp,
+            host,
+            CoreType::Enchantment,
+            "Aura",
+            heliods_punishment_grant(),
+        );
+        let index = runner.state().objects[&host].abilities.len() - 1;
+
+        activate(&mut runner, host, index, None);
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        assert_eq!(st.objects[&hp].counters.get(&counter("task")), Some(&1));
+        assert_eq!(st.objects[&host].counters.get(&counter("task")), Some(&1));
+        assert_eq!(st.objects[&hp].zone, Zone::Battlefield);
+
+        runner.state_mut().objects.get_mut(&host).unwrap().tapped = false;
+        activate(&mut runner, host, index, None);
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().objects[&hp].zone, Zone::Graveyard);
+        assert_eq!(runner.state().objects[&host].zone, Zone::Battlefield);
+    }
+
+    #[test]
+    fn bound_condition_reads_the_granter_not_the_host() {
+        for (granter_n, host_n, bound_runs, source_runs) in
+            [(0, 2, true, false), (1, 0, false, true)]
+        {
+            let mut scenario = GameScenario::new();
+            let host = scenario.add_creature(P0, "Host", 2, 2).id();
+            let granter = scenario.add_creature(P0, "Granter", 0, 3).id();
+            scenario.with_counter(host, counter("task"), host_n);
+            scenario.with_counter(granter, counter("task"), granter_n);
+            let mut runner = scenario.build();
+            let granter_scope = bound(runner.state(), granter);
+            for (scope, runs) in [
+                (granter_scope, bound_runs),
+                (ObjectScope::Source, source_runs),
+            ] {
+                let mut st = runner.state_mut().clone();
+                let life = st.players[0].life;
+                let gain = |n| Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: n },
+                    player: TargetFilter::Controller,
+                };
+                let mut sub = ResolvedAbility::new(gain(1), vec![], host, P0);
+                sub.condition = Some(AbilityCondition::QuantityCheck {
+                    lhs: counters_on(scope, "task"),
+                    comparator: Comparator::EQ,
+                    rhs: QuantityExpr::Fixed { value: 0 },
+                });
+                let mut root = ResolvedAbility::new(gain(10), vec![], host, P0);
+                root.sub_ability = Some(Box::new(sub));
+                resolve_ability_chain(&mut st, &root, &mut Vec::new(), 0).unwrap();
+                assert_eq!(
+                    st.players[0].life - life,
+                    if runs { 11 } else { 10 },
+                    "{scope:?}"
+                );
+            }
+        }
+    }
+
+    const UPKEEP_GAIN: &str =
+        "Equipped creature has \"At the beginning of your upkeep, you gain 1 life.\"";
+
+    fn upkeep_grant(granter_counters: bool) -> StaticDefinition {
+        let mut grant = grant_static(UPKEEP_GAIN, "Charger", "Artifact", "Equipment");
+        if granter_counters {
+            match granted_execute(&mut grant).effect.as_mut() {
+                Effect::GainLife { amount, .. } => {
+                    *amount = counters_on(ObjectScope::GrantingObject, "charge")
+                }
+                other => panic!("expected GainLife, got {other:?}"),
+            }
+        }
+        grant
+    }
+
+    fn upkeep_runner(pairs: usize, granter_counters: bool) -> GameRunner {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::Untap);
+        let pairs: Vec<(ObjectId, ObjectId)> = (0..pairs)
+            .map(|i| {
+                let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+                let granter = scenario.add_creature(P0, "Charger", 0, 0).id();
+                scenario.with_counter(host, counter("charge"), 1);
+                scenario.with_counter(granter, counter("charge"), 2 + i as u32);
+                (host, granter)
+            })
+            .collect();
+        let mut runner = scenario.build();
+        for (host, granter) in pairs {
+            attach(
+                &mut runner,
+                granter,
+                host,
+                CoreType::Artifact,
+                "Equipment",
+                upkeep_grant(granter_counters),
+            );
+        }
+        runner.advance_to_upkeep();
+        runner
+    }
+
+    #[test]
+    fn granted_trigger_gains_the_granters_counters() {
+        let mut runner = upkeep_runner(1, true);
+        let life = runner.state().players[0].life;
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().players[0].life - life, 2);
+    }
+
+    #[test]
+    fn granted_triggers_bound_to_distinct_granters_need_ordering() {
+        let runner = upkeep_runner(2, true);
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::OrderTriggers { .. }
+        ));
+        let control = upkeep_runner(2, false);
+        assert!(matches!(
+            control.state().waiting_for,
+            WaitingFor::Priority { .. }
+        ));
+        assert_eq!(control.state().stack.len(), 2);
+    }
+
+    #[test]
+    fn spare_dagger_sacrifices_the_dagger_and_deals_damage() {
+        let grant = grant_static(SPARE_DAGGER, "Spare Dagger", "Artifact", "Equipment");
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let dagger = scenario.add_creature(P0, "Spare Dagger", 0, 0).id();
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            dagger,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            grant,
+        );
+        let life = runner.state().players[1].life;
+        attack_with(&mut runner, host);
+        drive(&mut runner, Some(TargetRef::Player(P1)));
+        let st = runner.state();
+        assert_eq!(st.objects[&dagger].zone, Zone::Graveyard);
+        assert_eq!(st.objects[&host].zone, Zone::Battlefield);
+        assert_eq!(st.players[1].life, life - 1);
+    }
+
+    #[test]
+    fn every_condition_and_quantity_arm_binds_the_granter() {
+        let g = || counters_on(ObjectScope::GrantingObject, "charge");
+        let check = |lhs, rhs| AbilityCondition::QuantityCheck {
+            lhs,
+            comparator: Comparator::GE,
+            rhs,
+        };
+        let fixed = || QuantityExpr::Fixed { value: 0 };
+        let condition = AbilityCondition::And {
+            conditions: vec![
+                check(
+                    QuantityExpr::Difference {
+                        left: Box::new(QuantityExpr::Offset {
+                            inner: Box::new(g()),
+                            offset: 1,
+                        }),
+                        right: Box::new(QuantityExpr::Sum { exprs: vec![g()] }),
+                    },
+                    fixed(),
+                ),
+                AbilityCondition::Or {
+                    conditions: vec![
+                        check(fixed(), g()),
+                        AbilityCondition::Not {
+                            condition: Box::new(check(g(), fixed())),
+                        },
+                    ],
+                },
+                AbilityCondition::ConditionInstead {
+                    inner: Box::new(check(g(), fixed())),
+                },
+                AbilityCondition::PreviousEffectAmount {
+                    comparator: Comparator::GE,
+                    rhs: g(),
+                    channel: Default::default(),
+                },
+            ],
+        };
+        let generic = Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::continuous()
+                .affected(TargetFilter::GrantingObject)
+                .modifications(vec![ContinuousModification::SetDynamicPower { value: g() }])],
+            duration: None,
+            target: None,
+            end_cost: None,
+        };
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap)
+        .sub_ability(AbilityDefinition::new(AbilityKind::Spell, generic));
+        def.condition = Some(condition);
+        let grant = StaticDefinition::continuous()
+            .affected(TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::EquippedBy]),
+            ))
+            .modifications(vec![ContinuousModification::GrantAbility {
+                definition: Box::new(def),
+            }]);
+
+        let mut scenario = GameScenario::new();
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let granter = scenario.add_creature(P0, "Charger", 0, 0).id();
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            granter,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            grant,
+        );
+        let st = runner.state();
+        let copy = st.objects[&host]
+            .abilities
+            .last()
+            .expect("the granted ability");
+        let json = serde_json::to_string(copy).unwrap();
+        let scope = serde_json::to_string(&bound(st, granter)).unwrap();
+        let filter = serde_json::to_string(&TargetFilter::SpecificObject { id: granter }).unwrap();
+        assert_eq!(json.matches(&scope).count(), 7, "{json}");
+        assert_eq!(json.matches(&filter).count(), 1, "{json}");
+        assert!(!json.contains("GrantingObject"), "{json}");
+    }
+
+    #[test]
+    fn trusty_boomerang_taps_the_target_and_returns_itself() {
+        let grant = grant_static(
+            TRUSTY_BOOMERANG,
+            "Trusty Boomerang",
+            "Artifact",
+            "Equipment",
+        );
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_mana_pool(
+            P0,
+            vec![ManaUnit::new(
+                ManaType::Colorless,
+                ObjectId(0),
+                false,
+                vec![],
+            )],
+        );
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let boomerang = scenario.add_creature(P0, "Trusty Boomerang", 0, 0).id();
+        let victim = scenario.add_creature(P1, "Victim", 2, 2).id();
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            boomerang,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            grant,
+        );
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&boomerang)
+            .unwrap()
+            .keywords
+            .push(Keyword::Shroud);
+        let index = runner.state().objects[&host].abilities.len() - 1;
+        activate(&mut runner, host, index, Some(victim));
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        assert!(st.objects[&victim].tapped);
+        assert_eq!(st.objects[&boomerang].zone, Zone::Hand);
+        assert_eq!(st.objects[&host].zone, Zone::Battlefield);
+    }
+}

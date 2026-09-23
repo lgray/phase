@@ -912,7 +912,7 @@ fn affected_names_the_source(affected: Option<&TargetFilter>) -> bool {
 /// Mutable mirror of `game::quantity::continuous_modification_dynamic_quantity`.
 /// Enumerated without a wildcard for the same reason the immutable twin is: a
 /// future `QuantityExpr`-carrying variant must force a decision in both.
-fn continuous_modification_dynamic_quantity_mut(
+pub(crate) fn continuous_modification_dynamic_quantity_mut(
     m: &mut ContinuousModification,
 ) -> Option<&mut QuantityExpr> {
     match m {

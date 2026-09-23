@@ -712,6 +712,9 @@ pub fn resolve_event_context_target(
             .first()
             .copied()
             .map(TargetRef::Object),
+        // CR 201.5a + CR 115.10a: a concretized by-name reference names its object
+        // directly, independent of any trigger event.
+        TargetFilter::SpecificObject { id } => Some(TargetRef::Object(*id)),
         TargetFilter::AttachedTo
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
@@ -770,6 +773,8 @@ pub fn resolve_event_context_targets(
                 .map(|id| TargetRef::Object(*id))
                 .collect();
         }
+        // CR 201.5a + CR 115.10a: one named object, not one per batched event.
+        TargetFilter::SpecificObject { id } => return vec![TargetRef::Object(*id)],
         _ => {}
     }
 
@@ -829,10 +834,8 @@ pub fn resolved_targets(
     // before the `ability.targets` fallback so chained "Exile ~" sub-abilities
     // don't accidentally inherit the parent's targets via the chain target
     // propagation in `effects::mod.rs::resolve_chain`.
-    // CR 201.5a: `GrantingObject` is always concretized to `SpecificObject` at
-    // grant-clone time and should never reach here; the arm is a fail-safe that
-    // degrades an un-concretized granter ref to the ability source (host) — the
-    // pre-fix binding, never worse.
+    // CR 201.5a: an unwalked `GrantingObject` resolves to the exact current
+    // ability source.
     if matches!(
         target_filter,
         TargetFilter::SelfRef | TargetFilter::GrantingObject
@@ -1250,6 +1253,8 @@ pub(crate) fn is_pure_event_context_filter(target_filter: &TargetFilter) -> bool
             | TargetFilter::PostReplacementSourceController
             | TargetFilter::PostReplacementDamageTarget
             | TargetFilter::PostReplacementDamageTargetOwner
+            // CR 201.5a + CR 115.10a: resolved from its bound id, never chosen.
+            | TargetFilter::SpecificObject { .. }
     )
 }
 
@@ -1351,9 +1356,8 @@ pub(crate) fn resolved_object_ids_for_filter_with_context(
         // CR 400.7: self-reference resolves only to the exact source or its own
         // immediate recorded event successor; a blinked-and-returned source
         // (higher incarnation) finds nothing.
-        // CR 201.5a: an un-concretized `GrantingObject` degrades to the source
-        // (host) — fail-safe; it is normally rewritten to `SpecificObject` at
-        // grant-clone time.
+        // CR 201.5a: an unwalked `GrantingObject` resolves to the exact current
+        // ability source.
         TargetFilter::SelfRef => ability
             .self_ref_is_current(state)
             .then_some(ability.source_id)

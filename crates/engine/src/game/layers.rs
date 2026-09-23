@@ -6850,6 +6850,16 @@ fn expand_granted_static_effects(
     if inner.mode != StaticMode::Continuous {
         return Vec::new();
     }
+    // CR 201.5a: the host static's object granted `inner`, so its by-name
+    // references bind to that object.
+    let mut concretized = inner.clone();
+    if let Some(host) = state.objects.get(&host_source_id) {
+        super::ability_utils::concretize_granting_object_in_static(
+            &mut concretized,
+            ObjectIncarnationRef::from_object(host),
+        );
+    }
+    let inner = &concretized;
     let inner_affected = inner.affected.clone().unwrap_or(TargetFilter::Any);
     let ctx = crate::game::filter::FilterContext::from_source(state, host_source_id);
     let mut out = Vec::new();
@@ -8898,6 +8908,11 @@ fn apply_continuous_effect_filtered(
         None
     };
     let all_creature_types = state.all_creature_types.clone();
+    // CR 201.5a: a granted body's by-name references bind to the granting object.
+    let granter = state
+        .objects
+        .get(&effect.source_id)
+        .map(ObjectIncarnationRef::from_object);
 
     for &id in affected_ids {
         // CR 613.4c: When the dynamic modification's QuantityExpr depends on
@@ -9427,12 +9442,14 @@ fn apply_continuous_effect_filtered(
             ContinuousModification::GrantAbility { definition } => {
                 // CR 201.5a + CR 613.1f: concretize any granter by-name
                 // self-reference (`GrantingObject`) in the cloned body to the
-                // live granting object (`effect.source_id`) before dedup/push,
-                // so "Exile/Sacrifice/Return <granter-name>" acts on the
-                // equipment/aura, not on the host it was granted to. Re-minted
-                // each layer pass (CR 613.1f). Dedup on the concretized value.
+                // granting object before dedup/push, so "Exile/Sacrifice/Return
+                // <granter-name>" acts on the equipment/aura, not on the host it
+                // was granted to. Re-minted each layer pass (CR 613.1f). Dedup on
+                // the concretized value.
                 let mut granted = *definition.clone();
-                super::ability_utils::concretize_granting_object(&mut granted, effect.source_id);
+                if let Some(granter) = granter {
+                    super::ability_utils::concretize_granting_object(&mut granted, granter);
+                }
                 if !obj.abilities.iter().any(|a| a == &granted) {
                     Arc::make_mut(&mut obj.abilities).push(granted);
                 }
@@ -9452,13 +9469,15 @@ fn apply_continuous_effect_filtered(
             ContinuousModification::GrantTrigger { trigger } => {
                 // CR 201.5a + CR 613.1f: concretize a granter by-name
                 // self-reference inside the granted trigger's execute chain
-                // (e.g. "you may sacrifice <granter>") to the live granting
-                // object before dedup/push. Re-minted each layer pass (CR 613.1f).
+                // (e.g. "you may sacrifice <granter>") to the granting object
+                // before dedup/push. Re-minted each layer pass (CR 613.1f).
                 let mut granted = *trigger.clone();
-                super::ability_utils::concretize_granting_object_in_trigger(
-                    &mut granted,
-                    effect.source_id,
-                );
+                if let Some(granter) = granter {
+                    super::ability_utils::concretize_granting_object_in_trigger(
+                        &mut granted,
+                        granter,
+                    );
+                }
                 let producer = effect
                     .expanded_trigger_provider
                     .as_ref()
@@ -9476,19 +9495,22 @@ fn apply_continuous_effect_filtered(
             // CR 113.3d + CR 604.1 + CR 613.1f: Grant a full static ability to the
             // recipient. The inner static's `affected`/`condition`/`modifications`
             // are independent of the recipient (e.g. "Other commanders you control
-            // get +2/+2 and have lifelink") and are preserved verbatim, so the
-            // granted static operates against its own scope under CR 611.2c once
-            // it's installed on the recipient's `static_definitions`. Dedup by
-            // structural equality so repeated layer passes don't multiply the
-            // grant (mirrors the `GrantAbility` / `GrantTrigger` / `AddStaticMode`
-            // idempotency invariant in this match).
+            // get +2/+2 and have lifelink") and are preserved apart from granter
+            // concretization (CR 201.5a), so the granted static operates against
+            // its own scope under CR 611.2c once it's installed on the recipient's
+            // `static_definitions`. Dedup by structural equality so repeated layer
+            // passes don't multiply the grant (mirrors the `GrantAbility` /
+            // `GrantTrigger` / `AddStaticMode` idempotency invariant in this match).
             ContinuousModification::GrantStaticAbility { definition } => {
-                if !obj
-                    .static_definitions
-                    .iter_all()
-                    .any(|sd| sd == definition.as_ref())
-                {
-                    obj.static_definitions.push(*definition.clone());
+                let mut granted = *definition.clone();
+                if let Some(granter) = granter {
+                    super::ability_utils::concretize_granting_object_in_static(
+                        &mut granted,
+                        granter,
+                    );
+                }
+                if !obj.static_definitions.iter_all().any(|sd| sd == &granted) {
+                    obj.static_definitions.push(granted);
                 }
             }
             // CR 614.1a + CR 614.6 + CR 613.1f: Grant an object-hosted replacement

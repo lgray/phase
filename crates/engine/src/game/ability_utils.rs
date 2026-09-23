@@ -6,8 +6,8 @@ use crate::types::ability::{
     CounterMoveSelection, DamageSource, EachDamageRecipient, Effect, EffectKind, EffectScope,
     FilterProp, GameRestriction, ModalChoice, ModalSelectionCondition, ModalSelectionConstraint,
     MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
-    ResolvedAbility, RestrictionPlayerScope, SpellContext, SubAbilityLink, TargetChoiceTiming,
-    TargetFilter, TargetRef, TriggerDefinition, TypeFilter, TypedFilter,
+    ResolvedAbility, RestrictionPlayerScope, SpellContext, StaticDefinition, SubAbilityLink,
+    TargetChoiceTiming, TargetFilter, TargetRef, TriggerDefinition, TypeFilter, TypedFilter,
 };
 // CR 601.2c: mana recipient / count-source role slot gate.
 use crate::types::ability::mana_multi_role;
@@ -6892,37 +6892,29 @@ fn rewrite_declared_target_player(
     rewrite_relative_controller(&rewritten, ControllerRef::TargetOpponent, to)
 }
 
-/// CR 201.5a + CR 613.1f: Concretize `TargetFilter::GrantingObject` → the live
-/// granting object once a granted ability is cloned onto its recipient at a
-/// Layer-6 grant (`game/layers.rs` GrantAbility/GrantTrigger). `granter` is the
-/// granting object's id (`effect.source_id` at the grant site). Walks the
-/// definition's cost, effect, and nested sub/else/mode abilities.
+/// CR 201.5a + CR 613.1f: Concretize the granter symbol in a body granted by
+/// `granter` (Layer-6 grants in `game/layers.rs`, token statics in
+/// `effects/token.rs`). Walks the definition's cost, effect, condition, and
+/// nested sub/else/mode abilities.
 ///
 /// This is the single concretization point: at parse time the granted body's
-/// by-name reference to its granting object is a symbolic `GrantingObject`; here
-/// it becomes a concrete `SpecificObject { id }`, so no new runtime resolution
-/// logic is required. Host self-references (`SelfRef`) and every other filter
-/// are left untouched — the dual binding (granter vs. host) is preserved.
-/// Idempotent and re-minted each layer pass (CR 613.1f: Layer 6 ability-adding
-/// effects are applied fresh each pass).
-///
-/// ZONE-MOVE SCOPING (CR 201.5a second sentence + CR 400.7): the snapshot binds
-/// the granter's CURRENT battlefield id. It is correct only while the granter is
-/// not moved-then-re-referenced within a single resolution. CR 201.5a's second
-/// sentence — "if the second ability also moved the first ability's source to a
-/// different public zone, the name refers to the object the source became in its
-/// new zone" — is not modeled: a granter that leaves the battlefield becomes a
-/// new object (CR 400.7), so a later reference would need the new-zone object.
-/// No R4 card requires this today: Hammer/Bracelet move as a *cost* (paid and
-/// gone before the effect, never re-referenced); Trusty/Razor/Toralf Boomerang
-/// return themselves as their final action. A future card that exiles-or-moves
-/// its granter and then references it again in the same resolution must extend
-/// this to carry the post-move incarnation.
-pub(crate) fn concretize_granting_object(def: &mut AbilityDefinition, granter: ObjectId) {
+/// by-name reference to its granting object is a symbolic `GrantingObject`;
+/// here target references become `SpecificObject { id }` and quantity
+/// references become `ObjectScope::SpecificObject` bound to the exact
+/// incarnation. Host self-references (`SelfRef`, `Source`) and every other
+/// filter are left untouched — the dual binding (granter vs. host) is
+/// preserved. Idempotent.
+pub(crate) fn concretize_granting_object(
+    def: &mut AbilityDefinition,
+    granter: ObjectIncarnationRef,
+) {
     if let Some(cost) = def.cost.as_mut() {
         concretize_granting_object_in_cost(cost, granter);
     }
     concretize_granting_object_in_effect(def.effect.as_mut(), granter);
+    if let Some(condition) = def.condition.as_mut() {
+        concretize_granting_object_in_condition(condition, granter);
+    }
     if let Some(sub) = def.sub_ability.as_mut() {
         concretize_granting_object(sub, granter);
     }
@@ -6940,16 +6932,39 @@ pub(crate) fn concretize_granting_object(def: &mut AbilityDefinition, granter: O
 /// by-name self-reference, so only `execute` is walked.
 pub(crate) fn concretize_granting_object_in_trigger(
     trigger: &mut TriggerDefinition,
-    granter: ObjectId,
+    granter: ObjectIncarnationRef,
 ) {
     if let Some(execute) = trigger.execute.as_mut() {
         concretize_granting_object(execute, granter);
     }
 }
 
-fn concretize_granting_object_in_filter(filter: &mut TargetFilter, granter: ObjectId) {
+/// CR 201.5a: Concretize the granter symbol in a static installed on another
+/// object — a granted static ability or a created token's static — through its
+/// `affected` filter and each modification's dynamic quantity.
+pub(crate) fn concretize_granting_object_in_static(
+    def: &mut StaticDefinition,
+    granter: ObjectIncarnationRef,
+) {
+    if let Some(affected) = def.affected.as_mut() {
+        concretize_granting_object_in_filter(affected, granter);
+    }
+    for modification in def.modifications.iter_mut() {
+        if let Some(value) =
+            crate::parser::oracle_static::continuous_modification_dynamic_quantity_mut(modification)
+        {
+            concretize_granting_object_in_quantity(value, granter);
+        }
+    }
+}
+
+fn concretize_granting_object_in_filter(filter: &mut TargetFilter, granter: ObjectIncarnationRef) {
     match filter {
-        TargetFilter::GrantingObject => *filter = TargetFilter::SpecificObject { id: granter },
+        TargetFilter::GrantingObject => {
+            *filter = TargetFilter::SpecificObject {
+                id: granter.object_id,
+            }
+        }
         TargetFilter::Not { filter } => concretize_granting_object_in_filter(filter, granter),
         TargetFilter::Or { filters } | TargetFilter::And { filters } => {
             for f in filters {
@@ -6958,9 +6973,12 @@ fn concretize_granting_object_in_filter(filter: &mut TargetFilter, granter: Obje
         }
         _ => {}
     }
+    crate::game::filter::rewrite_distinct_from_references(filter, &mut |reference| {
+        concretize_granting_object_in_filter(reference, granter)
+    });
 }
 
-fn concretize_granting_object_in_cost(cost: &mut AbilityCost, granter: ObjectId) {
+fn concretize_granting_object_in_cost(cost: &mut AbilityCost, granter: ObjectIncarnationRef) {
     match cost {
         AbilityCost::Sacrifice(sac) => {
             concretize_granting_object_in_filter(&mut sac.target, granter)
@@ -6985,12 +7003,13 @@ fn concretize_granting_object_in_cost(cost: &mut AbilityCost, granter: ObjectId)
 }
 
 /// Mirrors the canonical target-bearing `Effect` list
-/// (`oracle_effect::rewrite_parent_targets_to_tracked_set`). Effects with no
-/// `target` slot cannot carry a `GrantingObject`, so `_ => {}` is complete for
-/// the emitting parser paths; any future target-bearing effect that is missed
-/// degrades fail-safe (runtime resolves an un-concretized `GrantingObject` to
-/// the ability source — the pre-fix host binding), never worse.
-fn concretize_granting_object_in_effect(effect: &mut Effect, granter: ObjectId) {
+/// (`oracle_effect::rewrite_parent_targets_to_tracked_set`). Unlisted effects'
+/// target slots, `CreateDelayedTrigger`'s payload included, keep
+/// `GrantingObject` symbolic, which runtime resolves to the exact current
+/// ability source (`source_is_current`) or, inside a filter, to no object;
+/// every quantity `each_quantity_expr_mut` visits, delayed payloads included,
+/// is concretized.
+fn concretize_granting_object_in_effect(effect: &mut Effect, granter: ObjectIncarnationRef) {
     match effect {
         Effect::SetTapState {
             scope: EffectScope::Single,
@@ -7026,12 +7045,20 @@ fn concretize_granting_object_in_effect(effect: &mut Effect, granter: ObjectId) 
         | Effect::ChangeZone { target, .. }
         | Effect::ChangeZoneAll { target, .. }
         | Effect::CastFromZone { target, .. }
-        | Effect::Attach { target, .. }
-        | Effect::UnattachAll { target, .. } => {
+        | Effect::UnattachAll { target, .. }
+        // CR 201.5a + CR 701.21a: "sacrifice <granter>" sacrifices the granting
+        // object, not the host.
+        | Effect::Sacrifice { target, .. } => {
             concretize_granting_object_in_filter(target, granter)
         }
+        Effect::Attach {
+            target, attachment, ..
+        } => {
+            concretize_granting_object_in_filter(target, granter);
+            concretize_granting_object_in_filter(attachment, granter);
+        }
         // Parity with `rewrite_parent_targets_to_tracked_set`: walk both the
-        // GenericEffect target and any granted static's `affected` filter.
+        // GenericEffect target and every granted static.
         Effect::GenericEffect {
             target,
             static_abilities,
@@ -7041,12 +7068,225 @@ fn concretize_granting_object_in_effect(effect: &mut Effect, granter: ObjectId) 
                 concretize_granting_object_in_filter(t, granter);
             }
             for static_def in static_abilities.iter_mut() {
-                if let Some(affected) = static_def.affected.as_mut() {
-                    concretize_granting_object_in_filter(affected, granter);
-                }
+                concretize_granting_object_in_static(static_def, granter);
             }
         }
         _ => {}
+    }
+    crate::parser::oracle_effect::each_quantity_expr_mut(effect, &mut |quantity| {
+        concretize_granting_object_in_quantity(quantity, granter)
+    });
+}
+
+fn concretize_granting_object_in_condition(
+    condition: &mut AbilityCondition,
+    granter: ObjectIncarnationRef,
+) {
+    match condition {
+        AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
+            concretize_granting_object_in_quantity(lhs, granter);
+            concretize_granting_object_in_quantity(rhs, granter);
+        }
+        AbilityCondition::PreviousEffectAmount { rhs, .. } => {
+            concretize_granting_object_in_quantity(rhs, granter)
+        }
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            for inner in conditions.iter_mut() {
+                concretize_granting_object_in_condition(inner, granter);
+            }
+        }
+        AbilityCondition::Not { condition: inner }
+        | AbilityCondition::ConditionInstead { inner } => {
+            concretize_granting_object_in_condition(inner, granter)
+        }
+        // `subject` names the paid spell (Source/Target); a granter pays no cost
+        // for its granted ability.
+        AbilityCondition::AdditionalCostPaid { .. } | AbilityCondition::CastVariantPaid { .. } => {}
+        // Filter-borne granter references are outside this concretizer's bound
+        // channels; no producer emits one here.
+        AbilityCondition::RevealedHasCardType { .. }
+        | AbilityCondition::ObjectsShareQuality { .. }
+        | AbilityCondition::TargetSharesNameWithOtherExiledThisWay { .. }
+        | AbilityCondition::DiscardedCardMatchesFilter { .. }
+        | AbilityCondition::TargetHasKeywordInstead { .. }
+        | AbilityCondition::TargetMatchesFilter { .. }
+        | AbilityCondition::TriggeringSpellTargetsFilter { .. }
+        | AbilityCondition::SourceMatchesFilter { .. }
+        | AbilityCondition::PostReplacementDamageSourceMatchesFilter { .. }
+        | AbilityCondition::ZoneChangeObjectMatchesFilter { .. }
+        | AbilityCondition::ControllerControlsMatching { .. }
+        | AbilityCondition::ControllerControlledMatchingAsCast { .. }
+        | AbilityCondition::ZoneChangedThisWay { .. }
+        | AbilityCondition::CostPaidObjectMatchesFilter { .. }
+        | AbilityCondition::SourceLacksKeyword { .. }
+        | AbilityCondition::ScopedPlayerMatches { .. } => {}
+        // Carries no QuantityExpr, ObjectScope or TargetFilter.
+        AbilityCondition::TriggerEventTargetDamagedBySourceThisTurn
+        | AbilityCondition::AdditionalCostPaidInstead
+        | AbilityCondition::AlternativeManaCostPaid
+        | AbilityCondition::EffectOutcome { .. }
+        | AbilityCondition::EventOutcomeWon
+        | AbilityCondition::CoinFlipOutcome { .. }
+        | AbilityCondition::WhenYouDo
+        | AbilityCondition::WasCast { .. }
+        | AbilityCondition::CastDuringPhase { .. }
+        | AbilityCondition::CurrentPhaseIs { .. }
+        | AbilityCondition::CastTimingPermission { .. }
+        | AbilityCondition::ManaColorSpent { .. }
+        | AbilityCondition::SourceEnteredThisTurn
+        | AbilityCondition::CastVariantPaidInstead { .. }
+        | AbilityCondition::HasMaxSpeed
+        | AbilityCondition::IsMonarch
+        | AbilityCondition::IsInitiative
+        | AbilityCondition::HasCityBlessing
+        | AbilityCondition::HasEnduringStory
+        | AbilityCondition::ControlsCommander { .. }
+        | AbilityCondition::IsRingBearer
+        | AbilityCondition::CompletedDungeon { .. }
+        | AbilityCondition::HasObjectTarget
+        | AbilityCondition::IsYourTurn
+        | AbilityCondition::WasStartingPlayer { .. }
+        | AbilityCondition::SpellCastWithVariantThisTurn { .. }
+        | AbilityCondition::FirstCombatPhaseOfTurn
+        | AbilityCondition::FirstEndStepOfTurn
+        | AbilityCondition::SourceIsTapped
+        | AbilityCondition::SourceAttachedToCreature
+        | AbilityCondition::DayNightIsNeither
+        | AbilityCondition::DayNightIs { .. }
+        | AbilityCondition::AbilityUseCountThisTurn { .. } => {}
+    }
+}
+
+fn concretize_granting_object_in_quantity(expr: &mut QuantityExpr, granter: ObjectIncarnationRef) {
+    match expr {
+        QuantityExpr::Ref { qty } => concretize_granting_object_in_quantity_ref(qty, granter),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::UpTo { max: inner }
+        | QuantityExpr::Power {
+            exponent: inner, ..
+        } => concretize_granting_object_in_quantity(inner, granter),
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+            for inner in exprs.iter_mut() {
+                concretize_granting_object_in_quantity(inner, granter);
+            }
+        }
+        QuantityExpr::Difference { left, right } => {
+            concretize_granting_object_in_quantity(left, granter);
+            concretize_granting_object_in_quantity(right, granter);
+        }
+        QuantityExpr::Fixed { .. } => {}
+    }
+}
+
+fn concretize_granting_object_in_quantity_ref(
+    qty: &mut QuantityRef,
+    granter: ObjectIncarnationRef,
+) {
+    match qty {
+        // CR 201.5a + CR 122.2: counters on the granter are read from its exact
+        // incarnation, never the host's.
+        QuantityRef::CountersOn {
+            scope: scope @ ObjectScope::GrantingObject,
+            ..
+        } => *scope = ObjectScope::SpecificObject { object: granter },
+        // No producer; the P1 readers fail closed.
+        QuantityRef::CountersOn { .. }
+        | QuantityRef::Power { .. }
+        | QuantityRef::BasePower { .. }
+        | QuantityRef::Intensity { .. }
+        | QuantityRef::Toughness { .. }
+        | QuantityRef::ObjectManaValue { .. }
+        | QuantityRef::ObjectColorCount { .. }
+        | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ObjectTypelineComponentCount { .. }
+        | QuantityRef::ManaSymbolsInManaCost { .. } => {}
+        // Filter-borne granter references are outside this concretizer's bound
+        // channels; no producer emits one here.
+        QuantityRef::ObjectCount { .. }
+        | QuantityRef::ObjectCountDistinct { .. }
+        | QuantityRef::ObjectCountBySharedQuality { .. }
+        | QuantityRef::PlayerCount { .. }
+        | QuantityRef::CountersOnObjects { .. }
+        | QuantityRef::TargetObjectManaValue { .. }
+        | QuantityRef::PropertyAggregate(_)
+        | QuantityRef::ControlledByEachPlayer { .. }
+        | QuantityRef::DistinctCardTypes { .. }
+        | QuantityRef::DistinctSubtypes { .. }
+        | QuantityRef::ZoneCardCount { .. }
+        | QuantityRef::FilteredTrackedSetSize { .. }
+        | QuantityRef::EventContextPlayerCount { .. }
+        | QuantityRef::SpellsCastThisTurn { .. }
+        | QuantityRef::SpellsCastBeforeTriggeringSpell { .. }
+        | QuantityRef::EnteredThisTurn { .. }
+        | QuantityRef::SacrificedThisTurn { .. }
+        | QuantityRef::BattlefieldEntriesThisTurn { .. }
+        | QuantityRef::ZoneChangeCountThisTurn { .. }
+        | QuantityRef::ZoneChangeAggregateThisTurn { .. }
+        | QuantityRef::DamageDealtThisTurn { .. }
+        | QuantityRef::AttackedThisTurn { .. }
+        | QuantityRef::SpellsCastThisGame { .. }
+        | QuantityRef::CounterAddedThisTurn { .. }
+        | QuantityRef::TokensCreatedThisTurn { .. }
+        | QuantityRef::ManaSpentToCast { .. }
+        | QuantityRef::DistinctColorsAmong { .. }
+        | QuantityRef::DistinctCounterKindsAmong { .. } => {}
+        // Carries no QuantityExpr, ObjectScope or TargetFilter.
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal
+        | QuantityRef::TriggeringDiscoverValue
+        | QuantityRef::TriggeringScryLookCount
+        | QuantityRef::TriggeringScryBottomCount
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::TargetControllerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::Devotion { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ExiledCardPower { .. }
+        | QuantityRef::BasicLandTypeCount { .. }
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::PreviousEffectAmount { .. }
+        | QuantityRef::PreviousEffectCount
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::PartySize { .. }
+        | QuantityRef::UnspentMana { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::EventContextAmount
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::EventContextSourceModesChosen
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::TurnsTaken
+        | QuantityRef::ChosenNumber
+        | QuantityRef::PlayerChosenNumber { .. }
+        | QuantityRef::DescendedThisTurn
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::AdditionalCostPaymentCountFor { .. }
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount
+        | QuantityRef::CommanderManaValue { .. }
+        | QuantityRef::VoteCount { .. } => {}
     }
 }
 

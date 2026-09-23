@@ -663,13 +663,22 @@ fn build_token_spec(
     fallback_toughness: &PtValue,
     tapped: bool,
     enters_attacking: bool,
-    static_abilities: Vec<crate::types::ability::StaticDefinition>,
+    mut static_abilities: Vec<crate::types::ability::StaticDefinition>,
     enter_with_counters: Vec<(CounterType, u32)>,
     attach_to: TokenHostRequest,
     ability: &ResolvedAbility,
     state: &GameState,
 ) -> TokenSpec {
     use crate::types::proposed_event::TokenCharacteristics;
+
+    // CR 201.5a + CR 400.7: the token's statics name the incarnation that
+    // created it, so a creator that later changes zones is a different object.
+    if let Some(incarnation) = ability.source_incarnation {
+        let creator = ObjectIncarnationRef::of(ability.source_id, incarnation);
+        for static_def in static_abilities.iter_mut() {
+            crate::game::ability_utils::concretize_granting_object_in_static(static_def, creator);
+        }
+    }
 
     let (display_name, power, toughness, core_types, subtypes, supertypes, colors, keywords) =
         if let Some(attrs) = parsed {

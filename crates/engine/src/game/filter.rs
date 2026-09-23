@@ -214,8 +214,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
-        // CR 201.5a: append-only; GrantingObject is concretized to SpecificObject
-        // at grant-clone and never reaches this object predicate.
+        // CR 201.5a: an unwalked GrantingObject matches no object in a filter.
         | TargetFilter::GrantingObject
         | TargetFilter::AllPlayers => false,
     }
@@ -876,8 +875,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
-        // CR 201.5a: append-only; GrantingObject is concretized to SpecificObject
-        // at grant-clone and never reaches this object predicate.
+        // CR 201.5a: an unwalked GrantingObject matches no object in a filter.
         | TargetFilter::GrantingObject
         | TargetFilter::AllPlayers => false,
     }
@@ -2399,6 +2397,24 @@ pub(crate) fn retarget_chosen_card_type_to_creature_type(filter: &mut TargetFilt
         *filter = rewritten;
     }
     complete
+}
+
+/// CR 201.5a: apply `f` to every `FilterProp::DistinctFrom` reference reachable
+/// through `filter`, so an "other than <granter>" exclusion binds with its filter.
+pub(crate) fn rewrite_distinct_from_references(
+    filter: &mut TargetFilter,
+    f: &mut dyn FnMut(&mut TargetFilter),
+) {
+    let mut complete = true;
+    rewrite_filter_props(
+        filter,
+        &mut |prop| {
+            if let FilterProp::DistinctFrom { reference } = prop {
+                f(reference);
+            }
+        },
+        &mut complete,
+    );
 }
 
 /// Rewrite every property reachable through `filter`, recording any incomplete
@@ -4967,7 +4983,7 @@ fn filter_inner_for_object(
         TargetFilter::Named { name } => obj.name == *name,
         // CR 400.3: Owner is a player-resolving filter (resolves to the owner of
         // source_id), meaningless as an object-matching predicate.
-        // CR 201.5a: GrantingObject appended append-only (concretized before runtime).
+        // CR 201.5a: an unwalked GrantingObject matches no object in a filter.
         TargetFilter::Owner | TargetFilter::GrantingObject => false,
     }
 }

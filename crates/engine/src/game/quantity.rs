@@ -1895,9 +1895,10 @@ fn resolution_only_scope_referent_present(
     ability: &ResolvedAbility,
 ) -> bool {
     match scope {
-        // Not resolution-only — always bound to the ability's own permanent /
-        // recipient. Never reached via the classifier, answered `true` for safety.
-        // A bound incarnation's readers own their live-or-LKI ladder.
+        // Not resolution-only — `Source` and `Recipient` are always bound to the
+        // ability's own permanent / recipient. Never reached via the classifier,
+        // answered `true` for safety. A bound incarnation's readers own their
+        // live-or-LKI ladder.
         ObjectScope::Source | ObjectScope::Recipient | ObjectScope::SpecificObject { .. } => true,
         // Unbound, a characteristic read has no referent: its readers fail closed to 0.
         ObjectScope::GrantingObject => false,
