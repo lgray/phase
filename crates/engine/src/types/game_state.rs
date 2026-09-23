@@ -13641,6 +13641,71 @@ pub(crate) fn loop_period_driver_of(seq: &[LoopActionContext]) -> Option<PlayerI
     loop_period_controller_of(seq).filter(|_| loop_period_is_priority_driven_of(seq))
 }
 
+/// What kind of step drives a recorded period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopPeriodKind {
+    /// CR 117.1b: every step is one its controller takes at priority.
+    PriorityDriven,
+    /// CR 603.3: every step is the resolution of a triggered ability.
+    TriggerDriven,
+}
+
+impl GameState {
+    /// CR 732.2a: the seat whose record this is, with the kind of step that drives it —
+    /// [`loop_period_kind_of`] asked of the state's own record.
+    pub(crate) fn loop_period_kind(&self) -> Option<(PlayerId, LoopPeriodKind)> {
+        loop_period_kind_of(&self.last_loop_action_sequence)
+    }
+}
+
+/// CR 732.2a: whose record this sequence is and which kind of step drives it. `None` for an
+/// empty or heterogeneous record, and for one that mixes kinds.
+pub(crate) fn loop_period_kind_of(seq: &[LoopActionContext]) -> Option<(PlayerId, LoopPeriodKind)> {
+    let controller = loop_period_controller_of(seq)?;
+    if loop_period_is_priority_driven_of(seq) {
+        Some((controller, LoopPeriodKind::PriorityDriven))
+    } else if seq
+        .iter()
+        .all(|step| matches!(step.action, LoopAction::ResolveTrigger { .. }))
+    {
+        Some((controller, LoopPeriodKind::TriggerDriven))
+    } else {
+        None
+    }
+}
+
+/// The classification accessors above, reachable from the integration suite, which is a separate
+/// crate and names only `pub` items. Each delegates and adds no logic.
+#[cfg(any(test, feature = "test-support"))]
+impl GameState {
+    pub fn loop_period_controller_for_tests(&self) -> Option<PlayerId> {
+        self.loop_period_controller()
+    }
+
+    pub fn loop_period_is_priority_driven_for_tests(&self) -> bool {
+        self.loop_period_is_priority_driven()
+    }
+
+    pub fn loop_period_driver_for_tests(&self) -> Option<PlayerId> {
+        self.loop_period_driver()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn loop_period_controller_of_for_tests(seq: &[LoopActionContext]) -> Option<PlayerId> {
+    loop_period_controller_of(seq)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn loop_period_is_priority_driven_of_for_tests(seq: &[LoopActionContext]) -> bool {
+    loop_period_is_priority_driven_of(seq)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn loop_period_driver_of_for_tests(seq: &[LoopActionContext]) -> Option<PlayerId> {
+    loop_period_driver_of(seq)
+}
+
 /// Decodes both current trusted snapshots and historical raw `GameState`
 /// snapshots. The raw form has no pre-cast route authority, so restoring it
 /// routes through `precast_copy_shortcut::normalize_untrusted_restore`, which

@@ -3458,7 +3458,7 @@ fn optional_cleared_classification(
 /// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`] because
 /// every guard that reads a field sits inside an `if let Some(..)` / `is_some_and`. EVERY
 /// field is read: `phase_invariant` and `sole_driver` by the growing-class firewall's
-/// CR 510.2 / CR 506.1 and CR 117.1b guards, `cast_card_ids` by the projected firewall's
+/// CR 510.2 / CR 506.1 and CR 117.1b + CR 732.2c guards, `cast_card_ids` by the projected firewall's
 /// CR 601.2f cost guard, `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a
 /// gates (3) and (6), and `identity_unstable` by the CR 400.7 conjuncts — the per-host
 /// [`host_identity_is_stable`] reader and the growing-class firewall's own entry-matcher
@@ -3470,10 +3470,11 @@ pub(crate) struct LoopWindowScope<'a> {
     /// CR 510.2 the combat-damage step). `None` at any caller whose window CROSSES a
     /// phase or step boundary.
     phase_invariant: Option<Phase>,
-    /// `Some(p)` iff the caller proved the whole window is driven by `p` and no other
-    /// player receives priority inside the taken shortcut (CR 117.1b: a player may
-    /// activate an ability only with priority; CR 732.2c: the shortcut advances to
-    /// the proposed ending point once every player has accepted).
+    /// `Some(p)` iff the caller proved the whole window is `p`'s record, driven by steps of
+    /// one kind — priority actions or trigger resolutions — so no player activates anything
+    /// inside the taken shortcut that the proposal does not contain (CR 117.1b: a player may
+    /// activate an ability only with priority; CR 732.2c: the shortcut advances to the
+    /// proposed ending point with every choice it contains taken).
     sole_driver: Option<PlayerId>,
     /// `Some(pins)` iff the caller proved an OFFER published exactly these per-iteration
     /// choice slots. READ by [`loop_states_cover_modulo_growth_scoped`]'s gates (3)/(6).
@@ -3560,9 +3561,10 @@ impl LoopWindowScope<'static> {
 /// and once its entry is taken only the unit record shows it). Derived LOCALLY, so it is
 /// independent of gate ORDER; `extra_turns` is not a conjunct because an extra TURN is taken
 /// after the current one and `turn_number` is monotone. `sole_driver`: `Some(p)` exactly when
-/// BOTH frames' [`GameState::loop_period_driver`] answer `Some(p)` (CR 117.1b) — reading only
-/// `prior` would mint `Some(p)` for a window another player drove. That accessor is NAMED
-/// rather than re-derived here so its conjuncts cannot be restated stale. `identity_unstable`
+/// BOTH frames' [`GameState::loop_period_kind`] answer `Some((p, kind))` with one kind (CR 117.1b +
+/// CR 732.2c) — reading only `prior` would mint `Some(p)` for a window another player drove.
+/// That accessor is NAMED rather than re-derived here so its conjuncts cannot be restated
+/// stale. `identity_unstable`
 /// (CR 400.7) is NOT derived here: [`identity_unstable_ids`] must be computed from the same
 /// PROJECTED pair the caller hands the firewall, so it is threaded in as `pinned` and `period`.
 fn window_scope_from_cover_frames<'a>(
@@ -3583,21 +3585,20 @@ fn window_scope_from_cover_frames<'a>(
     .then_some(pa.phase);
 
     // (s1) BOTH sequences non-empty; (s2) one controller across BOTH sequences; (s3) every
-    // recorded step is one that controller takes at priority. All three conjuncts are exactly
-    // [`GameState::loop_period_driver`] applied per frame — "is the object-growth route live for
-    // this seat", the narrowed authority every ROUTE-LIVENESS consumer reads — with the two
-    // answers required to agree. The unnarrowed [`GameState::loop_period_controller`] answers a
-    // different question, whose record this is, and is read by the sites that admit or discard a
-    // record rather than route on it. Stating it that way rather than re-deriving
+    // recorded step on both frames is of ONE kind — a priority action, or a trigger resolution.
+    // All three conjuncts are exactly [`GameState::loop_period_kind`] applied per frame, with
+    // the two answers required to agree. Stating it that way rather than re-deriving
     // `first().controller` + `all()` here is the point of hoisting that authority: a two-frame
     // twin of the same question cannot drift from the one-frame form it duplicates.
     //
-    // (s3) is what the reliefs behind this scope rest on: each rests on "no player but the sole
-    // driver receives priority inside the taken shortcut", which a period holding a step no
-    // player takes does not support. `None` ⇒ both reliefs fail closed, exactly as for no period.
+    // (s3) is what the reliefs behind this scope rest on: inside a taken shortcut no player
+    // activates anything the proposal does not contain (CR 732.2c), whether its steps are
+    // priority actions or trigger resolutions. A period mixing kinds is `None` ⇒ both reliefs
+    // fail closed, exactly as for no period.
     let sole_driver = pa
-        .loop_period_driver()
-        .filter(|driver| pb.loop_period_driver() == Some(*driver));
+        .loop_period_kind()
+        .filter(|kind| pb.loop_period_kind() == Some(*kind))
+        .map(|(seat, _)| seat);
 
     LoopWindowScope {
         phase_invariant,
@@ -4332,6 +4333,11 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
 /// (game_object.rs) does not define that set: it binds every field of the struct, so what it
 /// buys is a forced classification decision as `GameObject` grows.
 pub(crate) fn fodder_content_eq(a: &GameObject, b: &GameObject) -> bool {
+    // CR 111.1: a token and a card are never one class, and `object_content_eq` does not read
+    // `is_token`.
+    if a.is_token != b.is_token {
+        return false;
+    }
     let mut probe = a.clone();
     probe.tapped = b.tapped;
     crate::types::game_state::object_content_eq(&probe, b)
@@ -4707,13 +4713,59 @@ pub(crate) fn certify_instructed_opponent_library_departure(
 /// compared LIVE each call via [`fodder_content_eq`] (modulo tapped) — not latched by
 /// ObjectId, because fodder tokens are not id-stable. Covers any inert fungible token class
 /// (Saproling, Elf Warrior, Thopter, …), so it builds for the class not a card.
+#[cfg_attr(not(test), allow(dead_code))] // exercised by unit tests; the producer reads the refusals.
 pub(crate) fn loop_states_cover_modulo_fodder_growth(
     prior: &GameState,
     current: &GameState,
     fodder_class: &GameObject,
     caster: PlayerId,
 ) -> bool {
+    fodder_growth_cover_refusals(prior, current, fodder_class, caster).is_empty()
+}
+
+/// A condition of [`loop_states_cover_modulo_fodder_growth`] that refused a frame pair, in the
+/// order the cover evaluates them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FodderCoverRefusal {
+    BoardCover,
+    GrownNotInert,
+    FireTimeRead,
+    StackEntryRead,
+    NonObjectRemainder,
+    LoyaltyActivationCount,
+}
+
+/// CR 732.2a: the object-growth producer's verdict on its three settle frames, by the recurrence
+/// arm that answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectGrowthVerdict {
+    /// One homogeneous class was minted: each frame pair's fodder-cover refusals.
+    FodderGrowth([Vec<FodderCoverRefusal>; 2]),
+    /// Nothing was minted: whether both pairs recur modulo resources or counter growth.
+    ResourceRecurrence(bool),
+}
+
+impl ObjectGrowthVerdict {
+    pub fn certifies(&self) -> bool {
+        match self {
+            ObjectGrowthVerdict::FodderGrowth(pairs) => pairs.iter().all(Vec::is_empty),
+            ObjectGrowthVerdict::ResourceRecurrence(covers) => *covers,
+        }
+    }
+}
+
+/// Every condition of [`loop_states_cover_modulo_fodder_growth`] that refuses this pair; empty
+/// exactly when the cover certifies it.
+// ponytail: every condition runs even after one refuses, one extra firewall scan per refused
+// offer beat off the per-action path; short-circuit here if the offer hook measures hot.
+pub(crate) fn fodder_growth_cover_refusals(
+    prior: &GameState,
+    current: &GameState,
+    fodder_class: &GameObject,
+    caster: PlayerId,
+) -> Vec<FodderCoverRefusal> {
     bump_loop_detect_cost(|cost| cost.compares_cover_modulo_fodder_growth += 1);
+    let mut refusals = Vec::new();
     let pf = flush_clone(prior);
     let cf = flush_clone(current);
     let mut pa = project_out_resources(&pf);
@@ -4751,7 +4803,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     // Tapped-split multiset cover on the fodder partition (B1 + strict growth), with the
     // growing set out of the stable partition on both sides.
     if !board_covers_modulo_fodder(&pa, &pb, fodder_class, &growing) {
-        return false;
+        refusals.push(FodderCoverRefusal::BoardCover);
     }
 
     // Every grown object is churn-inert (single inertness authority; scanned on the
@@ -4759,7 +4811,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     // id inherits this obligation rather than being waved past it, which is what keeps the
     // accounting from being a blanket accept: an ability-bearing arrival is still refused here.
     if !grown_objects_are_inert(&cf, &growing) {
-        return false;
+        refusals.push(FodderCoverRefusal::GrownNotInert);
     }
 
     // No live off-stack / on-stack observer reads the growing class. Pass the growing set —
@@ -4814,26 +4866,26 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
         Some(&class_members),
         window_scope_from_cover_frames(&pa, &pb, None, None, Some(&identity_unstable)),
     ) {
-        return false;
+        refusals.push(FodderCoverRefusal::FireTimeRead);
     }
     if cf.stack.iter().any(stack_entry_reads_growing_class) {
-        return false;
+        refusals.push(FodderCoverRefusal::StackEntryRead);
     }
 
     // The growth-invariant non-object remainder, grown pile stripped. NOTE:
     // `GameState::PartialEq` compares only `objects.len()`, so stable-engine object CONTENT is
     // covered by `board_covers_modulo_fodder`'s `objects_content_eq` above, not here.
     if !eq_except_growable(&pa, &pb, &growing) {
-        return false;
+        refusals.push(FodderCoverRefusal::NonObjectRemainder);
     }
 
     // CR 606.3 fail-safe legality gate: a fodder loop that ALSO re-activates a
     // loyalty ability must not certify. Transparent (all-zero) for the target class.
     if !loyalty_activation_counts_match(&pa, &pb) {
-        return false;
+        refusals.push(FodderCoverRefusal::LoyaltyActivationCount);
     }
 
-    true
+    refusals
 }
 
 // ===========================================================================
@@ -5129,8 +5181,12 @@ fn board_covers(prior: &GameState, current: &GameState, grown: &HashSet<ObjectId
 /// or P/T), and non-legendary + non-`world` (CR 704.5j/k uniqueness SBAs read
 /// them). Fail-safe: any doubt ⇒ not inert ⇒ reject.
 fn object_is_inert(o: &GameObject) -> bool {
-    o.trigger_definitions.iter_all().next().is_none()
-        && o.static_definitions.iter_all().next().is_none()
+    o.trigger_definitions.iter_all().next().is_none() && object_is_inert_except_triggers(o)
+}
+
+/// [`object_is_inert`] without its trigger conjunct.
+fn object_is_inert_except_triggers(o: &GameObject) -> bool {
+    o.static_definitions.iter_all().next().is_none()
         && o.replacement_definitions.iter_all().next().is_none()
         && !o
             .abilities
@@ -5142,11 +5198,32 @@ fn object_is_inert(o: &GameObject) -> bool {
         && !o.card_types.supertypes.contains(&Supertype::World)
 }
 
+/// CR 603.6a + CR 111.8: a token on the battlefield whose only triggers are its own
+/// enters-the-battlefield triggers is inert once it has entered: a token that leaves cannot come
+/// back, so that entry cannot recur. A nontoken object can re-enter (CR 400.7), so it is not
+/// relieved here.
+fn grown_token_is_inert_after_its_entry(o: &GameObject) -> bool {
+    use crate::types::ability::TargetFilter;
+    o.is_token
+        && o.zone == Zone::Battlefield
+        && object_is_inert_except_triggers(o)
+        && o.trigger_definitions.iter_all().all(|entry| {
+            let def = &entry.definition;
+            def.mode == crate::types::triggers::TriggerMode::ChangesZone
+                && def.zone_change_clauses.is_empty()
+                && def.destination == Some(Zone::Battlefield)
+                && matches!(def.valid_card, Some(TargetFilter::SelfRef))
+        })
+}
+
 /// CR 732.2a: every grown object is churn-inert.
 fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bool {
-    grown
-        .iter()
-        .all(|id| current.objects.get(id).is_some_and(object_is_inert))
+    grown.iter().all(|id| {
+        current
+            .objects
+            .get(id)
+            .is_some_and(|o| object_is_inert(o) || grown_token_is_inert_after_its_entry(o))
+    })
 }
 
 /// The growth-invariant non-object remainder of the two projected frames, through
@@ -5159,6 +5236,13 @@ fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bo
 /// `_gamestate_partition_is_total`'s doc is the single authority on what its totality guard
 /// buys. The two hand conjuncts at the end of this function are where this gate compensates
 /// for an axis that decision left out; each states its own one-sided-safety argument.
+///
+/// Tracked object sets are an append-only arena: each resolution that says "this way" (CR 608.2c)
+/// or "until" (CR 610.3) allocates its own, so the later frame's sets allocated inside the window
+/// are dropped before the compare, while every earlier set and every carrier naming a set stay
+/// compared. A reader that takes the highest id rather than a carried one —
+/// `targeting::latest_tracked_set_id` behind `resolve_tracked_set_sentinel`'s legacy fallback — is
+/// not confined to the resolution that produced the set by this code; CR 608.2c confines it.
 fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>) -> bool {
     let mut a = pa.clone();
     let mut b = pb.clone();
@@ -5211,6 +5295,11 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     // sequence whose board coincidentally covers would compare EQUAL and be falsely certified.
     // COMPARING (order-sensitive `Vec` `PartialEq`) catches it, and it is `[]` at every
     // non-loop-action sample beat, so it never suppresses a legitimate loop.
+    let window_floor = pa.next_tracked_set_id;
+    b.tracked_object_sets.retain(|id, _| id.0 < window_floor);
+    b.tracked_set_member_causes
+        .retain(|id, _| id.0 < window_floor);
+    b.next_tracked_set_id = a.next_tracked_set_id;
     a == b
         && a.post_replacement_token_substitution_count
             == b.post_replacement_token_substitution_count
@@ -6359,9 +6448,8 @@ fn activated_ability_is_not_a_loop_choice(
             // for a card being cast. Answering `true` instead would assert that every activated
             // ability on the board is the loop's driving choice, a false CR 732.2a claim.
             //
-            // `false` is the relieving direction here, so state why it is not reached: the
-            // `sole_driver` this closure sits behind reads `GameState::loop_period_driver`, which
-            // is `None` for any period holding such a step, so the scan does not open at all.
+            // `false` is the relieving direction here, and it is correct: inside a taken
+            // shortcut no player activates an ability the proposal does not contain (CR 732.2c).
             LoopAction::ResolveTrigger { .. } => false,
         })
 }
@@ -7394,9 +7482,8 @@ fn fire_time_conditions_read_growing_class_scoped(
                 //     the OWN-controller permanents `relieved` cannot, and lands whose census
                 //     is genuine on the merits.
                 //
-                // `scope.sole_driver` is `Some(p)` exactly when BOTH cover frames'
-                // [`GameState::loop_period_driver`] answer `Some(p)` — the derivation lives on
-                // [`window_scope_from_cover_frames`] and is not restated here. That is the proof
+                // `scope.sole_driver` is derived on [`window_scope_from_cover_frames`] and is not
+                // restated here. That is the proof
                 // that `last_loop_action_sequence` on the SCANNED frame describes THIS window
                 // rather than an earlier one; without it the record is a stale
                 // artifact and absence from it proves nothing. PER-ABILITY, never per-object:
@@ -7585,10 +7672,13 @@ fn fire_time_conditions_read_growing_class_scoped(
             }
         }
     }
-    // (6) The belt — pending/delayed ability-body stores. Both compared frames sit at
-    // a clean priority window where these are normally empty; a non-empty store
-    // carries a deferred ability body that could read |G|, so reject conservatively.
-    if !state.delayed_triggers.is_empty()
+    // (6) The belt — pending/delayed ability-body stores. A stored delayed trigger vetoes
+    // when its firing condition or body reads the growing class (CR 603.7). The other four
+    // stores veto whenever they are non-empty: prover incomplete here.
+    if state
+        .delayed_triggers
+        .iter()
+        .any(scan::delayed_trigger_reads_growing_class_for_loop)
         || !state.deferred_triggers.is_empty()
         || state.pending_trigger.is_some()
         || state.pending_trigger_order.is_some()
@@ -7600,10 +7690,10 @@ fn fire_time_conditions_read_growing_class_scoped(
 }
 
 /// Does a stack entry's AST read the growing class (the `sibling` axis)?
-/// Delegates to the axis-2 accessors over the embedded ability plus the
-/// trigger-level intervening-if (CR 603.4). `KeywordAction` has no AST ⇒ fail
-/// closed; a permanent `Spell { ability: None }` reads nothing (its resolution
-/// changes the board and breaks `board_covers` anyway).
+/// Scans the embedded ability under the loop firewall — the same axis block (1) of the
+/// fire-time firewall asks of a trigger body — plus the trigger-level intervening-if
+/// (CR 603.4). `KeywordAction` has no AST ⇒ fail closed; a permanent `Spell { ability: None }`
+/// reads nothing (its resolution changes the board and breaks `board_covers` anyway).
 fn stack_entry_reads_growing_class(entry: &StackEntry) -> bool {
     use crate::game::ability_scan as scan;
     if let StackEntryKind::TriggeredAbility {
@@ -7616,7 +7706,7 @@ fn stack_entry_reads_growing_class(entry: &StackEntry) -> bool {
         }
     }
     match entry.ability() {
-        Some(ability) => scan::ability_reads_sibling_mutable(ability),
+        Some(ability) => scan::resolved_ability_reads_sibling_mutable_for_loop(ability),
         None => matches!(entry.kind, StackEntryKind::KeywordAction { .. }),
     }
 }
@@ -23368,8 +23458,9 @@ mod tests {
     ///   passes.
     /// * drop the turn-number conjunct ⇒ the differing-turn assertion FAILS.
     /// * re-point `sole_driver` to the UNNARROWED [`GameState::loop_period_controller`] ⇒ the
-    ///   trigger-driven `sole_driver == None` assertion FAILS while the four probes above,
-    ///   which run before it, still pass.
+    ///   mixed-kind `sole_driver == None` assertion FAILS while the four probes above, which run
+    ///   before it, still pass.
+    /// * compare only the seats of the two frames' kinds ⇒ the disagreeing-kinds assertion FAILS.
     #[test]
     fn window_scope_is_fail_closed_on_a_heterogeneous_window() {
         use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
@@ -23531,31 +23622,45 @@ mod tests {
             "(p2) a window that crosses a phase boundary is not phase-invariant"
         );
 
-        // ── `sole_driver` (s3) — CR 603.3 ──
-        // The baseline frames one FIELD apart: the step's action. A triggered ability goes on
-        // the stack with no player electing it, so the period is not one its controller can
-        // take again and `loop_period_driver` answers `None` for it on both frames.
-        let trigger_frame = || {
-            let mut s = base();
-            s.last_loop_action_sequence = vec![LoopActionContext {
-                action: LoopAction::ResolveTrigger {
-                    source_id: ObjectId(960),
-                    occurrence: TriggerDefinitionOccurrenceRef::Printed {
-                        base_set: TriggerBaseSetInstanceRef::INITIAL,
-                        printed_index: 0,
-                    },
+        // ── `sole_driver` (s3) — CR 603.3 + CR 732.2c ──
+        let trigger_step = |controller: u8| LoopActionContext {
+            action: LoopAction::ResolveTrigger {
+                source_id: ObjectId(960),
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
                 },
-                ..ctx(0)
-            }];
+            },
+            ..ctx(controller)
+        };
+        let with_record = |record: Vec<LoopActionContext>| {
+            let mut s = base();
+            s.last_loop_action_sequence = record;
             s
         };
-        let (pa_trigger, pb_trigger) = (trigger_frame(), trigger_frame());
+        let trigger_driven = || with_record(vec![trigger_step(0), trigger_step(0)]);
         assert_eq!(
-            window_scope_from_cover_frames(&pa_trigger, &pb_trigger, None, None, None).sole_driver,
+            window_scope_from_cover_frames(&trigger_driven(), &trigger_driven(), None, None, None)
+                .sole_driver,
+            Some(PlayerId(0)),
+            "(s3) a period of trigger resolutions on BOTH frames is its controller's"
+        );
+        let mixed = with_record(vec![trigger_step(0), ctx(0)]);
+        assert_eq!(
+            window_scope_from_cover_frames(&mixed, &mixed, None, None, None).sole_driver,
             None,
-            "(s3) this period is non-empty and single-controller on BOTH frames, so only the \
-             priority-driven conjunct can refuse it — the `Some(PlayerId(0))` positive at the \
-             top of this row is these same frames one ACTION apart"
+            "(s3) a period mixing a trigger resolution with a priority action is fail-closed"
+        );
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &trigger_driven(), None, None, None).sole_driver,
+            None,
+            "(s3) frames whose periods are of different kinds prove nothing about one window"
+        );
+        let two_seats = with_record(vec![trigger_step(0), trigger_step(1)]);
+        assert_eq!(
+            window_scope_from_cover_frames(&two_seats, &two_seats, None, None, None).sole_driver,
+            None,
+            "(s2) trigger resolutions controlled by two seats are nobody's period"
         );
     }
     /// CR 732.2a — `ring_delta_signature`'s "seen TWICE" contract, at the building-block
@@ -30722,10 +30827,7 @@ mod tests {
         }
     }
 
-    /// One recorded loop step whose action is `action`, controlled by the sole driver. A row that
-    /// derives its scope from frames rather than writing it directly reads `sole_driver`, which is
-    /// `loop_period_driver`: `Some(P2_DRIVER)` for a priority-driven `action`, `None` for a
-    /// `ResolveTrigger` one.
+    /// One recorded loop step whose action is `action`, controlled by the sole driver.
     fn p2_step(
         action: crate::types::game_state::LoopAction,
     ) -> crate::types::game_state::LoopActionContext {
@@ -31106,7 +31208,7 @@ mod tests {
     /// **Row 21 (NEGATIVE — an empty loop-action sequence does not relieve).**
     ///
     /// `scope.sole_driver` is `Some(p)` exactly when BOTH cover frames'
-    /// [`GameState::loop_period_driver`] answer `Some(p)` — it is the proof that
+    /// [`GameState::loop_period_kind`] answer `p` with one kind — it is the proof that
     /// `last_loop_action_sequence` describes THIS window. An empty sequence proves nothing:
     /// "the record does not name this ability" and "there is no record" are the same shell
     /// output, and only the first licenses CR 732.2a's absence argument. Fail closed.
@@ -31158,6 +31260,70 @@ mod tests {
              it, the relief fires — so the subject's veto is the missing proof and not a \
              blanket refusal"
         );
+    }
+
+    /// **Block (2) under a trigger-driven period (CR 117.1b + CR 732.2c).** A record of trigger
+    /// resolutions alone is its controller's period, so an activation it never names is
+    /// relieved; one foreign activation step makes the period mixed and the veto stands.
+    ///
+    /// MUTATION PROBE: have `loop_period_kind_of` answer `TriggerDriven` for a mixed record ⇒
+    /// the mixed leg is relieved ⇒ **FAILS**.
+    #[test]
+    fn a_trigger_driven_period_relieves_only_an_unmixed_record() {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        use crate::types::game_state::LoopAction;
+        let resolve = || {
+            p2_step(LoopAction::ResolveTrigger {
+                source_id: P2_HOST,
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            })
+        };
+        let other_activation = || {
+            p2_step(LoopAction::Activate {
+                source_id: P2_OTHER_HOST,
+                ability_index: 0,
+            })
+        };
+        for (record, sole_driver, refuses) in [
+            (vec![resolve(), resolve()], Some(P2_DRIVER), false),
+            (vec![resolve(), other_activation()], None, true),
+        ] {
+            let (prior, current) = p2_frames(record);
+            let unstable = identity_unstable_ids(&prior, &current);
+            assert!(!unstable.contains(&P2_HOST));
+            p2_reach_guards(&current, 0, P2_DRIVER, "block 2");
+            let scope =
+                window_scope_from_cover_frames(&prior, &current, None, None, Some(&unstable));
+            assert_eq!(
+                (
+                    scope.sole_driver,
+                    fire_time_conditions_read_growing_class_scoped(&current, None, scope)
+                ),
+                (sole_driver, refuses)
+            );
+            if sole_driver.is_none() {
+                // CR 400.7: the record does not name the scanned ability, so the refusal is the
+                // missing sole driver's, and only the identity argument lets the check say so.
+                let host = &current.objects[&P2_HOST];
+                let def = &host.abilities[0];
+                assert_eq!(
+                    (
+                        activated_ability_is_not_a_loop_choice(
+                            &current,
+                            host,
+                            def,
+                            0,
+                            Some(&unstable)
+                        ),
+                        activated_ability_is_not_a_loop_choice(&current, host, def, 0, None),
+                    ),
+                    (true, false)
+                );
+            }
+        }
     }
 
     /// **Row 22 (POSITIVE — `activator_filter` deliberately does NOT block this relief).**
@@ -31539,12 +31705,7 @@ mod tests {
     /// `activated_ability_is_not_a_loop_choice` ⇒ the two periods stop answering differently and
     /// the pair below prints `(false, false)` ⇒ **FAILS**.
     ///
-    /// UNIT-LEVEL DELIBERATELY, for the reason row 37 states and one more of its own: the
-    /// `sole_driver` this closure sits behind reads `GameState::loop_period_driver`, which is
-    /// `None` for any period holding a trigger-driven step, so on a driven board the scan never
-    /// opens and this arm is unreachable. That unreachability is the point — the arm exists so a
-    /// later phase cannot reach it and find a false CR 732.2a claim — and it is why the axis is
-    /// constructible only where the record is written directly.
+    /// UNIT-LEVEL DELIBERATELY, for the reason row 37 states.
     #[test]
     fn the_proposal_absence_relief_separates_a_trigger_step_from_an_activation_naming_the_same_pair(
     ) {
@@ -37205,6 +37366,264 @@ mod tests {
             gain_only.conforms(&gain_only.delta.clone(), &pins),
             "PAIRED POSITIVE: the same gain-only period against itself still conforms, so the \
              leg above cannot be satisfied by an always-refusing predicate"
+        );
+    }
+
+    fn stack_entry_with(effect: crate::types::ability::Effect) -> StackEntry {
+        use crate::types::ability::ResolvedAbility;
+        StackEntry {
+            id: ObjectId(700),
+            source_id: ObjectId(701),
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: ObjectId(701),
+                ability: Box::new(ResolvedAbility::new(
+                    effect,
+                    vec![],
+                    ObjectId(701),
+                    PlayerId(0),
+                )),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+                provenance: None,
+            },
+        }
+    }
+
+    /// CR 732.2a: a stack entry is asked the loop firewall's question, so a move of one
+    /// particular object is relieved while a sweep over every creature still refuses.
+    ///
+    /// REVERT-PROBE: ask `ability_reads_sibling_mutable` (the conservative scan) ⇒ the
+    /// relieved leg **FAILS**.
+    #[test]
+    fn a_stack_entry_is_scanned_under_the_loop_firewall() {
+        use crate::types::ability::{Effect, TargetFilter, TypedFilter};
+        let particular_move = Effect::ChangeZone {
+            origin: Some(Zone::Exile),
+            destination: Zone::Battlefield,
+            target: TargetFilter::ParentTarget,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        };
+        let sweep = Effect::DestroyAll {
+            target: TargetFilter::Typed(TypedFilter::creature()),
+            cant_regenerate: false,
+        };
+        assert_eq!(
+            (
+                stack_entry_reads_growing_class(&stack_entry_with(particular_move)),
+                stack_entry_reads_growing_class(&stack_entry_with(sweep)),
+            ),
+            (false, true)
+        );
+    }
+
+    fn self_trigger(
+        mode: crate::types::triggers::TriggerMode,
+        zone: Zone,
+        entry: bool,
+    ) -> TriggerDefinition {
+        let def =
+            TriggerDefinition::new(mode).valid_card(crate::types::ability::TargetFilter::SelfRef);
+        if entry {
+            def.destination(zone)
+        } else {
+            def.origin(zone)
+        }
+    }
+
+    fn grown_with(is_token: bool, trigger: TriggerDefinition) -> bool {
+        let mut state = GameState::new_two_player(7);
+        let id = inert_token(&mut state, 800, 0, "Illusion");
+        let object = state.objects.get_mut(&id).unwrap();
+        object.is_token = is_token;
+        object.trigger_definitions = vec![trigger].into();
+        grown_objects_are_inert(&state, &HashSet::from([id]))
+    }
+
+    /// CR 603.6a + CR 111.8: a grown token whose only trigger is its own entry is inert once it
+    /// has entered; a card can re-enter, and a leaves-the-battlefield trigger can still fire.
+    ///
+    /// REVERT-PROBE: drop the `grown_token_is_inert_after_its_entry` disjunct ⇒ the relieved
+    /// leg **FAILS**; drop its `is_token` conjunct ⇒ the card leg **FAILS**.
+    #[test]
+    fn only_a_spent_token_entry_is_inert() {
+        use crate::types::triggers::TriggerMode;
+        let entry = || self_trigger(TriggerMode::ChangesZone, Zone::Battlefield, true);
+        let leaves = self_trigger(TriggerMode::ChangesZone, Zone::Battlefield, false);
+        assert_eq!(
+            (
+                grown_with(true, entry()),
+                grown_with(false, entry()),
+                grown_with(true, leaves),
+            ),
+            (true, false, false)
+        );
+    }
+
+    fn belt_with(edit: impl FnOnce(&mut GameState)) -> bool {
+        let mut state = GameState::new_two_player(7);
+        edit(&mut state);
+        fire_time_conditions_read_growing_class(&state, None)
+    }
+
+    fn delayed_on(
+        filter: crate::types::ability::TargetFilter,
+    ) -> crate::types::game_state::DelayedTrigger {
+        use crate::types::ability::{
+            DelayedTriggerCondition, Effect, QuantityExpr, ResolvedAbility, TargetFilter,
+        };
+        crate::types::game_state::DelayedTrigger::new(
+            DelayedTriggerCondition::WhenDies { filter },
+            Box::new(ResolvedAbility::new(
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::Controller,
+                },
+                vec![],
+                ObjectId(701),
+                PlayerId(0),
+            )),
+            PlayerId(0),
+            ObjectId(701),
+            true,
+        )
+    }
+
+    /// CR 603.7c: the belt scans a stored delayed trigger, so one watching a particular object
+    /// is relieved while one watching every creature, and any deferred trigger, still refuse.
+    ///
+    /// REVERT-PROBE: restore `!state.delayed_triggers.is_empty()` ⇒ the relieved leg **FAILS**.
+    #[test]
+    fn the_belt_scans_each_delayed_trigger() {
+        use crate::types::ability::{
+            Effect, QuantityExpr, ResolvedAbility, TargetFilter, TypedFilter,
+        };
+        let particular = belt_with(|s| {
+            s.delayed_triggers
+                .push(delayed_on(TargetFilter::ParentTarget))
+        });
+        let census = belt_with(|s| {
+            s.delayed_triggers
+                .push(delayed_on(TargetFilter::Typed(TypedFilter::creature())))
+        });
+        let deferred = belt_with(|s| {
+            s.deferred_triggers
+                .push(crate::game::triggers::PendingTriggerContext::single(
+                    crate::game::triggers::PendingTrigger {
+                        source_id: ObjectId(701),
+                        controller: PlayerId(0),
+                        condition: None,
+                        ability: Box::new(ResolvedAbility::new(
+                            Effect::GainLife {
+                                amount: QuantityExpr::Fixed { value: 1 },
+                                player: TargetFilter::Controller,
+                            },
+                            vec![],
+                            ObjectId(701),
+                            PlayerId(0),
+                        )),
+                        timestamp: 0,
+                        target_constraints: Vec::new(),
+                        distribute: None,
+                        trigger_event: None,
+                        modal: None,
+                        mode_abilities: Vec::new(),
+                        description: None,
+                        may_trigger_origin: None,
+                        subject_match_count: None,
+                        die_result: None,
+                        provenance: None,
+                    },
+                ))
+        });
+        assert_eq!(
+            (belt_with(|_| {}), particular, census, deferred),
+            (false, false, true, true)
+        );
+    }
+
+    fn with_tracked_sets(sets: &[(u64, Vec<u64>)], carrier: Option<u64>) -> GameState {
+        use crate::types::identifiers::TrackedSetId;
+        let mut state = GameState::new_two_player(7);
+        for (id, members) in sets {
+            state.tracked_object_sets.insert(
+                TrackedSetId(*id),
+                members.iter().map(|m| ObjectId(*m)).collect(),
+            );
+            state.tracked_set_member_causes.insert(
+                TrackedSetId(*id),
+                members
+                    .iter()
+                    .map(|m| (ObjectId(*m), crate::types::ability::ThisWayCause::Exiled))
+                    .collect(),
+            );
+        }
+        state.next_tracked_set_id = sets.iter().map(|(id, _)| id + 1).max().unwrap_or(0);
+        if let Some(id) = carrier {
+            state.delayed_triggers.push(delayed_on(
+                crate::types::ability::TargetFilter::TrackedSet {
+                    id: TrackedSetId(id),
+                },
+            ));
+        }
+        state
+    }
+
+    /// CR 608.2c + CR 610.3: sets allocated inside the window drop out of the compare, while a
+    /// carrier naming one and any change to an earlier set still refuse.
+    ///
+    /// REVERT-PROBE: delete the `window_floor` retains ⇒ the relieved leg **FAILS**.
+    #[test]
+    fn window_new_tracked_sets_are_bookkeeping_growth() {
+        let grown = HashSet::new();
+        let prior = with_tracked_sets(&[(0, vec![500])], Some(0));
+        let relieved = with_tracked_sets(&[(0, vec![500]), (1, vec![501])], Some(0));
+        let carrier_moved = with_tracked_sets(&[(0, vec![500]), (1, vec![501])], Some(1));
+        let prior_mutated = with_tracked_sets(&[(0, vec![500, 502]), (1, vec![501])], Some(0));
+        assert_eq!(
+            (
+                eq_except_growable(&prior, &relieved, &grown),
+                eq_except_growable(&prior, &carrier_moved, &grown),
+                eq_except_growable(&prior, &prior_mutated, &grown),
+            ),
+            (true, false, false)
+        );
+    }
+
+    /// CR 111.1: a token and a card are never one fodder class, while tapping never splits one.
+    ///
+    /// REVERT-PROBE: drop the `is_token` guard ⇒ the first leg **FAILS**.
+    #[test]
+    fn a_token_and_a_card_are_not_one_fodder_class() {
+        let mut state = GameState::new_two_player(7);
+        let card = inert_token(&mut state, 800, 0, "Saproling");
+        let token = inert_token(&mut state, 801, 0, "Saproling");
+        let tapped_token = inert_token(&mut state, 802, 0, "Saproling");
+        for (id, is_token, tapped) in [(token, true, false), (tapped_token, true, true)] {
+            let object = state.objects.get_mut(&id).unwrap();
+            object.is_token = is_token;
+            object.tapped = tapped;
+        }
+        let object = |id| &state.objects[&id];
+        assert_eq!(
+            (
+                fodder_content_eq(object(card), object(token)),
+                fodder_content_eq(object(token), object(tapped_token)),
+            ),
+            (false, true)
         );
     }
 }

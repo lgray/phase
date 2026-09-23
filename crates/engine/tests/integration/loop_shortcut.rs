@@ -3195,9 +3195,12 @@ fn sprout_swarm_scenario_with_drain(
     {
         let st = runner.state_mut();
         st.loop_detection = LoopDetectionMode::Interactive;
-        // The starting fodder must be GREEN so convoke can tap it for the {G} pip.
+        // The starting fodder must be GREEN so convoke can tap it for the {G} pip, and tokens
+        // like the Saprolings the loop mints (CR 111.1).
         for &id in &fodder {
-            st.objects.get_mut(&id).unwrap().color = vec![ManaColor::Green];
+            let object = st.objects.get_mut(&id).unwrap();
+            object.color = vec![ManaColor::Green];
+            object.is_token = true;
         }
     }
     (runner, sprout, fodder)
@@ -4361,7 +4364,9 @@ fn sprout_shell_scenario(body: &str) -> (GameRunner, ObjectId, Vec<ObjectId>) {
         let st = runner.state_mut();
         st.loop_detection = LoopDetectionMode::Interactive;
         for &id in &fodder {
-            st.objects.get_mut(&id).unwrap().color = vec![ManaColor::Green];
+            let object = st.objects.get_mut(&id).unwrap();
+            object.color = vec![ManaColor::Green];
+            object.is_token = true;
         }
     }
     (runner, sprout, fodder)

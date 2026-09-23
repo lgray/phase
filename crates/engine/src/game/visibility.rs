@@ -1158,8 +1158,19 @@ pub(crate) fn identity_projection_for_unseated_viewer(
 /// clones and then applies leaves through an `ObjectId`-keyed map that no `GameState`
 /// journal is reachable from.
 pub(crate) fn proposer_hidden_view(state: &GameState, proposer: PlayerId) -> GameState {
+    proposer_hidden_view_as_of(state, state, proposer)
+}
+
+/// [`proposer_hidden_view`] of `state`, blanking what `proposer` may not look at in
+/// `projection_source` — the board a detection drive started from, so a card the drive moves
+/// stays blank in every frame it reaches.
+pub(crate) fn proposer_hidden_view_as_of(
+    projection_source: &GameState,
+    state: &GameState,
+    proposer: PlayerId,
+) -> GameState {
     let mut view = state.clone();
-    for (obj_id, projection) in identity_projection_for_viewer(state, proposer) {
+    for (obj_id, projection) in identity_projection_for_viewer(projection_source, proposer) {
         match projection {
             IdentityProjection::Hidden => hide_card(&mut view, obj_id),
             IdentityProjection::FaceDownRedacted => {

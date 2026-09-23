@@ -7902,6 +7902,86 @@ fn normalize_recast_frame(
     s
 }
 
+/// CR 732.2a: the object-growth producer's certification of its three settle frames — their
+/// normalization, the minted class, and the recurrence cover — asked of `lead`, the period's
+/// first step.
+fn certify_object_growth_frames(
+    frames: [&GameState; 3],
+    lead: &crate::types::game_state::LoopActionContext,
+    caster: PlayerId,
+) -> crate::analysis::resource::ObjectGrowthVerdict {
+    use crate::analysis::resource::ObjectGrowthVerdict;
+    let [s_n, s_n1, s_n2] = frames;
+    // CR 400.7: normalize each frame (strip the self-returning recast card + clear churning
+    // token-id bookkeeping) BEFORE the cover fork so both arms share the normalized frames. Uses
+    // the lead step's action to dispatch the recast-strip — an all-`Activate` period (the mana-engine
+    // class) only clears token-id bookkeeping; a 1-element `Recast` strips its card as before.
+    let (cs_n, cs_n1, cs_n2) = (
+        normalize_recast_frame(s_n, lead),
+        normalize_recast_frame(s_n1, lead),
+        normalize_recast_frame(s_n2, lead),
+    );
+    // CR 732.2a board recurrence on BOTH pairs — two disjoint recurrence shapes:
+    //  - fodder-growth (one HOMOGENEOUS class of k >= 1 members was reproduced each period,
+    //    `derived_fodder_class` is `Some`): cover modulo the inert reproduced fodder class (the
+    //    P3 object-growth path, unchanged — the cover consumes only the class, never k).
+    //  - pure resource growth (NO new battlefield object — the multi-activation mana-engine class):
+    //    the board returns EQUAL modulo projected resources (mana grows +N/period, board identical).
+    //    PROBE-1 measured `loop_states_equal_modulo_resources` TRUE on real Basalt+Power sequence
+    //    boundaries. A PARTIAL period never reaches here board-equal (the drive re-taps a tapped
+    //    source and aborts first), so the drive+cover IS the period-boundary check.
+    match derived_fodder_class(s_n, s_n1) {
+        Some((mut fodder, _k)) => {
+            crate::analysis::resource::project_object_for_loop(&mut fodder);
+            ObjectGrowthVerdict::FodderGrowth([
+                crate::analysis::resource::fodder_growth_cover_refusals(
+                    &cs_n, &cs_n1, &fodder, caster,
+                ),
+                crate::analysis::resource::fodder_growth_cover_refusals(
+                    &cs_n1, &cs_n2, &fodder, caster,
+                ),
+            ])
+        }
+        None => {
+            // FIX-2 (CR 732.2a / CR 104.4b): the multi-activation / pure-counter class returns
+            // EQUAL modulo projected resources OR covers modulo preserved-`Generic` counter growth
+            // (Pentad charge, One Ring burden — the whole preserved-`Generic` family, not one
+            // card). The base `loop_states_equal_modulo_resources` PRESERVES `Generic` counters, so
+            // a +1-charge/cycle loop is UNEQUAL there; the counter-growth cover accepts it. Sound:
+            // the offer is declinable and never crowns a `GameOver` (the cover's own doc,
+            // `resource.rs`), and is deliberately NOT wired into any Path-A/Path-B lethal seam.
+            let cover = |a: &GameState, b: &GameState| {
+                crate::analysis::resource::loop_states_equal_modulo_resources(a, b)
+                    || crate::analysis::resource::loop_states_cover_modulo_counter_growth(a, b)
+            };
+            ObjectGrowthVerdict::ResourceRecurrence(cover(&cs_n, &cs_n1) && cover(&cs_n1, &cs_n2))
+        }
+    }
+}
+
+/// [`certify_object_growth_frames`] on frames the integration suite reached through `apply()`.
+///
+/// Each frame is viewed as the proposer saw the first one, and carries `record`, because the
+/// producer's own frames come from a probe drive that neither reveals a card nor grows the record.
+#[cfg(any(test, feature = "test-support"))]
+pub fn certify_object_growth_frames_for_tests(
+    frames: [&GameState; 3],
+    record: &[crate::types::game_state::LoopActionContext],
+    caster: PlayerId,
+) -> crate::analysis::resource::ObjectGrowthVerdict {
+    let lead = record
+        .first()
+        .expect("a non-empty record: its first step is the lead");
+    let first = frames[0];
+    let views = frames.map(|frame| {
+        let mut view = crate::game::visibility::proposer_hidden_view_as_of(first, frame, caster);
+        view.last_loop_action_sequence = record.to_vec();
+        view
+    });
+    let _probe = SimulationProbeGuard::enter();
+    certify_object_growth_frames([&views[0], &views[1], &views[2]], lead, caster)
+}
+
 /// CR 111.1: the battlefield objects one period MINTED — created with no prior existence in any
 /// zone — as opposed to those that ARRIVED by moving zones. `zones::move_to_zone` carries the
 /// existing `object_id` through a move, so an arrival is keyed in BOTH frames' `objects` maps
@@ -8315,49 +8395,7 @@ fn try_offer_object_growth_shortcut(
         return None;
     }
 
-    // CR 400.7: normalize each frame (strip the self-returning recast card + clear churning
-    // token-id bookkeeping) BEFORE the cover fork so both arms share the normalized frames. Uses
-    // `seq[0]`'s action to dispatch the recast-strip — an all-`Activate` period (the mana-engine
-    // class) only clears token-id bookkeeping; a 1-element `Recast` strips its card as before.
-    let (cs_n, cs_n1, cs_n2) = (
-        normalize_recast_frame(&s_n, &seq[0]),
-        normalize_recast_frame(&s_n1, &seq[0]),
-        normalize_recast_frame(&s_n2, &seq[0]),
-    );
-    // CR 732.2a board recurrence on BOTH pairs — two disjoint recurrence shapes:
-    //  - fodder-growth (one HOMOGENEOUS class of k >= 1 members was reproduced each period,
-    //    `derived_fodder_class` is `Some`): cover modulo the inert reproduced fodder class (the
-    //    P3 object-growth path, unchanged — the cover consumes only the class, never k).
-    //  - pure resource growth (NO new battlefield object — the multi-activation mana-engine class):
-    //    the board returns EQUAL modulo projected resources (mana grows +N/period, board identical).
-    //    PROBE-1 measured `loop_states_equal_modulo_resources` TRUE on real Basalt+Power sequence
-    //    boundaries. A PARTIAL period never reaches here board-equal (the drive re-taps a tapped
-    //    source and aborts first), so the drive+cover IS the period-boundary check.
-    let cover_ok = match derived_fodder_class(&s_n, &s_n1) {
-        Some((mut fodder, _k)) => {
-            crate::analysis::resource::project_object_for_loop(&mut fodder);
-            crate::analysis::resource::loop_states_cover_modulo_fodder_growth(
-                &cs_n, &cs_n1, &fodder, caster,
-            ) && crate::analysis::resource::loop_states_cover_modulo_fodder_growth(
-                &cs_n1, &cs_n2, &fodder, caster,
-            )
-        }
-        None => {
-            // FIX-2 (CR 732.2a / CR 104.4b): the multi-activation / pure-counter class returns
-            // EQUAL modulo projected resources OR covers modulo preserved-`Generic` counter growth
-            // (Pentad charge, One Ring burden — the whole preserved-`Generic` family, not one
-            // card). The base `loop_states_equal_modulo_resources` PRESERVES `Generic` counters, so
-            // a +1-charge/cycle loop is UNEQUAL there; the counter-growth cover accepts it. Sound:
-            // the offer is declinable and never crowns a `GameOver` (the cover's own doc,
-            // `resource.rs`), and is deliberately NOT wired into any Path-A/Path-B lethal seam.
-            let cover = |a: &GameState, b: &GameState| {
-                crate::analysis::resource::loop_states_equal_modulo_resources(a, b)
-                    || crate::analysis::resource::loop_states_cover_modulo_counter_growth(a, b)
-            };
-            cover(&cs_n, &cs_n1) && cover(&cs_n1, &cs_n2)
-        }
-    };
-    if !cover_ok {
+    if !certify_object_growth_frames([&s_n, &s_n1, &s_n2], &seq[0], caster).certifies() {
         return None;
     }
 

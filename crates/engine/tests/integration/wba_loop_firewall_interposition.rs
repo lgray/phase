@@ -278,8 +278,8 @@ fn spent_self_entry_relief_offers_on_three_real_entry_census_lands() {
 /// activated abilities: a mana ability (`{T}: Add ..`, which
 /// CR 605.3a keeps OUT of this relief) and a second, non-mana ability whose body reads the
 /// board. They are deliberately three DIFFERENT reads — a counter sweep over every creature
-/// you control, a token mint with a board-scaled cost reduction, and a targeted keyword grant —
-/// so the row is about the class of card and not about one effect shape.
+/// you control, a token mint with a board-scaled cost reduction, and a P/T sweep over every
+/// creature you control — so the row is about the class of card and not about one effect shape.
 const PROPOSAL_LANDS: [(&str, &str, &[&str]); 3] = [
     (
         "Abandoned Air Temple",
@@ -295,13 +295,22 @@ const PROPOSAL_LANDS: [(&str, &str, &[&str]); 3] = [
         &["Mountain"],
     ),
     (
-        "Fire Nation Palace",
-        "This land enters tapped unless you control a basic land.\n{T}: Add {R}.\n\
-         {1}{R}, {T}: Target creature you control gains firebending 4 until end of turn. \
-         (Whenever it attacks, add {R}{R}{R}{R}. This mana lasts until end of combat.)",
+        "Castle Embereth",
+        "This land enters tapped unless you control a Mountain.\n{T}: Add {R}.\n\
+         {1}{R}{R}, {T}: Creatures you control get +1/+0 until end of turn.",
         &[],
     ),
 ];
+
+/// Fire Nation Palace's VERBATIM Oracle text, from the same export. Its non-mana ability grants a
+/// keyword to its one target, which reads nothing the loop grows.
+const FIRE_NATION_PALACE: (&str, &str, &[&str]) = (
+    "Fire Nation Palace",
+    "This land enters tapped unless you control a basic land.\n{T}: Add {R}.\n\
+     {1}{R}, {T}: Target creature you control gains firebending 4 until end of turn. \
+     (Whenever it attacks, add {R}{R}{R}{R}. This mana lasts until end of combat.)",
+    &[],
+);
 
 /// Chocobo Camp's VERBATIM Oracle text, from the same export.
 const CHOCOBO_CAMP: (&str, &str, &[&str]) = (
@@ -483,6 +492,34 @@ fn unactivated_ability_relief_offers_on_three_real_census_lands() {
              demonstrably sees this ability, so ARM A's offer is the relief and not a blind scan"
         );
     }
+}
+
+/// **Fire Nation Palace offers even when its ability is not one the proposal leaves out.** CR
+/// 611.2c fixes the keyword grant to the one creature it targets, so the body reads nothing the
+/// loop grows, and with its `kind` rewritten to `Spell` the ability still does not veto.
+#[test]
+fn a_single_target_keyword_grant_does_not_veto_the_offer() {
+    assert!(
+        drive_and_report(load_realistic_dump(), "baseline"),
+        "BASELINE positive control: the untouched combo board OFFERS"
+    );
+    let name = FIRE_NATION_PALACE.0;
+
+    let mut with_land = load_realistic_dump();
+    graft_full_land(&mut with_land, FIRE_NATION_PALACE);
+    assert!(
+        drive_and_report(with_land, name),
+        "ARM A ({name}): the proposal contains no activation of this ability"
+    );
+
+    let mut spellified = load_realistic_dump();
+    let host = graft_full_land(&mut spellified, FIRE_NATION_PALACE);
+    spellify_the_nonmana_ability(&mut spellified, host);
+    assert!(
+        drive_and_report(spellified, name),
+        "ARM B ({name}): the proposal-absence relief no longer applies, and a keyword granted to \
+         one target reads nothing the loop grows"
+    );
 }
 
 /// **Chocobo Camp OFFERS the CR 732.2a shortcut, untapped and tapped.** `graft_full_land` ADDS an

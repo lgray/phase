@@ -87,12 +87,13 @@ fn offered_player_targets(actions: &[GameAction]) -> BTreeSet<PlayerId> {
 }
 
 /// One beat, every beat crossing the public `apply()` boundary: pass at priority, aim
-/// every re-aimable choice at the LATCHED seat, and take an optional-effect prompt.
+/// every re-aimable choice at the LATCHED seat, take an optional-effect prompt, and answer any
+/// other prompt with its first legal action.
 ///
 /// The seat is latched at the first beat that offers one, as the LOWEST legal seat rather
 /// than in publisher order, and re-asserted legal at every later beat — a drive that
 /// silently re-aimed would move the certificate's losing seat under the rows that read it.
-fn drive_one_beat(state: &mut GameState, aimed_at: &mut Option<PlayerId>) {
+pub(crate) fn drive_one_beat(state: &mut GameState, aimed_at: &mut Option<PlayerId>) {
     let who = state
         .waiting_for
         .acting_player()
@@ -140,18 +141,13 @@ fn drive_one_beat(state: &mut GameState, aimed_at: &mut Option<PlayerId>) {
         return;
     }
 
-    let optional = actions
+    let answer = actions
         .iter()
         .find(|action| matches!(action, GameAction::DecideOptionalEffect { accept: true }))
+        .or_else(|| actions.first())
         .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "this drive policy answers priority, a player-target choice and an optional-effect \
-                 prompt; unhandled {:?}",
-                state.waiting_for
-            )
-        });
-    submit(state, who, optional);
+        .unwrap_or_else(|| panic!("no legal action at {:?}", state.waiting_for));
+    submit(state, who, answer);
 }
 
 fn legal_actions_at_offer(state: &GameState, proposer: PlayerId) -> Vec<GameAction> {
@@ -999,7 +995,7 @@ fn both_drain_boards_publish_no_aim_independent_charge_at_their_live_offer() {
 }
 
 /// A committed dump's whole JSON document, inflated and parsed.
-fn committed_document(path: &Path) -> serde_json::Value {
+pub(crate) fn committed_document(path: &Path) -> serde_json::Value {
     let bytes =
         std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let mut json = String::new();
@@ -1010,7 +1006,7 @@ fn committed_document(path: &Path) -> serde_json::Value {
         .unwrap_or_else(|error| panic!("{} must parse as JSON: {error}", path.display()))
 }
 
-fn collect_gz(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn collect_gz(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries =
         std::fs::read_dir(dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()));
     for entry in entries {

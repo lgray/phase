@@ -1,0 +1,80 @@
+//! CR 732.2a: the object-growth cover, asked through the producer's own certification on three
+//! frames each blink board reaches through `apply()`, certifies both boards' recorded
+//! trigger-driven periods on every condition, beside a committed board whose offer it certifies.
+
+use engine::analysis::resource::ObjectGrowthVerdict;
+use engine::game::engine::certify_object_growth_frames_for_tests as certify;
+use engine::game::scenario::{GameRunner, P0};
+use engine::types::actions::GameAction;
+use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::identifiers::ObjectId;
+
+use crate::loop_period_accessor_answers::{board_a_frames, board_b_frames};
+
+fn certified_on_every_condition() -> ObjectGrowthVerdict {
+    ObjectGrowthVerdict::FodderGrowth([Vec::new(), Vec::new()])
+}
+
+fn board_verdict(frames: &[GameState; 3]) -> ObjectGrowthVerdict {
+    certify(
+        [&frames[0], &frames[1], &frames[2]],
+        &frames[0].last_loop_action_sequence,
+        P0,
+    )
+}
+
+/// The Sprout Swarm dump's offer, declined on each of four casts: the frames after each decline,
+/// with the record the first offer carried, since declining clears it.
+fn sprout_control_verdicts() -> Vec<ObjectGrowthVerdict> {
+    let mut state = crate::sprout_inalla_realistic_offer::load_realistic_dump();
+    let mut frames = Vec::new();
+    let mut record = Vec::new();
+    for fodder in [406, 407, 408, 409] {
+        let outcome = GameRunner::from_state(state)
+            .cast(ObjectId(405))
+            .accept_optional()
+            .convoke_with(&[ObjectId(fodder)])
+            .commit()
+            .resolve();
+        let mut runner = GameRunner::from_state(outcome.state().clone());
+        assert!(
+            matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
+            "reach guard: the control's cast with fodder {fodder} raises the object-growth offer"
+        );
+        if record.is_empty() {
+            record = runner.state().last_loop_action_sequence.clone();
+        }
+        runner
+            .act(GameAction::DeclineShortcut)
+            .expect("the offer is declinable");
+        state = runner.state().clone();
+        frames.push(state.clone());
+    }
+    frames
+        .windows(3)
+        .map(|window| certify([&window[0], &window[1], &window[2]], &record, P0))
+        .collect()
+}
+
+#[test]
+fn both_blink_boards_certify_on_every_cover_condition() {
+    for verdict in sprout_control_verdicts() {
+        assert_eq!(
+            verdict,
+            certified_on_every_condition(),
+            "live control: a board whose offer the producer raises certifies through the same \
+             hand-off"
+        );
+    }
+    let (Some(board_a), Some(board_b)) = (board_a_frames(), board_b_frames()) else {
+        return;
+    };
+    assert_eq!(
+        (board_verdict(&board_a), board_verdict(&board_b)),
+        (
+            certified_on_every_condition(),
+            certified_on_every_condition()
+        ),
+        "boards A and B: no cover condition refuses either recorded trigger-driven period"
+    );
+}

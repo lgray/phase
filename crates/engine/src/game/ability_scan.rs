@@ -849,7 +849,42 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc = acc.or(scan_target_filter(target, target_ctx, mode));
             acc
         }
-        Effect::ChangeZone { .. } => Axes::CONSERVATIVE,
+        // CR 732.2a: which object moves is the proposal's choice; the scan reads what the
+        // move's own fields read. The three entry riders stay unscanned: prover incomplete here.
+        Effect::ChangeZone {
+            target,
+            enters_under,
+            enter_with_counters,
+            conditional_enter_with_counters,
+            face_down_profile,
+            enters_modified_if,
+            origin: _,
+            destination: _,
+            owner_library: _,
+            enter_transformed: _,
+            enter_tapped: _,
+            enters_attacking: _,
+            up_to: _,
+        } => match mode {
+            ScanMode::Conservative => Axes::CONSERVATIVE,
+            ScanMode::LoopFirewall
+                if !conditional_enter_with_counters.is_empty()
+                    || face_down_profile.is_some()
+                    || enters_modified_if.is_some() =>
+            {
+                Axes::CONSERVATIVE
+            }
+            ScanMode::LoopFirewall => {
+                let mut acc = scan_target_filter(target, target_ctx, mode);
+                if let Some(controller) = enters_under {
+                    acc = acc.or(scan_controller_ref(controller));
+                }
+                for (_counter_type, qty) in enter_with_counters {
+                    acc = acc.or(scan_quantity_expr(qty, mode));
+                }
+                acc
+            }
+        },
         Effect::ChangeZoneAll { .. } => Axes::CONSERVATIVE,
         Effect::Dig {
             player,
@@ -1011,7 +1046,43 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             }
             acc
         }
-        Effect::CopyTokenOf { .. } => Axes::CONSERVATIVE,
+        // CR 707.2: a copy of one object reads that object; a `source_filter` copies every
+        // object it matches, which is a census.
+        Effect::CopyTokenOf {
+            target,
+            owner,
+            source_filter,
+            count,
+            extra_keywords,
+            additional_modifications,
+            enters_attacking: _,
+            tapped: _,
+        } => match mode {
+            ScanMode::Conservative => Axes::CONSERVATIVE,
+            ScanMode::LoopFirewall => {
+                let mut acc = scan_target_filter(target, target_ctx, mode);
+                acc = acc.or(scan_target_filter(
+                    owner,
+                    FilterReadContext::SnapshotOrEvent,
+                    mode,
+                ));
+                if let Some(filter) = source_filter {
+                    acc = acc.or(scan_target_filter(
+                        filter,
+                        FilterReadContext::LiveBoardCensus,
+                        mode,
+                    ));
+                }
+                acc = acc.or(scan_quantity_expr(count, mode));
+                for kw in extra_keywords {
+                    acc = acc.or(scan_keyword(kw, mode));
+                }
+                for m in additional_modifications {
+                    acc = acc.or(scan_continuous_modification(m, mode));
+                }
+                acc
+            }
+        },
         Effect::CreateTokenCopyFromPool {
             owner,
             type_filter,
@@ -1184,7 +1255,27 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
         Effect::Animate { .. } => Axes::CONSERVATIVE,
         Effect::ReturnAsAura { .. } => Axes::CONSERVATIVE,
         Effect::RegisterBending { kind: _ } => Axes::NONE,
-        Effect::GenericEffect { .. } => Axes::CONSERVATIVE,
+        Effect::GenericEffect {
+            static_abilities,
+            duration,
+            target,
+            end_cost: _,
+        } => match mode {
+            ScanMode::Conservative => Axes::CONSERVATIVE,
+            ScanMode::LoopFirewall => {
+                let mut acc = Axes::NONE;
+                for sd in static_abilities {
+                    acc = acc.or(scan_resolved_continuous_static(sd, mode));
+                }
+                if let Some(d) = duration {
+                    acc = acc.or(scan_duration(d, mode));
+                }
+                if let Some(t) = target {
+                    acc = acc.or(scan_target_filter(t, target_ctx, mode));
+                }
+                acc
+            }
+        },
         Effect::Cleanup {
             clear_remembered: _,
             clear_chosen_player: _,
@@ -1482,8 +1573,8 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
         // Continuous-modification carrier: the mods Vec is an UNDESCENDED subtree
         // (no scan_continuous_modification walker exists), so classify
         // CONSERVATIVE — the fail-closed default for undescended subtrees, exactly
-        // as every sibling continuous-modification effect (Animate:802,
-        // ReturnAsAura:803, GenericEffect:805). Over-read is inert — this effect
+        // as the sibling continuous-modification effects (Animate:802,
+        // ReturnAsAura:803). Over-read is inert — this effect
         // never resolves standalone (lifted as CastFromZone permission metadata).
         Effect::AddPendingEntersModifications { .. } => Axes::CONSERVATIVE,
         Effect::CreateEmblem { .. } => Axes::CONSERVATIVE,
@@ -2426,17 +2517,17 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             acc
         }
         QuantityRef::TrackedSetSize => Axes::NONE,
-        QuantityRef::FilteredTrackedSetSize {
-            filter,
-            caused_by: _,
-        } => {
-            let mut acc = Axes::NONE;
-            acc = acc.or(scan_target_filter(
-                filter,
-                FilterReadContext::LiveBoardCensus,
-                mode,
-            ));
-            acc
+        // CR 608.2c: with a cause, the set is what one zone change or keyword action produced
+        // "this way", so its size scales only through that producer, whose own arm carries any
+        // population read.
+        QuantityRef::FilteredTrackedSetSize { filter, caused_by } => {
+            let ctx = match (mode, caused_by) {
+                (ScanMode::LoopFirewall, Some(_)) => FilterReadContext::SnapshotOrEvent,
+                (ScanMode::LoopFirewall, None) | (ScanMode::Conservative, _) => {
+                    FilterReadContext::LiveBoardCensus
+                }
+            };
+            scan_target_filter(filter, ctx, mode)
         }
         QuantityRef::ExiledFromHandThisResolution => Axes::NONE,
         // CR 608.2c: the sticker this resolution's put-a-sticker instruction
@@ -4153,17 +4244,17 @@ fn scan_delayed_trigger_condition(c: &DelayedTriggerCondition, mode: ScanMode) -
         // `object_id` is already resolved, so there is no filter to walk and no
         // population whose size a growing class could move.
         DelayedTriggerCondition::WhenLeavesPlay { object_id: _ } => Axes::NONE,
-        // Fails CLOSED. The payload is a bare `TargetFilter` with NO owning authority
-        // to delegate to — the arms below have one, and `effect_target_ctx` is not it,
-        // because it classifies EFFECT targets and a delayed-trigger matcher is not
-        // one. Replicating a matcher discipline inline would mint a second, unowned
-        // copy of it. `FilterReadContext`'s census default is the safe direction
-        // for a contested new call site: over-veto, never a false offer.
+        // CR 603.7c: under the loop firewall a matcher naming one particular object reads no
+        // population; every other matcher, and every matcher under `Conservative`, is a census.
         DelayedTriggerCondition::WhenDies { filter }
         | DelayedTriggerCondition::WhenLeavesPlayFiltered { filter }
         | DelayedTriggerCondition::WhenEntersBattlefield { filter }
         | DelayedTriggerCondition::WhenDiesOrExiled { filter } => {
-            scan_target_filter(filter, FilterReadContext::LiveBoardCensus, mode)
+            let ctx = match mode {
+                ScanMode::Conservative => FilterReadContext::LiveBoardCensus,
+                ScanMode::LoopFirewall => particular_object_ctx(filter),
+            };
+            scan_target_filter(filter, ctx, mode)
         }
         // CR 603.2: the payload is a whole trigger EVENT MATCHER, and this file's
         // single authority for a `TriggerDefinition` is [`scan_trigger_definition`] —
@@ -6013,6 +6104,99 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
     }
 }
 
+/// CR 603.7c + CR 611.2c: a filter naming one particular object — a delayed trigger's referent,
+/// or the objects a resolved continuous effect affects — reads no population. Any other filter is
+/// a census, so a new `TargetFilter` variant lands on the census side.
+fn particular_object_ctx(filter: &TargetFilter) -> FilterReadContext {
+    match filter {
+        TargetFilter::SelfRef
+        | TargetFilter::OriginalSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::TrackedSet { .. } => FilterReadContext::SnapshotOrEvent,
+        _ => FilterReadContext::LiveBoardCensus,
+    }
+}
+
+/// CR 611.2c: a static ability a resolving `GenericEffect` installs. Only a continuous mode is
+/// described here; any other mode, and the two fields no card sets, stay unscanned: prover
+/// incomplete here. Destructured with no `..`, so a new field is classified before it compiles.
+fn scan_resolved_continuous_static(
+    sd: &crate::types::ability::StaticDefinition,
+    mode: ScanMode,
+) -> Axes {
+    let crate::types::ability::StaticDefinition {
+        mode: static_mode,
+        affected,
+        modifications,
+        condition,
+        per_player_condition,
+        attack_defended,
+        bypass_beneficiary,
+        // Restricts where `affected` is evaluated; `affected`'s own scan carries any read.
+        affected_zone: _,
+        // A location, a flag, a label, a fixed id, or an exemption over the protected object's
+        // own attachments.
+        effect_zone: _,
+        active_zones: _,
+        characteristic_defining: _,
+        description: _,
+        source_controller: _,
+        source_object: _,
+        protection_does_not_remove: _,
+        room_door: _,
+        granting_object: _,
+    } = sd;
+    if *static_mode != crate::types::statics::StaticMode::Continuous
+        || per_player_condition.is_some()
+        || attack_defended.is_some()
+    {
+        return Axes::CONSERVATIVE;
+    }
+    let mut acc = Axes::NONE;
+    if let Some(affected) = affected {
+        acc = acc.or(scan_target_filter(
+            affected,
+            particular_object_ctx(affected),
+            mode,
+        ));
+    }
+    if let Some(condition) = condition {
+        acc = acc.or(scan_static_condition(condition, mode));
+    }
+    for m in modifications {
+        acc = acc.or(scan_continuous_modification(m, mode));
+    }
+    if let Some(beneficiary) = bypass_beneficiary {
+        acc = acc.or(scan_controller_ref(beneficiary));
+    }
+    acc
+}
+
+/// The CR 732.2a firewall's `sibling` axis on a resolved ability — a stack entry's body.
+pub(crate) fn resolved_ability_reads_sibling_mutable_for_loop(ability: &ResolvedAbility) -> bool {
+    resolved_ability_axes(ability, ScanMode::LoopFirewall).sibling
+}
+
+/// CR 603.7 + CR 732.2a: does a stored delayed trigger's firing condition or body read the
+/// growing class?
+pub(crate) fn delayed_trigger_reads_growing_class_for_loop(
+    trigger: &crate::types::game_state::DelayedTrigger,
+) -> bool {
+    let crate::types::game_state::DelayedTrigger {
+        condition,
+        ability,
+        // A player, an object id, a flag, and an install identity.
+        controller: _,
+        source_id: _,
+        one_shot: _,
+        provenance: _,
+    } = trigger;
+    scan_delayed_trigger_condition(condition, ScanMode::LoopFirewall)
+        .or(resolved_ability_axes(ability, ScanMode::LoopFirewall))
+        .reads_growing_class()
+}
+
 /// LoopFirewall-mode growing class (`sibling` ∨ `projected`) on a def-level
 /// `AbilityDefinition` (trigger `execute` bodies, every functioning `obj.abilities`
 /// def, granted-ability bodies) — the CR 732.2a object-growth firewall's DESCENDING
@@ -6210,7 +6394,7 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         //     extra-combat engines re-declare attackers each combat, so a board grown by
         //     prior iterations yields MORE attackers ⇒ unbounded copies. Its scan_effect
         //     arm routes `source_filter` through this `target_ctx`, so the tag is
-        //     runtime-live (unlike CopyTokenOf, which is already scan_effect-CONSERVATIVE).
+        //     runtime-live.
         | Effect::CopyTokenBlockingAttacker { .. } => FilterReadContext::LiveBoardCensus,
         // ── OBLIGATION-(ii)-PROVEN NON-ESCALATION EXCEPTION — the SOLE census-role slot
         // classified Snapshot. `SetTapState` ("untap/tap all matching", scope All) is
@@ -8240,15 +8424,23 @@ mod tests {
             )
             .sibling
         );
-        assert!(
+        // CR 608.2c: the same filter over a set one exile produced "this way" reads no census.
+        let tracked = |caused_by| {
             scan_quantity_ref(
                 &QuantityRef::FilteredTrackedSetSize {
                     filter: Box::new(ct()),
-                    caused_by: None,
+                    caused_by,
                 },
-                LoopFirewall
+                LoopFirewall,
             )
             .sibling
+        };
+        assert_eq!(
+            (
+                tracked(None),
+                tracked(Some(crate::types::ability::ThisWayCause::Exiled))
+            ),
+            (true, false)
         );
     }
 
@@ -8963,8 +9155,8 @@ mod tests {
             (
                 "token_copy.rs",
                 false,
-                "CopyTokenOf source_filter scan is scan_effect-CONSERVATIVE-vetoed (safe via \
-                 the whole-effect conservative arm, not the census tag)",
+                "CopyTokenOf source_filter is scanned as a live census by its own scan_effect \
+                 arm, not through the census tag",
             ),
         ];
 
@@ -10314,16 +10506,13 @@ mod tests {
         );
     }
 
-    /// A filter-carrying delayed condition fails CLOSED on all four variants, and the
-    /// `sibling` half comes from the census CONTEXT rather than from the filter's own shape.
+    /// CR 603.7c: on all four filter-carrying delayed conditions, a population matcher is a
+    /// census under the loop firewall, while a matcher naming one particular object reads none.
     ///
-    /// The second fixture is a SINGLE-OBJECT reference (`TargetFilter::ParentTarget`), which
-    /// scans `(true, false, false)` on its own — it yields the same triple here only because
-    /// the arm passes `LiveBoardCensus`, which is what makes the attribution visible.
-    ///
-    /// REVERT-PROBE: swap `FilterReadContext::LiveBoardCensus` for `SnapshotOrEvent` in the
-    /// four-variant arm ⇒ **FAILS**; replace the arm body with
-    /// `ability_definition_axes(effect, mode)` alone (drop the condition leg) ⇒ **FAILS**.
+    /// REVERT-PROBE: answer `LiveBoardCensus` for every matcher in the four-variant arm ⇒ the
+    /// `ParentTarget` leg **FAILS**; replace the arm body with
+    /// `ability_definition_axes(effect, mode)` alone (drop the condition leg) ⇒ the bare
+    /// `Typed` leg **FAILS**.
     #[test]
     fn filter_carrying_delayed_conditions_fail_closed() {
         use crate::types::phase::Phase;
@@ -10339,7 +10528,10 @@ mod tests {
 
         let bare = TargetFilter::Typed(TypedFilter::creature());
         let single_object = TargetFilter::ParentTarget;
-        for (label, filter) in [("bare Typed", &bare), ("ParentTarget", &single_object)] {
+        for (label, filter, expected) in [
+            ("bare Typed", &bare, (true, true, false)),
+            ("ParentTarget", &single_object, (true, false, false)),
+        ] {
             let built: [(&str, DelayedTriggerCondition); 4] = [
                 (
                     "WhenDies",
@@ -10373,11 +10565,8 @@ mod tests {
                 );
                 assert_eq!(
                     (axes.event, axes.sibling, axes.projected),
-                    (true, true, false),
-                    "{variant} / {label}: the matcher filter has no owning authority to \
-                     delegate to, so it is read under `LiveBoardCensus` and the `sibling` \
-                     half is the census's own — precise, not a blanket, since `projected` \
-                     stays false"
+                    expected,
+                    "{variant} / {label}: only a population matcher reads the growing class"
                 );
             }
         }
@@ -10810,5 +10999,155 @@ mod tests {
         // that says so, and it is what the assert consults.
         let foreign = TargetFilter::Any;
         let _ = effect_target_reads_growing_class_for_loop(&effect, &foreign);
+    }
+
+    fn loop_axes(effect: &Effect) -> (bool, bool, bool) {
+        let axes = scan_effect(effect, ScanMode::LoopFirewall);
+        (axes.event, axes.sibling, axes.projected)
+    }
+
+    fn move_onto_battlefield_with(edit: impl FnOnce(&mut Effect)) -> (bool, bool, bool) {
+        let mut effect = Effect::ChangeZone {
+            origin: Some(Zone::Exile),
+            destination: Zone::Battlefield,
+            target: TargetFilter::ParentTarget,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        };
+        edit(&mut effect);
+        loop_axes(&effect)
+    }
+
+    /// CR 732.2a: moving one particular object reads only the move's own fields; a
+    /// board-counting entry rider still reads the census, and each unscanned rider refuses.
+    ///
+    /// REVERT-PROBE: restore `Effect::ChangeZone { .. } => Axes::CONSERVATIVE` ⇒ the relieved
+    /// leg **FAILS**; drop the retained-rider guard ⇒ the refused legs **FAIL**.
+    #[test]
+    fn a_particular_object_move_reads_only_its_own_fields() {
+        let (_, sibling, projected) = move_onto_battlefield_with(|_| {});
+        assert_eq!((sibling, projected), (false, false));
+        let counted = move_onto_battlefield_with(|e| {
+            if let Effect::ChangeZone {
+                enter_with_counters,
+                ..
+            } = e
+            {
+                enter_with_counters.push((CounterType::Plus1Plus1, object_count()));
+            }
+        });
+        assert!(counted.1, "a counter count over the board is a census");
+        let retained = [
+            move_onto_battlefield_with(|e| {
+                if let Effect::ChangeZone {
+                    conditional_enter_with_counters,
+                    ..
+                } = e
+                {
+                    conditional_enter_with_counters.push((
+                        TargetFilter::SelfRef,
+                        CounterType::Plus1Plus1,
+                        QuantityExpr::Fixed { value: 1 },
+                    ));
+                }
+            }),
+            move_onto_battlefield_with(|e| {
+                if let Effect::ChangeZone {
+                    face_down_profile, ..
+                } = e
+                {
+                    *face_down_profile =
+                        Some(crate::types::ability::FaceDownProfile::cloaked_2_2());
+                }
+            }),
+            move_onto_battlefield_with(|e| {
+                if let Effect::ChangeZone {
+                    enters_modified_if, ..
+                } = e
+                {
+                    *enters_modified_if = Some(TargetFilter::SelfRef);
+                }
+            }),
+        ];
+        assert_eq!(retained, [(true, true, true); 3]);
+    }
+
+    fn copy_of_target(source_filter: Option<TargetFilter>) -> Effect {
+        Effect::CopyTokenOf {
+            target: TargetFilter::ParentTarget,
+            owner: TargetFilter::Controller,
+            source_filter,
+            enters_attacking: false,
+            tapped: false,
+            count: QuantityExpr::Fixed { value: 1 },
+            extra_keywords: vec![],
+            additional_modifications: vec![],
+        }
+    }
+
+    /// CR 707.2: a copy of one object reads that object; a `source_filter` copies every
+    /// object it matches.
+    ///
+    /// REVERT-PROBE: restore `Effect::CopyTokenOf { .. } => Axes::CONSERVATIVE` ⇒ the plain
+    /// copy **FAILS**; scan `source_filter` under `SnapshotOrEvent` ⇒ the census leg **FAILS**.
+    #[test]
+    fn a_copy_of_one_object_is_not_a_census() {
+        let (_, plain_sibling, plain_projected) = loop_axes(&copy_of_target(None));
+        let (_, census_sibling, _) = loop_axes(&copy_of_target(Some(creature_filter())));
+        assert_eq!(
+            (plain_sibling, plain_projected, census_sibling),
+            (false, false, true)
+        );
+    }
+
+    fn grant_until_end_of_turn(sd: StaticDefinition) -> Effect {
+        Effect::GenericEffect {
+            static_abilities: vec![sd],
+            duration: Some(Duration::UntilEndOfTurn),
+            target: None,
+            end_cost: None,
+        }
+    }
+
+    fn flying_grant(affected: TargetFilter) -> StaticDefinition {
+        StaticDefinition::continuous()
+            .affected(affected)
+            .modifications(vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Flying,
+            }])
+    }
+
+    /// CR 611.2c: a keyword granted to one particular object reads nothing that grows; one
+    /// granted to every creature you control reads the census, and a non-continuous installed
+    /// static stays unscanned.
+    ///
+    /// REVERT-PROBE: restore `Effect::GenericEffect { .. } => Axes::CONSERVATIVE` ⇒ the
+    /// relieved leg **FAILS**; scan `affected` as `SnapshotOrEvent` always ⇒ the census leg
+    /// **FAILS**.
+    #[test]
+    fn a_grant_to_one_object_is_not_a_census() {
+        let (_, one_sibling, one_projected) = loop_axes(&grant_until_end_of_turn(flying_grant(
+            TargetFilter::ParentTarget,
+        )));
+        let yours = TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You));
+        let (_, yours_sibling, _) = loop_axes(&grant_until_end_of_turn(flying_grant(yours)));
+        assert_eq!(
+            (one_sibling, one_projected, yours_sibling),
+            (false, false, true)
+        );
+        let mut not_continuous = flying_grant(TargetFilter::ParentTarget);
+        not_continuous.mode = StaticMode::CantBlock;
+        assert_eq!(
+            loop_axes(&grant_until_end_of_turn(not_continuous)),
+            (true, true, true)
+        );
     }
 }
