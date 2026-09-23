@@ -977,7 +977,8 @@ fn parse_exile_rest_clause(lower: &str) -> bool {
 /// information suffix). Composes the (pronoun × optional "face down") axes with
 /// nom combinators rather than enumerating the permutations as match-arm
 /// literals; the clause-boundary splitter has already stripped the leading
-/// "then" connector.
+/// "then" connector. It also recognizes the restatement of a search result's
+/// exile.
 fn parse_exile_looked_at_card(lower: &str) -> Option<bool> {
     let trimmed = lower.trim().trim_end_matches('.').trim_end();
     let (rest, _) = tag::<_, _, OracleError<'_>>("exile ").parse(trimmed).ok()?;
@@ -5304,6 +5305,19 @@ pub(super) fn apply_clause_continuation(
             }
         }
         ContinuationAst::SearchResultClauseHandled => {}
+        ContinuationAst::ConcealSearchDestination => {
+            let Some(bound_index) = env.resolve(
+                defs,
+                super::assembly::AntecedentSelector::ContinuationProduct(
+                    super::assembly::ContinuationRole::SearchDestination,
+                ),
+                None,
+                super::assembly::OnMiss::Ignore,
+            ) else {
+                return;
+            };
+            append_conceal_sub_ability(&mut defs[bound_index]);
+        }
         ContinuationAst::PutChoiceRemainderOnBottom => {
             let Some(previous) = defs.last_mut() else {
                 return;
@@ -5876,7 +5890,7 @@ pub(super) fn apply_clause_continuation(
 /// CR 702.75a + CR 608.2c: Append the Hideaway conceal continuation to the
 /// deepest point of `dig`'s sub-ability chain. Mirrors `database/hideaway.rs`:
 /// the chained `HideawayConceal { target: ParentTarget }` flips the just-exiled
-/// dug card face down (CR 406.3) and links it to the source. Appended at the
+/// card face down (CR 406.3) and links it to the source. Appended at the
 /// deepest sub so it never clobbers an existing continuation (e.g. a trailing
 /// "put the rest on the bottom" patch lives on the Dig itself, not as a sub).
 fn append_conceal_sub_ability(dig: &mut AbilityDefinition) {
@@ -6068,6 +6082,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::ChooseFromExile { .. } => true,
         ContinuationAst::SearchRevealResult => true,
         ContinuationAst::SearchResultClauseHandled => true,
+        ContinuationAst::ConcealSearchDestination => true,
         ContinuationAst::PutChoiceRemainderOnBottom => true,
         ContinuationAst::ChoicePartitionDestinations { .. } => true,
         ContinuationAst::PutChosenCardsAtLibraryPosition { .. } => true,
@@ -8161,21 +8176,11 @@ pub(super) fn parse_followup_continuation_ast(
             origin: Some(Zone::Library),
             destination: Zone::Exile,
             ..
-        } if matches!(
-            lower.trim(),
-            "exile it"
-                | "exile it face down"
-                | "exile that card"
-                | "exile that card face down"
-                | "exile the card"
-                | "exile the card face down"
-                | "exile them"
-                | "exile them face down"
-                | "exile those cards"
-                | "exile those cards face down"
-        ) =>
-        {
-            Some(ContinuationAst::SearchResultClauseHandled)
+        } if parse_exile_looked_at_card(&lower).is_some() => {
+            match parse_exile_looked_at_card(&lower) {
+                Some(true) => Some(ContinuationAst::ConcealSearchDestination),
+                Some(false) | None => Some(ContinuationAst::SearchResultClauseHandled),
+            }
         }
         Effect::ChangeZone {
             origin: Some(Zone::Library),
@@ -9962,6 +9967,42 @@ mod tests {
         let result =
             parse_followup_continuation_ast("exile them", &previous, &mut ParseContext::default());
         assert_eq!(result, Some(ContinuationAst::SearchResultClauseHandled));
+    }
+
+    /// CR 406.3: "face down" on a search's exile restatement conceals the found card.
+    #[test]
+    fn search_exile_face_down_followup_conceals_the_search_destination() {
+        let previous = Effect::ChangeZone {
+            origin: Some(Zone::Library),
+            destination: Zone::Exile,
+            target: TargetFilter::Any,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        };
+        let followup = |text: &str| {
+            parse_followup_continuation_ast(text, &previous, &mut ParseContext::default())
+        };
+        for pronoun in ["it", "them", "that card", "those cards", "the card"] {
+            assert_eq!(
+                followup(&format!("exile {pronoun} face down")),
+                Some(ContinuationAst::ConcealSearchDestination),
+                "{pronoun}"
+            );
+            assert_eq!(
+                followup(&format!("exile {pronoun}")),
+                Some(ContinuationAst::SearchResultClauseHandled),
+                "{pronoun}"
+            );
+        }
+        assert_eq!(followup("exile it face up"), None);
     }
 
     /// CR 701.23a + CR 701.18a (cluster 35 / Mana Severance): comma-split

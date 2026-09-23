@@ -102,10 +102,51 @@ fn continuation_search_exile_then_shuffle() {
         } => {}
         other => panic!("expected library-to-exile search destination, got {other:?}"),
     }
-    let Some(shuffle) = change_zone.sub_ability.as_ref() else {
-        panic!("exile destination should chain into shuffle");
+    let conceal = change_zone
+        .sub_ability
+        .as_deref()
+        .expect("exile destination should chain into the conceal");
+    assert!(matches!(
+        &*conceal.effect,
+        Effect::HideawayConceal {
+            target: TargetFilter::ParentTarget
+        }
+    ));
+    let Some(shuffle) = conceal.sub_ability.as_ref() else {
+        panic!("conceal should chain into shuffle");
     };
     assert!(matches!(&*shuffle.effect, Effect::Shuffle { .. }));
+}
+
+#[test]
+fn praetors_grasp_conceals_the_foreign_search_result() {
+    let def = parse_effect_chain(
+        "Search target opponent's library for a card and exile it face down. Then that player shuffles. You may play that card for as long as it remains exiled.",
+        AbilityKind::Spell,
+    );
+
+    let change_zone = def
+        .sub_ability
+        .as_deref()
+        .expect("search should chain into the exile destination");
+    assert!(matches!(
+        &*change_zone.effect,
+        Effect::ChangeZone {
+            origin: Some(Zone::Library),
+            destination: Zone::Exile,
+            ..
+        }
+    ));
+    let conceal = change_zone
+        .sub_ability
+        .as_deref()
+        .expect("exile destination should chain into the conceal");
+    assert!(matches!(
+        &*conceal.effect,
+        Effect::HideawayConceal {
+            target: TargetFilter::ParentTarget
+        }
+    ));
 }
 
 #[test]
@@ -127,10 +168,24 @@ fn beseech_the_mirror_search_exiles_and_has_hand_fallback() {
         }
     ));
 
-    let cast = exile
+    let conceal = exile
         .sub_ability
         .as_deref()
-        .and_then(|shuffle| shuffle.sub_ability.as_deref())
+        .expect("exile should chain into the conceal");
+    assert!(matches!(
+        &*conceal.effect,
+        Effect::HideawayConceal {
+            target: TargetFilter::ParentTarget
+        }
+    ));
+    let shuffle = conceal
+        .sub_ability
+        .as_deref()
+        .expect("conceal should chain into shuffle");
+    assert!(matches!(&*shuffle.effect, Effect::Shuffle { .. }));
+    let cast = shuffle
+        .sub_ability
+        .as_deref()
         .expect("shuffle should chain into bargained cast");
     match &*cast.effect {
         Effect::CastFromZone {

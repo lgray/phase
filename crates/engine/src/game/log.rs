@@ -4,7 +4,7 @@ use crate::game::combat::AttackTarget;
 use crate::game::planechase::PlanarDieFace;
 use crate::types::ability::{AbilityTag, TargetRef};
 use crate::types::events::{GameEvent, PlayerActionKind};
-use crate::types::game_state::GameState;
+use crate::types::game_state::{GameState, ZoneChangeRecord};
 use crate::types::identifiers::ObjectId;
 use crate::types::log::{
     GameLogEntry, LogBoundary, LogCategory, LogImportance, LogPresentation, LogSegment, LogTone,
@@ -42,9 +42,10 @@ pub fn resolve_log_entries(
         .enumerate()
         .filter_map(|(index, event)| {
             cursor.apply(event);
-            (!should_exclude_event(event, after)
+            (!should_exclude_event(event)
                 && !is_redundant_log_event(events, index)
-                && !is_player_leave_move(events, index, &batch))
+                && !is_player_leave_move(events, index, &batch)
+                && !is_concealed_move(events, index, &batch, after))
             .then(|| {
                 let mut segments = format_segments(event, after);
                 name_at_event_time(&mut segments, &batch, index + 1);
@@ -158,8 +159,8 @@ fn is_redundant_log_event(events: &[GameEvent], index: usize) -> bool {
     }
 }
 
-/// A batch `ZoneChanged` as (position, origin, recorded name).
-type BatchMove<'a> = (usize, Option<Zone>, &'a str);
+/// A batch `ZoneChanged` as (position, origin, record).
+type BatchMove<'a> = (usize, Option<Zone>, &'a ZoneChangeRecord);
 
 /// Batch look-ups gathered once, so no per-event check rescans the batch or the journal.
 struct BatchIndex<'a> {
@@ -207,7 +208,7 @@ impl<'a> BatchIndex<'a> {
                 } => batch.moves.entry(*object_id).or_default().push((
                     position,
                     *from,
-                    record.name.as_str(),
+                    record.as_ref(),
                 )),
                 GameEvent::TurnStarted { .. } => batch.turn_starts.push(position),
                 GameEvent::PlayerEliminated { player_id } => {
@@ -218,6 +219,60 @@ impl<'a> BatchIndex<'a> {
         }
         batch
     }
+
+    fn next_move(&self, object_id: ObjectId, from_index: usize) -> Option<&BatchMove<'a>> {
+        let moves = self.moves.get(&object_id)?;
+        moves.get(moves.partition_point(|&(position, ..)| position < from_index))
+    }
+}
+
+fn departed_face_down(record: &ZoneChangeRecord) -> bool {
+    record
+        .trigger_source_context()
+        .is_some_and(|context| context.face_down)
+}
+
+/// CR 400.2 + CR 406.3 + CR 708.9: whether the card's face was public as it left `from`.
+fn departed_face_up(from: Zone, record: &ZoneChangeRecord) -> bool {
+    from.is_public()
+        && (matches!(from, Zone::Battlefield | Zone::Stack) || !departed_face_down(record))
+}
+
+/// Face-down status in exile is applied after the move is recorded.
+fn arrived_face_down(
+    batch: &BatchIndex,
+    object_id: ObjectId,
+    index: usize,
+    after: &GameState,
+) -> bool {
+    match batch.next_move(object_id, index + 1) {
+        Some((_, _, record)) => departed_face_down(record),
+        None => after
+            .objects
+            .get(&object_id)
+            .is_some_and(|obj| obj.face_down),
+    }
+}
+
+/// CR 400.2 + CR 406.3: a move is narrated only if the card was face up in a public zone on one
+/// side of it.
+fn is_concealed_move(
+    events: &[GameEvent],
+    index: usize,
+    batch: &BatchIndex,
+    after: &GameState,
+) -> bool {
+    let Some(GameEvent::ZoneChanged {
+        object_id,
+        from: Some(from),
+        to,
+        record,
+    }) = events.get(index)
+    else {
+        return false;
+    };
+    !departed_face_up(*from, record)
+        && !(to.is_public() && !arrived_face_down(batch, *object_id, index, after))
 }
 
 /// CR 800.4a: whether this hidden-origin move is the leaving-player sweep; the journal holding
@@ -260,19 +315,18 @@ fn is_player_leave_move(events: &[GameEvent], index: usize, batch: &BatchIndex) 
 }
 
 /// CR 400.7: a card's name can change as it moves, so a card cited before a later move in the
-/// batch takes that move's recorded name, if the move left a public zone (CR 400.2).
+/// batch takes that move's recorded name, if the move left a public zone face up (CR 400.2); a
+/// card that left one face down had no name (CR 406.3a).
 fn name_at_event_time(segments: &mut [LogSegment], batch: &BatchIndex, from_index: usize) {
     for segment in segments {
         let LogSegment::CardName { name, object_id } = segment else {
             continue;
         };
-        let Some(object_moves) = batch.moves.get(object_id) else {
-            continue;
-        };
-        let next = object_moves.partition_point(|&(position, ..)| position < from_index);
-        if let Some(&(_, Some(from), recorded)) = object_moves.get(next) {
-            if from.is_public() {
-                recorded.clone_into(name);
+        if let Some(&(_, Some(from), record)) = batch.next_move(*object_id, from_index) {
+            if departed_face_up(from, record) {
+                record.name.clone_into(name);
+            } else if from.is_public() {
+                name.clear();
             }
         }
     }
@@ -639,30 +693,19 @@ fn visibility(event: &GameEvent) -> LogVisibility {
 
 /// Returns true for events that should be excluded from log output.
 /// Covers hidden-information leaks and low-signal stack bookkeeping.
-fn should_exclude_event(event: &GameEvent, state: &GameState) -> bool {
+fn should_exclude_event(event: &GameEvent) -> bool {
     match event {
         GameEvent::HiddenSearchViewed { .. } => true,
         // CR 701.17a + CR 701.17c: the paired `ZoneChanged` already names the milled
         // card; this event exists for mill triggers, so narrating it would duplicate
         // that line.
         GameEvent::Milled { .. } => true,
-        // CR 400.2 + CR 406.3 + CR 708.2: a hidden-origin move is narrated only into a public
-        // zone and only if the card is face up in the end-of-batch state; a same-zone move says
-        // nothing.
+        // A same-zone move says nothing.
         GameEvent::ZoneChanged {
-            object_id,
             from: Some(from),
             to,
             ..
-        } => {
-            from == to
-                || (!from.is_public()
-                    && (!to.is_public()
-                        || state
-                            .objects
-                            .get(object_id)
-                            .is_some_and(|obj| obj.face_down)))
-        }
+        } => from == to,
         // PlayerPerformedAction { Draw } is an internal ledger signal consumed by
         // "for each player who drew a card this way" counting and
         // the player-action trigger index), not a user-facing event. Unlike
@@ -2211,13 +2254,12 @@ mod tests {
     /// trigger-facing mill event is dropped rather than narrated twice.
     #[test]
     fn milled_is_excluded_from_the_log() {
-        let state = GameState::new_two_player(42);
         let milled = GameEvent::Milled {
             player_id: PlayerId(0),
             object_id: ObjectId(7),
             to: crate::types::zones::Zone::Graveyard,
         };
-        assert!(should_exclude_event(&milled, &state));
+        assert!(should_exclude_event(&milled));
 
         // Live control in the same invocation: a predicate stuck at `true`, or
         // one that never ran, cannot pass this leg.
@@ -2227,7 +2269,7 @@ mod tests {
             object_id: ObjectId(7),
             cast_mana_value: None,
         };
-        assert!(!should_exclude_event(&cast, &state));
+        assert!(!should_exclude_event(&cast));
     }
 
     #[test]
@@ -2245,7 +2287,7 @@ mod tests {
         assert_eq!(importance(&creation), LogImportance::Detail);
         assert_eq!(tone(&creation), LogTone::Neutral);
         assert_eq!(categorize(&creation), LogCategory::Turn);
-        assert!(should_exclude_event(&creation, &state));
+        assert!(should_exclude_event(&creation));
         assert!(format_segments(&creation, &state).is_empty());
         assert!(resolve_log_entries(&[creation], &state, &state).is_empty());
         assert_eq!(
@@ -2256,7 +2298,6 @@ mod tests {
 
     #[test]
     fn empty_attack_declaration_is_excluded_from_the_log() {
-        let state = GameState::new_two_player(42);
         let no_attackers = GameEvent::AttackersDeclared {
             attacker_ids: vec![],
             defending_player: PlayerId(1),
@@ -2270,8 +2311,8 @@ mod tests {
             declaration_records: Vec::new(),
         };
 
-        assert!(should_exclude_event(&no_attackers, &state));
-        assert!(!should_exclude_event(&attacker, &state));
+        assert!(should_exclude_event(&no_attackers));
+        assert!(!should_exclude_event(&attacker));
     }
 
     #[test]
@@ -3311,12 +3352,11 @@ mod tests {
 
     #[test]
     fn same_zone_move_is_not_narrated() {
-        let state = GameState::new_two_player(42);
         let exile_to_exile = zone_move(ObjectId(7), Zone::Exile, Zone::Exile, PlayerId(1), 0);
         let graveyard_to_exile =
             zone_move(ObjectId(7), Zone::Graveyard, Zone::Exile, PlayerId(1), 0);
-        assert!(should_exclude_event(&exile_to_exile, &state));
-        assert!(!should_exclude_event(&graveyard_to_exile, &state));
+        assert!(should_exclude_event(&exile_to_exile));
+        assert!(!should_exclude_event(&graveyard_to_exile));
     }
 
     #[test]
@@ -3373,6 +3413,176 @@ mod tests {
         );
         let other_card = zone_move(ObjectId(8), Zone::Stack, Zone::Exile, PlayerId(0), 0);
         assert_eq!(rename(&[other_card]), "After Name");
+
+        let mut scratch = GameState::new_two_player(42);
+        let hidden = create_object(
+            &mut scratch,
+            CardId(1),
+            PlayerId(0),
+            "Hidden Name".to_string(),
+            Zone::Exile,
+        );
+        scratch.objects.get_mut(&hidden).unwrap().face_down = true;
+        let face_down_departure = GameEvent::ZoneChanged {
+            object_id: card,
+            from: Some(Zone::Exile),
+            to: Zone::Hand,
+            record: Box::new(scratch.objects[&hidden].snapshot_for_zone_change(
+                card,
+                Some(Zone::Exile),
+                Zone::Hand,
+            )),
+        };
+        assert_eq!(rename(&[face_down_departure]), "");
+    }
+
+    fn snapshot_move(state: &GameState, object_id: ObjectId, from: Zone, to: Zone) -> GameEvent {
+        GameEvent::ZoneChanged {
+            object_id,
+            from: Some(from),
+            to,
+            record: Box::new(state.objects[&object_id].snapshot_for_zone_change(
+                object_id,
+                Some(from),
+                to,
+            )),
+        }
+    }
+
+    fn set_face_down(state: &mut GameState, object_id: ObjectId, face_down: bool) {
+        state.objects.get_mut(&object_id).unwrap().face_down = face_down;
+    }
+
+    fn has_move_line(entries: &[GameLogEntry], id: ObjectId, from: Zone, to: Zone) -> bool {
+        entries.iter().any(|entry| {
+            matches!(
+                entry.segments.as_slice(),
+                [
+                    LogSegment::CardName { object_id, .. },
+                    LogSegment::Text(_),
+                    LogSegment::Zone(logged_from),
+                    LogSegment::Text(_),
+                    LogSegment::Zone(logged_to),
+                ] if *object_id == id && *logged_from == from && *logged_to == to
+            )
+        })
+    }
+
+    fn naming_count(entries: &[GameLogEntry], id: ObjectId) -> usize {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.segments.iter().any(|segment| {
+                    matches!(segment, LogSegment::CardName { object_id, .. } if *object_id == id)
+                })
+            })
+            .count()
+    }
+
+    /// CR 406.3: a card exiled face down and moved on to a hidden zone in one batch never showed
+    /// its face.
+    #[test]
+    fn face_down_round_trip_in_one_batch_is_unnamed() {
+        let mut state = GameState::new_two_player(42);
+        let hidden = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Probe Round Trip".to_string(),
+            Zone::Library,
+        );
+        let milled = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Probe Milled".to_string(),
+            Zone::Library,
+        );
+        let to_exile = snapshot_move(&state, hidden, Zone::Library, Zone::Exile);
+        let mill = snapshot_move(&state, milled, Zone::Library, Zone::Graveyard);
+        set_face_down(&mut state, hidden, true);
+        let to_hand = snapshot_move(&state, hidden, Zone::Exile, Zone::Hand);
+        set_face_down(&mut state, hidden, false);
+
+        let entries = resolve_log_entries(&[to_exile, mill, to_hand], &state, &state);
+        assert!(
+            has_move_line(&entries, milled, Zone::Library, Zone::Graveyard),
+            "{entries:?}"
+        );
+        assert_eq!(naming_count(&entries, hidden), 0, "{entries:?}");
+    }
+
+    /// CR 406.3 + CR 708.9: a face-down arrival is not narrated, but leaving the battlefield
+    /// reveals the card.
+    #[test]
+    fn face_down_arrival_that_dies_in_the_batch_is_unnamed() {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Probe Manifest".to_string(),
+            Zone::Library,
+        );
+        let arrive = snapshot_move(&state, card, Zone::Library, Zone::Battlefield);
+        set_face_down(&mut state, card, true);
+        state.objects.get_mut(&card).unwrap().name = String::new();
+        let dies = snapshot_move(&state, card, Zone::Battlefield, Zone::Graveyard);
+        set_face_down(&mut state, card, false);
+        state.objects.get_mut(&card).unwrap().name = "Probe Manifest".to_string();
+
+        let entries = resolve_log_entries(&[arrive, dies], &state, &state);
+        assert!(
+            has_move_line(&entries, card, Zone::Battlefield, Zone::Graveyard),
+            "{entries:?}"
+        );
+        assert!(
+            !has_move_line(&entries, card, Zone::Library, Zone::Battlefield),
+            "{entries:?}"
+        );
+    }
+
+    /// CR 708.9: a face-down permanent is revealed as it leaves the battlefield.
+    #[test]
+    fn face_down_permanent_bounce_stays_named() {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Probe Morph".to_string(),
+            Zone::Battlefield,
+        );
+        set_face_down(&mut state, card, true);
+        let bounce = snapshot_move(&state, card, Zone::Battlefield, Zone::Hand);
+        set_face_down(&mut state, card, false);
+
+        let entries = resolve_log_entries(&[bounce], &state, &state);
+        assert!(
+            has_move_line(&entries, card, Zone::Battlefield, Zone::Hand),
+            "{entries:?}"
+        );
+    }
+
+    #[test]
+    fn context_free_exile_departure_stays_named() {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Probe Legacy".to_string(),
+            Zone::Hand,
+        );
+        let entries = resolve_log_entries(
+            &[zone_move(card, Zone::Exile, Zone::Hand, PlayerId(0), 0)],
+            &state,
+            &state,
+        );
+        assert!(
+            has_move_line(&entries, card, Zone::Exile, Zone::Hand),
+            "{entries:?}"
+        );
     }
 
     #[test]

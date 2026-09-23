@@ -1086,7 +1086,6 @@ impl AssemblyEnv {
                 &*def.effect,
                 Effect::ChangeZone {
                     origin: Some(Zone::Library),
-                    destination: Zone::Hand,
                     ..
                 }
             ) && provenance.role == NodeRole::ContinuationProduct
