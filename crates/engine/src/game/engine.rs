@@ -6140,8 +6140,10 @@ fn materialize_fixed_shortcut(
     // PARALLEL per-item bound VECTOR would be positionally unsyncable across that sort; that
     // is the shape being rejected here, not per-accept binding as such.)
     //
-    // SITE C (CR 732.2c): `shortcut_route` decides which drive takes this proposal; a foreign,
-    // mixed or ring-minted period falls through to the drain path below.
+    // SITE C (CR 732.2c): `shortcut_route` decides which drive takes this proposal; a foreign
+    // period, a ring-minted offer over a record that is not the proposer's own priority-driven
+    // period, a window whose replayed slice mixes kinds, and a frame the record does not stand at,
+    // fall through to the drain path below.
     match shortcut_route(state, proposal.proposer, proposal.road) {
         ShortcutRoute::TriggerReplay => {
             // CR 732.2a: performed and never elided, because the elision's licence is an unbounded
@@ -6911,8 +6913,8 @@ fn record_non_mana_activation_accepted(
 /// trigger that resolves between an activation and that activation's own cost/trigger answers
 /// takes the following pins in its place.
 ///
-/// WHY A DISPLACED PIN IS HARMLESS, and what carries that now. A period mixing a priority-side
-/// step with such a step has no `GameState::loop_period_kind`, so
+/// WHY A DISPLACED PIN IS HARMLESS, and what carries that now. A replayed slice mixing a
+/// priority-side step with such a step answers no `recorded_period_at_frame`, so
 /// `try_offer_object_growth_shortcut` refuses it before a pin is read at all. The drive's opener
 /// does not refuse that step kind, so the claim rests on three properties instead:
 ///
@@ -8315,8 +8317,8 @@ fn try_offer_object_growth_shortcut(
     };
     // CR 732.2a: the period this frame's proposal replays — the priority holder's own record,
     // whole for a priority-driven period and from the occurrence on top for a trigger-driven one.
-    // A foreign or heterogeneous record, a window whose replayed slice mixes kinds, and a frame the
-    // record does not stand at, refuse here, before any drive.
+    // A record whose replayed part is not the holder's own single kind (foreign, or a slice mixing
+    // kinds or seats), and a frame the record does not stand at, refuse here, before any drive.
     let seq = recorded_period_at_frame(state, caster)?.to_vec();
     // CR 602.2a / CR 732.2a (G4): the per-step ability def each `Activate` step names, so the drive
     // can re-validate its positional `ability_index` by `Eq` each iteration; `None` for `Recast`.
@@ -9247,8 +9249,10 @@ fn handle_declare_shortcut(
         // alone breaks the shipped object-growth declarations.
         //
         // SITE F (CR 732.2a): "re-derivable" is `shortcut_route` naming one of this proposer's
-        // recorded periods — the answer `materialize` dispatches on. A `Ring` route (a foreign,
-        // mixed or ring-minted period, or none) has nothing to re-derive from, and the sibling
+        // recorded periods — the answer `materialize` dispatches on. A `Ring` route (a foreign
+        // period, a ring-minted offer over a record that is not the proposer's own priority-driven
+        // period, a replayed slice that mixes kinds, a record that does not stand at this frame,
+        // or none) has nothing to re-derive from, and the sibling
         // `None => {}` arm validates no pins at all, so it rejects here.
         None if !offer.schema.points.is_empty()
             && shortcut_route(state, offer.proposer, offer.road) == ShortcutRoute::Ring =>

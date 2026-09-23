@@ -360,8 +360,8 @@ const BOARD_B_WINDOW_ACCEPTS: usize = 12;
 /// How many windows each board's replay rows read.
 const WINDOWS: usize = 2;
 
-/// A `Priority{P0}` window `apply()` returned with the minting trigger on top and its own step last
-/// in the record, that step, and the next window with a new instance of the trigger on top.
+/// The frame the recorded-period producer enters with the minting trigger on top and its own step
+/// last in the record, that step, and the next window with a new instance of the trigger on top.
 struct Window {
     entry: GameState,
     step: LoopActionContext,
@@ -375,8 +375,11 @@ fn top_is_trigger_of(state: &GameState, source: ObjectId) -> bool {
         .is_some_and(|top| trigger_entry_ids(state, source).contains(&top.id))
 }
 
-/// Drive to the first `count` windows, passing at every priority and declining every offer, so the
-/// windows kept are those the producer entered and minted nothing at.
+/// Drive to the first `count` windows, passing at every priority and declining every offer.
+///
+/// A window's entry is the `Priority{P0}` frame the recorded-period producer reads. Where it mints
+/// an offer, the mint writes only `waiting_for` over that frame, so the entry is the offer with P0's
+/// priority restored.
 fn recurrence_windows(
     runner: &mut GameRunner,
     minting: ObjectId,
@@ -406,14 +409,20 @@ fn recurrence_windows(
                 }
             }
         }
-        if open.is_none() && p0_priority && top_is_trigger_of(state, minting) {
+        let p0_offer = matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut { proposer, .. } if proposer == P0
+        );
+        if open.is_none() && (p0_priority || p0_offer) && top_is_trigger_of(state, minting) {
             if let Some(step) = state.last_loop_action_sequence.last().filter(|step| {
                 matches!(
                     step.action,
                     LoopAction::ResolveTrigger { source_id, .. } if source_id == minting
                 )
             }) {
-                open = Some((state.clone(), step.clone()));
+                let mut entry = state.clone();
+                entry.waiting_for = WaitingFor::Priority { player: P0 };
+                open = Some((entry, step.clone()));
             }
         }
         let action = if offer {
