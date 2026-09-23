@@ -712,8 +712,8 @@ pub fn resolve_event_context_target(
             .first()
             .copied()
             .map(TargetRef::Object),
-        // CR 201.5a + CR 115.10a: a concretized by-name reference names its object
-        // directly, independent of any trigger event.
+        // CR 115.10a: a bound object id is affected, never a declared target; it
+        // names its object directly, independent of any trigger event.
         TargetFilter::SpecificObject { id } => Some(TargetRef::Object(*id)),
         TargetFilter::AttachedTo
         | TargetFilter::PostReplacementSourceController
@@ -773,7 +773,8 @@ pub fn resolve_event_context_targets(
                 .map(|id| TargetRef::Object(*id))
                 .collect();
         }
-        // CR 201.5a + CR 115.10a: one named object, not one per batched event.
+        // CR 115.10a: a bound object id is affected, never a declared target; it
+        // is one object, not one per batched event.
         TargetFilter::SpecificObject { id } => return vec![TargetRef::Object(*id)],
         _ => {}
     }

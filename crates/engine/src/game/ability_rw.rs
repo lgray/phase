@@ -2645,13 +2645,10 @@ fn member_bound_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::StackAbility { .. }
         // CR 201.5a (PR-6.75 c5, R3 axis): two normalized-identical granted bodies
         // whose granters DIFFER each read their OWN granter ⇒ per-member-divergent
-        // (TrackedSet/ExiledBySource shape). REACHABILITY: grant-clone concretizes
-        // `GrantingObject` → `SpecificObject{granter}` (ability_utils.rs:4090) and an
-        // un-concretized survivor degrades to the source (targeting.rs:871), so a
-        // bare `GrantingObject` never reaches this runtime walk — the arm is inert.
+        // (TrackedSet/ExiledBySource shape).
         // Classified fail-closed (maximal-conservative) on the member-bound axis: an
         // elided member-bound read is fail-OPEN (a false auto-order, CR 603.3b), so
-        // an unreachable/degrade-to-source referent takes `true`, never `false`.
+        // a symbolic referent takes `true`, never `false`.
         | TargetFilter::GrantingObject => true,
         TargetFilter::Not { filter } => member_bound_target_filter(filter),
         TargetFilter::And { filters } | TargetFilter::Or { filters } => {

@@ -21181,8 +21181,7 @@ impl TargetFilter {
                 | TargetFilter::ControllerAndControlledPermanents { .. }
                 | TargetFilter::TrackedSet { .. }
                 | TargetFilter::TrackedSetFiltered { .. }
-                // CR 201.5a + CR 115.10a: a concretized by-name reference is an
-                // affected object, never a declared target.
+                // CR 115.10a: a bound object id is affected, never a declared target.
                 | TargetFilter::SpecificObject { .. }
         )
     }

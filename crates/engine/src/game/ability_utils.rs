@@ -7192,7 +7192,8 @@ fn concretize_granting_object_in_quantity_ref(
             scope: scope @ ObjectScope::GrantingObject,
             ..
         } => *scope = ObjectScope::SpecificObject { object: granter },
-        // No producer; the P1 readers fail closed.
+        // Other scopes stay as written; no producer emits a `GrantingObject` scope in
+        // these refs, and the readers fail closed on it.
         QuantityRef::CountersOn { .. }
         | QuantityRef::Power { .. }
         | QuantityRef::BasePower { .. }

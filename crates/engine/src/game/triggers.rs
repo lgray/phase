@@ -12022,8 +12022,6 @@ fn filter_binding_diverges(filter: &TargetFilter) -> bool {
         // CR 113.7a + CR 608.2h: source-relative reads, all served by the
         // `TriggerSourceContext` the fire-time leg carries — the same authority
         // `ObjectScope::Source` is adjudicated non-divergent under.
-        // `OriginalSource` and `GrantingObject` are concretized to
-        // `SpecificObject` before runtime and degrade to the source if not;
         // CR 400.3 `Owner` and `SourceController` project a player off it;
         // CR 301.5 / CR 303.4 `AttachedTo` and CR 702.95b `SourceOrPaired` read
         // the source's attachment / pairing.
