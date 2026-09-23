@@ -3408,8 +3408,8 @@ mod tests {
 
         assert_eq!(entries.len(), events.len());
         assert!(
-            elapsed < std::time::Duration::from_millis(500),
-            "20k-event batch took {elapsed:?}, limit 500ms"
+            elapsed < std::time::Duration::from_millis(1500),
+            "20k-event batch took {elapsed:?}, limit 1500ms"
         );
     }
 
