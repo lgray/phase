@@ -22205,7 +22205,8 @@ pub(super) fn find_targeted_remove_counter_cost(
     CounterCostSelection,
 )> {
     match cost {
-        // CR 601.2h: a bound object involves no choice; `pay_ability_cost_inner` pays it.
+        // CR 601.2h: a bound object with a fixed or ALL count involves no choice;
+        // `pay_ability_cost_inner` pays it.
         AbilityCost::RemoveCounter {
             count,
             counter_type,

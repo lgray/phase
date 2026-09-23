@@ -2313,13 +2313,15 @@ pub(crate) fn render_granting_self_reference(text: &str, card_name: &str) -> Str
 /// these; every other occurrence normalizes to `~` (the host). Each entry's
 /// downstream consumer turns the placeholder into a granter symbol
 /// (`TargetFilter::GrantingObject`, `ObjectScope::GrantingObject` or
-/// `FilterProp::DistinctFrom`), so the placeholder never survives unconsumed.
+/// `FilterProp::DistinctFrom`), except where the parser drops the consuming
+/// clause (as in some `other than ` and `attach ` bodies) and the placeholder is
+/// dropped with it; either way it never leaks.
 const GRANTER_SELF_REF_VERB_PREFIXES: &[&str] = &[
     "sacrifice ",     // Sacrifice cost
     "exile ",         // Exile cost
     "return ",        // ReturnToHand cost / Bounce effect
     "counter on ",    // PutCounter target ("put a <kind> counter on <name>")
-    "counters on ",   // CountersOn quantity ("the number of <kind> counters on <name>")
+    "counters on ",   // CountersOn quantity / plural PutCounter target
     "counter from ",  // RemoveCounter target ("remove a <kind> counter from <name>")
     "counters from ", // RemoveCounter cost ("remove all <kind> counters from <name>")
     "destroy ",       // Destroy target

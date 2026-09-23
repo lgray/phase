@@ -3,27 +3,9 @@
 //! that refers to the granting object BY NAME, the name refers only to the
 //! granting object — never to the host it was granted to.
 //!
-//! Three independent channels are exercised, and must stay separate. Each now
-//! has a TYPED half (the AST the engine resolves) and a DISPLAY half (the
-//! `description` string the client renders), and the two must agree:
-//!   1. Granter-referential ("Exile/Sacrifice/Return <granter-name>") →
-//!      TYPED: `TargetFilter::GrantingObject` → concretized to
-//!      `SpecificObject{granter}`. DISPLAY: the granting card's PRINTED name
-//!      (`oracle_util::render_granting_self_reference`, CR 201.5a + CR 201.5c).
-//!   2. Host-referential ("Sacrifice this permanent") → TYPED: stays `SelfRef` →
-//!      host. DISPLAY: stays the host token `~`, which the client substitutes
-//!      with the object's own name (CR 201.5b).
-//!   3. Host power read ("where X is this creature's power") → TYPED:
-//!      `QuantityRef::Power` (never a `TargetFilter`) → unchanged. DISPLAY:
-//!      unchanged.
-//!
-//! A display half that disagreed with its typed half would be strictly worse
-//! than a consistent error: the UI would say "sacrifice the Equipment" while the
-//! engine sacrificed the creature.
-//!
-//! Every behavioral test drives the production Layer-6 grant path
-//! (`evaluate_layers`) and, for Deconstruction Hammer, the full activate/resolve
-//! pipeline asserting which object left the battlefield.
+//! A granted body's typed AST and its display `description` must name the same
+//! object; otherwise the UI would say "sacrifice the Equipment" while the engine
+//! sacrificed the creature.
 
 use std::sync::Arc;
 

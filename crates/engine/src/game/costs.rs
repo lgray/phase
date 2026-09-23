@@ -1657,8 +1657,9 @@ fn pay_ability_cost_inner(
             target: target @ (None | Some(TargetFilter::SpecificObject { .. })),
             ..
         } => {
-            // CR 201.5a + CR 602.2b + CR 601.2h: a cost naming one bound object,
-            // such as a granter by name, involves no choice, so it is paid here like `~`.
+            // CR 201.5a + CR 602.2b + CR 601.2h: a fixed- or ALL-count cost naming one
+            // bound object, such as a granter by name, involves no choice, so it is paid
+            // here like `~`.
             let payer = match target {
                 Some(TargetFilter::SpecificObject { id }) => *id,
                 _ => source_id,
