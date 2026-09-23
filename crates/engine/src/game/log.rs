@@ -235,7 +235,9 @@ fn departed_face_down(record: &ZoneChangeRecord) -> bool {
 /// CR 400.2 + CR 406.3 + CR 708.9: whether the card's face was public as it left `from`.
 fn departed_face_up(from: Zone, record: &ZoneChangeRecord) -> bool {
     from.is_public()
-        && (matches!(from, Zone::Battlefield | Zone::Stack) || !departed_face_down(record))
+        && (from == Zone::Battlefield
+            || (from == Zone::Stack && record.to_zone != Zone::Battlefield)
+            || !departed_face_down(record))
 }
 
 /// Face-down status in exile is applied after the move is recorded.
@@ -700,7 +702,6 @@ fn should_exclude_event(event: &GameEvent) -> bool {
         // card; this event exists for mill triggers, so narrating it would duplicate
         // that line.
         GameEvent::Milled { .. } => true,
-        // A same-zone move says nothing.
         GameEvent::ZoneChanged {
             from: Some(from),
             to,
@@ -3515,7 +3516,7 @@ mod tests {
     /// CR 406.3 + CR 708.9: a face-down arrival is not narrated, but leaving the battlefield
     /// reveals the card.
     #[test]
-    fn face_down_arrival_that_dies_in_the_batch_is_unnamed() {
+    fn face_down_arrival_line_is_dropped_when_it_dies_in_the_batch() {
         let mut state = GameState::new_two_player(42);
         let card = create_object(
             &mut state,
@@ -3538,6 +3539,42 @@ mod tests {
         );
         assert!(
             !has_move_line(&entries, card, Zone::Library, Zone::Battlefield),
+            "{entries:?}"
+        );
+    }
+
+    /// CR 708.9: a face-down spell is revealed only when it leaves the stack for a zone other
+    /// than the battlefield.
+    #[test]
+    fn face_down_spell_resolving_to_the_battlefield_is_unnarrated() {
+        let mut state = GameState::new_two_player(42);
+        let resolved = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Probe Resolved Morph".to_string(),
+            Zone::Stack,
+        );
+        let countered = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Probe Countered Morph".to_string(),
+            Zone::Stack,
+        );
+        set_face_down(&mut state, resolved, true);
+        set_face_down(&mut state, countered, true);
+        let resolve = snapshot_move(&state, resolved, Zone::Stack, Zone::Battlefield);
+        let counter = snapshot_move(&state, countered, Zone::Stack, Zone::Graveyard);
+        set_face_down(&mut state, countered, false);
+
+        let entries = resolve_log_entries(&[resolve, counter], &state, &state);
+        assert!(
+            has_move_line(&entries, countered, Zone::Stack, Zone::Graveyard),
+            "{entries:?}"
+        );
+        assert!(
+            !has_move_line(&entries, resolved, Zone::Stack, Zone::Battlefield),
             "{entries:?}"
         );
     }

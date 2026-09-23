@@ -8176,11 +8176,15 @@ pub(super) fn parse_followup_continuation_ast(
             origin: Some(Zone::Library),
             destination: Zone::Exile,
             ..
+        } if parse_exile_looked_at_card(&lower) == Some(true) => {
+            Some(ContinuationAst::ConcealSearchDestination)
+        }
+        Effect::ChangeZone {
+            origin: Some(Zone::Library),
+            destination: Zone::Exile,
+            ..
         } if parse_exile_looked_at_card(&lower).is_some() => {
-            match parse_exile_looked_at_card(&lower) {
-                Some(true) => Some(ContinuationAst::ConcealSearchDestination),
-                Some(false) | None => Some(ContinuationAst::SearchResultClauseHandled),
-            }
+            Some(ContinuationAst::SearchResultClauseHandled)
         }
         Effect::ChangeZone {
             origin: Some(Zone::Library),
