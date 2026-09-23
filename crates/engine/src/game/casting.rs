@@ -22205,12 +22205,15 @@ pub(super) fn find_targeted_remove_counter_cost(
     CounterCostSelection,
 )> {
     match cost {
+        // CR 601.2h: a bound object involves no choice; `pay_ability_cost_inner` pays it.
         AbilityCost::RemoveCounter {
             count,
             counter_type,
             target: Some(target),
             selection,
-        } => Some((*count, counter_type, target, *selection)),
+        } if !matches!(target, TargetFilter::SpecificObject { .. }) => {
+            Some((*count, counter_type, target, *selection))
+        }
         AbilityCost::Composite { costs } => {
             costs.iter().find_map(find_targeted_remove_counter_cost)
         }

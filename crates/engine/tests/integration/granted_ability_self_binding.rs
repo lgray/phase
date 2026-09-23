@@ -33,10 +33,11 @@ use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::parser::oracle_util::normalize_card_name_refs;
 use engine::types::ability::{
-    AbilityCost, AbilityDefinition, ContinuousModification, Effect, ObjectScope, QuantityExpr,
-    QuantityRef, StaticDefinition, TargetFilter,
+    AbilityCondition, AbilityCost, AbilityDefinition, Comparator, ContinuousModification, Effect,
+    ObjectScope, QuantityExpr, QuantityRef, StaticDefinition, TargetFilter,
 };
 use engine::types::card_type::CoreType;
+use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -560,22 +561,12 @@ fn granted_def_from(
 const PLACEHOLDER: char = '\u{E0002}';
 
 // ---------------------------------------------------------------------------
-// CR 201.5a — THE MEASURED CLASS CORPUS.
+// CR 201.5a class corpus: exported cards whose quoted granted body names the
+// card itself in a `GRANTER_SELF_REF_VERB_PREFIXES` position and whose parse
+// carries a granter symbol. Every text is the verbatim Oracle text, reminder text
+// and all, because a paraphrase can take a different parser branch.
 //
-// Every card in `client/public/card-data.json` whose Oracle text contains, in a
-// `"`-quoted granted body, its own printed name immediately preceded by an
-// allowlisted verb-object prefix (`GRANTER_SELF_REF_VERB_PREFIXES`: `sacrifice `
-// / `exile ` / `return ` / `counter on `). Reproduced by the corpus script in
-// the plan's Pattern Coverage section, cross-checked against the independent
-// "the export carries a `GrantingObject`" query — both methods yield the SAME 16
-// names.
-//
-// Every text below is the VERBATIM export Oracle text, reminder text and all.
-// Abbreviated fixtures are what let the round-1 leak ship: a paraphrase can take
-// a different parser branch and go green while the real card stays broken.
-//
-// The seventeenth class member is the predefined token Rock, which is absent
-// from the export and reaches the parser through
+// The predefined token Rock reaches the parser through
 // `game::effects::token::catalog_rules_text_abilities`; its arm of this corpus
 // property lives in
 // `game::effects::token::tests::catalog_rules_text_abilities_never_leaks_the_placeholder`.
@@ -613,8 +604,39 @@ const TRICKSTERS_TALISMAN: &str =
     "Invoke Duplicity \u{2014} Equipped creature gets +1/+1 and has \"Whenever this creature deals combat damage to a player, you may sacrifice Trickster's Talisman. If you do, create a token that's a copy of this creature.\"\nEquip {2}";
 const TRUSTY_BOOMERANG: &str =
     "Equipped creature has \"{1}, {T}: Tap target creature. Return Trusty Boomerang to its owner's hand.\"\nEquip {1} ({1}: Attach to target creature you control. Equip only as a sorcery.)";
+const GUTTER_GRIME: &str = "Whenever a nontoken creature you control dies, put a slime \
+counter on this enchantment, then create a green Ooze creature token with \"This token's power \
+and toughness are each equal to the number of slime counters on Gutter Grime.\"";
+const DIRE_BLUNDERBUSS: &str = "Equipped creature gets +3/+0 and has \"Whenever this creature \
+attacks, you may sacrifice an artifact other than Dire Blunderbuss. When you do, this creature \
+deals damage equal to its power to target creature.\"\nEquip {1}";
+const NETTLEVINE_BLIGHT: &str = "Enchant creature or land\nEnchanted permanent has \"At the \
+beginning of your end step, sacrifice this permanent and attach Nettlevine Blight to a creature \
+or land you control.\"";
+const HELIODS_PUNISHMENT: &str = "Enchant creature\nThis Aura enters with four task counters \
+on it.\nEnchanted creature can't attack or block. It loses all abilities and has \"{T}: Remove a \
+task counter from Heliod's Punishment. Then if it has no task counters on it, destroy Heliod's \
+Punishment.\"";
+const SAPROLING_BURST: &str = "Fading 7 (This enchantment enters with seven fade counters on it. \
+At the beginning of your upkeep, remove a fade counter from it. If you can't, sacrifice it.)\n\
+Remove a fade counter from this enchantment: Create a green Saproling creature token. It has \
+\"This token's power and toughness are each equal to the number of fade counters on Saproling \
+Burst.\"\nWhen this enchantment leaves the battlefield, destroy all tokens created with this \
+enchantment. They can't be regenerated.";
+const GROTHAMA: &str = "Other creatures have \"Whenever this creature attacks, you may have it \
+fight Grothama, All-Devouring.\"\nWhen Grothama leaves the battlefield, each player draws cards \
+equal to the amount of damage dealt to Grothama this turn by sources they controlled.";
+const THE_AETHERSPARK: &str = "As long as The Aetherspark is attached to a creature, The \
+Aetherspark can't be attacked and has \"Whenever equipped creature deals combat damage during \
+your turn, put that many loyalty counters on The Aetherspark.\"\n[+1]: Attach The Aetherspark to \
+up to one target creature you control. Put a +1/+1 counter on that creature.\n[\u{2212}5]: Draw \
+two cards.\n[\u{2212}10]: Add ten mana of any one color.";
+const SHIFTING_SHADOW: &str = "Enchant creature\nEnchanted creature has haste and \"At the \
+beginning of your upkeep, destroy this creature. Reveal cards from the top of your library until \
+you reveal a creature card. Put that card onto the battlefield and attach Shifting Shadow to it, \
+then put all other cards revealed this way on the bottom of your library in a random order.\"";
 
-/// `(oracle text, printed name, core types, subtypes)` for all 16 exported class
+/// `(oracle text, printed name, core types, subtypes)` for the exported class
 /// members.
 const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
     (
@@ -692,6 +714,44 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
         "Trusty Boomerang",
         &["Artifact"],
         &["Equipment"],
+    ),
+    (
+        ARCHERY_TRAINING,
+        "Archery Training",
+        &["Enchantment"],
+        &["Aura"],
+    ),
+    (GUTTER_GRIME, "Gutter Grime", &["Enchantment"], &[]),
+    (SAPROLING_BURST, "Saproling Burst", &["Enchantment"], &[]),
+    (
+        DIRE_BLUNDERBUSS,
+        "Dire Blunderbuss",
+        &["Artifact"],
+        &["Equipment"],
+    ),
+    (
+        THE_AETHERSPARK,
+        "The Aetherspark",
+        &["Artifact", "Planeswalker"],
+        &["Equipment"],
+    ),
+    (
+        HELIODS_PUNISHMENT,
+        "Heliod's Punishment",
+        &["Enchantment"],
+        &["Aura"],
+    ),
+    (
+        GROTHAMA,
+        "Grothama, All-Devouring",
+        &["Creature"],
+        &["Wurm"],
+    ),
+    (
+        NETTLEVINE_BLIGHT,
+        "Nettlevine Blight",
+        &["Enchantment"],
+        &["Aura"],
     ),
 ];
 
@@ -791,17 +851,10 @@ fn placeholder_leak_guard_reports_a_planted_marker() {
 ///
 /// Meandered Towershell's granted trigger body says, in order:
 ///   * "Whenever this creature attacks"  → a HOST reference (CR 201.5b) → `~`
-///   * "exile it and Meandered Towershell" → a CR 201.5a granter reference whose
-///     lookbehind is `and `, NOT an allowlisted verb-object prefix, so it is
-///     host-bound today — the deferred gap documented in the
-///     `KNOWN CR 201.5a FOLLOW-UP` block in `oracle_util::mask_name_occurrences_in_segment`.
+///   * "exile it and Meandered Towershell" → lookbehind `and `, a refused
+///     masker position, so it stays `~`.
 ///   * "return Meandered Towershell to the battlefield" → an ALLOWLISTED
 ///     (`return `) granter reference → masked → rendered as the printed name.
-///
-/// The assertions are written so the advertised follow-up sweep CANNOT turn them
-/// red: (a) is a positive `contains`, and (b) pins only the LEADING host
-/// reference, which the sweep does not touch. A bare `contains('~')` would be
-/// the wrong assertion for exactly that reason.
 ///
 /// Revert-to-red: replace the sentinel render with a blanket
 /// `text.replace('~', card_name)` → (b) fails, which is precisely the failure a
@@ -838,15 +891,13 @@ fn meandered_towershell_binds_each_occurrence_independently() {
         .expect("the granted trigger carries a display description");
 
     // (a) CR 201.5a: the allowlisted occurrence renders as the GRANTER's printed
-    // name. Stays true after the follow-up sweep lands (it can only add more).
+    // name.
     assert!(
         desc.contains("Meandered Towershell"),
         "CR 201.5a: the `return <granter>` occurrence must render the printed \
          name; got {desc}"
     );
     // (b) CR 201.5b: the LEADING occurrence is a host reference and stays `~`.
-    // The follow-up sweep targets the middle (`and <granter>`) occurrence, not
-    // this one, so it cannot turn this red.
     assert!(
         desc.starts_with("Whenever ~ attacks"),
         "CR 201.5b: the leading host reference must stay `~` — a blanket \
@@ -930,23 +981,235 @@ fn r4_counter_channel_targets_the_granter() {
     }
 }
 
+fn granted_modifications(
+    oracle: &str,
+    name: &str,
+    types: &[&str],
+    subtypes: &[&str],
+) -> Vec<ContinuousModification> {
+    let types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
+    let subtypes: Vec<String> = subtypes.iter().map(|s| s.to_string()).collect();
+    parse_oracle_text(oracle, name, &[], &types, &subtypes)
+        .statics
+        .into_iter()
+        .flat_map(|s| s.modifications)
+        .collect()
+}
+
+fn granted_trigger_effect(oracle: &str, name: &str, types: &[&str], subtypes: &[&str]) -> Effect {
+    granted_modifications(oracle, name, types, subtypes)
+        .into_iter()
+        .find_map(|m| match m {
+            ContinuousModification::GrantTrigger { trigger } => trigger.execute.map(|e| *e.effect),
+            _ => None,
+        })
+        .expect("a granted trigger body")
+}
+
+fn cost_parts(cost: &AbilityCost) -> Vec<&AbilityCost> {
+    match cost {
+        AbilityCost::Composite { costs } => costs.iter().collect(),
+        other => vec![other],
+    }
+}
+
+/// CR 201.5a: the token's granted CDA reads the granting Saproling Burst.
+#[test]
+fn saproling_burst_granted_cda_reads_the_granter() {
+    let parsed = parse_oracle_text(
+        SAPROLING_BURST,
+        "Saproling Burst",
+        &[],
+        &["Enchantment".to_string()],
+        &[],
+    );
+    let activated = parsed
+        .abilities
+        .iter()
+        .find(|a| matches!(a.cost, Some(AbilityCost::RemoveCounter { .. })))
+        .expect("the fade-counter ability");
+    assert!(matches!(*activated.effect, Effect::Unimplemented { .. }));
+    let grant = match activated.sub_ability.as_deref().map(|s| s.effect.as_ref()) {
+        Some(Effect::GenericEffect {
+            static_abilities, ..
+        }) => static_abilities[0]
+            .modifications
+            .iter()
+            .find_map(|m| match m {
+                ContinuousModification::GrantStaticAbility { definition } => Some(definition),
+                _ => None,
+            })
+            .expect("GrantStaticAbility"),
+        other => panic!("expected a GenericEffect grant, got {other:?}"),
+    };
+    let fade = QuantityExpr::Ref {
+        qty: QuantityRef::CountersOn {
+            scope: ObjectScope::GrantingObject,
+            counter_type: Some(CounterType::Fade),
+        },
+    };
+    assert_eq!(
+        grant.modifications,
+        vec![
+            ContinuousModification::SetDynamicPower {
+                value: fade.clone()
+            },
+            ContinuousModification::SetDynamicToughness { value: fade },
+        ]
+    );
+}
+
+/// CR 201.5a: "Remove all aim counters from Hankyu" is a cost on Hankyu.
+#[test]
+fn hankyu_remove_all_cost_names_the_granter() {
+    let mods = granted_modifications(HANKYU, "Hankyu", &["Artifact"], &["Equipment"]);
+    let defs: Vec<&AbilityDefinition> = mods
+        .iter()
+        .filter_map(|m| match m {
+            ContinuousModification::GrantAbility { definition } => Some(definition.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(defs.len(), 2);
+    assert!(matches!(
+        defs[0].effect.as_ref(),
+        Effect::PutCounter {
+            target: TargetFilter::GrantingObject,
+            ..
+        }
+    ));
+    let remove = cost_parts(defs[1].cost.as_ref().expect("a cost"))
+        .into_iter()
+        .find_map(|c| match c {
+            AbilityCost::RemoveCounter { target, .. } => Some(target.clone()),
+            _ => None,
+        })
+        .expect("a remove-counter cost");
+    assert_eq!(remove, Some(TargetFilter::GrantingObject));
+}
+
+/// CR 201.5a: the granted "fight Grothama" fights the granting Grothama.
+#[test]
+fn grothama_granted_fight_names_the_granter() {
+    match granted_trigger_effect(
+        GROTHAMA,
+        "Grothama, All-Devouring",
+        &["Creature"],
+        &["Wurm"],
+    ) {
+        Effect::Fight { target, .. } => assert_eq!(target, TargetFilter::GrantingObject),
+        other => panic!("expected Fight, got {other:?}"),
+    }
+}
+
+/// CR 201.5a: "Tap Fishing Pole" is a cost on Fishing Pole.
+#[test]
+fn fishing_pole_tap_cost_names_the_granter() {
+    let def = granted_def_from(FISHING_POLE, "Fishing Pole", &["Artifact"], &["Equipment"]);
+    assert!(matches!(
+        def.effect.as_ref(),
+        Effect::PutCounter {
+            target: TargetFilter::GrantingObject,
+            ..
+        }
+    ));
+    let tap = cost_parts(def.cost.as_ref().expect("a cost"))
+        .into_iter()
+        .find_map(|c| match c {
+            AbilityCost::EffectCost { effect } => match effect.as_ref() {
+                Effect::SetTapState { target, .. } => Some(target.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a tap effect cost");
+    assert_eq!(tap, TargetFilter::GrantingObject);
+}
+
+fn foo_bar_body_condition(body: &str) -> (AbilityDefinition, AbilityCondition) {
+    let oracle = format!("Enchant creature\nEnchanted creature has \"{body}\"");
+    let def = granted_def_from(&oracle, "Foo Bar", &["Enchantment"], &["Aura"]);
+    let sub = def.sub_ability.as_deref().expect("the destroy clause");
+    assert!(matches!(
+        sub.effect.as_ref(),
+        Effect::Destroy {
+            target: TargetFilter::GrantingObject,
+            ..
+        }
+    ));
+    let condition = sub.condition.clone().expect("the counter gate");
+    (def, condition)
+}
+
+fn task_gate(scope: ObjectScope) -> AbilityCondition {
+    AbilityCondition::QuantityCheck {
+        lhs: QuantityExpr::Ref {
+            qty: QuantityRef::CountersOn {
+                scope,
+                counter_type: Some(CounterType::Generic("task".to_string())),
+            },
+        },
+        comparator: Comparator::EQ,
+        rhs: QuantityExpr::Fixed { value: 0 },
+    }
+}
+
+/// CR 608.2c + CR 201.5a: the bare "it" of a leading counter gate reads the
+/// granter only when the prior clause names the granter, conditioned or not.
+#[test]
+fn counter_gate_pronoun_follows_its_antecedent() {
+    let (_, host) = foo_bar_body_condition(
+        "{T}: Remove a task counter from this creature. Then if it has no task counters on it, destroy Foo Bar.",
+    );
+    assert_eq!(host, task_gate(ObjectScope::Source));
+
+    let (def, granter) = foo_bar_body_condition(
+        "{T}: If you control an artifact, remove a task counter from Foo Bar. Then if it has no task counters on it, destroy Foo Bar.",
+    );
+    assert!(def.condition.is_some());
+    assert_eq!(granter, task_gate(ObjectScope::GrantingObject));
+}
+
+/// CR 201.5a: Heliod's Punishment's body removes from, counts and destroys the
+/// granting Aura.
+#[test]
+fn heliods_punishment_parse_reads_the_granter() {
+    let def = granted_def_from(
+        HELIODS_PUNISHMENT,
+        "Heliod's Punishment",
+        &["Enchantment"],
+        &["Aura"],
+    );
+    assert!(matches!(
+        def.effect.as_ref(),
+        Effect::RemoveCounter {
+            target: TargetFilter::GrantingObject,
+            ..
+        }
+    ));
+    let sub = def.sub_ability.as_deref().expect("the destroy clause");
+    assert!(matches!(
+        sub.effect.as_ref(),
+        Effect::Destroy {
+            target: TargetFilter::GrantingObject,
+            ..
+        }
+    ));
+    assert_eq!(sub.condition, Some(task_gate(ObjectScope::GrantingObject)));
+}
+
 // ---------------------------------------------------------------------------
-// Round-1 regression guards (R1/HIGH): non-verb-object in-quote self-name refs
-// must NOT be masked — they stay `~` (host), BYTE-IDENTICAL to pre-fix. Asserted
-// at the masker's direct output (`normalize_card_name_refs`): its ONLY effect is
-// inserting the placeholder, so "no placeholder in the normalized string" ⟺ the
-// normalized/parsed output is byte-identical to the pre-fix (name→`~`) baseline.
-// Re-widening the masker inserts the placeholder into these positions → red.
+// CR 201.5a masker positions: an allowlisted position masks the granter name, a
+// refused one (`by `) stays `~`.
 // ---------------------------------------------------------------------------
 
-/// Assert the masker is a NO-OP for a card's non-verb-object self-name refs: the
-/// normalized string carries no placeholder (byte-identical to pre-fix) yet still
-/// normalized the self-name/self-ref to `~` (non-vacuous reach-guard).
+/// Assert the masker leaves a refused position unmasked while the name still
+/// normalizes to `~`.
 fn assert_masker_noop(oracle: &str, name: &str) {
     let normalized = normalize_card_name_refs(oracle, name);
     assert!(
         !normalized.contains(PLACEHOLDER),
-        "{name}: a non-verb-object self-name position must NOT be masked (byte-identical to pre-fix)"
+        "{name}: a refused self-name position must NOT be masked"
     );
     assert!(
         normalized.contains('~'),
@@ -958,45 +1221,36 @@ const ARCHERY_TRAINING: &str = "Enchant creature\nAt the beginning of your upkee
 arrow counter on this Aura.\nEnchanted creature has \"{T}: This creature deals X damage to target \
 attacking or blocking creature, where X is the number of arrow counters on Archery Training.\"";
 
-/// Archery Training — QuantityRef channel ("number of arrow counters on <self>").
-/// Revert-to-red: re-widen the masker → `counters on <placeholder>` appears in the
-/// normalized string AND the end-to-end `CountersOn` node is lost → assertions flip.
+/// CR 201.5a: Archery Training's "number of arrow counters on <self>" reads the
+/// granter, in both the typed and the display channel.
 #[test]
-fn archery_training_quantity_ref_channel_not_masked() {
-    assert_masker_noop(ARCHERY_TRAINING, "Archery Training");
-    // End-to-end: the arrow-counter count still parses to a CountersOn QuantityRef.
+fn archery_training_quantity_ref_channel_binds_the_granter() {
+    assert!(normalize_card_name_refs(ARCHERY_TRAINING, "Archery Training").contains(PLACEHOLDER));
     let def = granted_def_from(
         ARCHERY_TRAINING,
         "Archery Training",
         &["Enchantment"],
         &["Aura"],
     );
-    assert!(
-        format!("{def:?}").contains("CountersOn"),
-        "the arrow-counter count must parse to a CountersOn QuantityRef (not dropped)"
-    );
-    assert!(
-        !contains_granting_object(&def),
-        "a QuantityRef `counters on <self>` position must never become GrantingObject"
-    );
-
-    // DISPLAY half. The class must not silently widen: a non-allowlisted position
-    // stays host-bound in the description exactly as it does in the AST. Widening
-    // the DISPLAY channel alone would make the UI name the Aura while the engine
-    // counted the host's counters — the two channels would diverge.
-    // Reach-guards: `assert_masker_noop` above (the masker did not fire here) and
-    // the `CountersOn` assertion (the body really parsed).
+    match def.effect.as_ref() {
+        Effect::DealDamage { amount, .. } => assert_eq!(
+            *amount,
+            QuantityExpr::Ref {
+                qty: QuantityRef::CountersOn {
+                    scope: ObjectScope::GrantingObject,
+                    counter_type: Some(CounterType::Generic("arrow".to_string())),
+                },
+            }
+        ),
+        other => panic!("expected DealDamage, got {other:?}"),
+    }
     let desc = def
         .description
         .as_deref()
         .expect("the granted Archery Training ability carries a display description");
     assert!(
-        desc.contains('~'),
-        "a non-allowlisted self-name position must stay the host token `~`; got {desc}"
-    );
-    assert!(
-        !desc.contains("Archery Training"),
-        "the display channel must not widen ahead of the typed channel; got {desc}"
+        desc.contains("arrow counters on Archery Training"),
+        "{desc}"
     );
 }
 
@@ -1004,11 +1258,40 @@ const ANIMAL_FRIEND: &str = "Enchant creature\nEnchanted creature has \"Whenever
 attacks, create a 1/1 green Squirrel creature token. Put a +1/+1 counter on that token for each \
 Aura and Equipment attached to this creature other than Animal Friend.\"";
 
-/// Animal Friend — exclusion channel ("other than <self>"). Revert-to-red:
-/// re-widen the masker → `other than <placeholder>` in the normalized string → red.
+/// CR 201.5a: Animal Friend's "other than <self>" and Shifting Shadow's
+/// "attach <self>" are masked, and no placeholder survives their dropped clauses.
 #[test]
-fn animal_friend_exclusion_channel_not_masked() {
-    assert_masker_noop(ANIMAL_FRIEND, "Animal Friend");
+fn animal_friend_exclusion_channel_masks_without_leaking() {
+    for (oracle, name) in [
+        (ANIMAL_FRIEND, "Animal Friend"),
+        (SHIFTING_SHADOW, "Shifting Shadow"),
+    ] {
+        assert!(
+            normalize_card_name_refs(oracle, name).contains(PLACEHOLDER),
+            "{name}"
+        );
+        let parsed = parse_oracle_text(
+            oracle,
+            name,
+            &[],
+            &["Enchantment".to_string()],
+            &["Aura".to_string()],
+        );
+        assert!(
+            parsed
+                .statics
+                .iter()
+                .flat_map(|s| s.modifications.iter())
+                .any(|m| matches!(m, ContinuousModification::GrantTrigger { .. })),
+            "{name}"
+        );
+        assert!(
+            !serde_json::to_string(&parsed)
+                .expect("ParsedAbilities serializes")
+                .contains(PLACEHOLDER),
+            "{name}"
+        );
+    }
 }
 
 const TORRENT_OF_LAVA: &str = "Torrent of Lava deals X damage to each creature without flying.\n\
@@ -1246,14 +1529,14 @@ mod object_scope_reads {
 // ---------------------------------------------------------------------------
 // CR 201.5a concretizer seams: every channel through which a granted body names
 // its granter, bound at each attachment seam (Layer-6 grants, token creation).
-// Card fixtures use verbatim Oracle text with the parser's host leaf rewritten to
-// the granter symbol.
+// Card fixtures use verbatim Oracle text.
 // ---------------------------------------------------------------------------
 
 mod concretizer_seams {
     use std::sync::Arc;
 
     use engine::game::combat::AttackTarget;
+    use engine::game::effects::attach::attach_to;
     use engine::game::effects::resolve_ability_chain;
     use engine::game::filter::{matches_target_filter, FilterContext};
     use engine::game::game_object::AttachTarget;
@@ -1263,7 +1546,7 @@ mod concretizer_seams {
     use engine::parser::oracle::parse_oracle_text;
     use engine::types::ability::{
         AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, Comparator,
-        ContinuousModification, Effect, EffectKind, FilterProp, ObjectScope, QuantityExpr,
+        ContinuousModification, Effect, EffectKind, FilterProp, ObjectScope, PtValue, QuantityExpr,
         QuantityRef, ResolvedAbility, StaticDefinition, TargetFilter, TargetRef, TypeFilter,
         TypedFilter,
     };
@@ -1274,25 +1557,14 @@ mod concretizer_seams {
     use engine::types::game_state::{GameState, WaitingFor};
     use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
     use engine::types::keywords::Keyword;
-    use engine::types::mana::{ManaType, ManaUnit};
+    use engine::types::mana::{ManaCost, ManaType, ManaUnit};
     use engine::types::phase::Phase;
     use engine::types::zones::Zone;
 
-    use super::{ARCHERY_TRAINING, SPARE_DAGGER, TRUSTY_BOOMERANG};
-
-    const GUTTER_GRIME: &str = "Whenever a nontoken creature you control dies, put a slime \
-counter on this enchantment, then create a green Ooze creature token with \"This token's power \
-and toughness are each equal to the number of slime counters on Gutter Grime.\"";
-    const DIRE_BLUNDERBUSS: &str = "Equipped creature gets +3/+0 and has \"Whenever this creature \
-attacks, you may sacrifice an artifact other than Dire Blunderbuss. When you do, this creature \
-deals damage equal to its power to target creature.\"\nEquip {1}";
-    const NETTLEVINE_BLIGHT: &str = "Enchant creature or land\nEnchanted permanent has \"At the \
-beginning of your end step, sacrifice this permanent and attach Nettlevine Blight to a creature \
-or land you control.\"";
-    const HELIODS_PUNISHMENT: &str = "Enchant creature\nThis Aura enters with four task counters \
-on it.\nEnchanted creature can't attack or block. It loses all abilities and has \"{T}: Remove a \
-task counter from Heliod's Punishment. Then if it has no task counters on it, destroy Heliod's \
-Punishment.\"";
+    use super::{
+        ARCHERY_TRAINING, DIRE_BLUNDERBUSS, GROTHAMA, GUTTER_GRIME, HANKYU, HELIODS_PUNISHMENT,
+        NETTLEVINE_BLIGHT, SPARE_DAGGER, THE_AETHERSPARK, TRUSTY_BOOMERANG,
+    };
 
     fn counter(kind: &str) -> CounterType {
         CounterType::Generic(kind.to_string())
@@ -1314,16 +1586,6 @@ Punishment.\"";
     fn bound(state: &GameState, id: ObjectId) -> ObjectScope {
         ObjectScope::SpecificObject {
             object: incarnation(state, id),
-        }
-    }
-
-    /// Rewrites the parser's host counter read to the granter symbol.
-    fn to_granter(expr: &mut QuantityExpr) {
-        match expr {
-            QuantityExpr::Ref {
-                qty: QuantityRef::CountersOn { scope, .. },
-            } if *scope == ObjectScope::Source => *scope = ObjectScope::GrantingObject,
-            other => panic!("expected a Source counter read, got {other:?}"),
         }
     }
 
@@ -1500,8 +1762,10 @@ Punishment.\"";
     /// Host carries 1 arrow counter; each Archery Training carries `arrows[i]`.
     fn archery_training(arrows: &[u32]) -> (GameRunner, ObjectId, Vec<ObjectId>, ObjectId) {
         let mut grant = grant_static(ARCHERY_TRAINING, "Archery Training", "Enchantment", "Aura");
-        match granted_ability(&mut grant).effect.as_mut() {
-            Effect::DealDamage { amount, .. } => to_granter(amount),
+        match granted_ability(&mut grant).effect.as_ref() {
+            Effect::DealDamage { amount, .. } => {
+                assert_eq!(*amount, counters_on(ObjectScope::GrantingObject, "arrow"))
+            }
             other => panic!("expected DealDamage, got {other:?}"),
         }
         let mut scenario = GameScenario::new();
@@ -1598,7 +1862,16 @@ Punishment.\"";
     }
 
     fn add_gutter_grime(scenario: &mut GameScenario, slime: u32) -> ObjectId {
-        let mut trigger = parse_oracle_text(
+        let id = scenario
+            .add_enchantment_from_oracle(P0, "Gutter Grime", GUTTER_GRIME)
+            .id();
+        scenario.with_counter(id, counter("slime"), slime);
+        id
+    }
+
+    #[test]
+    fn gutter_grime_parse_reads_the_granter() {
+        let trigger = parse_oracle_text(
             GUTTER_GRIME,
             "Gutter Grime",
             &[],
@@ -1607,34 +1880,33 @@ Punishment.\"";
         )
         .triggers
         .remove(0);
-        let token = trigger
+        let slime = counters_on(ObjectScope::GrantingObject, "slime");
+        match trigger
             .execute
-            .as_mut()
-            .and_then(|e| e.sub_ability.as_mut())
-            .expect("token sub-ability");
-        match token.effect.as_mut() {
-            Effect::Token {
-                static_abilities, ..
-            } => {
-                for m in static_abilities[0].modifications.iter_mut() {
-                    match m {
-                        ContinuousModification::SetDynamicPower { value }
-                        | ContinuousModification::SetDynamicToughness { value } => {
-                            to_granter(value)
-                        }
-                        other => panic!("unexpected modification {other:?}"),
-                    }
-                }
+            .as_ref()
+            .and_then(|e| e.sub_ability.as_ref())
+            .map(|s| s.effect.as_ref())
+        {
+            Some(Effect::Token {
+                power,
+                toughness,
+                static_abilities,
+                ..
+            }) => {
+                assert_eq!(*power, PtValue::Quantity(slime.clone()));
+                assert_eq!(*toughness, PtValue::Quantity(slime.clone()));
+                assert_eq!(
+                    static_abilities[0].modifications,
+                    vec![
+                        ContinuousModification::SetDynamicPower {
+                            value: slime.clone()
+                        },
+                        ContinuousModification::SetDynamicToughness { value: slime },
+                    ]
+                );
             }
             other => panic!("expected Token, got {other:?}"),
         }
-        let id = scenario
-            .add_creature(P0, "Gutter Grime", 0, 0)
-            .as_enchantment()
-            .with_trigger_definition(trigger)
-            .id();
-        scenario.with_counter(id, counter("slime"), slime);
-        id
     }
 
     fn oozes(state: &GameState) -> Vec<ObjectId> {
@@ -1743,7 +2015,33 @@ Punishment.\"";
     }
 
     #[test]
-    fn gutter_grime_existing_token_dies_when_its_creator_is_blinked() {
+    fn gutter_grime_ooze_stays_at_its_granters_count() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let gg = add_gutter_grime(&mut scenario, 2);
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        runner.advance_until_stack_empty();
+        let tokens = oozes(runner.state());
+        assert_eq!(tokens.len(), 1);
+        assert_ne!(tokens[0], gg);
+        let token = &runner.state().objects[&tokens[0]];
+        assert_eq!((token.power, token.toughness), (Some(3), Some(3)));
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&gg)
+            .unwrap()
+            .counters
+            .insert(counter("slime"), 4);
+        relayer(runner.state_mut());
+        let token = &runner.state().objects[&tokens[0]];
+        assert_eq!((token.power, token.toughness), (Some(4), Some(4)));
+    }
+
+    #[test]
+    fn gutter_grime_existing_token_drops_to_zero_power_when_its_creator_is_blinked() {
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);
         let gg = add_gutter_grime(&mut scenario, 2);
@@ -1848,19 +2146,15 @@ Punishment.\"";
             "Artifact",
             "Equipment",
         );
-        match granted_execute(&mut grant).effect.as_mut() {
+        match granted_execute(&mut grant).effect.as_ref() {
             Effect::Sacrifice {
                 target: TargetFilter::Typed(typed),
                 ..
             } => {
-                let another = typed
-                    .properties
-                    .iter()
-                    .position(|p| matches!(p, FilterProp::Another))
-                    .expect("the parser's Another leaf");
-                typed.properties[another] = FilterProp::DistinctFrom {
+                assert!(typed.properties.contains(&FilterProp::DistinctFrom {
                     reference: Box::new(TargetFilter::GrantingObject),
-                };
+                }));
+                assert!(!typed.properties.contains(&FilterProp::Another));
             }
             other => panic!("expected a typed Sacrifice, got {other:?}"),
         }
@@ -1958,8 +2252,7 @@ Punishment.\"";
             .map(|s| s.effect.as_mut())
         {
             Some(Effect::Attach { attachment, .. }) => {
-                assert_eq!(*attachment, TargetFilter::SelfRef);
-                *attachment = TargetFilter::GrantingObject;
+                assert_eq!(*attachment, TargetFilter::GrantingObject);
             }
             other => panic!("expected Attach, got {other:?}"),
         }
@@ -1999,31 +2292,12 @@ Punishment.\"";
     }
 
     fn heliods_punishment_grant() -> StaticDefinition {
-        let mut grant = grant_static(
+        grant_static(
             HELIODS_PUNISHMENT,
             "Heliod's Punishment",
             "Enchantment",
             "Aura",
-        );
-        let def = granted_ability(&mut grant);
-        match def.effect.as_mut() {
-            Effect::RemoveCounter { target, .. } if *target == TargetFilter::SelfRef => {
-                *target = TargetFilter::GrantingObject
-            }
-            other => panic!("expected RemoveCounter on SelfRef, got {other:?}"),
-        }
-        let sub = def.sub_ability.as_mut().expect("the destroy clause");
-        match sub.effect.as_mut() {
-            Effect::Destroy { target, .. } if *target == TargetFilter::SelfRef => {
-                *target = TargetFilter::GrantingObject
-            }
-            other => panic!("expected Destroy on SelfRef, got {other:?}"),
-        }
-        match sub.condition.as_mut() {
-            Some(AbilityCondition::QuantityCheck { lhs, .. }) => to_granter(lhs),
-            other => panic!("expected a QuantityCheck, got {other:?}"),
-        }
-        grant
+        )
     }
 
     #[test]
@@ -2325,5 +2599,184 @@ Punishment.\"";
         assert!(st.objects[&victim].tapped);
         assert_eq!(st.objects[&boomerang].zone, Zone::Hand);
         assert_eq!(st.objects[&host].zone, Zone::Battlefield);
+    }
+
+    #[test]
+    fn heliods_punishment_cast_enters_with_four_and_destroys_itself_on_the_fourth() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let hp = scenario
+            .add_spell_to_hand(P0, "Heliod's Punishment", false)
+            .as_enchantment()
+            .with_subtypes(vec!["Aura"])
+            .from_oracle_text(HELIODS_PUNISHMENT)
+            .with_keyword(Keyword::Enchant(TargetFilter::Typed(
+                TypedFilter::creature(),
+            )))
+            .with_mana_cost(ManaCost::generic(0))
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(hp).target_object(host).resolve();
+        let st = runner.state();
+        assert_eq!(st.objects[&hp].zone, Zone::Battlefield);
+        assert_eq!(
+            st.objects[&hp].attached_to,
+            Some(AttachTarget::Object(host))
+        );
+        assert_eq!(st.objects[&hp].counters.get(&counter("task")), Some(&4));
+        for remaining in [3, 2, 1] {
+            runner.state_mut().objects.get_mut(&host).unwrap().tapped = false;
+            let index = runner.state().objects[&host].abilities.len() - 1;
+            activate(&mut runner, host, index, None);
+            runner.advance_until_stack_empty();
+            let st = runner.state();
+            assert_eq!(
+                st.objects[&hp].counters.get(&counter("task")),
+                Some(&remaining)
+            );
+            assert_eq!(st.objects[&hp].zone, Zone::Battlefield);
+            assert_eq!(st.objects[&host].zone, Zone::Battlefield);
+        }
+        runner.state_mut().objects.get_mut(&host).unwrap().tapped = false;
+        let index = runner.state().objects[&host].abilities.len() - 1;
+        activate(&mut runner, host, index, None);
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().objects[&hp].zone, Zone::Graveyard);
+        assert_eq!(runner.state().objects[&host].zone, Zone::Battlefield);
+    }
+
+    /// CR 201.5a + CR 601.2h: the cost removes Hankyu's counters, not the host's.
+    #[test]
+    fn hankyu_remove_all_reads_the_granter() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        scenario.with_counter(host, counter("aim"), 1);
+        let hk = scenario
+            .add_artifact_from_oracle(P0, "Hankyu", HANKYU)
+            .with_subtypes(vec!["Equipment"])
+            .id();
+        scenario.with_counter(hk, counter("aim"), 2);
+        let mut runner = scenario.build();
+        assert_ne!(hk, host);
+        attach_to(runner.state_mut(), hk, host);
+        relayer(runner.state_mut());
+        let index = runner.state().objects[&host].abilities.len() - 1;
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: host,
+                ability_index: index,
+            })
+            .unwrap();
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ) {
+            runner
+                .act(GameAction::SelectTargets {
+                    targets: vec![TargetRef::Player(P1)],
+                })
+                .unwrap();
+        }
+        assert!(
+            !matches!(runner.state().waiting_for, WaitingFor::PayCost { .. }),
+            "{:?}",
+            runner.state().waiting_for
+        );
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        assert_eq!(st.objects[&hk].counters.get(&counter("aim")), None);
+        assert_eq!(st.objects[&host].counters.get(&counter("aim")), Some(&1));
+        assert!(st.objects[&host].tapped);
+        assert!(st.stack.is_empty());
+    }
+
+    #[test]
+    fn the_aetherspark_loyalty_lands_on_itself() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let sp = scenario
+            .add_artifact_from_oracle(P0, "The Aetherspark", THE_AETHERSPARK)
+            .with_subtypes(vec!["Equipment"])
+            .id();
+        scenario.with_counter(sp, CounterType::Loyalty, 1);
+        let mut runner = scenario.build();
+        attach_to(runner.state_mut(), sp, host);
+        relayer(runner.state_mut());
+        let targets: Vec<TargetFilter> = runner.state().objects[&sp]
+            .trigger_definitions
+            .as_slice()
+            .iter()
+            .filter_map(|t| t.definition.execute.as_deref())
+            .filter_map(|d| match d.effect.as_ref() {
+                Effect::PutCounter { target, .. } => Some(target.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(targets, vec![TargetFilter::SpecificObject { id: sp }]);
+        let life = runner.state().players[1].life;
+        attack_with(&mut runner, host);
+        runner.combat_damage();
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        assert_eq!(st.players[1].life, life - 2);
+        assert_eq!(
+            st.objects[&sp].counters.get(&CounterType::Loyalty),
+            Some(&3)
+        );
+        assert_eq!(st.objects[&host].counters.get(&CounterType::Loyalty), None);
+    }
+
+    #[test]
+    fn grothama_granted_fight_fights_grothama() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let attacker = scenario.add_creature(P0, "Bearer", 3, 5).id();
+        let grothama = scenario
+            .add_creature_from_oracle(P0, "Grothama, All-Devouring", 10, 8, GROTHAMA)
+            .as_legendary()
+            .id();
+        let mut runner = scenario.build();
+        relayer(runner.state_mut());
+        attack_with(&mut runner, attacker);
+        drive(&mut runner, None);
+        let st = runner.state();
+        assert_ne!(grothama, attacker);
+        assert_eq!(st.objects[&grothama].damage_marked, 3);
+        assert_eq!(st.objects[&attacker].damage_marked, 10);
+        assert_eq!(st.objects[&attacker].zone, Zone::Graveyard);
+    }
+
+    #[test]
+    fn nettlevine_blight_moves_to_another_permanent() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PostCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let other = scenario.add_creature(P0, "Other", 1, 1).id();
+        let blight = scenario
+            .add_enchantment_from_oracle(P0, "Nettlevine Blight", NETTLEVINE_BLIGHT)
+            .with_subtypes(vec!["Aura"])
+            .id();
+        let mut runner = scenario.build();
+        attach_to(runner.state_mut(), blight, host);
+        relayer(runner.state_mut());
+        runner.advance_to_end_step();
+        let legal = match &runner.state().waiting_for {
+            WaitingFor::TriggerTargetSelection { selection, .. } => {
+                selection.current_legal_targets.clone()
+            }
+            other => panic!("expected the attach target choice, got {other:?}"),
+        };
+        assert!(legal.contains(&TargetRef::Object(host)), "{legal:?}");
+        drive(&mut runner, Some(TargetRef::Object(other)));
+        let st = runner.state();
+        assert_eq!(st.objects[&host].zone, Zone::Graveyard);
+        assert_eq!(st.objects[&blight].zone, Zone::Battlefield);
+        assert_eq!(
+            st.objects[&blight].attached_to,
+            Some(AttachTarget::Object(other))
+        );
     }
 }

@@ -1641,9 +1641,10 @@ fn pay_ability_cost_inner(
                 std::cmp::Ordering::Equal => {}
             }
         }
-        // CR 118.3 + CR 122: Remove-counter cost. The SelfRef form ("Remove N
-        // {type} counters from ~") is auto-payable — no player choice is needed,
-        // so it lands here rather than in an interactive WaitingFor round-trip.
+        // CR 118.3 + CR 122: Remove-counter cost. The `~` form ("Remove N {type}
+        // counters from ~") and the bound-object form are auto-payable — no
+        // player choice is needed, so they land here rather than in an
+        // interactive WaitingFor round-trip.
         // Routes through the single-authority counter resolver so replacement
         // effects (Vorinclex, Doubling Season) apply per CR 614.1a and
         // obj.loyalty/obj.defense stay in sync per CR 306.5b / CR 310.4c.
@@ -1653,15 +1654,21 @@ fn pay_ability_cost_inner(
         AbilityCost::RemoveCounter {
             count,
             counter_type,
-            target: None,
+            target: target @ (None | Some(TargetFilter::SpecificObject { .. })),
             ..
         } => {
+            // CR 201.5a + CR 602.2b + CR 601.2h: a cost naming one bound object,
+            // such as a granter by name, involves no choice, so it is paid here like `~`.
+            let payer = match target {
+                Some(TargetFilter::SpecificObject { id }) => *id,
+                _ => source_id,
+            };
             if *count == REMOVE_COUNTER_COST_ALL
                 && matches!(counter_type, crate::types::counter::CounterMatch::Any)
             {
                 let mut counters: Vec<_> = state
                     .objects
-                    .get(&source_id)
+                    .get(&payer)
                     .map(|obj| {
                         obj.counters
                             .iter()
@@ -1676,7 +1683,7 @@ fn pay_ability_cost_inner(
                 for (counter_type, count) in counters {
                     super::effects::counters::remove_counter_with_replacement(
                         state,
-                        source_id,
+                        payer,
                         counter_type,
                         count,
                         events,
@@ -1690,13 +1697,13 @@ fn pay_ability_cost_inner(
             // a single concrete kind. `OfType(t)` passes through unchanged.
             if let Some(resolved) = super::effects::counters::resolve_counter_match_for_removal(
                 state,
-                source_id,
+                payer,
                 counter_type,
             ) {
                 let count = if *count == REMOVE_COUNTER_COST_ALL {
                     state
                         .objects
-                        .get(&source_id)
+                        .get(&payer)
                         .and_then(|obj| obj.counters.get(&resolved))
                         .copied()
                         .unwrap_or(0)
@@ -1704,7 +1711,7 @@ fn pay_ability_cost_inner(
                     *count
                 };
                 super::effects::counters::remove_counter_with_replacement(
-                    state, source_id, resolved, count, events,
+                    state, payer, resolved, count, events,
                 );
             }
         }
@@ -2981,6 +2988,39 @@ mod tests {
         )
         .expect("battlefield self-return cost should be payable");
         assert_eq!(scenario.state.objects[&src].zone, Zone::Hand);
+    }
+
+    /// CR 201.5a + CR 601.2h: a remove-counter cost naming a bound object pays from
+    /// that object, not the source.
+    #[test]
+    fn remove_counter_cost_on_a_bound_object_pays_from_that_object() {
+        let charge = CounterType::Generic("charge".to_string());
+        let mut scenario = GameScenario::new();
+        let src = scenario.add_creature(P0, "Host", 2, 2).id();
+        let other = scenario.add_creature(P0, "Granter", 0, 3).id();
+        scenario.with_counter(src, charge.clone(), 1);
+        scenario.with_counter(other, charge.clone(), 3);
+        let cost = AbilityCost::RemoveCounter {
+            count: 1,
+            counter_type: CounterMatch::OfType(charge.clone()),
+            target: Some(TargetFilter::SpecificObject { id: other }),
+            selection: Default::default(),
+        };
+        let outcome = pay_ability_cost_for_activation(
+            &mut scenario.state,
+            P0,
+            src,
+            &cost,
+            Some(0),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PaymentOutcome::Paid));
+        assert_eq!(
+            scenario.state.objects[&other].counters.get(&charge),
+            Some(&2)
+        );
+        assert_eq!(scenario.state.objects[&src].counters.get(&charge), Some(&1));
     }
 
     /// Activation-scope `can_pay` against `state` for `source`.
