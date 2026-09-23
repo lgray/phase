@@ -3179,8 +3179,8 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 }
 
 /// CR 603.2 / CR 603.6a: can this observer's trigger event ever fire on the growing fodder
-/// class ENTERING the battlefield? Returns `true` iff it PROVABLY cannot — a scalar
-/// single-clause enters-the-battlefield trigger (`ChangesZone`/`ChangesZoneAll`,
+/// class ENTERING the battlefield? Answers `ExclusionVerdict::Excluded` iff it PROVABLY cannot — a
+/// scalar single-clause enters-the-battlefield trigger (`ChangesZone`/`ChangesZoneAll`,
 /// `destination == Battlefield`, no disjunctive `zone_change_clauses`) whose positive
 /// `valid_card` matcher excludes `class_member` (wrong subtype/type, `NonToken` vs a token, or
 /// a controller scope bound to a player other than the loop controller — CR 603.6a checks the
@@ -3222,15 +3222,14 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 ///
 /// Fail-closed on every axis it cannot classify: a broad (`valid_card == None`), disjunctive
 /// (`zone_change_clauses` non-empty), non-battlefield-destination, or genuinely-matching observer
-/// returns `false` (it may observe the loop → the firewall keeps its conservative veto).
+/// answers a refusal arm (it may observe the loop → the firewall keeps its conservative veto).
 ///
-/// Shares the cluster's ordered obligation through
-/// `analysis::resource::provably_excludes_class`, with both declarations recorded rather than
-/// omitted.
+/// Shares the cluster's ordered obligation through `analysis::resource::exclusion_verdict`, with
+/// both declarations recorded rather than omitted.
 ///
 /// Pre-gate `SoleSource::None`: the subject is a `TriggerDefinition`, not an
 /// `AbilityDefinition`, so there is no axis for a `Blank` rescan to blank. The shape gate reads
-/// the entry matcher and nothing else of the definition, and a `true` here is nevertheless
+/// the entry matcher and nothing else of the definition, and an `Excluded` here is nevertheless
 /// DEF-SCOPED: `analysis::resource::fire_time_conditions_read_growing_class_scoped` `continue`s
 /// over the WHOLE definition, so neither this trigger's `condition` nor its `execute` body is
 /// scanned afterwards.
@@ -3247,9 +3246,9 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 /// `game::zones::move_to_zone` keeps its id and is `object_content_eq` to its pre-blink self, so
 /// a steady-state blink pair passes every gate of
 /// `analysis::resource::loop_states_cover_modulo_fodder_growth` and only the incarnation epoch
-/// records it. This gate therefore refuses relief wherever the scanned frame keys such an id ON
-/// the battlefield and this definition's own matcher matches it, and refuses on an ABSENT proof
-/// for the reason every consumer of that proof refuses: no proof is not a proof of stability.
+/// records it. The identity stage therefore refuses relief wherever the scanned frame keys such an
+/// id ON the battlefield and this definition's own matcher matches it, and refuses on an ABSENT
+/// proof for the reason every consumer of that proof refuses: no proof is not a proof of stability.
 ///
 /// NAMED RESIDUAL: two sampled frames cannot witness a permanent that enters the battlefield and
 /// leaves again inside a single cycle, so an unstable id the scanned frame keys in another zone
@@ -3284,9 +3283,9 @@ pub(crate) fn etb_observer_provably_excludes_class(
     class_member: ObjectId,
     source_id: ObjectId,
     identity_unstable: Option<&HashSet<ObjectId>>,
-) -> bool {
+) -> crate::analysis::resource::ExclusionVerdict {
     // ONE matcher question for BOTH halves of this relief — the member exclusion below and
-    // the CR 400.7 refusal in the shape gate — so the two halves can never consult two
+    // the CR 400.7 refusal in the identity stage — so the two halves can never consult two
     // different matchers. `valid_card_matches` takes an observation-time source-context
     // snapshot (upstream's LKI-by-incarnation refactor) rather than a bare id, so
     // source-relative refs in the `valid_card` filter resolve against the source's
@@ -3301,37 +3300,37 @@ pub(crate) fn etb_observer_provably_excludes_class(
         let source_context = trigger_source_context_for_latch(state, source);
         crate::game::trigger_matchers::valid_card_matches(def, state, candidate, &source_context)
     };
-    crate::analysis::resource::provably_excludes_class(
+    crate::analysis::resource::exclusion_verdict(
         state,
         class_member,
         crate::analysis::resource::SoleSource::None,
         crate::analysis::resource::MemberLiveness::Unchecked,
         || {
-            if !(matches!(
+            (matches!(
                 def.mode,
                 TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll
             ) && def.zone_change_clauses.is_empty()
                 && def.destination == Some(Zone::Battlefield)
                 && def.valid_card.is_some())
-            {
-                return None;
-            }
-            // CR 400.7: an object that moves from one zone to another becomes a new object.
-            // CR 603.6a: each time an event puts one or more permanents onto the battlefield,
-            // all permanents on the battlefield are checked for matching
-            // enters-the-battlefield triggers. So an identity-unstable permanent the scanned
-            // frame keys ON the battlefield is an entry this definition's own matcher may fire
-            // on, and the DEF-scoped relief is refused there. An ABSENT proof refuses too: no
-            // identity proof is not a proof of stability.
-            let unstable = identity_unstable?;
-            (!unstable.iter().any(|&id| {
-                state
-                    .objects
-                    .get(&id)
-                    .is_some_and(|obj| obj.zone == Zone::Battlefield)
-                    && matcher_may_match(id)
-            }))
             .then_some(())
+        },
+        // CR 400.7: an object that moves from one zone to another becomes a new object.
+        // CR 603.6a: each time an event puts one or more permanents onto the battlefield, all
+        // permanents on the battlefield are checked for matching enters-the-battlefield
+        // triggers. So an identity-unstable permanent the scanned frame keys ON the battlefield
+        // is an entry this definition's own matcher may fire on, and the DEF-scoped relief is
+        // refused there. An ABSENT proof refuses too: no identity proof is not a proof of
+        // stability.
+        || {
+            identity_unstable.is_some_and(|unstable| {
+                !unstable.iter().any(|&id| {
+                    state
+                        .objects
+                        .get(&id)
+                        .is_some_and(|obj| obj.zone == Zone::Battlefield)
+                        && matcher_may_match(id)
+                })
+            })
         },
         |(), member| !matcher_may_match(member),
     )

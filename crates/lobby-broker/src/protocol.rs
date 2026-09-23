@@ -60,6 +60,13 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
+/// 111 — `WaitingFor::LoopShortcut` and `ShortcutProposal` gained a required
+///      `road: OfferRoad` naming the producer that minted the offer. A v110
+///      peer drops the key from every frame it re-encodes, and a frame without
+///      it decodes here only through `GameState`'s legacy-offer migration,
+///      which infers the road; the exact-match handshake refuses the pairing
+///      instead. P2P moves in lockstep (wire 93); lobby messages are unchanged.
+///
 /// 110 — `ShortcutDecisionSchema` replaced `max_iterations: u32` with the pair
 ///      `measured_repetition_bound: Option<u32>` and `deliverable_capacity:
 ///      u32`, so `WaitingFor::LoopShortcut` publishes the threshold the
@@ -914,7 +921,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 110;
+pub const PROTOCOL_VERSION: u32 = 111;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2169,12 +2176,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 110);
+        assert_eq!(PROTOCOL_VERSION, 111);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 109);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 110);
     }
 
     #[test]

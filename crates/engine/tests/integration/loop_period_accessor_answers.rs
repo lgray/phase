@@ -11,8 +11,8 @@ use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
     loop_period_controller_of_for_tests, loop_period_driver_of_for_tests,
-    loop_period_is_priority_driven_of_for_tests, CastPaymentMode, GameState, LoopDetectionMode,
-    StackEntryKind, WaitingFor,
+    loop_period_is_priority_driven_of_for_tests, CastPaymentMode, GameState, LoopActionContext,
+    LoopDetectionMode, StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::player::PlayerId;
@@ -134,7 +134,7 @@ fn top_trigger_source(state: &GameState) -> Option<ObjectId> {
 }
 
 /// CR 603.3b: Altar of the Brood's triggers are put on the stack last, so they resolve first.
-fn altar_resolves_first(state: &GameState) -> Option<GameAction> {
+pub(crate) fn altar_resolves_first(state: &GameState) -> Option<GameAction> {
     let WaitingFor::OrderTriggers { triggers, .. } = &state.waiting_for else {
         return None;
     };
@@ -156,26 +156,39 @@ fn cast_animate_dead(runner: &mut GameRunner, animate_dead: ObjectId, target: Ob
         .expect("Animate Dead is castable from the built board");
 }
 
-/// Three consecutive `Priority{P0}` windows at which `minting`'s trigger stands on top of the
-/// stack with a non-empty record, reached through `apply()` under the board's declared drive.
+/// Three consecutive windows of one board: each as the accessors read it, each as the cover sees
+/// it once an offer there is declined, and the first window's record.
+pub(crate) struct Frames {
+    pub(crate) read: [GameState; 3],
+    pub(crate) cover: [GameState; 3],
+    pub(crate) record: Vec<LoopActionContext>,
+}
+
+/// Three consecutive windows at which `minting`'s trigger stands on top of the stack with a
+/// non-empty record and P0 holds priority or is offered the loop, reached through `apply()` under
+/// the board's declared drive. Each offer is declined once its frame is read.
 fn capture_frames(
     runner: &mut GameRunner,
     minting: ObjectId,
     mut declared: impl FnMut(&GameState) -> Option<GameAction>,
-) -> [GameState; 3] {
-    let mut frames = Vec::new();
+) -> Frames {
+    let (mut read, mut cover) = (Vec::new(), Vec::new());
     for _ in 0..FRAME_BEATS {
         let state = runner.state();
-        if matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+        let offer = matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut { proposer, .. } if proposer == P0
+        );
+        let window = (offer
+            || matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0))
             && top_trigger_source(state) == Some(minting)
-            && !state.last_loop_action_sequence.is_empty()
-        {
-            frames.push(state.clone());
-            if frames.len() == 3 {
-                return frames.try_into().expect("three frames");
-            }
+            && !state.last_loop_action_sequence.is_empty();
+        if window {
+            read.push(state.clone());
         }
-        let action = altar_resolves_first(state)
+        let action = offer
+            .then_some(GameAction::DeclineShortcut)
+            .or_else(|| altar_resolves_first(state))
             .or_else(|| declared(state))
             .unwrap_or_else(|| match state.waiting_for {
                 WaitingFor::Priority { .. } => GameAction::PassPriority,
@@ -184,19 +197,33 @@ fn capture_frames(
                     .find(|action| !matches!(action, GameAction::PassPriority))
                     .expect("a prompt the declared drive does not answer offers a legal action"),
             });
+        if window && !offer {
+            cover.push(state.clone());
+        }
         runner
             .act(action.clone())
             .unwrap_or_else(|error| panic!("{action:?} was rejected: {error:?}"));
+        if window && offer {
+            cover.push(runner.state().clone());
+        }
+        if read.len() == 3 {
+            let record = read[0].last_loop_action_sequence.clone();
+            return Frames {
+                read: read.try_into().expect("three frames"),
+                cover: cover.try_into().expect("three frames"),
+                record,
+            };
+        }
     }
     panic!(
         "the drive reached {} of three minting frames in {FRAME_BEATS} beats",
-        frames.len()
+        read.len()
     );
 }
 
 /// Board A: Animate Dead returns Abdel Adrian, whose enters trigger exiles only Animate Dead
 /// while accepts remain and then exiles nothing.
-pub(crate) fn board_a_frames() -> Option<[GameState; 3]> {
+pub(crate) fn board_a_frames() -> Option<Frames> {
     let crate::abdel_adrian_animate_dead_altar_board::AbdelAnimateAltarBoard {
         mut runner,
         abdel,
@@ -233,7 +260,7 @@ pub(crate) fn board_a_frames() -> Option<[GameState; 3]> {
 /// Board B: Animate Dead returns Felidar Guardian. Each Illusion's enters trigger targets the
 /// original Felidar Guardian and accepts while accepts remain; the original's own enters trigger
 /// targets Altar of the Brood and declines.
-pub(crate) fn board_b_frames() -> Option<[GameState; 3]> {
+pub(crate) fn board_b_frames() -> Option<Frames> {
     let crate::loop_period_trigger_driven_arming::PrestonBoard {
         mut runner,
         felidar,
@@ -297,10 +324,10 @@ fn every_census_read_answers_on_the_blink_boards_and_a_restored_offer_as_at_the_
     let (Some(board_a), Some(board_b)) = (board_a_frames(), board_b_frames()) else {
         return;
     };
-    for (frame, state) in board_a.iter().enumerate() {
+    for (frame, state) in board_a.read.iter().enumerate() {
         assert_reads(&format!("board A frame {frame}"), state, &trigger_driven);
     }
-    for (frame, state) in board_b.iter().enumerate() {
+    for (frame, state) in board_b.read.iter().enumerate() {
         assert_reads(&format!("board B frame {frame}"), state, &trigger_driven);
     }
 

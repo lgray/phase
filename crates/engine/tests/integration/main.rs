@@ -1653,6 +1653,7 @@ mod loop_counter_growth;
 mod loop_period_accessor_answers;
 mod loop_period_token_family_arming;
 mod loop_period_trigger_driven_arming;
+mod loop_period_trigger_driven_offer;
 mod loop_period_trigger_driven_replay;
 mod loop_shortcut;
 mod loop_shortcut_activation;

@@ -9,7 +9,9 @@
 //! `TriggerTargetSelection` and `OptionalEffectChoice`.
 //!
 //! Every board is driven only through `game::engine::apply()`. The replay is the production
-//! drive, reached through the `test-support`-gated hand-off beside it.
+//! drive, reached through the `test-support`-gated hand-off beside it. The replay rows read each
+//! board at the windows where P0 holds priority with the minting trigger on top, the frame the
+//! recorded-period producer enters, and compare the replay with the next such window.
 //!
 //! **Each board's declaration of the step at which the drive declines the loop's voluntary
 //! choice.** Board A's cycle is voluntary at Abdel Adrian's exile ("any number", and zero is a
@@ -30,6 +32,7 @@ use engine::types::game_state::{
 use engine::types::identifiers::ObjectId;
 use engine::types::player::PlayerId;
 
+use crate::loop_period_accessor_answers::altar_resolves_first;
 use crate::loop_period_trigger_driven_arming::{build_board_b, PrestonBoard};
 
 /// Beat cap for every live drive here. Read by no assertion; it bounds a runaway drive.
@@ -43,12 +46,8 @@ const ACCEPTS: usize = 6;
 /// What one performed cycle of a board handed the replay.
 struct Performed {
     /// Beat (a): the frame the drive was handed, before any of the step's own prompts were
-    /// answered. The frame a replay of this step's record starts from.
+    /// answered.
     entry: GameState,
-    /// The frame the performed cycle reaches at the recurrence's RESOLUTION — the beat
-    /// `arm_trigger_driven_loop_period` appends the successor step at, which is where this step's
-    /// record is complete. A prompt beat, not a `Priority` beat.
-    settled: GameState,
     /// The recorded step, read at the settle frame by the index it occupied at the entry frame,
     /// with the pins the performed cycle wrote onto it.
     step: LoopActionContext,
@@ -146,7 +145,6 @@ fn perform(
                     );
                     return Performed {
                         entry: entry_frame.clone(),
-                        settled: state.clone(),
                         step: state.last_loop_action_sequence[*index].clone(),
                     };
                 }
@@ -175,6 +173,18 @@ fn perform(
 // Board A
 // ---------------------------------------------------------------------------
 
+fn cast_animate_dead_on(runner: &mut GameRunner, animate_dead: ObjectId, target: ObjectId) {
+    let card_id = runner.state().objects[&animate_dead].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: animate_dead,
+            card_id,
+            targets: vec![target],
+            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+        })
+        .expect("Animate Dead is castable with the seeded mana");
+}
+
 /// Board A's policy: answer Abdel Adrian's voluntary exile in full while accepts remain, with an
 /// empty selection after. `accepts` is a cell so the closure can spend them.
 fn board_a_policy(accepts: &mut usize) -> impl FnMut(&GameState) -> Option<GameAction> + '_ {
@@ -199,22 +209,7 @@ fn board_a_performed(accepts: usize) -> Option<Performed> {
     // not need it, so this row sets it here rather than changing that board.
     board.runner.state_mut().loop_detection =
         engine::types::game_state::LoopDetectionMode::Interactive;
-    let card_id = board
-        .runner
-        .state()
-        .objects
-        .get(&board.animate_dead)
-        .expect("Animate Dead")
-        .card_id;
-    board
-        .runner
-        .act(GameAction::CastSpell {
-            object_id: board.animate_dead,
-            card_id,
-            targets: vec![board.abdel],
-            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
-        })
-        .expect("Animate Dead is castable with the seeded mana");
+    cast_animate_dead_on(&mut board.runner, board.animate_dead, board.abdel);
     let abdel = board.abdel;
     let mut left = accepts;
     let mut policy = board_a_policy(&mut left);
@@ -225,40 +220,31 @@ fn board_a_performed(accepts: usize) -> Option<Performed> {
 // Board B
 // ---------------------------------------------------------------------------
 
-fn board_b_performed(accepts: usize) -> Option<Performed> {
-    let PrestonBoard {
-        mut runner,
-        felidar,
-        animate_dead,
-        preston,
-        altar: _,
-    } = build_board_b()?;
-    let card_id = runner
-        .state()
-        .objects
-        .get(&animate_dead)
-        .expect("Animate Dead")
-        .card_id;
-    runner
-        .act(GameAction::CastSpell {
-            object_id: animate_dead,
-            card_id,
-            targets: vec![felidar],
-            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
-        })
-        .expect("Animate Dead is castable with the seeded mana");
-    let mut left = accepts;
-    Some(perform(&mut runner, preston, move |state| {
+/// Board B's policy: aim each enters trigger at Felidar Guardian and accept its exile while
+/// accepts remain, and decline after. `aim_otherwise` is where a trigger that cannot target Felidar
+/// Guardian is aimed; `None` takes the first legal action.
+fn board_b_policy(
+    felidar: ObjectId,
+    aim_otherwise: Option<ObjectId>,
+    mut left: usize,
+) -> impl FnMut(&GameState) -> Option<GameAction> {
+    move |state: &GameState| {
         let legal = engine::ai_support::legal_actions(state);
-        if left > 0 {
-            if let Some(action) = legal.iter().find(|action| {
+        let aimed_at = |target: ObjectId| {
+            legal.iter().find(|action| {
                 matches!(
                     action,
-                    GameAction::ChooseTarget { target: Some(TargetRef::Object(id)) } if *id == felidar
+                    GameAction::ChooseTarget { target: Some(TargetRef::Object(id)) } if *id == target
                 )
-            }) {
+            })
+        };
+        if left > 0 {
+            if let Some(action) = aimed_at(felidar) {
                 return Some(action.clone());
             }
+        }
+        if let Some(action) = aim_otherwise.and_then(aimed_at) {
+            return Some(action.clone());
         }
         let accept = left > 0;
         if let Some(action) = legal.iter().find(|action| {
@@ -273,7 +259,23 @@ fn board_b_performed(accepts: usize) -> Option<Performed> {
             return Some(action.clone());
         }
         None
-    }))
+    }
+}
+
+/// Board B built, with Animate Dead cast onto Felidar Guardian.
+fn board_b_cast() -> Option<PrestonBoard> {
+    let mut board = build_board_b()?;
+    cast_animate_dead_on(&mut board.runner, board.animate_dead, board.felidar);
+    Some(board)
+}
+
+fn board_b_performed(accepts: usize) -> Option<Performed> {
+    let mut board = board_b_cast()?;
+    Some(perform(
+        &mut board.runner,
+        board.preston,
+        board_b_policy(board.felidar, None, accepts),
+    ))
 }
 
 /// CR 732.2a — **the two boards' recorded classes are disjoint apart from the ordering prompt**,
@@ -306,37 +308,6 @@ fn the_two_boards_record_disjoint_classes_apart_from_the_ordering_prompt() {
             .all(|point| *point == ChoicePoint::TriggerOrder),
         "the boards' recorded classes are disjoint apart from the ordering prompt; A {pa:?}, \
          B {pb:?}, shared {shared:?}"
-    );
-}
-
-/// CR 732.2a + CR 104.4b — **R10's admitted member: recording a trigger's answers changes nothing
-/// an existing step kind records, publishes or offers.** Board B's live drive is asserted to raise
-/// no loop-shortcut offer at any beat, which is the producer's CR 104.4b voluntariness gate
-/// standing as it did at the base; the gate's own row lives beside it in
-/// `loop_period_trigger_driven_arming`.
-///
-/// PAIRED POSITIVE CONTROL, in the same test: the drive really reached the recorded step, so the
-/// absence of an offer is an absence and not a drive that never ran.
-#[test]
-fn a_trigger_driven_period_still_publishes_no_offer_while_recording_its_answers() {
-    let Some(performed) = board_b_performed(ACCEPTS) else {
-        return;
-    };
-    assert!(
-        matches!(performed.step.action, LoopAction::ResolveTrigger { .. }),
-        "positive control: the drive reached the recorded trigger-driven step"
-    );
-    assert!(
-        !performed.step.pins.is_empty(),
-        "positive control: that step really carries the answers this phase records"
-    );
-    assert!(
-        !matches!(
-            performed.settled.waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "CR 104.4b: a trigger-driven period's road stops at the producer's voluntariness gate, \
-         so no beat of it publishes an offer"
     );
 }
 
@@ -379,15 +350,154 @@ fn recorded_trigger_step_at_separates_a_re_push_that_differs_only_in_its_seat() 
 // The replay
 // ---------------------------------------------------------------------------
 
-/// Both boards' performed cycles, or `None` when either board's cards are absent.
-fn both_boards() -> Option<[(&'static str, Performed); 2]> {
+/// How many of Abdel Adrian's exiles Board A's window drive accepts; the rows read windows at
+/// which accepts remain, so the live cycle answers as the record does.
+const BOARD_A_WINDOW_ACCEPTS: usize = 8;
+
+/// How many of Felidar Guardian's exiles Board B's window drive accepts, for the same reason.
+const BOARD_B_WINDOW_ACCEPTS: usize = 12;
+
+/// How many windows each board's replay rows read.
+const WINDOWS: usize = 2;
+
+/// A `Priority{P0}` window `apply()` returned with the minting trigger on top and its own step last
+/// in the record, that step, and the next window with a new instance of the trigger on top.
+struct Window {
+    entry: GameState,
+    step: LoopActionContext,
+    next: GameState,
+}
+
+fn top_is_trigger_of(state: &GameState, source: ObjectId) -> bool {
+    state
+        .stack
+        .back()
+        .is_some_and(|top| trigger_entry_ids(state, source).contains(&top.id))
+}
+
+/// Drive to the first `count` windows, passing at every priority and declining every offer, so the
+/// windows kept are those the producer entered and minted nothing at.
+fn recurrence_windows(
+    runner: &mut GameRunner,
+    minting: ObjectId,
+    count: usize,
+    mut answer: impl FnMut(&GameState) -> Option<GameAction>,
+) -> Vec<Window> {
+    let mut windows = Vec::new();
+    let mut open: Option<(GameState, LoopActionContext)> = None;
+    for _ in 0..BEAT_CAP {
+        let state = runner.state();
+        let offer = matches!(state.waiting_for, WaitingFor::LoopShortcut { .. });
+        let p0_priority =
+            matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0);
+        if let Some((entry, step)) = &open {
+            if (p0_priority || offer)
+                && top_is_trigger_of(state, minting)
+                && state.stack.back().map(|top| top.id) != entry.stack.back().map(|top| top.id)
+            {
+                windows.push(Window {
+                    entry: entry.clone(),
+                    step: step.clone(),
+                    next: state.clone(),
+                });
+                open = None;
+                if windows.len() == count {
+                    return windows;
+                }
+            }
+        }
+        if open.is_none() && p0_priority && top_is_trigger_of(state, minting) {
+            if let Some(step) = state.last_loop_action_sequence.last().filter(|step| {
+                matches!(
+                    step.action,
+                    LoopAction::ResolveTrigger { source_id, .. } if source_id == minting
+                )
+            }) {
+                open = Some((state.clone(), step.clone()));
+            }
+        }
+        let action = if offer {
+            GameAction::DeclineShortcut
+        } else if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+            GameAction::PassPriority
+        } else {
+            answer(state).unwrap_or_else(|| {
+                engine::ai_support::legal_actions(state)
+                    .into_iter()
+                    .find(|action| !matches!(action, GameAction::PassPriority))
+                    .expect("a prompt the declared drive does not answer offers a legal action")
+            })
+        };
+        runner
+            .act(action.clone())
+            .unwrap_or_else(|error| panic!("{action:?} was rejected: {error:?}"));
+    }
+    panic!(
+        "the drive reached {} of {count} windows in {BEAT_CAP} beats",
+        windows.len()
+    );
+}
+
+/// Board A's windows: Altar of the Brood's triggers resolve first (CR 603.3b), and Abdel Adrian's
+/// exile takes only Animate Dead while accepts remain.
+fn board_a_windows() -> Option<Vec<Window>> {
+    let mut board = crate::abdel_adrian_animate_dead_altar_board::build()?;
+    board.runner.state_mut().loop_detection =
+        engine::types::game_state::LoopDetectionMode::Interactive;
+    let returned = board.runner.state().objects[&board.animate_dead].card_id;
+    cast_animate_dead_on(&mut board.runner, board.animate_dead, board.abdel);
+    let mut left = BOARD_A_WINDOW_ACCEPTS;
+    Some(recurrence_windows(
+        &mut board.runner,
+        board.abdel,
+        WINDOWS,
+        move |state| {
+            altar_resolves_first(state).or_else(|| {
+                let WaitingFor::EffectZoneChoice { cards, .. } = &state.waiting_for else {
+                    return None;
+                };
+                let exiled = if left > 0 {
+                    left -= 1;
+                    cards
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            state
+                                .objects
+                                .get(id)
+                                .is_some_and(|object| object.card_id == returned)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Some(GameAction::SelectCards { cards: exiled })
+            })
+        },
+    ))
+}
+
+/// Board B's windows: a trigger that cannot target Felidar Guardian is aimed at Altar of the Brood,
+/// so every occurrence answers as the record does.
+fn board_b_windows() -> Option<Vec<Window>> {
+    let mut board = board_b_cast()?;
+    Some(recurrence_windows(
+        &mut board.runner,
+        board.preston,
+        WINDOWS,
+        board_b_policy(board.felidar, Some(board.altar), BOARD_B_WINDOW_ACCEPTS),
+    ))
+}
+
+/// Both boards' windows, or `None` when either board's cards are absent.
+fn both_boards() -> Option<[(&'static str, Vec<Window>); 2]> {
     Some([
-        ("Board A", board_a_performed(ACCEPTS)?),
-        ("Board B", board_b_performed(ACCEPTS)?),
+        ("Board A", board_a_windows()?),
+        ("Board B", board_b_windows()?),
     ])
 }
 
-/// Replay one recorded step from beat (a), through the production drive. `[None]` is the
+/// Replay one recorded step from `entry`, through the production drive. `[None]` is the
 /// definition slice: a `ResolveTrigger` opener validates the frame and reads no definition.
 fn replay(entry: &GameState, step: &LoopActionContext) -> (GameState, Result<(), RecastAbort>) {
     let mut clone = entry.clone();
@@ -396,10 +506,9 @@ fn replay(entry: &GameState, step: &LoopActionContext) -> (GameState, Result<(),
     (clone, verdict)
 }
 
-/// Re-stamp every by-identity target of the step's FIRST `Targets` pin to an incarnation no live
-/// object carries, and return how many were re-stamped (0 = the record has no such pin, which
-/// voids the leg that calls this).
-fn restamp_first_targets_pin(step: &mut LoopActionContext) -> usize {
+/// Re-stamp every by-identity target of the step's FIRST `Targets` pin to an object id no object
+/// carries, and return how many were re-stamped.
+fn restamp_first_targets_pin_id(step: &mut LoopActionContext) -> usize {
     for pin in step.pins.iter_mut() {
         let PinnedDecision::Targets { targets, .. } = pin else {
             continue;
@@ -407,12 +516,10 @@ fn restamp_first_targets_pin(step: &mut LoopActionContext) -> usize {
         let restamped = targets
             .iter_mut()
             .filter_map(|target| match target {
-                TargetPin::ByIdentity(YieldTarget::ThisObject { incarnation, .. }) => {
-                    Some(incarnation)
-                }
+                TargetPin::ByIdentity(YieldTarget::ThisObject { source_id, .. }) => Some(source_id),
                 _ => None,
             })
-            .map(|incarnation| *incarnation = Some(incarnation.unwrap_or(0) + 1_000))
+            .map(|source_id| *source_id = ObjectId(u64::MAX - 1))
             .count();
         if restamped > 0 {
             return restamped;
@@ -422,48 +529,54 @@ fn restamp_first_targets_pin(step: &mut LoopActionContext) -> usize {
 }
 
 /// CR 405.5 + CR 117.3b + CR 603.3 + CR 732.2a — **charter acceptance row 1.** A recorded
-/// trigger-driven step replays from the frame the drive is handed, and settles at the frame the
-/// performed cycle itself reaches at the recurrence.
+/// trigger-driven step replays from the window its producer enters, and settles at the next window
+/// the performed cycle reaches.
 ///
 /// The comparison is this row's own subject — every zone, each player's state, and the stack —
 /// never whole-`GameState` equality: the drive runs the reconcile-free internal path by design, so
 /// `derive_display_state`'s mirror fields and `apply()`'s per-action counter differ between the
 /// frames for reasons that are not this row's.
-///
-/// Reach guards: `perform` asserts the performed cycle MINTED an object between the two frames, so
-/// equal frames are never two frames nothing changed; and both boards are required, because their
-/// recorded classes are disjoint apart from the ordering prompt.
 #[test]
 fn a_recorded_trigger_driven_step_replays_to_the_frame_performance_reaches() {
     let Some(boards) = both_boards() else {
         return;
     };
-    for (board, performed) in boards {
-        let (settled, verdict) = replay(&performed.entry, &performed.step);
-        assert!(
-            verdict.is_ok(),
-            "{board}: the recorded step replays from beat (a); got {verdict:?}"
-        );
-        assert_eq!(
-            settled.battlefield, performed.settled.battlefield,
-            "{board}: the battlefield the replay settles at"
-        );
-        assert_eq!(
-            settled.exile, performed.settled.exile,
-            "{board}: the exile zone the replay settles at"
-        );
-        assert_eq!(
-            settled.command_zone, performed.settled.command_zone,
-            "{board}: the command zone the replay settles at"
-        );
-        assert_eq!(
-            settled.stack, performed.settled.stack,
-            "{board}: the stack the replay settles at"
-        );
-        assert_eq!(
-            settled.players, performed.settled.players,
-            "{board}: each player's state at the frame the replay settles at"
-        );
+    for (board, windows) in boards {
+        for (index, window) in windows.iter().enumerate() {
+            assert!(
+                window
+                    .next
+                    .battlefield
+                    .iter()
+                    .any(|id| !window.entry.battlefield.contains(id)),
+                "{board} window {index}: reach guard — the performed cycle minted an object"
+            );
+            let (settled, verdict) = replay(&window.entry, &window.step);
+            assert!(
+                verdict.is_ok(),
+                "{board} window {index}: the recorded step replays; got {verdict:?}"
+            );
+            assert_eq!(
+                settled.battlefield, window.next.battlefield,
+                "{board} window {index}: the battlefield the replay settles at"
+            );
+            assert_eq!(
+                settled.exile, window.next.exile,
+                "{board} window {index}: the exile zone the replay settles at"
+            );
+            assert_eq!(
+                settled.command_zone, window.next.command_zone,
+                "{board} window {index}: the command zone the replay settles at"
+            );
+            assert_eq!(
+                settled.stack, window.next.stack,
+                "{board} window {index}: the stack the replay settles at"
+            );
+            assert_eq!(
+                settled.players, window.next.players,
+                "{board} window {index}: each player's state at the frame the replay settles at"
+            );
+        }
     }
 }
 
@@ -474,40 +587,41 @@ fn a_recorded_trigger_driven_step_replays_to_the_frame_performance_reaches() {
 ///
 /// Reach guard, as a property rather than a beat count: the step's record is non-empty and the
 /// drive returns `Ok`, and a `ResolveTrigger` step's settle refuses unless every recorded entry was
-/// taken — so `Ok` IS "every prompt the record names was answered".
+/// settled — so `Ok` IS "every prompt the record names was answered".
 ///
-/// The re-check's own end, in the same invocation: re-stamping the first `Targets` pin's identity
-/// so it cannot re-bind aborts the drive, while the unmodified record returns `Ok`. The re-check is
-/// re-subjected, not weakened.
+/// The re-check's own end, in the same invocation: re-stamping the first `Targets` pin's target to
+/// an object id no object carries aborts the drive at the beat that takes it.
 #[test]
 fn a_pin_the_drive_already_took_is_not_re_checked_at_a_foreign_beat() {
     let Some(boards) = both_boards() else {
         return;
     };
-    for (board, performed) in boards {
-        assert!(
-            !performed.step.pins.is_empty(),
-            "{board}: positive control — the step's record carries the answers this row spends"
-        );
-        let (_, verdict) = replay(&performed.entry, &performed.step);
-        assert!(
-            verdict.is_ok(),
-            "{board}: every prompt the record names is answered and the drive completes; got \
-             {verdict:?}"
-        );
+    for (board, windows) in boards {
+        for (index, window) in windows.iter().enumerate() {
+            assert!(
+                !window.step.pins.is_empty(),
+                "{board} window {index}: positive control — the record carries answers"
+            );
+            let (_, verdict) = replay(&window.entry, &window.step);
+            assert!(
+                verdict.is_ok(),
+                "{board} window {index}: every prompt the record names is answered; got \
+                 {verdict:?}"
+            );
 
-        let mut stale = performed.step.clone();
-        let restamped = restamp_first_targets_pin(&mut stale);
-        assert!(
-            restamped > 0,
-            "{board}: positive control — the record carries a by-identity target to re-stamp"
-        );
-        let (_, stale_verdict) = replay(&performed.entry, &stale);
-        assert!(
-            stale_verdict.is_err(),
-            "{board}: a target that cannot re-bind aborts at the beat that TAKES its pin \
-             ({restamped} re-stamped); got {stale_verdict:?}"
-        );
+            let mut missing = window.step.clone();
+            assert_eq!(
+                restamp_first_targets_pin_id(&mut missing),
+                1,
+                "{board} window {index}: the fixture changes only the one pinned target"
+            );
+            let (_, missing_verdict) = replay(&window.entry, &missing);
+            assert!(
+                missing_verdict.is_err(),
+                "{board} window {index}: a pinned target no object carries aborts at the beat \
+                 that takes it; got {missing_verdict:?}"
+            );
+        }
     }
 }
 
@@ -531,38 +645,40 @@ fn restamp_order_slot_sources(step: &mut LoopActionContext) -> usize {
 /// occurrences of one drive and the step's recorded entries are in bijection: an untaken entry
 /// means this drive's interval is not the one the recording wrote.
 ///
-/// The fixture appends a byte-copy of the record's last entry. Selection walks the pins in index
-/// order, so the copy sits behind every original of its class and the interval's occurrences — one
-/// per original, since the unmodified record replays — leave it untaken. It cannot be refused for
-/// resolving either: it is a copy of an entry this very drive took and resolved. The bijection is
-/// the only thing left that can refuse it, which is what this row measures. Paired control in the
-/// same invocation: the unmodified record replays.
+/// The fixture appends a byte-copy of the record's last entry that is not an ordering entry, since
+/// an ordering entry no prompt asks for is spent (CR 603.3b). Selection walks the pins in index
+/// order, so the copy sits behind every original of its class and is left untaken. Paired control
+/// in the same invocation: the unmodified record replays.
 #[test]
 fn an_entry_the_interval_never_asks_for_is_refused_at_the_settle() {
     let Some(boards) = both_boards() else {
         return;
     };
-    for (board, performed) in boards {
-        let (_, control) = replay(&performed.entry, &performed.step);
-        assert!(
-            control.is_ok(),
-            "{board}: control — the unmodified record replays; got {control:?}"
-        );
+    for (board, windows) in boards {
+        for (index, window) in windows.iter().enumerate() {
+            let (_, control) = replay(&window.entry, &window.step);
+            assert!(
+                control.is_ok(),
+                "{board} window {index}: control — the unmodified record replays; got {control:?}"
+            );
 
-        let mut spare = performed.step.clone();
-        let duplicate = spare
-            .pins
-            .last()
-            .expect("positive control: the record carries an entry to copy")
-            .clone();
-        let point = duplicate.slot().point;
-        spare.pins.push(duplicate);
-        let (_, verdict) = replay(&performed.entry, &spare);
-        assert!(
-            verdict.is_err(),
-            "{board}: a spare {point:?} entry no occurrence can take is refused at the settle; \
-             got {verdict:?}"
-        );
+            let mut spare = window.step.clone();
+            let duplicate = spare
+                .pins
+                .iter()
+                .rev()
+                .find(|pin| !matches!(pin, PinnedDecision::Order { .. }))
+                .expect("positive control: the record carries a non-ordering entry to copy")
+                .clone();
+            let point = duplicate.slot().point;
+            spare.pins.push(duplicate);
+            let (_, verdict) = replay(&window.entry, &spare);
+            assert!(
+                verdict.is_err(),
+                "{board} window {index}: a spare {point:?} entry no occurrence can take is \
+                 refused at the settle; got {verdict:?}"
+            );
+        }
     }
 }
 
@@ -570,40 +686,49 @@ fn an_entry_the_interval_never_asks_for_is_refused_at_the_settle() {
 /// object that asked is replaced between repetitions, so the place in the sequence is the whole of
 /// the class: an ordering pin whose source names a spent incarnation still answers its prompt.
 ///
-/// The fixture is the board's own record with every `Order` pin's slot source — and nothing else —
-/// re-stamped to an incarnation no live object carries. The paired control is the unmodified
-/// record in the same invocation, and the conjunct's other end (the same pin refused once the
-/// source is part of the key) is `a_stale_ordering_source_is_refused_only_when_the_source_is_part_of_the_key`
-/// beside `take_answer`.
+/// Board B's window interval meets the ordering prompt, so the same step without its `Order`
+/// entries is refused there: the prompt was answered from an entry, not spent. The other end of
+/// the key (the same pin refused once the source is part of the key) is
+/// `a_stale_ordering_source_is_refused_only_when_the_source_is_part_of_the_key` beside
+/// `take_answer`.
 #[test]
 fn a_stale_ordering_source_still_answers_a_trigger_driven_step() {
-    let Some(boards) = both_boards() else {
+    let Some(windows) = board_b_windows() else {
         return;
     };
-    for (board, performed) in boards {
-        let (_, control) = replay(&performed.entry, &performed.step);
-        assert!(
-            control.is_ok(),
-            "{board}: control — the unmodified record replays; got {control:?}"
-        );
+    let window = &windows[0];
+    let (_, control) = replay(&window.entry, &window.step);
+    assert!(
+        control.is_ok(),
+        "control — the unmodified record replays; got {control:?}"
+    );
 
-        let mut stale = performed.step.clone();
-        let restamped = restamp_order_slot_sources(&mut stale);
-        assert!(
-            restamped > 0,
-            "{board}: positive control — the record carries ordering pins to re-stamp"
-        );
-        assert_ne!(
-            stale.pins, performed.step.pins,
-            "{board}: positive control — the re-stamp really changed the record"
-        );
-        let (_, verdict) = replay(&performed.entry, &stale);
-        assert!(
-            verdict.is_ok(),
-            "{board}: {restamped} ordering pins naming a spent incarnation still answer their \
-             prompts; got {verdict:?}"
-        );
-    }
+    let mut unordered = window.step.clone();
+    unordered
+        .pins
+        .retain(|pin| !matches!(pin, PinnedDecision::Order { .. }));
+    assert_ne!(
+        unordered.pins, window.step.pins,
+        "positive control — the record carries ordering entries"
+    );
+    let (_, unordered_verdict) = replay(&window.entry, &unordered);
+    assert!(
+        unordered_verdict.is_err(),
+        "the ordering prompt the interval meets needs its entry; got {unordered_verdict:?}"
+    );
+
+    let mut stale = window.step.clone();
+    let restamped = restamp_order_slot_sources(&mut stale);
+    assert!(
+        restamped > 0,
+        "positive control — the record carries ordering pins to re-stamp"
+    );
+    let (_, verdict) = replay(&window.entry, &stale);
+    assert!(
+        verdict.is_ok(),
+        "{restamped} ordering pins naming a spent incarnation still answer their prompts; got \
+         {verdict:?}"
+    );
 }
 
 /// The seat every board here drives for. Named so a reader does not have to infer it from the

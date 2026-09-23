@@ -106,6 +106,11 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  93 — game_setup and state_update carry GameState, whose
+ *       WaitingFor::LoopShortcut and ShortcutProposal gained a required road
+ *       naming the producer that minted the offer. A v92 peer drops the key
+ *       from every frame it re-encodes, so first contact refuses the pairing.
+ *       Bumped in lockstep with full-game protocol 111.
  *  92 — game_setup and state_update carry GameState, whose
  *       WaitingFor::LoopShortcut schema replaced max_iterations with the pair
  *       measured_repetition_bound and deliverable_capacity. Both new fields
@@ -567,7 +572,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 92 as const;
+export const WIRE_PROTOCOL_VERSION = 93 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

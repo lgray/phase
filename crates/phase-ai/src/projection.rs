@@ -1254,6 +1254,7 @@ mod tests {
             },
             schema: engine::analysis::decision_template::ShortcutDecisionSchema::default(),
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
 
         let (_actor, action, is_policy_choice, _successor) =

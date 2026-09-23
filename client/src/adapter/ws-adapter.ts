@@ -210,6 +210,10 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 111 — WaitingFor.LoopShortcut and ShortcutProposal gained a required road
+ *      naming the producer that minted the offer. A v110 peer drops the key
+ *      from every frame it re-encodes, so the exact-match version check at
+ *      connect refuses the pairing.
  * 110 — ShortcutDecisionSchema replaced max_iterations with the pair
  *      measured_repetition_bound and deliverable_capacity, so
  *      WaitingFor.LoopShortcut publishes the threshold the reduction
@@ -716,7 +720,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 110;
+export const PROTOCOL_VERSION = 111;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

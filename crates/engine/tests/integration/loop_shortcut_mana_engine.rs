@@ -688,6 +688,7 @@ fn loop_action_sequence_conditional_load_migration() {
         },
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::RecordedPeriod,
     };
     at_offer.last_loop_action_sequence = vec![pinned_step()];
     let json = serde_json::to_string(&at_offer).expect("serialize offer save");

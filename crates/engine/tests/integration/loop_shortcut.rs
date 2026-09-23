@@ -1136,6 +1136,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         certificate: cert.clone(),
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     let wf_b = WaitingFor::LoopShortcut {
         proposer: P2,
@@ -1143,6 +1144,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         certificate: cert.clone(),
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     assert_eq!(wf_a.acting_player(), Some(P1));
     assert_eq!(wf_b.acting_player(), Some(P2));
@@ -1158,6 +1160,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         per_cycle: None,
         shortened_by: None,
         published_declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     let wf_r = WaitingFor::RespondToShortcut {
         player: P2,
@@ -1179,6 +1182,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         certificate: cert.clone(),
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     apply(&mut delegated, P0, GameAction::DeclineShortcut)
         .expect("the turn controller may submit the priority holder's decline");
@@ -1768,6 +1772,7 @@ fn injected_3p_one_faller_no_crown() {
         certificate: synthetic_lethal_cert(),
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -1913,6 +1918,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         certificate: synthetic_lethal_cert(),
         schema: schema.clone(),
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -1934,6 +1940,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         certificate: synthetic_lethal_cert(),
         schema,
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     runner2
         .act(GameAction::DeclareShortcut {
@@ -1991,6 +1998,7 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
             certificate: synthetic_lethal_cert(),
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
         runner
             .act(GameAction::DeclareShortcut {
@@ -4638,6 +4646,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
         certificate: cert,
         schema,
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
 
     let targets_of = |wf: &WaitingFor| -> Vec<TargetRef> {
@@ -4767,6 +4776,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                 per_cycle: None,
                 shortened_by: None,
                 published_declaration: None,
+                road: engine::analysis::loop_check::OfferRoad::Ring,
             },
         };
         state
@@ -6807,6 +6817,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                 }),
                 shortened_by: None,
                 published_declaration: None,
+                road: engine::analysis::loop_check::OfferRoad::Ring,
             },
         };
         v["waiting_for"] = serde_json::to_value(&waiting).expect("a WaitingFor serializes");
@@ -7966,6 +7977,7 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
             certificate: synthetic_lethal_cert(),
             schema: schema.clone(),
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
         runner
             .act(GameAction::DeclareShortcut {
@@ -10126,6 +10138,7 @@ fn bounded_offer_parts(
             certificate,
             schema,
             declaration: _,
+            road: _,
         } => (*proposer, certificate, schema),
         other => panic!("expected a bounded LoopShortcut offer, got {other:?}"),
     }
@@ -13338,6 +13351,7 @@ fn restored_proposal(
         per_cycle: Some(per_cycle),
         shortened_by: None,
         published_declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     }
 }
 
@@ -15574,6 +15588,7 @@ fn g1_declare_verdict(
         certificate: synthetic_lethal_cert(),
         schema,
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -16272,6 +16287,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         certificate,
         schema,
         declaration: _,
+        road,
     } = runner.state().waiting_for.clone()
     else {
         panic!("staged from the live offer, never from thin air");
@@ -16289,6 +16305,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         // declaration-free — and it would contradict the invariant that an empty schema
         // publishes no declaration, at the very fixture that stages an empty schema.
         declaration: None,
+        road,
     };
 }
 
@@ -16305,6 +16322,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         certificate,
         schema,
         declaration: _,
+        road,
     } = runner.state().waiting_for.clone()
     else {
         panic!("staged from the live offer, never from thin air");
@@ -16333,6 +16351,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         // and NOTHING else, so the two must keep differing in exactly one field. Staging a live
         // `Some` here would add a second axis to a pair whose whole value is being one apart.
         declaration: None,
+        road,
     };
 }
 
@@ -17008,6 +17027,7 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
             },
             key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
         }),
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
 
     let mut json = serde_json::to_value(&offer).expect("the offer serializes");

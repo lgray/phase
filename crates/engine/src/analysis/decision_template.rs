@@ -627,6 +627,20 @@ pub enum TargetPin {
     Scheduled(TargetSchedule),
 }
 
+impl TargetPin {
+    /// CR 400.7 + CR 732.2a: this pin with its object named at whatever incarnation is live. A
+    /// trigger-driven replay is entered one occurrence after the record, by when every object the
+    /// recorded interval named has been replaced by its next incarnation, and the proposal's
+    /// sequence of game choices names that successor.
+    pub(crate) fn at_live_incarnation(&self) -> TargetPin {
+        let mut pin = self.clone();
+        if let TargetPin::ByIdentity(YieldTarget::ThisObject { incarnation, .. }) = &mut pin {
+            *incarnation = None;
+        }
+        pin
+    }
+}
+
 /// CR 732.2a: how the pins are replayed. `Static` (ordering) ignores the iteration
 /// index; `Scheduled` (loop shortcut) makes every choice a pure function of it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -842,14 +856,34 @@ pub(crate) enum AnswerIdentity<'a> {
 
 impl AnswerIdentity<'_> {
     /// CR 732.2a: every entry this drive was handed has been taken by a prompt occurrence.
-    ///
-    /// Read by the settle, so the drive never re-borrows the cursor mid-loop.
     pub(crate) fn every_entry_taken(&self) -> bool {
         match self {
             // A declaration holds ONE answer per point and re-applies it at every occurrence, so
             // it marks nothing and claims no bijection.
             AnswerIdentity::PerDeclaredPoint => true,
             AnswerIdentity::PerOccurrence { answers, .. } => answers.every_entry_taken(),
+        }
+    }
+
+    /// CR 732.2a: every entry of `template` is taken or spent. Read by the settle, so the drive
+    /// never re-borrows the cursor mid-loop.
+    ///
+    /// CR 603.3b: under the trigger-driven key an untaken `Order` entry is spent, because ordering
+    /// is a choice only when several abilities are put on the stack at once, and an interval that
+    /// asked no ordering question — a later occurrence the controller's saved template ordered —
+    /// made no ordering choice for the entry to answer. Every other key is exactly
+    /// [`AnswerIdentity::every_entry_taken`].
+    pub(crate) fn every_entry_settled(&self, template: &DecisionTemplate) -> bool {
+        match self {
+            AnswerIdentity::PerDeclaredPoint => self.every_entry_taken(),
+            AnswerIdentity::PerOccurrence { answers, key } => match key {
+                RecordedAnswerKey::PointAndSource => answers.every_entry_taken(),
+                RecordedAnswerKey::Point => {
+                    template.decisions.iter().enumerate().all(|(index, pin)| {
+                        answers.is_taken(index) || matches!(pin, PinnedDecision::Order { .. })
+                    })
+                }
+            },
         }
     }
 }
@@ -904,7 +938,25 @@ pub(crate) fn take_answer(
             &pins[index]
         }
     };
-    Some(resolve_pin(selected, iteration, state))
+    match identity {
+        AnswerIdentity::PerOccurrence {
+            key: RecordedAnswerKey::Point,
+            ..
+        } => {
+            let mut live = selected.clone();
+            if let PinnedDecision::Targets { targets, .. } = &mut live {
+                for target in targets.iter_mut() {
+                    *target = target.at_live_incarnation();
+                }
+            }
+            Some(resolve_pin(&live, iteration, state))
+        }
+        AnswerIdentity::PerOccurrence {
+            key: RecordedAnswerKey::PointAndSource,
+            ..
+        }
+        | AnswerIdentity::PerDeclaredPoint => Some(resolve_pin(selected, iteration, state)),
+    }
 }
 
 /// Resolve one pin. The failure kind is selected HERE by the pin kind (G2): an absent target

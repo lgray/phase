@@ -1,6 +1,5 @@
 //! CR 603.3 + CR 608.2 + CR 111.1: a token-minting triggered ability's resolution opens a
-//! CR 732.2a loop period for its controller, and the road that period opens stops at the
-//! producer's CR 104.4b voluntariness gate — no offer is raised on either board.
+//! CR 732.2a loop period for its controller.
 //!
 //! Two boards, because the two cycles carry their choice and their mint at different beats.
 //! Board A (built by `abdel_adrian_animate_dead_altar_board`, driven here and not rebuilt) makes
@@ -25,6 +24,7 @@
 //! trigger's exile choice with both other nonland permanents once, and answers every later choice
 //! of that kind with an empty selection.
 
+use engine::analysis::loop_check::OfferRoad;
 use engine::game::functioning_abilities::active_trigger_definitions;
 use engine::game::scenario::{GameRunner, GameScenario, P0};
 use engine::types::ability::TargetRef;
@@ -163,11 +163,9 @@ struct DriveReading {
     /// `(sequence before, sequence after)` taken across each resolution of a triggered ability the
     /// arming places outside the class.
     across_out_of_class: Vec<(Vec<LoopActionContext>, Vec<LoopActionContext>)>,
-    /// A beat at which the empty-stack bridge's three not-already-implied conjuncts hold while a
-    /// period stands — the reach guard for the absence of an offer.
-    bridge_reached: bool,
-    /// Whether any beat published a loop-shortcut offer.
-    offered: bool,
+    /// The first loop-shortcut offer the drive met, as its road and the stack's top triggered
+    /// ability's source at that beat. The drive declines every offer and continues.
+    offered: Option<(OfferRoad, Option<ObjectId>)>,
 }
 
 /// One beat of a drive at a time, answering by the row's own declared policy.
@@ -190,9 +188,16 @@ fn drive(
 
     for _ in 0..BEAT_CAP {
         let state = runner.state();
-        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
-            reading.offered = true;
-            return reading;
+        if let WaitingFor::LoopShortcut { road, .. } = state.waiting_for {
+            reading
+                .offered
+                .get_or_insert((road, top_trigger(state).map(|(_, source)| source)));
+            // Declining clears the record, so a resolution watched across it is not compared.
+            watching = None;
+            if runner.act(GameAction::DeclineShortcut).is_err() {
+                break;
+            }
+            continue;
         }
         let seq = state.last_loop_action_sequence.clone();
 
@@ -214,18 +219,6 @@ fn drive(
             if let Some((entry_id, source_id)) = top_trigger(state) {
                 if out_of_class.contains(&source_id) {
                     watching = Some((entry_id, seq.clone()));
-                }
-            }
-        }
-
-        // The three conjuncts of the empty-stack bridge that a standing period does not already
-        // imply: an empty stack, `Priority` for a seat, and that seat owning the period's first
-        // step. (`loop_detection.samples()` and `!in_simulation_probe()` are implied by the
-        // period's existence, because the arming beat carries that same gate pair.)
-        if state.stack.is_empty() {
-            if let WaitingFor::Priority { player } = state.waiting_for {
-                if seq.first().is_some_and(|step| step.controller == player) {
-                    reading.bridge_reached = true;
                 }
             }
         }
@@ -294,10 +287,10 @@ fn drive(
     reading
 }
 
-/// CR 603.3 + CR 608.2 + CR 111.1: Board A — the cycle's choice and its mint sit in ONE triggered
-/// ability's resolution (Abdel Adrian's enters trigger exiles any number of other nonland
+/// CR 603.3 + CR 608.2 + CR 111.1 + CR 732.2a: Board A — the cycle's choice and its mint sit in ONE
+/// triggered ability's resolution (Abdel Adrian's enters trigger exiles any number of other nonland
 /// permanents, then mints a Soldier for each permanent exiled this way). That resolution opens a
-/// period recording that trigger.
+/// period recording that trigger, which is offered where that trigger next stands on top.
 #[test]
 fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
     let Some(mut board) = crate::abdel_adrian_animate_dead_altar_board::build() else {
@@ -319,17 +312,11 @@ fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
         1,
     );
 
-    assert!(
-        !reading.offered,
-        "the road the period opens raises no loop-shortcut offer: it stops at the producer's \
-         CR 104.4b voluntariness gate, which admits only a period whose every step its controller \
-         takes at priority"
-    );
-    assert!(
-        reading.bridge_reached,
-        "the drive reached a beat with an empty stack, Priority for a seat, and that seat owning \
-         the recorded period's first step, so the absence of an offer is read off a drive that \
-         reached the producer's own entry condition"
+    assert_eq!(
+        reading.offered,
+        Some((OfferRoad::RecordedPeriod, Some(board.abdel))),
+        "the period is offered on the recorded road at the window where Abdel Adrian's trigger \
+         stands on top"
     );
     let at_mint = reading
         .at_mint
@@ -391,16 +378,6 @@ fn board_b_minting_trigger_opens_a_period_with_choice_and_mint_on_different_trig
         0,
     );
 
-    assert!(
-        !reading.offered,
-        "the road the period opens raises no loop-shortcut offer: it stops at the producer's \
-         CR 104.4b voluntariness gate"
-    );
-    assert!(
-        reading.bridge_reached,
-        "the drive reached a beat with an empty stack, Priority for a seat, and that seat owning \
-         the recorded period's first step"
-    );
     assert!(
         reading.at_mint.len() >= CYCLES_DRIVEN,
         "the drive observed at least {CYCLES_DRIVEN} of Preston's mints, so the cycle repeated \

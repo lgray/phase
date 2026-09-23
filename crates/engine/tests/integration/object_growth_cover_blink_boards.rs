@@ -6,21 +6,18 @@ use engine::analysis::resource::ObjectGrowthVerdict;
 use engine::game::engine::certify_object_growth_frames_for_tests as certify;
 use engine::game::scenario::{GameRunner, P0};
 use engine::types::actions::GameAction;
-use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 
-use crate::loop_period_accessor_answers::{board_a_frames, board_b_frames};
+use crate::loop_period_accessor_answers::{board_a_frames, board_b_frames, Frames};
 
 fn certified_on_every_condition() -> ObjectGrowthVerdict {
     ObjectGrowthVerdict::FodderGrowth([Vec::new(), Vec::new()])
 }
 
-fn board_verdict(frames: &[GameState; 3]) -> ObjectGrowthVerdict {
-    certify(
-        [&frames[0], &frames[1], &frames[2]],
-        &frames[0].last_loop_action_sequence,
-        P0,
-    )
+fn board_verdict(frames: &Frames) -> ObjectGrowthVerdict {
+    let [first, second, third] = &frames.cover;
+    certify([first, second, third], &frames.record, P0)
 }
 
 /// The Sprout Swarm dump's offer, declined on each of four casts: the frames after each decline,

@@ -1912,6 +1912,7 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
         ref certificate,
         ref schema,
         ref declaration,
+        road,
     } = state.waiting_for
     {
         if !can_view_private_for_player(proposer) {
@@ -1998,6 +1999,7 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
                 predicted_winner,
                 certificate: certificate.clone(),
                 declaration,
+                road,
                 schema: ShortcutDecisionSchema {
                     iteration_count: schema.iteration_count.clone(),
                     // CR 732.2a: BOTH published answers are derived from PUBLIC board state
@@ -9639,6 +9641,7 @@ mod tests {
                 },
                 key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
             }),
+            road: crate::analysis::loop_check::OfferRoad::Ring,
         };
         state
     }
@@ -10053,6 +10056,7 @@ mod tests {
                 per_cycle: None,
                 shortened_by: None,
                 published_declaration: Some(declaration),
+                road: crate::analysis::loop_check::OfferRoad::Ring,
             },
         };
         state

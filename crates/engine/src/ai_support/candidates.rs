@@ -6760,6 +6760,7 @@ mod tests {
             },
             schema: crate::analysis::decision_template::ShortcutDecisionSchema::default(),
             declaration: None,
+            road: crate::analysis::loop_check::OfferRoad::Ring,
         };
 
         let candidates = candidate_actions(&state);
@@ -9432,6 +9433,7 @@ mod tests {
                 convoke_tappable_count: 0,
             },
             declaration,
+            road: crate::analysis::loop_check::OfferRoad::Ring,
         };
         state
     }

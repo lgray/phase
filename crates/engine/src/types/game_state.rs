@@ -13002,6 +13002,45 @@ fn migrate_legacy_shortcut_repetition_bound(value: &mut serde_json::Value) -> Re
     Ok(())
 }
 
+/// Stamps the minting road onto a stamp-less `LoopShortcut` offer and `RespondToShortcut`
+/// proposal. Exact over the three mints that predate the stamp: the ring road's Path A publishes a
+/// winner and its Path D a per-cycle signature, while the recorded-period mint publishes neither.
+fn migrate_legacy_offer_road(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => values.iter_mut().for_each(migrate_legacy_offer_road),
+        serde_json::Value::Object(object) => {
+            let carrier = match object.get("type").and_then(serde_json::Value::as_str) {
+                Some("LoopShortcut") => object
+                    .get_mut("data")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .map(|data| (data, Some("certificate"))),
+                Some("RespondToShortcut") => object
+                    .get_mut("data")
+                    .and_then(|data| data.get_mut("proposal"))
+                    .and_then(serde_json::Value::as_object_mut)
+                    .map(|proposal| (proposal, None)),
+                _ => None,
+            };
+            if let Some((carrier, per_cycle_host)) = carrier {
+                if !carrier.contains_key("road") {
+                    let per_cycle = match per_cycle_host {
+                        Some(host) => carrier.get(host).and_then(|host| host.get("per_cycle")),
+                        None => carrier.get("per_cycle"),
+                    };
+                    let ring = carrier
+                        .get("predicted_winner")
+                        .is_some_and(|winner| !winner.is_null())
+                        || per_cycle.is_some_and(|per_cycle| !per_cycle.is_null());
+                    let road = if ring { "Ring" } else { "RecordedPeriod" };
+                    carrier.insert("road".to_string(), serde_json::Value::from(road));
+                }
+            }
+            object.values_mut().for_each(migrate_legacy_offer_road);
+        }
+        _ => {}
+    }
+}
+
 fn delayed_trigger_install_command(
     entry: &serde_json::Value,
 ) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -15638,6 +15677,8 @@ pub enum WaitingFor {
         /// adds a path around them.
         #[serde(default)]
         declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
+        /// The producer that minted this offer; `game::engine`'s route authority reads it.
+        road: crate::analysis::loop_check::OfferRoad,
     },
     /// CR 732.2b/c: the APNAP accept-or-shorten window. After the proposer declares the
     /// shortcut, each other living player is prompted in turn order (drain-one-advance
@@ -23003,6 +23044,7 @@ impl GameStateDecode {
         migrate_legacy_dungeon_choice_previews(&mut value)?;
         migrate_legacy_graveyard_paid_cast_cleanup(&mut value)?;
         migrate_legacy_shortcut_repetition_bound(&mut value)?;
+        migrate_legacy_offer_road(&mut value);
         let mut state = Self::materialize_prepared(value)?;
         normalize_delayed_trigger_allocators(&mut state)?;
         normalize_resolution_cast_offer_allocator(&mut state)?;
@@ -23064,6 +23106,7 @@ impl GameStateDecode {
         migrate_legacy_dungeon_choice_previews(value)?;
         migrate_legacy_graveyard_paid_cast_cleanup(value)?;
         migrate_legacy_shortcut_repetition_bound(value)?;
+        migrate_legacy_offer_road(value);
         Ok(())
     }
 
@@ -31510,6 +31553,7 @@ mod forced_cascade_window_tests {
                     certificate: certificate(),
                     schema: Default::default(),
                     declaration: None,
+                    road: crate::analysis::loop_check::OfferRoad::Ring,
                 },
             ),
             (
@@ -31527,6 +31571,7 @@ mod forced_cascade_window_tests {
                         per_cycle: None,
                         shortened_by: None,
                         published_declaration: None,
+                        road: crate::analysis::loop_check::OfferRoad::Ring,
                     },
                 },
             ),
@@ -33028,6 +33073,109 @@ mod tests {
             tree, once,
             "idempotent: the second walk finds no legacy key"
         );
+    }
+
+    /// A stamp-less offer or proposal takes the road its published shape proves, idempotently.
+    #[test]
+    fn legacy_offer_road_is_derived_from_the_mint_shape() {
+        let offer = |winner: serde_json::Value, per_cycle: serde_json::Value| {
+            serde_json::json!({
+                "type": "LoopShortcut",
+                "data": { "predicted_winner": winner, "certificate": { "per_cycle": per_cycle } }
+            })
+        };
+        let proposal = |winner: serde_json::Value, per_cycle: serde_json::Value| {
+            serde_json::json!({
+                "type": "RespondToShortcut",
+                "data": { "proposal": { "predicted_winner": winner, "per_cycle": per_cycle } }
+            })
+        };
+        let null = serde_json::Value::Null;
+        let mut tree = serde_json::json!({
+            "offer_path_a": offer(serde_json::json!(1), null.clone()),
+            "offer_path_d": offer(null.clone(), serde_json::json!({ "frames": 2 })),
+            "offer_recorded": offer(null.clone(), null.clone()),
+            "proposal_path_a": proposal(serde_json::json!(1), null.clone()),
+            "proposal_path_d": proposal(null.clone(), serde_json::json!({ "frames": 2 })),
+            "proposal_recorded": proposal(null.clone(), null.clone()),
+            "stamped": {
+                "type": "LoopShortcut",
+                "data": { "predicted_winner": null, "certificate": {}, "road": "Ring" }
+            },
+        });
+
+        migrate_legacy_offer_road(&mut tree);
+
+        for (key, road) in [
+            ("offer_path_a", "Ring"),
+            ("offer_path_d", "Ring"),
+            ("offer_recorded", "RecordedPeriod"),
+            ("stamped", "Ring"),
+        ] {
+            assert_eq!(tree[key]["data"]["road"], road, "[{key}]");
+        }
+        for (key, road) in [
+            ("proposal_path_a", "Ring"),
+            ("proposal_path_d", "Ring"),
+            ("proposal_recorded", "RecordedPeriod"),
+        ] {
+            assert_eq!(tree[key]["data"]["proposal"]["road"], road, "[{key}]");
+        }
+
+        let once = tree.clone();
+        migrate_legacy_offer_road(&mut tree);
+        assert_eq!(tree, once, "idempotent: every carrier already has its road");
+    }
+
+    /// The committed restore-time offers predate the stamp and decode to the road that minted them.
+    #[test]
+    fn committed_restore_offers_decode_to_their_minting_road() {
+        use crate::analysis::loop_check::OfferRoad;
+        use std::io::Read;
+        for (dump, road) in [
+            (
+                &include_bytes!("../../tests/fixtures/combo_infinite_pile_4p_offer.json.gz")[..],
+                OfferRoad::RecordedPeriod,
+            ),
+            (
+                &include_bytes!("../../tests/fixtures/tenacity_exquisite_blood_4p.json.gz")[..],
+                OfferRoad::Ring,
+            ),
+            (
+                &include_bytes!("../../tests/fixtures/lethal_lifegain_loss_4p.json.gz")[..],
+                OfferRoad::Ring,
+            ),
+            (
+                &include_bytes!("../../tests/fixtures/weird_drain_4p.json.gz")[..],
+                OfferRoad::Ring,
+            ),
+        ] {
+            let mut json = String::new();
+            flate2::read::GzDecoder::new(dump)
+                .read_to_string(&mut json)
+                .expect("the dump inflates");
+            let envelope: serde_json::Value = serde_json::from_str(&json).expect("the dump parses");
+            let board = envelope.get("gameState").unwrap_or(&envelope).clone();
+            assert!(
+                board["waiting_for"]["data"].get("road").is_none(),
+                "the dump predates the stamp"
+            );
+            let state = serde_json::from_value::<PersistedGameState>(board)
+                .expect("the dump deserializes")
+                .into_game_state()
+                .expect("the dump restores");
+            assert_eq!(
+                state.waiting_for.variant_name(),
+                "LoopShortcut",
+                "the dump restores at its offer"
+            );
+            let encoded = serde_json::to_value(&state.waiting_for).expect("the offer encodes");
+            assert_eq!(
+                serde_json::from_value::<OfferRoad>(encoded["data"]["road"].clone())
+                    .expect("the restored offer carries a road"),
+                road
+            );
+        }
     }
 
     #[test]

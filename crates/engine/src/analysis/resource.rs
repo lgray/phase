@@ -412,12 +412,19 @@ pub struct LoopDetectCost {
     pub compares_cover_modulo_growth_scoped: u32,
     pub compares_cover_modulo_object_growth: u32,
     pub compares_cover_modulo_fodder_growth: u32,
+    /// CR 603.6a: the enters-the-battlefield relief consult, one field per verdict arm.
+    pub etb_relief_pre_gate_refused: u32,
+    pub etb_relief_shape_declined: u32,
+    pub etb_relief_member_not_live: u32,
+    pub etb_relief_identity_refused: u32,
+    pub etb_relief_not_excluded: u32,
+    pub etb_relief_excluded: u32,
 }
 
 /// [`LoopDetectCost::parts`]' rows: site name, nanoseconds, calls.
 type TimedSites = [(&'static str, u64, u32); 9];
 /// [`LoopDetectCost::clones`]' rows: site name, count.
-type CloneSites = [(&'static str, u32); 7];
+type CloneSites = [(&'static str, u32); 13];
 
 impl LoopDetectCost {
     /// Both report arrays out of ONE no-`..` destructure, which is what makes them
@@ -457,6 +464,12 @@ impl LoopDetectCost {
             compares_cover_modulo_growth_scoped,
             compares_cover_modulo_object_growth,
             compares_cover_modulo_fodder_growth,
+            etb_relief_pre_gate_refused,
+            etb_relief_shape_declined,
+            etb_relief_member_not_live,
+            etb_relief_identity_refused,
+            etb_relief_not_excluded,
+            etb_relief_excluded,
         } = *self;
         (
             [
@@ -502,6 +515,12 @@ impl LoopDetectCost {
                     "compares_cover_modulo_fodder_growth",
                     compares_cover_modulo_fodder_growth,
                 ),
+                ("etb_relief_pre_gate_refused", etb_relief_pre_gate_refused),
+                ("etb_relief_shape_declined", etb_relief_shape_declined),
+                ("etb_relief_member_not_live", etb_relief_member_not_live),
+                ("etb_relief_identity_refused", etb_relief_identity_refused),
+                ("etb_relief_not_excluded", etb_relief_not_excluded),
+                ("etb_relief_excluded", etb_relief_excluded),
             ],
         )
     }
@@ -514,7 +533,7 @@ impl LoopDetectCost {
     /// The count-only sites, one entry per site. Deliberately a separate accessor from
     /// [`LoopDetectCost::parts`]: a duration-less axis inside that array would make its
     /// two-axis contract unanswerable for half its entries.
-    pub fn clones(&self) -> [(&'static str, u32); 7] {
+    pub fn clones(&self) -> [(&'static str, u32); 13] {
         self.classify().1
     }
 
@@ -538,6 +557,28 @@ impl LoopDetectCost {
             + self.compares_cover_modulo_growth_scoped
             + self.compares_cover_modulo_object_growth
             + self.compares_cover_modulo_fodder_growth
+    }
+
+    /// Every enters-the-battlefield relief consult, over all verdict arms. Derived, never a field.
+    pub fn etb_relief_consults(&self) -> u32 {
+        self.etb_relief_pre_gate_refused
+            + self.etb_relief_shape_declined
+            + self.etb_relief_member_not_live
+            + self.etb_relief_identity_refused
+            + self.etb_relief_not_excluded
+            + self.etb_relief_excluded
+    }
+
+    fn tally_etb_relief(&mut self, verdict: ExclusionVerdict) {
+        let field = match verdict {
+            ExclusionVerdict::PreGateRefused => &mut self.etb_relief_pre_gate_refused,
+            ExclusionVerdict::ShapeDeclined => &mut self.etb_relief_shape_declined,
+            ExclusionVerdict::MemberNotLive => &mut self.etb_relief_member_not_live,
+            ExclusionVerdict::IdentityRefused => &mut self.etb_relief_identity_refused,
+            ExclusionVerdict::NotExcluded => &mut self.etb_relief_not_excluded,
+            ExclusionVerdict::Excluded => &mut self.etb_relief_excluded,
+        };
+        *field += 1;
     }
 }
 
@@ -4841,8 +4882,8 @@ pub(crate) fn fodder_growth_cover_refusals(
     // instead of silently defaulting it to dropped.
     // ponytail: O(observers x |G|), short-circuiting on the first non-excluding member. If |G|
     // ever measures hot, hoist the member-independent conjuncts out of the per-member loop,
-    // `etb_observer_provably_excludes_class`'s CR 400.7 identity scan in its `shape` slot among
-    // them — re-run once per member for a verdict that cannot differ.
+    // `etb_observer_provably_excludes_class`'s CR 400.7 identity stage among them — re-run once
+    // per member for a verdict that cannot differ.
     let class_members: HashSet<ObjectId> = growing
         .iter()
         .copied()
@@ -5327,8 +5368,8 @@ pub(crate) enum SoleSource<'a> {
     /// It does NOT claim the shape gate sees the whole subject. It does where the subject is a
     /// `PtValue` or a `ReplacementCondition` variant, which carry no second axis a read could
     /// hide on. It does not for `game::triggers::etb_observer_provably_excludes_class`, whose
-    /// shape gate reads the entry-matcher fields of a `TriggerDefinition` plus the CR 400.7
-    /// identity proof its caller threads, and whose relief is DEF-SCOPED:
+    /// shape gate reads the entry-matcher fields of a `TriggerDefinition`, whose identity stage
+    /// reads the CR 400.7 identity proof its caller threads, and whose relief is DEF-SCOPED:
     /// `fire_time_conditions_read_growing_class_scoped` `continue`s over the WHOLE definition,
     /// so once that relief fires neither the trigger's `condition` nor its `execute` body is
     /// scanned. What licenses skipping those two surfaces is that identity conjunct: the
@@ -5383,22 +5424,8 @@ pub(crate) enum MemberLiveness {
     OnBattlefield,
 }
 
-/// CR 608.2h — the shared proof obligation every arm of this cluster discharges: "this
-/// definition's read cannot see `class_member`, so its value is invariant across the loop's
-/// growth, and the definition does not observe the loop". Fail-closed at every step, in one
-/// order for every arm: pre-gate, then shape, then member liveness, then the arm's own
-/// delegated fire-time authority. One arm discharges the final clause by NON-FIRING rather
-/// than read-invariance: `game::triggers::etb_observer_provably_excludes_class` proves the
-/// matcher fires nowhere in the window, taking the fodder's own entry from the ordering
-/// premise and every other entry from the CR 400.7 identity proof its caller threads. Its
-/// named residual is stated on that predicate.
-///
-/// The axes the arms actually differ on are PARAMETERS, not copied blocks. `pre` and
-/// `liveness` are each a declaration an arm cannot leave unstated, and `shape` / `excludes`
-/// keep each arm's own typed subject and its own delegated authority — so no arm needs `dyn`.
-/// That no arm resolves a member against a frame other than `state` is a property OF THE ARMS,
-/// established by reading them, and NOT of this signature: `shape` and `excludes` are `FnOnce`
-/// closures that capture freely, so nothing here binds them to the `state` argument.
+/// The boolean projection of [`exclusion_verdict`] for the read-invariance arms, which declare
+/// no identity obligation.
 pub(crate) fn provably_excludes_class<S>(
     state: &GameState,
     class_member: ObjectId,
@@ -5407,11 +5434,58 @@ pub(crate) fn provably_excludes_class<S>(
     shape: impl FnOnce() -> Option<S>,
     excludes: impl FnOnce(S, ObjectId) -> bool,
 ) -> bool {
+    exclusion_verdict(state, class_member, pre, liveness, shape, || true, excludes).excludes()
+}
+
+/// Which stage of [`exclusion_verdict`] decided, one arm per stage in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExclusionVerdict {
+    PreGateRefused,
+    ShapeDeclined,
+    MemberNotLive,
+    IdentityRefused,
+    NotExcluded,
+    Excluded,
+}
+
+impl ExclusionVerdict {
+    pub(crate) fn excludes(self) -> bool {
+        matches!(self, Self::Excluded)
+    }
+}
+
+/// CR 608.2h — the shared proof obligation every arm of this cluster discharges: "this
+/// definition's read cannot see `class_member`, so its value is invariant across the loop's
+/// growth, and the definition does not observe the loop". Fail-closed at every step, in one
+/// order for every arm: pre-gate, then shape, then member liveness, then identity, then the
+/// arm's own delegated fire-time authority; the verdict names the stage that decided. The
+/// read-invariance arms declare no identity obligation, which is why they pass `|| true` through
+/// [`provably_excludes_class`]. Only one arm discharges the final clause by NON-FIRING:
+/// `game::triggers::etb_observer_provably_excludes_class` proves the matcher fires nowhere in the
+/// window, taking the fodder's own entry from the ordering premise and every other entry from
+/// its identity stage, which reads the CR 400.7 identity proof its caller threads. Its named
+/// residual is stated on that predicate.
+///
+/// The axes the arms actually differ on are PARAMETERS, not copied blocks. `pre` and
+/// `liveness` are each a declaration an arm cannot leave unstated, and `shape` / `excludes`
+/// keep each arm's own typed subject and its own delegated authority — so no arm needs `dyn`.
+/// That no arm resolves a member against a frame other than `state` is a property OF THE ARMS,
+/// established by reading them, and NOT of this signature: `shape` and `excludes` are `FnOnce`
+/// closures that capture freely, so nothing here binds them to the `state` argument.
+pub(crate) fn exclusion_verdict<S>(
+    state: &GameState,
+    class_member: ObjectId,
+    pre: SoleSource<'_>,
+    liveness: MemberLiveness,
+    shape: impl FnOnce() -> Option<S>,
+    identity: impl FnOnce() -> bool,
+    excludes: impl FnOnce(S, ObjectId) -> bool,
+) -> ExclusionVerdict {
     match pre {
         SoleSource::None => {}
         SoleSource::Blank { ability, axis } => {
             if !ability.activation_restrictions.is_empty() {
-                return false;
+                return ExclusionVerdict::PreGateRefused;
             }
             let mut probe = ability.clone();
             match axis {
@@ -5419,17 +5493,17 @@ pub(crate) fn provably_excludes_class<S>(
                 AbilityAxis::Effect => *probe.effect = crate::types::ability::Effect::NoOp,
             }
             if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
-                return false;
+                return ExclusionVerdict::PreGateRefused;
             }
         }
         SoleSource::CarriesOnlyItsEffect(ability) => {
             if !ability_definition_carries_only_its_effect(ability) {
-                return false;
+                return ExclusionVerdict::PreGateRefused;
             }
         }
     }
     let Some(subject) = shape() else {
-        return false;
+        return ExclusionVerdict::ShapeDeclined;
     };
     let live = match liveness {
         MemberLiveness::Unchecked => true,
@@ -5440,9 +5514,16 @@ pub(crate) fn provably_excludes_class<S>(
             .is_some_and(|o| o.zone == Zone::Battlefield),
     };
     if !live {
-        return false;
+        return ExclusionVerdict::MemberNotLive;
     }
-    excludes(subject, class_member)
+    if !identity() {
+        return ExclusionVerdict::IdentityRefused;
+    }
+    if excludes(subject, class_member) {
+        ExclusionVerdict::Excluded
+    } else {
+        ExclusionVerdict::NotExcluded
+    }
 }
 
 /// CR 732.2a + CR 608.2h + CR 608.2i + CR 608.2j: does this trigger's `execute` body observe
@@ -7324,18 +7405,24 @@ fn fire_time_conditions_read_growing_class_scoped(
                 // otherwise fire for every def of every mode. Both member-quantified
                 // predicates are pure state reads, so `HashSet` iteration order moves only
                 // the short-circuit point, never the verdict.
-                if !members.is_empty()
-                    && members.iter().all(|&member| {
-                        crate::game::triggers::etb_observer_provably_excludes_class(
-                            def,
-                            state,
-                            member,
-                            obj.id,
-                            scope.identity_unstable,
-                        )
-                    })
-                {
-                    continue;
+                if !members.is_empty() {
+                    let verdict = members
+                        .iter()
+                        .map(|&member| {
+                            crate::game::triggers::etb_observer_provably_excludes_class(
+                                def,
+                                state,
+                                member,
+                                obj.id,
+                                scope.identity_unstable,
+                            )
+                        })
+                        .find(|verdict| !verdict.excludes())
+                        .unwrap_or(ExclusionVerdict::Excluded);
+                    bump_loop_detect_cost(|cost| cost.tally_etb_relief(verdict));
+                    if verdict.excludes() {
+                        continue;
+                    }
                 }
             }
             // The trigger CONDITION stays CONSERVATIVE: an intervening-if reads the
@@ -24068,6 +24155,7 @@ mod tests {
             certificate: cert.clone(),
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
+            road: crate::analysis::loop_check::OfferRoad::Ring,
         };
         let offer_json =
             serde_json::to_string(&offer).expect("the LoopShortcut payload carrying it must too");
@@ -24087,6 +24175,7 @@ mod tests {
             },
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
+            road: crate::analysis::loop_check::OfferRoad::Ring,
         };
         let shipped_json = serde_json::to_string(&shipped).expect("serializes");
         assert!(
@@ -24224,6 +24313,7 @@ mod tests {
             }),
             shortened_by: None,
             published_declaration: None,
+            road: crate::analysis::loop_check::OfferRoad::Ring,
         };
         let wait = WaitingFor::RespondToShortcut {
             player: PlayerId(1),

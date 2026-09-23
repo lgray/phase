@@ -6327,6 +6327,7 @@ mod tests {
             },
             schema: engine::analysis::decision_template::ShortcutDecisionSchema::default(),
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
 
         assert_eq!(

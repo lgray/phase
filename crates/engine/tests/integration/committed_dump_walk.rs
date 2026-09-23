@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use engine::analysis::loop_check::OfferRoad;
 use engine::types::game_state::{GameState, LoopDetectionMode, PersistedGameState, WaitingFor};
 
 use crate::loop_period_accessor_answers::answers;
@@ -53,17 +54,30 @@ pub(crate) fn restore_committed(path: &Path) -> Result<GameState, String> {
     Ok(state)
 }
 
+/// The offer's published shape, with its road asserted to be the one that shape proves: a winner
+/// or a per-cycle signature is the ring road's, and neither is the recorded period's.
 fn offer_line(state: &GameState) -> Option<String> {
     let WaitingFor::LoopShortcut {
+        predicted_winner,
         certificate,
         schema,
+        road,
         ..
     } = &state.waiting_for
     else {
         return None;
     };
+    let shaped = if predicted_winner.is_some() || certificate.per_cycle.is_some() {
+        OfferRoad::Ring
+    } else {
+        OfferRoad::RecordedPeriod
+    };
+    assert_eq!(
+        *road, shaped,
+        "the offer's road is the one its shape proves"
+    );
     Some(format!(
-        "bounded={} threshold={:?} unbounded={:?}",
+        "bounded={} threshold={:?} unbounded={:?} road={road:?}",
         certificate.per_cycle.is_some(),
         schema.measured_repetition_bound,
         certificate.unbounded
@@ -154,7 +168,7 @@ fn every_committed_dump_reaches_its_pinned_outcome() {
 const EXPECTED: &[(&str, &str)] = &[
     ("engine/tests/fixtures/basalt_power_artifact_infinite_colorless.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/codie_turn14.json.gz", "GAMEOVER@5 | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/combo_infinite_pile_4p_offer.json.gz", "OFFER@restore bounded=false threshold=None unbounded=[TokensCreated] | controller=Some(PlayerId(0)) priority_driven=true driver=Some(PlayerId(0)) controller_of=Some(PlayerId(0)) priority_driven_of=true driver_of=Some(PlayerId(0))"),
+    ("engine/tests/fixtures/combo_infinite_pile_4p_offer.json.gz", "OFFER@restore bounded=false threshold=None unbounded=[TokensCreated] road=RecordedPeriod | controller=Some(PlayerId(0)) priority_driven=true driver=Some(PlayerId(0)) controller_of=Some(PlayerId(0)) priority_driven_of=true driver_of=Some(PlayerId(0))"),
     ("engine/tests/fixtures/combo_infinite_pile_4p_untapped_precast.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/combo_infinite_pile_decklist_4p.json.gz", "RESTOREERR persisted game state has an invalid turn_number"),
     ("engine/tests/fixtures/cr733/authority_matrix.json.gz", "RESTOREERR persisted game state has an invalid turn_number"),
@@ -162,21 +176,21 @@ const EXPECTED: &[(&str, &str)] = &[
     ("engine/tests/fixtures/cr733/rng_allocator_map.json.gz", "RESTOREERR persisted game state has an invalid turn_number"),
     ("engine/tests/fixtures/cr733/side_effect_map.json.gz", "RESTOREERR persisted game state has an invalid turn_number"),
     ("engine/tests/fixtures/dellian_emblem_conqueror_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/dina_conqueror_4p.json.gz", "OFFER@19 bounded=true threshold=Some(36) unbounded=[Life(PlayerId(0)), Life(PlayerId(1)), Life(PlayerId(2)), Life(PlayerId(3))] | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/dina_conqueror_phase5_no_offer_4p.json.gz", "OFFER@21 bounded=true threshold=Some(34) unbounded=[Life(PlayerId(0)), Life(PlayerId(1)), Life(PlayerId(2)), Life(PlayerId(3))] | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/dina_noff_turn5_4p.json.gz", "OFFER@21 bounded=true threshold=Some(31) unbounded=[Life(PlayerId(0)), Life(PlayerId(1)), Life(PlayerId(2)), Life(PlayerId(3))] | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/f4_user_mode1_no_offer_4p.json.gz", "OFFER@37 bounded=true threshold=Some(87) unbounded=[LibraryDelta(PlayerId(0)), Counter(Plus1Plus1, Creature), TokensCreated, Life(PlayerId(1))] | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
-    ("engine/tests/fixtures/f4_user_mode2_accept_commits_nothing_4p.json.gz", "OFFER@39 bounded=true threshold=Some(84) unbounded=[LibraryDelta(PlayerId(0)), Counter(Plus1Plus1, Creature), TokensCreated, Life(PlayerId(1))] | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
-    ("engine/tests/fixtures/fantastic_four_bounded_loop_4p.json.gz", "OFFER@39 bounded=true threshold=Some(88) unbounded=[LibraryDelta(PlayerId(0)), Counter(Plus1Plus1, Creature), TokensCreated, Life(PlayerId(1))] | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
+    ("engine/tests/fixtures/dina_conqueror_4p.json.gz", "OFFER@19 bounded=true threshold=Some(36) unbounded=[Life(PlayerId(0)), Life(PlayerId(1)), Life(PlayerId(2)), Life(PlayerId(3))] road=Ring | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
+    ("engine/tests/fixtures/dina_conqueror_phase5_no_offer_4p.json.gz", "OFFER@21 bounded=true threshold=Some(34) unbounded=[Life(PlayerId(0)), Life(PlayerId(1)), Life(PlayerId(2)), Life(PlayerId(3))] road=Ring | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
+    ("engine/tests/fixtures/dina_noff_turn5_4p.json.gz", "OFFER@21 bounded=true threshold=Some(31) unbounded=[Life(PlayerId(0)), Life(PlayerId(1)), Life(PlayerId(2)), Life(PlayerId(3))] road=Ring | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
+    ("engine/tests/fixtures/f4_user_mode1_no_offer_4p.json.gz", "OFFER@37 bounded=true threshold=Some(87) unbounded=[LibraryDelta(PlayerId(0)), Counter(Plus1Plus1, Creature), TokensCreated, Life(PlayerId(1))] road=Ring | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
+    ("engine/tests/fixtures/f4_user_mode2_accept_commits_nothing_4p.json.gz", "OFFER@39 bounded=true threshold=Some(84) unbounded=[LibraryDelta(PlayerId(0)), Counter(Plus1Plus1, Creature), TokensCreated, Life(PlayerId(1))] road=Ring | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
+    ("engine/tests/fixtures/fantastic_four_bounded_loop_4p.json.gz", "OFFER@39 bounded=true threshold=Some(88) unbounded=[LibraryDelta(PlayerId(0)), Counter(Plus1Plus1, Creature), TokensCreated, Life(PlayerId(1))] road=Ring | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
     ("engine/tests/fixtures/integration_cards.json.gz", "RESTOREERR unversioned raw resolution state contains an Exploited trigg"),
     ("engine/tests/fixtures/kilo_freed_relic_pentad_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/kilo_freed_relic_pentad_max_of_one_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/lethal_lifegain_loss_4p.json.gz", "OFFER@restore bounded=true threshold=Some(2) unbounded=[Life(PlayerId(0)), Life(PlayerId(1))] | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
+    ("engine/tests/fixtures/lethal_lifegain_loss_4p.json.gz", "OFFER@restore bounded=true threshold=Some(2) unbounded=[Life(PlayerId(0)), Life(PlayerId(1))] road=Ring | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/mass_library_order_turn15.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/sprout_witherbloom_realistic_lands_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/tenacity_exquisite_blood_4p.json.gz", "OFFER@restore bounded=false threshold=None unbounded=[Life(PlayerId(0)), Life(PlayerId(3))] | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
+    ("engine/tests/fixtures/tenacity_exquisite_blood_4p.json.gz", "OFFER@restore bounded=false threshold=None unbounded=[Life(PlayerId(0)), Life(PlayerId(3))] road=Ring | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/vanquish_the_horde_manapayment_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
-    ("engine/tests/fixtures/weird_drain_4p.json.gz", "OFFER@restore bounded=true threshold=Some(10) unbounded=[Life(PlayerId(0)), Life(PlayerId(2))] | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
+    ("engine/tests/fixtures/weird_drain_4p.json.gz", "OFFER@restore bounded=true threshold=Some(10) unbounded=[Life(PlayerId(0)), Life(PlayerId(2))] road=Ring | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/witherbloom_altar_sprout_swarm_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("engine/tests/fixtures/witherbloom_sprout_lumaret_4p.json.gz", "BUDGET Priority | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
     ("engine/tests/fixtures/witherbloom_sprout_lumaret_simple_4p.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
@@ -187,6 +201,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ("engine/tests/integration/fixtures/mycoloth_devour_wedge_turn15.json.gz", "BUDGET Priority | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
     ("engine/tests/integration/fixtures/mycoloth_devour_wedge_turn20.json.gz", "BUDGET Priority | controller=Some(PlayerId(0)) priority_driven=false driver=None controller_of=Some(PlayerId(0)) priority_driven_of=false driver_of=None"),
     ("engine/tests/integration/fixtures/ureni_turn10_raw_resolution_stack.json.gz", "RESTOREERR This saved game is missing the private rules record for the "),
+    ("engine/tests/integration/fixtures/zurs_weirding_nested_dispatching_pre_7485.json.gz", "RESTOREERR OwnerlessPostReplacementDispatch"),
     ("phase-ai/fixtures/scenarios/galvanic-blast-manapayment-turn4.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
     ("phase-ai/fixtures/scenarios/invisible-woman-cosmic-crucible-mana.json.gz", "BUDGET Priority | controller=None priority_driven=true driver=None controller_of=None priority_driven_of=true driver_of=None"),
 ];

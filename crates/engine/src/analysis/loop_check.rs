@@ -158,6 +158,14 @@ impl LoopCertificate {
     }
 }
 
+/// Which producer minted a loop-shortcut offer: the ring sampler, or the priority holder's
+/// recorded period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OfferRoad {
+    Ring,
+    RecordedPeriod,
+}
+
 /// CR 732.2a: the log/display summary a `WaitingFor::RespondToShortcut` carries to each
 /// responding opponent — "the player with priority suggests repeating this loop N times".
 ///
@@ -214,6 +222,8 @@ pub struct ShortcutProposal {
     /// A seat identity is public board state, so this carries no redaction seam of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortened_by: Option<PlayerId>,
+    /// The producer that minted the offer this proposal was declared against, copied off it.
+    pub road: OfferRoad,
     /// CR 732.2a: the declaration the offer PUBLISHED — `game::engine::build_bounded_declaration`'s
     /// validated output, copied off the offer at declare — beside `template`, the declaration the
     /// drive replays. The two differ wherever the declarer overrode the published aim, and

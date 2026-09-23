@@ -11872,7 +11872,7 @@ mod tests {
     #[test]
     fn the_picker_publishes_the_deliverable_capacity_and_never_the_measured_threshold() {
         use crate::analysis::decision_template::ShortcutDecisionSchema;
-        use crate::analysis::loop_check::{LoopCertificate, WinKind};
+        use crate::analysis::loop_check::{LoopCertificate, OfferRoad, WinKind};
         use crate::analysis::resource::BoardDelta;
 
         let viewer = PlayerId(0);
@@ -11895,6 +11895,7 @@ mod tests {
                     ..Default::default()
                 },
                 declaration: None,
+                road: OfferRoad::Ring,
             };
             bind_interaction_authority(&mut state, InteractionSessionId("picker-ceiling".into()))
                 .expect("a valid interaction authority binding");

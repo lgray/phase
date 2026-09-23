@@ -1570,12 +1570,10 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc = acc.or(scan_quantity_expr(count, mode));
             acc
         }
-        // Continuous-modification carrier: the mods Vec is an UNDESCENDED subtree
-        // (no scan_continuous_modification walker exists), so classify
-        // CONSERVATIVE — the fail-closed default for undescended subtrees, exactly
-        // as the sibling continuous-modification effects (Animate:802,
-        // ReturnAsAura:803). Over-read is inert — this effect
-        // never resolves standalone (lifted as CastFromZone permission metadata).
+        // Continuous-modification carrier: the mods Vec is an UNDESCENDED subtree,
+        // so classify CONSERVATIVE — the fail-closed default for undescended subtrees,
+        // exactly as the sibling continuous-modification effects. Over-read is inert —
+        // this effect never resolves standalone (lifted as CastFromZone permission metadata).
         Effect::AddPendingEntersModifications { .. } => Axes::CONSERVATIVE,
         Effect::CreateEmblem { .. } => Axes::CONSERVATIVE,
         Effect::PayCost { .. } => Axes::CONSERVATIVE,

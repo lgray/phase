@@ -3012,6 +3012,7 @@ fn loop_shortcut_zero_deliverable_capacity_is_rejected_not_clamped() {
                 ..Default::default()
             },
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
         bind(&mut state, "loop-zero-bound");
         state
@@ -3076,6 +3077,7 @@ fn loop_shortcut_narrowed_capacity_bounds_the_picker() {
             ..Default::default()
         },
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     bind(&mut state, "loop-narrowed-bound");
 
@@ -3125,6 +3127,7 @@ fn loop_shortcut_number_schema_accepts_a_fixed_count_above_one() {
             ..Default::default()
         },
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     bind(&mut state, "loop-count");
     let view = priority_view(&state);
@@ -3222,6 +3225,7 @@ fn preview_offer_with_points(
             ..Default::default()
         },
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     bind(&mut state, "loop-preview");
     state
@@ -3927,6 +3931,7 @@ fn respond_window_on(
             per_cycle,
             shortened_by: None,
             published_declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         },
     };
     bind(&mut state, "respond-declared");
@@ -6552,6 +6557,7 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
             convoke_tappable_count: 1,
         },
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     bind(runner.state_mut(), "loop-point-kinds");
 
@@ -6752,6 +6758,7 @@ fn loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_s
             convoke_tappable_count: 0,
         },
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     bind(runner.state_mut(), "r2f-human-seat-pin");
 
@@ -8079,6 +8086,7 @@ fn stage_sequenced_offer(
             convoke_tappable_count: 0,
         },
         declaration: None,
+        road: engine::analysis::loop_check::OfferRoad::Ring,
     };
     bind(runner.state_mut(), label);
     (runner, slots)
@@ -10712,6 +10720,7 @@ fn p10_row_7_a_restored_multi_entry_ranking_still_loads_and_still_drives_head_on
             per_cycle: None,
             shortened_by: None,
             published_declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         },
     };
     let wire = serde_json::to_string(&carrying).expect("serialize the pending proposal");

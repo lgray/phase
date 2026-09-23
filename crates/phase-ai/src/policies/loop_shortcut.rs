@@ -158,6 +158,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
             schema,
             certificate,
             declaration,
+            road: _,
         } = &ctx.state.waiting_for
         else {
             return na();
@@ -527,6 +528,7 @@ mod tests {
             certificate: cert(),
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
         state
     }
@@ -722,6 +724,7 @@ mod tests {
                 ..Default::default()
             },
             declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
         state
     }
@@ -763,6 +766,7 @@ mod tests {
                 ..Default::default()
             },
             declaration,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
         };
         state
     }
