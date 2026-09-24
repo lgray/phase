@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ability::PermissionGrantee;
 use insta::assert_json_snapshot;
 
 // -----------------------------------------------------------------------
@@ -110,7 +111,7 @@ fn continuation_search_exile_then_shuffle() {
         &*conceal.effect,
         Effect::HideawayConceal {
             target: TargetFilter::ParentTarget,
-            grantee: None,
+            grantee: Some(PermissionGrantee::AbilityController),
         }
     ));
     let Some(shuffle) = conceal.sub_ability.as_ref() else {
@@ -146,7 +147,7 @@ fn praetors_grasp_conceals_the_foreign_search_result() {
         &*conceal.effect,
         Effect::HideawayConceal {
             target: TargetFilter::ParentTarget,
-            grantee: None,
+            grantee: Some(PermissionGrantee::AbilityController),
         }
     ));
 }
@@ -178,7 +179,7 @@ fn beseech_the_mirror_search_exiles_and_has_hand_fallback() {
         &*conceal.effect,
         Effect::HideawayConceal {
             target: TargetFilter::ParentTarget,
-            grantee: None,
+            grantee: Some(PermissionGrantee::AbilityController),
         }
     ));
     let shuffle = conceal

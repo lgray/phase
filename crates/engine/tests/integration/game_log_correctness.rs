@@ -1,8 +1,6 @@
 //! Game log privacy, naming and dedupe across the cast, activation and elimination pipelines.
 
-use engine::game::ability_utils::build_resolved_from_def;
 use engine::game::casting::spell_objects_available_to_cast;
-use engine::game::effects::resolve_ability_chain;
 use engine::game::game_object::{AttachTarget, BackFaceData};
 use engine::game::log::resolve_log_entries;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
@@ -10,9 +8,10 @@ use engine::game::visibility::filter_state_for_viewer;
 use engine::types::ability::{AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter};
 use engine::types::actions::GameAction;
 use engine::types::card_type::{CardType, CoreType};
-use engine::types::events::GameEvent;
+use engine::types::counter::CounterType;
+use engine::types::events::{GameEvent, PlayerActionKind};
 use engine::types::game_state::{
-    ActionResult, AutoPassRequest, GameState, TurnBoundary, WaitingFor,
+    ActionResult, AutoPassRequest, ExileLinkKind, GameState, LookGrant, TurnBoundary, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::log::{GameLogEntry, LogSegment, LogVisibility};
@@ -561,7 +560,9 @@ fn tagged_activation_logs_one_line() {
     assert_eq!(activation_lines(" activates ability: "), 0, "{entries:?}");
 }
 
-const BROODLORD: &str = "When this creature enters, search your library for a card, exile it face down, then shuffle. For as long as that card remains exiled, you may play it.\nSpells you cast from exile have convoke.";
+const BROODLORD: &str = "Convoke\nFlying\nWhen this creature enters, search your library for a card, exile it face down, then shuffle. For as long as that card remains exiled, you may play it.\nSpells you cast from exile have convoke.";
+const WORD_OF_SEIZING: &str = "Split second (As long as this spell is on the stack, players can't cast spells or activate abilities that aren't mana abilities.)\nUntap target permanent and gain control of it until end of turn. It gains haste until end of turn.";
+const AVACYN: &str = "(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\nI — Search your library for a card, exile it face down, then shuffle.\nII — Turn the exiled card face up. If it's a creature card, you lose life equal to its mana value.\nIII — You may put the exiled card onto the battlefield if it's a creature card. If you don't put it onto the battlefield, put it into its owner's hand.";
 
 fn view_name(state: &GameState, viewer: PlayerId, id: ObjectId) -> String {
     filter_state_for_viewer(state, viewer).objects[&id]
@@ -575,44 +576,101 @@ fn left_library_for_exile(events: &[GameEvent], id: ObjectId) -> bool {
     })
 }
 
-/// Resolves Hoarding Broodlord's search for `found`; returns `found`, the Broodlord and the state.
-fn broodlord_search_exiles_found() -> (ObjectId, ObjectId, GameState) {
+fn shuffled_library(events: &[GameEvent], player: PlayerId) -> bool {
+    events.iter().any(|event| {
+        matches!(event, GameEvent::PlayerPerformedAction { player_id, action: PlayerActionKind::ShuffledLibrary, .. } if *player_id == player)
+    })
+}
+
+fn fill_libraries(scenario: &mut GameScenario, players: &[PlayerId]) {
+    for &player in players {
+        for i in 0..6 {
+            scenario.add_card_to_library_top(player, &format!("Probe Filler {i}"));
+        }
+    }
+}
+
+fn add_free_instant(
+    scenario: &mut GameScenario,
+    player: PlayerId,
+    name: &str,
+    keywords: &[&str],
+    text: &str,
+) -> ObjectId {
+    scenario
+        .add_spell_to_hand(player, name, true)
+        .from_oracle_text_with_keywords(keywords, text)
+        .with_mana_cost(ManaCost::zero())
+        .id()
+}
+
+/// Passes priority until `player` holds it, then casts `spell` targeting `target` and resolves it.
+fn cast_on(runner: &mut GameRunner, player: PlayerId, spell: ObjectId, target: ObjectId) {
+    for _ in 0..8 {
+        if runner.state().priority_player == player
+            && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        {
+            break;
+        }
+        runner.act(GameAction::PassPriority).unwrap();
+    }
+    assert_eq!(runner.state().priority_player, player);
+    runner.cast(spell).target_objects(&[target]).resolve();
+}
+
+/// Resolves Hoarding Broodlord's search for `found` with Word of Seizing in P1's hand; returns
+/// `found`, the Broodlord, Word of Seizing and the runner.
+fn broodlord_search_exiles_found() -> (ObjectId, ObjectId, ObjectId, GameRunner) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
+    fill_libraries(&mut scenario, &[P0, P1]);
     let found = scenario.add_card_to_library_top(P0, "Probe Found");
     let lord = scenario
-        .add_creature_to_hand_from_oracle(P0, "Probe Broodlord", 4, 4, BROODLORD)
+        .add_creature_to_hand(P0, "Hoarding Broodlord", 4, 4)
+        .from_oracle_text_with_keywords(&["Convoke", "Flying"], BROODLORD)
         .id();
+    let seize = add_free_instant(
+        &mut scenario,
+        P1,
+        "Word of Seizing",
+        &["Split second"],
+        WORD_OF_SEIZING,
+    );
     let mut runner = scenario.build();
     let before = runner.state().clone();
     let outcome = runner.cast(lord).search_first_legal().resolve();
     assert!(left_library_for_exile(outcome.events(), found));
+    // CR 701.24a: the search shuffles the searched library.
+    assert!(shuffled_library(outcome.events(), P0));
     let entries = resolve_log_entries(outcome.events(), &before, outcome.state());
     assert!(entries_naming(&entries, found).is_empty(), "{entries:?}");
-    (found, lord, outcome.state().clone())
+    (found, lord, seize, runner)
 }
 
 /// CR 406.3: a card searched for and exiled face down is hidden from the other players.
 #[test]
 fn search_exile_face_down_hides_the_card_from_opponents() {
-    let (found, _, state) = broodlord_search_exiles_found();
+    let (found, _, _, runner) = broodlord_search_exiles_found();
+    let state = runner.state();
     assert!(state.objects[&found].face_down);
-    assert_eq!(view_name(&state, P0, found), "Probe Found");
-    assert!(spell_objects_available_to_cast(&state, P0).contains(&found));
-    assert_ne!(view_name(&state, P1, found), "Probe Found");
+    assert_eq!(view_name(state, P0, found), "Probe Found");
+    assert!(spell_objects_available_to_cast(state, P0).contains(&found));
+    assert_ne!(view_name(state, P1, found), "Probe Found");
 }
 
-/// Pins a known limit: after control of the exiling permanent changes, its new controller may look
-/// at the face-down search result, though CR 406.3 gives the look to the player who searched. The
-/// P1 assertion is expected to fail once the look permission is bound to the searcher.
+/// CR 406.3 + CR 613.1b: the searcher keeps the look after another player gains control of the
+/// Broodlord, and that player may not look.
 #[test]
-fn search_exile_look_follows_the_exiling_permanents_controller() {
-    let (found, lord, mut state) = broodlord_search_exiles_found();
-    state.objects.get_mut(&lord).unwrap().controller = P1;
+fn search_exile_look_stays_with_the_searcher_after_control_changes() {
+    let (found, lord, seize, mut runner) = broodlord_search_exiles_found();
+    cast_on(&mut runner, P1, seize, lord);
+    let state = runner.state();
+    assert_eq!(state.objects[&lord].controller, P1);
+    assert_eq!(state.objects[&found].zone, Zone::Exile);
     assert!(state.objects[&found].face_down);
-    assert_eq!(view_name(&state, P0, found), "Probe Found");
-    assert!(spell_objects_available_to_cast(&state, P0).contains(&found));
-    assert_eq!(view_name(&state, P1, found), "Probe Found");
+    assert_eq!(view_name(state, P1, found), "Hidden Card");
+    assert_eq!(view_name(state, P0, found), "Probe Found");
+    assert!(spell_objects_available_to_cast(state, P0).contains(&found));
 }
 
 /// CR 406.3: a card searched out of another player's library and exiled face down is hidden
@@ -621,6 +679,7 @@ fn search_exile_look_follows_the_exiling_permanents_controller() {
 fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
+    fill_libraries(&mut scenario, &[P0, P1]);
     let found = scenario.add_card_to_library_top(P1, "Probe Foreign Found");
     let spell = scenario
         .add_spell_to_hand_from_oracle(
@@ -639,6 +698,18 @@ fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
         .resolve();
     let state = outcome.state();
     assert!(left_library_for_exile(outcome.events(), found));
+    // CR 701.24a: only the searched library is shuffled.
+    assert!(shuffled_library(outcome.events(), P1));
+    assert!(!shuffled_library(outcome.events(), P0));
+    // CR 406.3 + CR 608.2c: the searcher, not the owner, is the player the look is bound to.
+    assert!(state.exile_links.iter().any(|link| link.exiled_id == found
+        && matches!(
+            link.kind,
+            ExileLinkKind::HideawayLookable {
+                grant: LookGrant::Player { player: P0 },
+                ..
+            }
+        )));
     assert_eq!(view_name(state, P0, found), "Probe Foreign Found");
     assert!(spell_objects_available_to_cast(state, P0).contains(&found));
     assert_ne!(view_name(state, P1, found), "Probe Foreign Found");
@@ -646,41 +717,120 @@ fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
     assert!(entries_naming(&entries, found).is_empty(), "{entries:?}");
 }
 
-/// CR 406.3: the Saga's chapter I search result stays face down until chapter II turns it
-/// face up.
-#[test]
-fn saga_search_exile_face_down_stays_hidden_until_chapter_two() {
+/// Resolves The Creation of Avacyn's chapter I search for `found`, with Word of Seizing in P1's
+/// hand and Disenchant in P0's; returns the runner, `found`, the Saga, Word of Seizing and
+/// Disenchant.
+fn avacyn_chapter_one() -> (GameRunner, ObjectId, ObjectId, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
+    fill_libraries(&mut scenario, &[P0, P1]);
     let found = scenario.add_card_to_library_top(P0, "Probe Found");
     let saga = scenario
-        .add_spell_to_hand(P0, "Probe Saga", false)
+        .add_spell_to_hand(P0, "The Creation of Avacyn", false)
         .as_enchantment()
         .with_subtypes(vec!["Saga"])
-        .from_oracle_text(
-            "(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\nI — Search your library for a card, exile it face down, then shuffle.\nII — Turn the exiled card face up. If it's a creature card, you lose life equal to its mana value.\nIII — You may put the exiled card onto the battlefield if it's a creature card. If you don't put it onto the battlefield, put it into its owner's hand.",
-        )
+        .from_oracle_text(AVACYN)
         .id();
+    let seize = add_free_instant(
+        &mut scenario,
+        P1,
+        "Word of Seizing",
+        &["Split second"],
+        WORD_OF_SEIZING,
+    );
+    let disenchant = add_free_instant(
+        &mut scenario,
+        P0,
+        "Disenchant",
+        &[],
+        "Destroy target artifact or enchantment.",
+    );
     let mut runner = scenario.build();
     let before = runner.state().clone();
     let outcome = runner.cast(saga).search_first_legal().resolve();
-    let mut state = outcome.state().clone();
+    let state = outcome.state();
     assert!(left_library_for_exile(outcome.events(), found));
+    // CR 701.24a: the search shuffles the searched library.
+    assert!(shuffled_library(outcome.events(), P0));
     assert!(state.objects[&found].face_down);
-    assert_eq!(view_name(&state, P0, found), "Probe Found");
-    assert_ne!(view_name(&state, P1, found), "Probe Found");
-    let entries = resolve_log_entries(outcome.events(), &before, &state);
+    assert_eq!(view_name(state, P0, found), "Probe Found");
+    assert_ne!(view_name(state, P1, found), "Probe Found");
+    let entries = resolve_log_entries(outcome.events(), &before, state);
     assert!(entries_naming(&entries, found).is_empty(), "{entries:?}");
+    (runner, found, saga, seize, disenchant)
+}
 
-    let chapters: Vec<AbilityDefinition> = state.objects[&saga]
-        .trigger_definitions
-        .iter_unchecked()
-        .filter_map(|trigger| trigger.definition.execute.as_deref().cloned())
-        .collect();
-    let chapter_two = build_resolved_from_def(&chapters[1], saga, P0);
-    resolve_ability_chain(&mut state, &chapter_two, &mut Vec::new(), 0).unwrap();
-    assert!(!state.objects[&found].face_down);
-    assert_eq!(view_name(&state, P1, found), "Probe Found");
+/// CR 406.3: the searcher keeps the look after the Saga that exiled the card leaves the
+/// battlefield.
+#[test]
+fn saga_search_exile_look_survives_the_saga_leaving() {
+    let (mut runner, found, saga, _, disenchant) = avacyn_chapter_one();
+    cast_on(&mut runner, P0, disenchant, saga);
+    let state = runner.state();
+    assert_eq!(state.objects[&saga].zone, Zone::Graveyard);
+    assert_eq!(state.objects[&found].zone, Zone::Exile);
+    assert!(state.objects[&found].face_down);
+    assert_eq!(view_name(state, P0, found), "Probe Found");
+    assert_eq!(view_name(state, P1, found), "Hidden Card");
+}
+
+/// CR 406.3 + CR 613.1b: gaining control of the Saga does not let a player look at the card its
+/// chapter I exiled face down, even after the Saga leaves the battlefield.
+#[test]
+fn saga_search_exile_look_is_not_gained_by_taking_the_saga() {
+    let (mut runner, found, saga, seize, disenchant) = avacyn_chapter_one();
+    cast_on(&mut runner, P1, seize, saga);
+    assert_eq!(runner.state().objects[&saga].controller, P1);
+    cast_on(&mut runner, P0, disenchant, saga);
+    let state = runner.state();
+    assert_eq!(state.objects[&saga].zone, Zone::Graveyard);
+    assert_eq!(state.objects[&found].zone, Zone::Exile);
+    assert!(state.objects[&found].face_down);
+    assert_eq!(view_name(state, P1, found), "Hidden Card");
+    assert_eq!(view_name(state, P0, found), "Probe Found");
+}
+
+/// CR 714.3c + CR 714.2b: the Saga's chapter II, reached through turn flow, turns the card
+/// face up and logs it publicly.
+#[test]
+fn saga_search_exile_face_down_stays_hidden_until_chapter_two() {
+    let (mut runner, found, saga, _, _) = avacyn_chapter_one();
+    let chapter_one_turn = runner.state().turn_number;
+    let mut flipped = None;
+    for _ in 0..64 {
+        assert!(
+            matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+            "{:?}",
+            runner.state().waiting_for
+        );
+        let result = runner.act(GameAction::PassPriority).unwrap();
+        if !runner.state().objects[&found].face_down {
+            flipped = Some(result);
+            break;
+        }
+    }
+    let flipped = flipped.expect("chapter II turns the card face up");
+    let state = runner.state();
+    assert_eq!(state.phase, Phase::PreCombatMain);
+    assert!(state.turn_number > chapter_one_turn);
+    assert_eq!(state.active_player, P0);
+    assert_eq!(
+        state.objects[&saga].counters.get(&CounterType::Lore),
+        Some(&2)
+    );
+    assert_eq!(view_name(state, P1, found), "Probe Found");
+    assert!(
+        flipped.log_entries.iter().any(|entry| {
+            entry.presentation.visibility == LogVisibility::Public
+                && matches!(
+                    entry.segments.as_slice(),
+                    [LogSegment::CardName { object_id, .. }, LogSegment::Text(text)]
+                        if *object_id == found && text == " is turned face up"
+                )
+        }),
+        "{:?}",
+        flipped.log_entries
+    );
 }
 
 /// CR 400.2 + CR 406.3: a search's face-up exile is public.
@@ -731,11 +881,10 @@ fn beseech_chain_keeps_the_card_unnamed() {
     scenario.add_card_to_library_top(P0, "Probe Filler");
     let found = scenario.add_card_to_library_top(P0, "Probe Beseeched");
     let spell = scenario
-        .add_spell_to_hand_from_oracle(
-            P0,
-            "Probe Beseech",
-            false,
-            "Search your library for a card, exile it face down, then shuffle. If this spell was bargained, you may cast the exiled card without paying its mana cost if that spell's mana value is 4 or less. Put the exiled card into your hand if it wasn't cast this way.",
+        .add_spell_to_hand(P0, "Probe Beseech", false)
+        .from_oracle_text_with_keywords(
+            &["Bargain"],
+            "Bargain (You may sacrifice an artifact, enchantment, or token as you cast this spell.)\nSearch your library for a card, exile it face down, then shuffle. If this spell was bargained, you may cast the exiled card without paying its mana cost if that spell's mana value is 4 or less. Put the exiled card into your hand if it wasn't cast this way.",
         )
         .id();
     let mut runner = scenario.build();
@@ -748,6 +897,8 @@ fn beseech_chain_keeps_the_card_unnamed() {
         .unwrap();
 
     assert!(move_position(&chosen, found, Zone::Library, Zone::Exile).is_some());
+    // CR 701.24a: the search shuffles the searched library.
+    assert!(shuffled_library(&chosen.events, P0));
     assert!(move_position(&chosen, found, Zone::Exile, Zone::Hand).is_some());
     assert_eq!(runner.state().objects[&found].zone, Zone::Hand);
     let entries = &chosen.log_entries;

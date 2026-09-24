@@ -5316,7 +5316,11 @@ pub(super) fn apply_clause_continuation(
             ) else {
                 return;
             };
-            append_conceal_sub_ability(&mut defs[bound_index]);
+            // CR 406.3 + CR 608.2c: the searcher, the ability's controller, keeps the look.
+            append_conceal_sub_ability(
+                &mut defs[bound_index],
+                PermissionGrantee::AbilityController,
+            );
         }
         ContinuationAst::PutChoiceRemainderOnBottom => {
             let Some(previous) = defs.last_mut() else {
@@ -5858,11 +5862,8 @@ pub(super) fn apply_clause_continuation(
                 }
                 _ => unreachable!(),
             }
-            // CR 608.2c: chain the conceal continuation onto the Dig. The
-            // `DigChoice` resolution binds the chosen (exiled) card onto this
-            // sub-ability's `ParentTarget`; `HideawayConceal` then flips it face
-            // down (CR 406.3) and links it to the source (CR 607.2a / CR 702.75a).
-            append_conceal_sub_ability(previous);
+            // CR 406.3 + CR 608.2c: the looking player, the ability's controller, keeps the look.
+            append_conceal_sub_ability(previous, PermissionGrantee::AbilityController);
             // CR 122.1: a "... face down with a <type> counter on it" rider (The
             // Dragon-Kami Reborn) places the counters on the CHOSEN dug card.
             // Append after the conceal so each `PutCounter { ParentTarget }`
@@ -5888,18 +5889,14 @@ pub(super) fn apply_clause_continuation(
     }
 }
 
-/// CR 702.75a + CR 608.2c: Append the Hideaway conceal continuation to the
-/// deepest point of `dig`'s sub-ability chain. Mirrors `database/hideaway.rs`:
-/// the chained `HideawayConceal { target: ParentTarget }` flips the just-exiled
-/// card face down (CR 406.3) and links it to the source. Appended at the
-/// deepest sub so it never clobbers an existing continuation (e.g. a trailing
-/// "put the rest on the bottom" patch lives on the Dig itself, not as a sub).
-fn append_conceal_sub_ability(dig: &mut AbilityDefinition) {
+/// CR 406.3 + CR 608.2c: append at the deepest sub a conceal that flips the just-exiled card
+/// face down and binds its look to `grantee`.
+fn append_conceal_sub_ability(dig: &mut AbilityDefinition, grantee: PermissionGrantee) {
     let conceal = Box::new(AbilityDefinition::new(
         AbilityKind::Spell,
         Effect::HideawayConceal {
             target: TargetFilter::ParentTarget,
-            grantee: None,
+            grantee: Some(grantee),
         },
     ));
     let mut cursor = dig;
@@ -11839,7 +11836,13 @@ mod tests {
             .as_ref()
             .expect("conceal sub-ability must be chained onto the Dig");
         assert!(
-            matches!(&*conceal.effect, Effect::HideawayConceal { .. }),
+            matches!(
+                &*conceal.effect,
+                Effect::HideawayConceal {
+                    target: TargetFilter::ParentTarget,
+                    grantee: Some(PermissionGrantee::AbilityController),
+                }
+            ),
             "first sub must be the conceal, got {:?}",
             conceal.effect
         );
