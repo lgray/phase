@@ -2498,7 +2498,8 @@ fn concealed_move_visible_to_viewer(
         Zone::Exile => obj.is_some_and(|obj| {
             face_down_exile_visible_to_viewer(state, object_id, obj, can_view_private_for_player)
         }),
-        // CR 401.2: Players can't look at or change the order of cards in a library.
+        // CR 401.2 + CR 708.5: no player may look at a library card, or at a face-down card
+        // in a graveyard or command zone.
         Zone::Library | Zone::Graveyard | Zone::Command => false,
     }
 }
