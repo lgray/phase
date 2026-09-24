@@ -18,8 +18,8 @@ use crate::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 #[cfg(test)]
 use std::sync::Arc;
 
-/// CR 611.2a + CR 108.3: the player `grantee` binds to for `obj_id`; `ObjectOwner`
-/// binds each object's owner, the others one player for the whole resolution.
+/// CR 608.2h + CR 108.3: the player `grantee` binds to for `obj_id`, fixed once at resolution;
+/// `ObjectOwner` binds each object's owner, the others one player for the whole resolution.
 pub(crate) fn resolve_grantee(
     state: &GameState,
     ability: &ResolvedAbility,
