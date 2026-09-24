@@ -2102,13 +2102,8 @@ fn evaluate_condition_inner(
                     expr,
                     controller,
                     QuantityContext {
-                        entering: None,
-                        source: source_id,
-                        trigger_source: None,
                         recipient: context.recipient,
-                        scoped_player: None,
-                        damage_source: None,
-                        event_amount: None,
+                        ..QuantityContext::new(source_id)
                     },
                 )
             };

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use rand_chacha::ChaCha20Rng;
@@ -2540,6 +2541,7 @@ fn collect_matching_triggers_inner(
             .map(|(i, (kind, def))| (printed_trigger_count + i, None, def, Some(*kind))),
     );
     for (trig_idx, definition_ref, trig_def, granted_keyword_kind) in all_triggers {
+        let source_context = source_context_for_definition(&source_context, trig_def);
         // Synthesized granted-keyword companion triggers carry a keyword-keyed
         // `MayTriggerOrigin` — the synthetic `trig_idx` points past
         // `trigger_definitions` and must not be used as a `Printed` index.
@@ -3652,6 +3654,7 @@ fn inline_tap_mana_trigger_abilities(
         for active in super::functioning_abilities::active_trigger_definitions(state, object) {
             let definition_ref = active.definition_ref.clone();
             let trigger_definition = active.definition;
+            let source_context = source_context_for_definition(&source_context, trigger_definition);
             if !matches!(
                 trigger_definition.mode,
                 TriggerMode::TapsForMana | TriggerMode::ManaAbilityProduced
@@ -4242,6 +4245,7 @@ fn collect_latched_batched_zone_triggers(
             let Some(source_context) = latched.source_context_at(observation_time) else {
                 continue;
             };
+            let stamped = source_context_for_definition(source_context, &latched.definition);
             let (_, suppressors) = match observation_time {
                 TriggerObservationTime::ImmediatelyBefore => group
                     .immediately_before_latches()
@@ -4254,15 +4258,15 @@ fn collect_latched_batched_zone_triggers(
             if event_is_suppressed_by_static_triggers_cached(
                 state,
                 event,
-                Some(source_context),
+                Some(&*stamped),
                 &suppressors,
-            ) || !matcher(event, &latched.definition, source_context, state)
+            ) || !matcher(event, &latched.definition, &stamped, state)
                 || !check_trigger_constraint_with_ref(
                     state,
                     &latched.definition,
                     Some(&latched.definition_ref),
-                    Some(source_context),
-                    source_context.lki.controller,
+                    Some(&*stamped),
+                    stamped.lki.controller,
                     Some(event),
                 )
                 || !latched
@@ -4273,8 +4277,8 @@ fn collect_latched_batched_zone_triggers(
                         check_trigger_condition_with_source(
                             state,
                             condition,
-                            source_context.lki.controller,
-                            Some(source_context),
+                            stamped.lki.controller,
+                            Some(&*stamped),
                             Some(event),
                         )
                     })
@@ -4282,7 +4286,7 @@ fn collect_latched_batched_zone_triggers(
                 continue;
             }
             if let Some(contextual_event) =
-                contextual_batched_trigger_event(state, event, &latched.definition, source_context)
+                contextual_batched_trigger_event(state, event, &latched.definition, &stamped)
             {
                 admitted.push((source_context, contextual_event));
             }
@@ -10910,6 +10914,7 @@ pub fn check_state_triggers(state: &mut GameState) {
                 continue;
             };
             let source_context = trigger_source_context_for_latch(state, source);
+            let source_context = source_context_for_definition(&source_context, trigger);
 
             // Evaluate the condition and build the pending ability from this
             // same observation; a state-trigger source must not later rebind.
@@ -16081,6 +16086,20 @@ fn ability_condition_refs_cost_paid_object(condition: &AbilityCondition) -> bool
     }
 }
 
+/// CR 201.5a + CR 603.2 + CR 603.4: the source context a trigger definition is
+/// matched, checked and instantiated with carries exactly that definition's granter stamp.
+pub(super) fn source_context_for_definition<'a>(
+    source_context: &'a TriggerSourceContext,
+    trig_def: &TriggerDefinition,
+) -> Cow<'a, TriggerSourceContext> {
+    if source_context.granting_object == trig_def.granting_object {
+        return Cow::Borrowed(source_context);
+    }
+    let mut stamped = source_context.clone();
+    stamped.granting_object = trig_def.granting_object;
+    Cow::Owned(stamped)
+}
+
 /// Builds a triggered ability exclusively from the source observation that
 /// matched it. The only live reads below are documented game-global event
 /// channels (`announced_source_x` and `active_player`), never a rebind of the
@@ -16091,6 +16110,8 @@ pub(super) fn build_triggered_ability_from_context(
     source_context: &TriggerSourceContext,
     definition_ref: Option<&TriggerDefinitionRef>,
 ) -> ResolvedAbility {
+    let source_context = source_context_for_definition(source_context, trig_def);
+    let source_context: &TriggerSourceContext = &source_context;
     let source_id = source_context.identity.reference.object_id;
     let controller = source_context.lki.controller;
     if let Some(definition_ref) = definition_ref {

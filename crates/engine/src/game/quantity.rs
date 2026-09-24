@@ -78,9 +78,38 @@ pub struct QuantityContext {
     /// other context, where `EventContextAmount` keeps its trigger/effect
     /// cascade.
     pub event_amount: Option<i32>,
+    /// CR 201.5a: the granter stamped on the definition this quantity is read for,
+    /// when no resolving ability is in scope to carry it.
+    pub granting_object: Option<ObjectIncarnationRef>,
 }
 
 impl QuantityContext {
+    /// A context naming only its source; every other binding is absent.
+    pub fn new(source: ObjectId) -> Self {
+        Self {
+            entering: None,
+            source,
+            trigger_source: None,
+            recipient: None,
+            scoped_player: None,
+            damage_source: None,
+            event_amount: None,
+            granting_object: None,
+        }
+    }
+
+    /// CR 201.5a + CR 603.4: a context read for a triggered source carries that
+    /// source's definition granter stamp; with no source it names `ObjectId(0)`.
+    pub fn for_trigger_source(trigger_source: Option<&TriggerSourceContext>) -> Self {
+        Self {
+            trigger_source: trigger_source.cloned(),
+            granting_object: trigger_source.and_then(|source| source.granting_object),
+            ..Self::new(
+                trigger_source.map_or(ObjectId(0), |source| source.identity.reference.object_id),
+            )
+        }
+    }
+
     /// Object to resolve "self"-scoped spell refs (e.g., colors spent to cast)
     /// against: the entering object when in ETB scope, else the static source.
     fn self_object(&self) -> ObjectId {
@@ -633,13 +662,8 @@ pub(crate) fn source_defending_player_for_context_for_test(
     source_defending_player_for_context(
         state,
         &QuantityContext {
-            entering: None,
-            source,
             trigger_source: trigger_source.cloned(),
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
+            ..QuantityContext::new(source)
         },
     )
 }
@@ -671,20 +695,7 @@ pub fn resolve_quantity(
     controller: PlayerId,
     source_id: ObjectId,
 ) -> i32 {
-    resolve_quantity_with_ctx(
-        state,
-        expr,
-        controller,
-        QuantityContext {
-            entering: None,
-            source: source_id,
-            trigger_source: None,
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
-        },
-    )
+    resolve_quantity_with_ctx(state, expr, controller, QuantityContext::new(source_id))
 }
 
 /// Resolves a quantity only when its value is available from the present source
@@ -1603,13 +1614,8 @@ pub fn resolve_quantity_with_recipient(
         expr,
         controller,
         QuantityContext {
-            entering: None,
-            source: source_id,
-            trigger_source: None,
             recipient: Some(recipient_id),
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
+            ..QuantityContext::new(source_id)
         },
     )
 }
@@ -1986,13 +1992,9 @@ pub(crate) fn quantity_expr_missing_resolution_only_referent(
         ability: &ResolvedAbility,
     ) -> bool {
         let ctx = QuantityContext {
-            entering: None,
-            source: ability.source_id,
             trigger_source: ability.trigger_source.clone(),
-            recipient: None,
             scoped_player: ability.scoped_player,
-            damage_source: None,
-            event_amount: None,
+            ..QuantityContext::new(ability.source_id)
         };
         !resolution_only_scope_referent_present(state, scope, ctx, &ability.targets, ability)
     }
@@ -3243,15 +3245,8 @@ pub(crate) fn resolve_quantity_for_trigger_check(
     let scoped_player =
         resolution_event.and_then(|e| crate::game::targeting::extract_player_from_event(e, state));
     let ctx = QuantityContext {
-        entering: None,
-        source: source_context
-            .map(|source| source.identity.reference.object_id)
-            .unwrap_or(ObjectId(0)),
-        trigger_source: source_context.cloned(),
-        recipient: None,
         scoped_player,
-        damage_source: None,
-        event_amount: None,
+        ..QuantityContext::for_trigger_source(source_context)
     };
 
     // Fast path: when current_trigger_event is already set (resolution-time
@@ -3342,15 +3337,8 @@ pub(crate) fn resolve_player_scope_for_trigger_check(
     }
 
     let ctx = QuantityContext {
-        entering: None,
-        source: source_context
-            .map(|source| source.identity.reference.object_id)
-            .unwrap_or(ObjectId(0)),
-        trigger_source: source_context.cloned(),
-        recipient: None,
         scoped_player,
-        damage_source: None,
-        event_amount: None,
+        ..QuantityContext::for_trigger_source(source_context)
     };
 
     match event {
@@ -3649,13 +3637,9 @@ pub fn resolve_quantity_with_targets(
             qty,
             controller,
             QuantityContext {
-                entering: None,
-                source: ability.source_id,
                 trigger_source: ability.trigger_source.clone(),
-                recipient: None,
                 scoped_player: ability.scoped_player,
-                damage_source: None,
-                event_amount: None,
+                ..QuantityContext::new(ability.source_id)
             },
             &ability.targets,
             ability.chosen_x,
@@ -3703,13 +3687,10 @@ pub(crate) fn resolve_quantity_with_targets_and_recipient(
             qty,
             controller,
             QuantityContext {
-                entering: None,
-                source: ability.source_id,
                 trigger_source: ability.trigger_source.clone(),
                 recipient: Some(recipient_id),
                 scoped_player: ability.scoped_player,
-                damage_source: None,
-                event_amount: None,
+                ..QuantityContext::new(ability.source_id)
             },
             &ability.targets,
             ability.chosen_x,
@@ -3741,13 +3722,10 @@ pub(crate) fn resolve_quantity_with_targets_and_damage_source(
             qty,
             controller,
             QuantityContext {
-                entering: None,
-                source: ability.source_id,
                 trigger_source: ability.trigger_source.clone(),
-                recipient: None,
                 scoped_player: ability.scoped_player,
                 damage_source: Some(damage_source),
-                event_amount: None,
+                ..QuantityContext::new(ability.source_id)
             },
             &ability.targets,
             ability.chosen_x,
@@ -3777,15 +3755,7 @@ pub fn resolve_quantity_with_targets_slice(
             state,
             qty,
             controller,
-            QuantityContext {
-                entering: None,
-                source: source_id,
-                trigger_source: None,
-                recipient: None,
-                scoped_player: None,
-                damage_source: None,
-                event_amount: None,
-            },
+            QuantityContext::new(source_id),
             targets,
             None,
             None,
@@ -3807,14 +3777,16 @@ pub fn resolve_quantity_with_targets_slice(
 /// This is the no-target case of [`resolve_quantity_scoped_with_targets`]: it
 /// delegates with an empty `targets` slice so there is a single authoritative
 /// scoped resolver. Callers with no ability target(s) (the condition/restriction
-/// paths in `restrictions.rs`) use this wrapper.
+/// paths in `restrictions.rs`) use this wrapper, passing the granter stamped on
+/// the definition they evaluate (CR 201.5a).
 pub(crate) fn resolve_quantity_scoped(
     state: &GameState,
     expr: &QuantityExpr,
     source_id: ObjectId,
     scope_player: PlayerId,
+    granting_object: Option<ObjectIncarnationRef>,
 ) -> i32 {
-    resolve_quantity_scoped_with_targets(state, expr, source_id, scope_player, &[])
+    resolve_quantity_scoped_in(state, expr, source_id, scope_player, &[], granting_object)
 }
 
 /// Resolve a per-player `DamageEachPlayer` quantity that also references the
@@ -3846,6 +3818,17 @@ pub(crate) fn resolve_quantity_scoped_with_targets(
     scope_player: PlayerId,
     targets: &[TargetRef],
 ) -> i32 {
+    resolve_quantity_scoped_in(state, expr, source_id, scope_player, targets, None)
+}
+
+fn resolve_quantity_scoped_in(
+    state: &GameState,
+    expr: &QuantityExpr,
+    source_id: ObjectId,
+    scope_player: PlayerId,
+    targets: &[TargetRef],
+    granting_object: Option<ObjectIncarnationRef>,
+) -> i32 {
     // CR 109.5: "you"/"your" in the quantity remain bound to the ability's
     // controller, not to the current DamageEachPlayer recipient.
     let ability_controller = state
@@ -3861,13 +3844,9 @@ pub(crate) fn resolve_quantity_scoped_with_targets(
             qty,
             ability_controller,
             QuantityContext {
-                entering: None,
-                source: source_id,
-                trigger_source: None,
-                recipient: None,
                 scoped_player: Some(scope_player),
-                damage_source: None,
-                event_amount: None,
+                granting_object,
+                ..QuantityContext::new(source_id)
             },
             targets,
             None,
@@ -3876,7 +3855,14 @@ pub(crate) fn resolve_quantity_scoped_with_targets(
         // Recurse into SELF so `targets` reach a `Target`-scoped leaf nested
         // inside a composite (e.g. the `right` operand of `Difference`).
         other => fold_compose(other, |inner| {
-            resolve_quantity_scoped_with_targets(state, inner, source_id, scope_player, targets)
+            resolve_quantity_scoped_in(
+                state,
+                inner,
+                source_id,
+                scope_player,
+                targets,
+                granting_object,
+            )
         }),
     }
 }
@@ -4434,7 +4420,7 @@ fn resolve_ref(
             // CR 120.3: DamageEachPlayer binds ControllerRef::ScopedPlayer to
             // the current recipient while ControllerRef::You stays on `controller`.
             fc.scoped_iteration_player = ctx.scoped_player;
-            fc
+            fc.with_granting_object(ctx.granting_object)
         }
     };
     filter_ctx.recipient_id = ctx.recipient;
@@ -4988,7 +4974,8 @@ fn resolve_ref(
                     // any `controller: You` clause inside `filter` read `p`.
                     let pctx = match ability {
                         Some(a) => FilterContext::from_ability_with_controller(a, p.id),
-                        None => FilterContext::from_source_with_controller(source_id, p.id),
+                        None => FilterContext::from_source_with_controller(source_id, p.id)
+                            .with_granting_object(ctx.granting_object),
                     };
                     usize_to_i32_saturating(
                         zone_ids
@@ -7245,11 +7232,14 @@ fn resolve_counters_on_live_or_lki_scope(
         .unwrap_or(0)
 }
 
-/// CR 201.5a: the incarnation stamped on the resolving ability's definition.
-fn granter_scope(ability: Option<&ResolvedAbility>) -> Option<ObjectScope> {
-    ability
-        .and_then(|ability| ability.context.granting_object)
-        .map(|object| ObjectScope::SpecificObject { object })
+/// CR 201.5a: the incarnation stamped on the definition read — the resolving
+/// ability's when one is in scope, else the context's.
+fn granter_scope(ability: Option<&ResolvedAbility>, ctx: &QuantityContext) -> Option<ObjectScope> {
+    match ability {
+        Some(ability) => ability.context.granting_object,
+        None => ctx.granting_object,
+    }
+    .map(|object| ObjectScope::SpecificObject { object })
 }
 
 fn resolve_counters_on_scope(
@@ -7370,7 +7360,7 @@ fn resolve_counters_on_scope(
         // CR 201.5a: the stamped granter; unbound, the symbol reads the ability's source (CR 113.7).
         ObjectScope::GrantingObject => resolve_counters_on_scope(
             state,
-            granter_scope(ability).unwrap_or(ObjectScope::Source),
+            granter_scope(ability, &ctx).unwrap_or(ObjectScope::Source),
             ctx,
             targets,
             ability,
@@ -7942,7 +7932,7 @@ where
         // characteristic readers as `Unhandled` until then.
         ObjectScope::ChainRootTarget => 0,
         // CR 201.5a: the stamped granter's P/T; unbound, no referent.
-        ObjectScope::GrantingObject => granter_scope(ability).map_or(0, |scope| {
+        ObjectScope::GrantingObject => granter_scope(ability, &ctx).map_or(0, |scope| {
             resolve_object_pt(
                 state,
                 scope,
@@ -8291,7 +8281,7 @@ fn resolve_object_mana_value(
         // `ability.context.chain_root_targets`.
         ObjectScope::ChainRootTarget => 0,
         // CR 201.5a: the stamped granter's mana value; unbound, no referent.
-        ObjectScope::GrantingObject => granter_scope(ability).map_or(0, |scope| {
+        ObjectScope::GrantingObject => granter_scope(ability, &ctx).map_or(0, |scope| {
             resolve_object_mana_value(state, scope, ctx, targets, ability)
         }),
         // CR 400.7 + CR 608.2h: the bound incarnation's mana value, LKI only while resolving.
@@ -8610,13 +8600,8 @@ pub(crate) fn defending_player_for_quantity_context_for_test(
     defending_player_for_quantity_context(
         state,
         QuantityContext {
-            entering: None,
-            source,
             trigger_source: trigger_source.cloned(),
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
+            ..QuantityContext::new(source)
         },
     )
 }
@@ -11347,12 +11332,7 @@ mod tests {
                 PlayerId(0),
                 QuantityContext {
                     entering: Some(entering),
-                    source: static_source,
-                    trigger_source: None,
-                    recipient: None,
-                    scoped_player: None,
-                    damage_source: None,
-                    event_amount: None,
+                    ..QuantityContext::new(static_source)
                 },
             ),
             1
@@ -18547,15 +18527,7 @@ mod tests {
             caster: PlayerId(0),
             turn_journal_index: 1,
         });
-        let ctx = QuantityContext {
-            entering: None,
-            source,
-            trigger_source: None,
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
-        };
+        let ctx = QuantityContext::new(source);
         assert_eq!(
             resolve_ref(
                 &state,
@@ -18651,15 +18623,7 @@ mod tests {
                 &state,
                 &qty,
                 PlayerId(1),
-                QuantityContext {
-                    entering: None,
-                    source,
-                    trigger_source: None,
-                    recipient: None,
-                    scoped_player: None,
-                    damage_source: None,
-                    event_amount: None,
-                },
+                QuantityContext::new(source),
                 &[],
                 None,
                 Some(&ability),
@@ -19017,13 +18981,8 @@ mod tests {
                 &expr,
                 PlayerId(0),
                 QuantityContext {
-                    entering: None,
-                    source: ObjectId(1),
-                    trigger_source: None,
-                    recipient: None,
                     scoped_player: Some(scoped_player),
-                    damage_source: None,
-                    event_amount: None,
+                    ..QuantityContext::new(ObjectId(1))
                 },
             ),
             9,
@@ -21822,15 +21781,7 @@ mod tests {
             "fixture reach-guard: the second departure must overwrite the id-keyed LKI cache with the later incarnation's value"
         );
 
-        let ctx = QuantityContext {
-            entering: None,
-            source: ObjectId(99),
-            trigger_source: None,
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
-        };
+        let ctx = QuantityContext::new(ObjectId(99));
         let got =
             resolve_object_mana_value(&state, ObjectScope::AmassedArmy, ctx, &[], Some(&ability));
 
@@ -21890,15 +21841,7 @@ mod tests {
         );
         ability.set_amassed_army_object_recursive(snapshot);
 
-        let ctx = QuantityContext {
-            entering: None,
-            source: ObjectId(99),
-            trigger_source: None,
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
-        };
+        let ctx = QuantityContext::new(ObjectId(99));
         let got =
             resolve_object_mana_value(&state, ObjectScope::AmassedArmy, ctx, &[], Some(&ability));
 
@@ -21953,15 +21896,7 @@ mod tests {
     }
 
     fn chain_root_ctx(spell: ObjectId) -> QuantityContext {
-        QuantityContext {
-            entering: None,
-            source: spell,
-            trigger_source: None,
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
-        }
+        QuantityContext::new(spell)
     }
 
     /// P1a — CR 702.12b + CR 608.2h: an indestructible chain-root target that was
@@ -22752,15 +22687,7 @@ mod tests {
             dealer,
             PlayerId(0),
         );
-        let ctx = QuantityContext {
-            entering: None,
-            source: dealer,
-            trigger_source: None,
-            recipient: None,
-            scoped_player: None,
-            damage_source: None,
-            event_amount: None,
-        };
+        let ctx = QuantityContext::new(dealer);
 
         assert!(
             damage_source_controller_matches(

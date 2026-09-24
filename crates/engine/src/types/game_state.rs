@@ -583,6 +583,9 @@ pub struct TriggerSourceContext {
     pub additional_cost_payments: Vec<AdditionalCostInstancePayment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast_cost_paid_object: Option<CostPaidObjectSnapshot>,
+    /// CR 201.5a: the granter stamped on the trigger definition this context was handed with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granting_object: Option<ObjectIncarnationRef>,
 }
 
 impl std::fmt::Debug for TriggerSourceContext {
@@ -659,8 +662,11 @@ impl std::fmt::Debug for TriggerSourceContext {
                 &self.additional_cost_payment_count,
             )
             .field("additional_cost_payments", &self.additional_cost_payments)
-            .field("cast_cost_paid_object", &self.cast_cost_paid_object)
-            .finish()
+            .field("cast_cost_paid_object", &self.cast_cost_paid_object);
+        if self.granting_object.is_some() {
+            debug.field("granting_object", &self.granting_object);
+        }
+        debug.finish()
     }
 }
 

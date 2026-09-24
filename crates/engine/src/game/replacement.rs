@@ -6126,13 +6126,9 @@ fn replacement_condition_quantity_ctx(
         _ => None,
     };
     crate::game::quantity::QuantityContext {
-        entering: None,
-        source: source_id,
-        trigger_source: None,
-        recipient: None,
         scoped_player,
-        damage_source: None,
         event_amount,
+        ..crate::game::quantity::QuantityContext::new(source_id)
     }
 }
 
@@ -8560,12 +8556,7 @@ fn extract_etb_counters_from_effect(
             };
             let ctx = crate::game::quantity::QuantityContext {
                 entering,
-                source: source_id,
-                trigger_source: None,
-                recipient: None,
-                scoped_player: None,
-                damage_source: None,
-                event_amount: None,
+                ..crate::game::quantity::QuantityContext::new(source_id)
             };
             let n = match count {
                 QuantityExpr::Fixed { value } => (*value).max(0) as u32,
@@ -8594,12 +8585,7 @@ fn extract_etb_counters_from_effect(
                     .unwrap_or(PlayerId(0));
                 let ctx = crate::game::quantity::QuantityContext {
                     entering: event.affected_object_id(),
-                    source: source_id,
-                    trigger_source: None,
-                    recipient: None,
-                    scoped_player: None,
-                    damage_source: None,
-                    event_amount: None,
+                    ..crate::game::quantity::QuantityContext::new(source_id)
                 };
                 let n =
                     crate::game::quantity::resolve_quantity_with_ctx(state, count, controller, ctx)

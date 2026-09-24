@@ -4505,6 +4505,12 @@ fn union_over_prior_object_candidates(
     legal_targets
 }
 
+/// CR 201.5a + CR 601.2c: a slot is enumerated with its ability in scope when the
+/// filter needs it or the ability carries a granter stamp its filters read.
+fn slot_needs_ability_context(filter: &TargetFilter, ability: &ResolvedAbility) -> bool {
+    target_filter_needs_ability_context(filter) || ability.context.granting_object.is_some()
+}
+
 fn target_filter_needs_ability_context(filter: &TargetFilter) -> bool {
     target_filter_contains_chosen_x_ref(filter)
         || target_filter_contains_quantity_scope(filter, ObjectScope::AmassedArmy)
@@ -6488,7 +6494,7 @@ fn legal_targets_for_ability_filter_uncapped(
     }
     let filter = slot.filter();
 
-    let needs_ability_context = target_filter_needs_ability_context(filter);
+    let needs_ability_context = slot_needs_ability_context(filter, ability);
     let relative_kind = relative_controller_kind(filter);
     if relative_kind.is_none() {
         // CR 601.2c + CR 603.3d: at slot-build time no selection has been made
@@ -7476,7 +7482,7 @@ fn legal_targets_for_selected_slot(
             crate::game::perf_counters::record_prior_target_binding_selection();
         }
         let enumeration_ability = bound.as_ref().unwrap_or(ability);
-        if bound.is_some() || target_filter_needs_ability_context(&enumeration_filter) {
+        if bound.is_some() || slot_needs_ability_context(&enumeration_filter, ability) {
             if controller == ability.controller {
                 targeting::find_legal_targets_for_ability(
                     state,

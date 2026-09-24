@@ -2799,6 +2799,7 @@ mod granter_stamp {
         runner: GameRunner,
         host: ObjectId,
         granters: Vec<ObjectId>,
+        other: Option<ObjectId>,
     }
 
     fn relayer(state: &mut GameState) {
@@ -2809,7 +2810,29 @@ mod granter_stamp {
     /// P0's 2/2 host with one +1/+1 counter, equipped by one "Foo Bar" (MV 5) per
     /// entry of `granter_counters` granting `body`; `other` adds a MV-2 artifact.
     fn board_with(body: &str, granter_counters: &[u32], other: bool) -> Board {
-        let text = format!("Equipped creature has \"{body}\"\nEquip {{1}}");
+        board_full(body, granter_counters, other.then_some(""), "")
+    }
+
+    /// `board_with`, where `other` is the other artifact's Oracle text and
+    /// `granter_extra` adds lines to Foo Bar's; P1 controls a 2/2 "Victim".
+    fn board_full(
+        body: &str,
+        granter_counters: &[u32],
+        other: Option<&str>,
+        granter_extra: &str,
+    ) -> Board {
+        board_built(body, granter_counters, other, granter_extra, |_| {})
+    }
+
+    /// `board_full`, where `add` places further objects before the build.
+    fn board_built(
+        body: &str,
+        granter_counters: &[u32],
+        other: Option<&str>,
+        granter_extra: &str,
+        add: impl FnOnce(&mut GameScenario),
+    ) -> Board {
+        let text = format!("Equipped creature has \"{body}\"\n{granter_extra}Equip {{1}}");
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);
         let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
@@ -2826,11 +2849,14 @@ mod granter_stamp {
             })
             .collect();
         scenario.with_library_top(P0, &["L1", "L2"]);
-        if other {
+        let other = other.map(|text| {
             scenario
-                .add_artifact_from_oracle(P0, "Other", "")
-                .with_mana_cost(ManaCost::generic(2));
-        }
+                .add_artifact_from_oracle(P0, "Other", text)
+                .with_mana_cost(ManaCost::generic(2))
+                .id()
+        });
+        scenario.add_creature(engine::game::scenario::P1, "Victim", 2, 2);
+        add(&mut scenario);
         let mut runner = scenario.build();
         let st = runner.state_mut();
         st.objects
@@ -2846,6 +2872,7 @@ mod granter_stamp {
             runner,
             host,
             granters,
+            other,
         }
     }
 
@@ -3161,5 +3188,301 @@ mod granter_stamp {
         assert!(!matches(&state, fb, &stamped));
         assert!(targets(&state, &stamped).is_empty());
         assert_eq!(read(&state, &counters, &stamped), 3);
+    }
+
+    fn object_named(b: &Board, name: &str) -> ObjectId {
+        let st = b.runner.state();
+        *st.battlefield
+            .iter()
+            .find(|id| st.objects[id].name == name)
+            .unwrap()
+    }
+
+    fn try_activate_last(b: &mut Board) -> bool {
+        let index = last_ability(b);
+        try_activate(b, index)
+    }
+
+    fn try_activate(b: &mut Board, index: usize) -> bool {
+        b.runner
+            .act(GameAction::ActivateAbility {
+                source_id: b.host,
+                ability_index: index,
+            })
+            .is_ok()
+    }
+
+    /// CR 601.2c via CR 602.2b: a target slot's threshold reads the announcing ability's granter.
+    #[test]
+    fn target_slot_threshold_reads_the_granter() {
+        let mut b = board(
+            "{T}: Destroy target creature with power less than the number of +1/+1 counters on Foo Bar.",
+            false,
+        );
+        let victim = object_named(&b, "Victim");
+        assert!(try_activate_last(&mut b));
+        if matches!(
+            b.runner.state().waiting_for,
+            engine::types::game_state::WaitingFor::TargetSelection { .. }
+        ) {
+            b.runner
+                .act(GameAction::SelectTargets {
+                    targets: vec![TargetRef::Object(victim)],
+                })
+                .unwrap();
+        }
+        b.runner.advance_until_stack_empty();
+        assert_eq!(b.runner.state().objects[&victim].zone, Zone::Graveyard);
+        assert_eq!(b.runner.state().objects[&b.host].zone, Zone::Battlefield);
+    }
+
+    /// CR 602.5: an activation restriction reads the activated ability's granter.
+    #[test]
+    fn activation_restriction_reads_the_granter() {
+        for (other, allowed) in [(false, false), (true, true)] {
+            let mut b = board(
+                "{T}: Draw a card. Activate only if you control an artifact other than Foo Bar.",
+                other,
+            );
+            assert_eq!(try_activate_last(&mut b), allowed, "other={other}");
+            b.runner.advance_until_stack_empty();
+            assert_eq!(hand(&b), usize::from(allowed), "other={other}");
+        }
+    }
+
+    /// The index of the host's ability stamped by `granter`.
+    fn ability_for_granter(b: &Board, granter: ObjectId) -> usize {
+        let st = b.runner.state();
+        let stamp = Some(ObjectIncarnationRef::from_object(&st.objects[&granter]));
+        st.objects[&b.host]
+            .abilities
+            .iter()
+            .position(|a| a.granting_object == stamp)
+            .unwrap()
+    }
+
+    const THRESHOLD_RESTRICTION: &str = "{T}: Draw a card. Activate only if you control an artifact with mana value less than the number of +1/+1 counters on Foo Bar.";
+
+    /// CR 602.5: a threshold inside an activation restriction's filter reads the granter.
+    #[test]
+    fn activation_restriction_threshold_reads_the_granter() {
+        for (other, allowed) in [(true, true), (false, false)] {
+            let mut b = board(THRESHOLD_RESTRICTION, other);
+            assert_eq!(try_activate_last(&mut b), allowed, "other={other}");
+        }
+        // CR 201.5a + CR 602.5c: each acquired copy reads the granter it was acquired from.
+        for (granter, allowed) in [(0, true), (1, false)] {
+            let mut b = board_with(THRESHOLD_RESTRICTION, &[3, 1], true);
+            let index = ability_for_granter(&b, b.granters[granter]);
+            assert_eq!(try_activate(&mut b, index), allowed, "granter={granter}");
+        }
+    }
+
+    const TAP: &str = "{T}: You gain 1 life.\n";
+    const TAPPED_EXCEPT: &str = "Whenever another artifact other than Foo Bar you control becomes tapped, put a +1/+1 counter on this creature.";
+
+    /// CR 603.2: a granted trigger's event filter excludes its granter.
+    #[test]
+    fn trigger_event_filter_excludes_the_granter() {
+        for (tapper, counters) in [("Foo Bar", 1), ("Other", 2)] {
+            let mut b = board_full(TAPPED_EXCEPT, &[3], Some(TAP), TAP);
+            activate_named(&mut b, tapper, |e| matches!(e, Effect::GainLife { .. }));
+            b.runner.advance_until_stack_empty();
+            assert_eq!(p1p1(&b, b.host), counters, "{tapper}");
+        }
+        // CR 201.5a: each granted copy excludes only its own granter.
+        for granter in [0, 1] {
+            let mut b = board_full(TAPPED_EXCEPT, &[3, 1], Some(TAP), TAP);
+            let tapper = b.granters[granter];
+            activate_tapper(&mut b, tapper, |e| matches!(e, Effect::GainLife { .. }));
+            b.runner.advance_until_stack_empty();
+            assert_eq!(p1p1(&b, b.host), 2, "granter={granter}");
+        }
+    }
+
+    const ATTACK_IF: &str =
+        "Whenever this creature attacks, if you control an artifact other than Foo Bar, draw a card.";
+
+    /// Declares the host as an attacker and reports whether its trigger reached the stack.
+    fn declare_attack(b: &mut Board) -> bool {
+        for _ in 0..8 {
+            if matches!(
+                b.runner.state().waiting_for,
+                engine::types::game_state::WaitingFor::DeclareAttackers { .. }
+            ) {
+                break;
+            }
+            b.runner.act(GameAction::PassPriority).unwrap();
+        }
+        b.runner
+            .declare_attackers(&[(
+                b.host,
+                engine::game::combat::AttackTarget::Player(engine::game::scenario::P1),
+            )])
+            .unwrap();
+        let host = b.host;
+        b.runner.state().stack.iter().any(|entry| {
+            entry.source_id == host
+                && matches!(
+                    entry.kind,
+                    engine::types::game_state::StackEntryKind::TriggeredAbility { .. }
+                )
+        })
+    }
+
+    /// CR 603.4: the trigger-time intervening-if reads the granter.
+    #[test]
+    fn intervening_if_at_trigger_time_reads_the_granter() {
+        for (other, triggered) in [(false, false), (true, true)] {
+            let mut b = board(ATTACK_IF, other);
+            assert_eq!(declare_attack(&mut b), triggered, "other={other}");
+            b.runner.advance_until_stack_empty();
+            assert_eq!(hand(&b), usize::from(triggered), "other={other}");
+        }
+    }
+
+    /// CR 603.4: the resolution recheck reads the granter the instantiated trigger carries.
+    #[test]
+    fn intervening_if_recheck_reads_the_granter() {
+        for (remove_other, drawn) in [(true, 0), (false, 1)] {
+            let mut b = board(ATTACK_IF, true);
+            assert!(declare_attack(&mut b));
+            if remove_other {
+                let other = b.other.unwrap();
+                move_to_zone(
+                    b.runner.state_mut(),
+                    other,
+                    Zone::Graveyard,
+                    &mut Vec::new(),
+                );
+            }
+            b.runner.advance_until_stack_empty();
+            assert_eq!(hand(&b), drawn, "remove_other={remove_other}");
+        }
+    }
+
+    /// Activates `tapper`'s first ability whose effect `is_tap_ability` accepts.
+    fn activate_named(b: &mut Board, tapper: &str, is_tap_ability: fn(&Effect) -> bool) {
+        let source = object_named(b, tapper);
+        activate_tapper(b, source, is_tap_ability);
+    }
+
+    /// Activates `source`'s first ability whose effect `is_tap_ability` accepts.
+    fn activate_tapper(b: &mut Board, source: ObjectId, is_tap_ability: fn(&Effect) -> bool) {
+        let index = b.runner.state().objects[&source]
+            .abilities
+            .iter()
+            .position(|a| is_tap_ability(&a.effect))
+            .unwrap();
+        b.runner
+            .act(GameAction::ActivateAbility {
+                source_id: source,
+                ability_index: index,
+            })
+            .unwrap();
+        assert!(b.runner.state().objects[&source].tapped, "{source:?}");
+    }
+
+    /// CR 603.8: a granted state trigger's condition excludes its granter.
+    #[test]
+    fn state_trigger_condition_excludes_the_granter() {
+        for (other, zone) in [(false, Zone::Graveyard), (true, Zone::Battlefield)] {
+            let mut b = board(
+                "When you control no artifacts other than Foo Bar, sacrifice this creature.",
+                other,
+            );
+            b.runner.act(GameAction::PassPriority).unwrap();
+            b.runner.advance_until_stack_empty();
+            assert_eq!(
+                b.runner.state().objects[&b.host].zone,
+                zone,
+                "other={other}"
+            );
+        }
+    }
+
+    /// CR 603.4 + CR 603.10a: a batched leaves-the-battlefield trigger's intervening-if reads
+    /// the granter when the trigger event occurs.
+    #[test]
+    fn batched_zone_intervening_if_at_trigger_time_reads_the_granter() {
+        for other in [false, true] {
+            let mut b = board_built(
+                "Whenever one or more other creatures you control leave the battlefield, if you control an artifact other than Foo Bar, draw a card.",
+                &[3],
+                other.then_some(""),
+                "",
+                |scenario| {
+                    scenario.add_creature(P0, "Fodder", 1, 1);
+                    scenario.add_creature_from_oracle(
+                        P0,
+                        "Killer",
+                        3,
+                        3,
+                        "{T}: Exile target creature.",
+                    );
+                },
+            );
+            let fodder = object_named(&b, "Fodder");
+            let killer = object_named(&b, "Killer");
+            b.runner
+                .state_mut()
+                .objects
+                .get_mut(&killer)
+                .unwrap()
+                .summoning_sick = false;
+            b.runner
+                .act(GameAction::ActivateAbility {
+                    source_id: killer,
+                    ability_index: 0,
+                })
+                .unwrap();
+            if matches!(
+                b.runner.state().waiting_for,
+                engine::types::game_state::WaitingFor::TargetSelection { .. }
+            ) {
+                b.runner
+                    .act(GameAction::SelectTargets {
+                        targets: vec![TargetRef::Object(fodder)],
+                    })
+                    .unwrap();
+            }
+            for _ in 0..6 {
+                if b.runner.state().objects[&fodder].zone == Zone::Exile {
+                    break;
+                }
+                b.runner.act(GameAction::PassPriority).unwrap();
+            }
+            assert_eq!(b.runner.state().objects[&fodder].zone, Zone::Exile);
+            let host = b.host;
+            let triggered = b.runner.state().stack.iter().any(|entry| {
+                entry.source_id == host
+                    && matches!(
+                        entry.kind,
+                        engine::types::game_state::StackEntryKind::TriggeredAbility { .. }
+                    )
+            });
+            assert_eq!(triggered, other, "other={other}");
+            b.runner.advance_until_stack_empty();
+            assert_eq!(hand(&b), usize::from(other), "other={other}");
+        }
+    }
+
+    /// CR 603.2 + CR 605.1b: a granted mana trigger's event filter excludes its granter.
+    #[test]
+    fn mana_trigger_event_filter_excludes_the_granter() {
+        for (tapper, pool) in [("Foo Bar", 1), ("Other", 2)] {
+            let mut b = board_full(
+                "Whenever an artifact other than Foo Bar you control is tapped for mana, add {C}.",
+                &[3],
+                Some("{T}: Add {C}."),
+                "{T}: Add {C}.\n",
+            );
+            activate_named(&mut b, tapper, |e| matches!(e, Effect::Mana { .. }));
+            assert_eq!(
+                b.runner.state().players[0].mana_pool.total(),
+                pool,
+                "{tapper}"
+            );
+        }
     }
 }

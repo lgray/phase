@@ -2431,6 +2431,7 @@ impl GameObject {
                 additional_cost_payment_count: self.additional_cost_payment_count,
                 additional_cost_payments: self.additional_cost_payments.clone(),
                 cast_cost_paid_object: self.cast_cost_paid_object.clone(),
+                granting_object: None,
             }),
             power: self.power,
             toughness: self.toughness,
