@@ -199,7 +199,7 @@ If the change touches the parser, find out whether it moves parser output: build
 
 ### Step 5 — Verify the committed candidate
 
-Run the checks in a clean worktree at `CANDIDATE_SHA`, not in the implementation worktree — a check that passes against uncommitted edits has told you nothing about what you are shipping. Run every gate the changed surface calls for: formatting for any implementation change, the Rust/engine/parser block, `./scripts/check-interaction-bindings.sh --check`, `cargo coverage` and `cargo semantic-audit` for Rust paths, the frontend block for frontend paths, the parser gate for parser paths. Markdown-only policy changes need scope and diff checks; do not run Cargo or Tilt for them.
+Run the checks in a clean worktree at `CANDIDATE_SHA`, not in the implementation worktree — a check that passes against uncommitted edits has told you nothing about what you are shipping. Run every gate the changed surface calls for: formatting for any implementation change, the Rust/engine/parser block, `./scripts/check-interaction-bindings.sh --check`, `cargo coverage` with no card regressed and `cargo semantic-audit` with zero new findings for Rust paths, the frontend block for frontend paths, the parser gate for parser paths. Markdown-only policy changes need scope and diff checks; do not run Cargo or Tilt for them.
 
 The full suite is owed at the tree being shipped. An intermediate fix round may narrow to the touched surface — say so plainly when reporting it, since a narrowed run is not a suite pass — and re-run unfiltered before acceptance.
 
