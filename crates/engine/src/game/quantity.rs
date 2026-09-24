@@ -807,6 +807,7 @@ pub fn ability_definition_is_cast_stable_for_pre_cast(definition: &AbilityDefini
         // `types::ability::UnloweredGuard`.)
         unlowered_guard: _,
         face_down_in_exile: _,
+        granting_object: _,
     } = definition;
 
     activation_mana_payment_restriction.is_none()
@@ -932,6 +933,7 @@ pub fn ability_definition_has_only_unbound_variable_quantities_for_pre_cast(
         // no runtime path reaches such a tree. See `types::ability::UnloweredGuard`.)
         unlowered_guard: _,
         face_down_in_exile: _,
+        granting_object: _,
     } = definition
     else {
         return false;
@@ -1331,6 +1333,7 @@ pub fn trigger_definition_is_cast_stable_for_pre_cast(definition: &TriggerDefini
         mana_ability_produced: _,
         clash_result: _,
         room_door: _,
+        granting_object: _,
     } = definition
     else {
         return false;
@@ -1900,8 +1903,8 @@ fn resolution_only_scope_referent_present(
         // answered `true` for safety. A bound incarnation's readers own their
         // live-or-LKI ladder.
         ObjectScope::Source | ObjectScope::Recipient | ObjectScope::SpecificObject { .. } => true,
-        // Unbound, a characteristic read has no referent: its readers fail closed to 0.
-        ObjectScope::GrantingObject => false,
+        // CR 201.5a: present once stamped, like the bound incarnation it names.
+        ObjectScope::GrantingObject => ability.context.granting_object.is_some(),
         ObjectScope::Target => targets.iter().any(|t| matches!(t, TargetRef::Object(_))),
         ObjectScope::EventSource => {
             object_id_for_scope(state, ObjectScope::EventSource, ctx, targets).is_some()
@@ -7242,6 +7245,13 @@ fn resolve_counters_on_live_or_lki_scope(
         .unwrap_or(0)
 }
 
+/// CR 201.5a: the incarnation stamped on the resolving ability's definition.
+fn granter_scope(ability: Option<&ResolvedAbility>) -> Option<ObjectScope> {
+    ability
+        .and_then(|ability| ability.context.granting_object)
+        .map(|object| ObjectScope::SpecificObject { object })
+}
+
 fn resolve_counters_on_scope(
     state: &GameState,
     scope: ObjectScope,
@@ -7357,10 +7367,10 @@ fn resolve_counters_on_scope(
                     .unwrap_or(0)
             })
             .unwrap_or(0),
-        // CR 201.5a + CR 113.7: unbound, the granting-object symbol reads the ability's source.
+        // CR 201.5a: the stamped granter; unbound, the symbol reads the ability's source (CR 113.7).
         ObjectScope::GrantingObject => resolve_counters_on_scope(
             state,
-            ObjectScope::Source,
+            granter_scope(ability).unwrap_or(ObjectScope::Source),
             ctx,
             targets,
             ability,
@@ -7930,7 +7940,19 @@ where
         // `resolve_counters_on_scope` arm against
         // `ability.context.chain_root_targets`; `game/coverage.rs` reports these
         // characteristic readers as `Unhandled` until then.
-        ObjectScope::ChainRootTarget | ObjectScope::GrantingObject => 0,
+        ObjectScope::ChainRootTarget => 0,
+        // CR 201.5a: the stamped granter's P/T; unbound, no referent.
+        ObjectScope::GrantingObject => granter_scope(ability).map_or(0, |scope| {
+            resolve_object_pt(
+                state,
+                scope,
+                ctx,
+                targets,
+                ability,
+                obj_extract,
+                lki_extract,
+            )
+        }),
         // CR 400.7 + CR 608.2h: the bound incarnation's P/T, LKI only while resolving.
         ObjectScope::SpecificObject { object } => {
             read_specific_object(state, object, ability, &obj_extract, &lki_extract).unwrap_or(0)
@@ -8267,7 +8289,11 @@ fn resolve_object_mana_value(
         // fail-closed placeholder — never a silent wildcard. Extend by mirroring
         // the `resolve_counters_on_scope` arm against
         // `ability.context.chain_root_targets`.
-        ObjectScope::ChainRootTarget | ObjectScope::GrantingObject => 0,
+        ObjectScope::ChainRootTarget => 0,
+        // CR 201.5a: the stamped granter's mana value; unbound, no referent.
+        ObjectScope::GrantingObject => granter_scope(ability).map_or(0, |scope| {
+            resolve_object_mana_value(state, scope, ctx, targets, ability)
+        }),
         // CR 400.7 + CR 608.2h: the bound incarnation's mana value, LKI only while resolving.
         ObjectScope::SpecificObject { object } => read_specific_object(
             state,

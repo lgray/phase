@@ -25751,6 +25751,8 @@ pub struct AbilityDefinition {
     /// This is deliberately separate from `FaceDownProfile`, which describes
     /// battlefield characteristics only.
     pub face_down_in_exile: ExileConcealment,
+    /// CR 201.5a: the object whose grant attached this definition; `None` unless granted.
+    pub granting_object: Option<ObjectIncarnationRef>,
 }
 
 /// Private serialization mirror for `AbilityDefinition`. Holds a borrowed view
@@ -25836,6 +25838,8 @@ struct AbilityDefinitionRepr<'a> {
     unlowered_guard: &'a Option<UnloweredGuard>,
     #[serde(skip_serializing_if = "ExileConcealment::is_public")]
     face_down_in_exile: ExileConcealment,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    granting_object: &'a Option<ObjectIncarnationRef>,
 }
 
 impl Serialize for AbilityDefinition {
@@ -25885,6 +25889,7 @@ impl Serialize for AbilityDefinition {
             sibling_condition,
             unlowered_guard,
             face_down_in_exile,
+            granting_object,
         } = self;
         let repr = AbilityDefinitionRepr {
             kind,
@@ -25929,6 +25934,7 @@ impl Serialize for AbilityDefinition {
             sibling_condition: *sibling_condition,
             unlowered_guard,
             face_down_in_exile: *face_down_in_exile,
+            granting_object,
         };
         /// Flatten wrapper: the mirror carries the real field set;
         /// `consumes_source` (#506) and `is_mana_ability` (CR 605.1a) are
@@ -26047,6 +26053,8 @@ struct AbilityDefinitionDe {
     unlowered_guard: Option<UnloweredGuard>,
     #[serde(default)]
     face_down_in_exile: ExileConcealment,
+    #[serde(default)]
+    granting_object: Option<ObjectIncarnationRef>,
 }
 
 impl<'de> Deserialize<'de> for AbilityDefinition {
@@ -26101,6 +26109,7 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
             sibling_condition: de.sibling_condition,
             unlowered_guard: de.unlowered_guard,
             face_down_in_exile: de.face_down_in_exile,
+            granting_object: de.granting_object,
         })
     }
 }
@@ -26361,6 +26370,7 @@ impl AbilityDefinition {
             sibling_condition: SiblingCondition::Dependent,
             unlowered_guard: None,
             face_down_in_exile: ExileConcealment::Public,
+            granting_object: None,
         }
     }
 
@@ -27722,6 +27732,9 @@ pub struct SpellContext {
     /// ordinary ability-chain handoffs without widening every ability literal.
     #[serde(default, skip_serializing_if = "ExileConcealment::is_public")]
     pub face_down_in_exile: ExileConcealment,
+    /// CR 201.5a: the granter stamped on the definition this ability was built from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granting_object: Option<ObjectIncarnationRef>,
     /// CR 608.2c: The immediate `forward_result` producer's complete ordered
     /// result. `None` means no producer has run in this resolution; `Some([])`
     /// is a completed producer that moved no objects and intentionally blocks
@@ -29275,6 +29288,9 @@ pub struct TriggerDefinition {
     /// every non-Room trigger: no door gating.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_door: Option<crate::game::game_object::RoomDoor>,
+    /// CR 201.5a: the object whose grant attached this definition; `None` unless granted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granting_object: Option<ObjectIncarnationRef>,
 }
 
 /// CR 605.1b: Which aggregate mana output a mana-ability trigger requires.
@@ -29816,6 +29832,7 @@ impl TriggerDefinition {
             mana_ability_produced: None,
             clash_result: None,
             room_door: None,
+            granting_object: None,
         }
     }
 
@@ -37080,6 +37097,7 @@ mod tests {
             mana_ability_produced: None,
             clash_result: None,
             room_door: Some(crate::game::game_object::RoomDoor::Left),
+            granting_object: None,
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: TriggerDefinition = serde_json::from_str(&json).unwrap();

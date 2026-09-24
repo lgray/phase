@@ -35,6 +35,7 @@ use crate::types::ability::{
     StaticCondition, StaticDefinition, TargetFilter, TriggerGrantProducerKey,
     TriggerProducerOrigin, TypedFilter,
 };
+use crate::types::ability_visit::{nodes_mut, DefinitionNodeMut};
 use crate::types::attribution::EffectRef;
 use crate::types::card_type::{
     is_land_subtype, noncreature_subtype_set, CoreType, SubtypeSet, Supertype,
@@ -6919,6 +6920,46 @@ fn expand_granted_static_effects(
     out
 }
 
+/// CR 201.5a: whether a granted body names its granter; only such a body is stamped.
+// Completeness comes from the serde derive; the typed alternative would be a hand-maintained field mirror.
+fn references_granting_object(body: &impl serde::Serialize) -> bool {
+    fn names_granter(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.get("type").is_some_and(|tag| tag == "GrantingObject")
+                    || map.values().any(names_granter)
+            }
+            serde_json::Value::Array(items) => items.iter().any(names_granter),
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => false,
+        }
+    }
+    serde_json::to_value(body).is_ok_and(|value| names_granter(&value))
+}
+
+/// CR 201.5a + CR 613.1f: the stamping rule. Every definition node of a granted
+/// body names `granter`; a node that already names one keeps it, because a granted
+/// ability copied onto a new object still refers to its original source.
+fn stamp_granter(
+    granter: ObjectIncarnationRef,
+) -> impl FnMut(DefinitionNodeMut<'_>) -> std::ops::ControlFlow<()> {
+    move |node| {
+        match node {
+            DefinitionNodeMut::Ability(def) => {
+                def.granting_object.get_or_insert(granter);
+            }
+            DefinitionNodeMut::Trigger(trigger) => {
+                trigger.granting_object.get_or_insert(granter);
+            }
+            // DEFERRED(phase 6a): StaticDefinition stamp. DEFERRED(phase 6b): ReplacementDefinition stamp.
+            DefinitionNodeMut::Static(_) | DefinitionNodeMut::Replacement(_) => {}
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
 /// CR 613.1f + CR 113.3: Expand a `GrantAllActivatedAbilitiesOf { source }` host
 /// modification into one `GrantAbility` effect per activated ability of each
 /// object matching `source`. Object-self references in `source` are resolved
@@ -8913,6 +8954,19 @@ fn apply_continuous_effect_filtered(
         .objects
         .get(&effect.source_id)
         .map(ObjectIncarnationRef::from_object);
+    // CR 201.5a: the body is identical for every recipient; inspect it once, and only if one exists.
+    let stamp_granter_as = granter.filter(|_| {
+        !affected_ids.is_empty()
+            && match &effect.modification {
+                ContinuousModification::GrantAbility { definition } => {
+                    references_granting_object(definition)
+                }
+                ContinuousModification::GrantTrigger { trigger } => {
+                    references_granting_object(trigger)
+                }
+                _ => false,
+            }
+    });
 
     for &id in affected_ids {
         // CR 613.4c: When the dynamic modification's QuantityExpr depends on
@@ -9438,7 +9492,9 @@ fn apply_continuous_effect_filtered(
             // GrantAbility — whether from a single static with repeated
             // modifications (e.g., Ragost parses the "have ..." clause twice)
             // or from multiple sources granting the same ability — must not
-            // stack. Structural equality dedup keeps the grant idempotent.
+            // stack, unless the body names its granter (CR 201.5a), whose stamp
+            // keeps each granter's copy apart (CR 113.2c). Structural equality
+            // dedup keeps the grant idempotent.
             ContinuousModification::GrantAbility { definition } => {
                 // CR 201.5a + CR 613.1f: concretize any granter by-name
                 // self-reference (`GrantingObject`) in the cloned body to the
@@ -9449,6 +9505,9 @@ fn apply_continuous_effect_filtered(
                 let mut granted = *definition.clone();
                 if let Some(granter) = granter {
                     super::ability_utils::concretize_granting_object(&mut granted, granter);
+                }
+                if let Some(granter) = stamp_granter_as {
+                    let _ = nodes_mut::visit_ability_def(&mut granted, &mut stamp_granter(granter));
                 }
                 if !obj.abilities.iter().any(|a| a == &granted) {
                     Arc::make_mut(&mut obj.abilities).push(granted);
@@ -9477,6 +9536,9 @@ fn apply_continuous_effect_filtered(
                         &mut granted,
                         granter,
                     );
+                }
+                if let Some(granter) = stamp_granter_as {
+                    let _ = nodes_mut::visit_trigger(&mut granted, &mut stamp_granter(granter));
                 }
                 let producer = effect
                     .expanded_trigger_provider
@@ -9962,6 +10024,71 @@ pub(crate) fn compute_current_copiable_values(
 
 #[cfg(test)]
 mod tests {
+
+    /// CR 201.5a: the predicate is true exactly for grant bodies that name their granter.
+    #[test]
+    fn granting_object_reference_decides_the_stamp() {
+        use crate::game::scenario::{GameScenario, P0};
+        let grants = |body: &str| {
+            let mut scenario = GameScenario::new();
+            let granter = scenario
+                .add_artifact_from_oracle(
+                    P0,
+                    "Foo Bar",
+                    &format!("Equipped creature has \"{body}\"\nEquip {{1}}"),
+                )
+                .with_subtypes(vec!["Equipment"])
+                .id();
+            let runner = scenario.build();
+            runner.state().objects[&granter]
+                .static_definitions
+                .iter_all()
+                .flat_map(|sd| sd.modifications.iter())
+                .filter_map(|m| match m {
+                    ContinuousModification::GrantAbility { definition } => {
+                        Some(references_granting_object(definition))
+                    }
+                    ContinuousModification::GrantTrigger { trigger } => {
+                        Some(references_granting_object(trigger))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for body in [
+            "{T}: Draw a card if you control an artifact other than Foo Bar.",
+            "{T}: Put a +1/+1 counter on this creature for each artifact you control other than Foo Bar.",
+            "{T}: This creature gets +X/+0 until end of turn, where X is the number of +1/+1 counters on Foo Bar.",
+            "Whenever this creature attacks, put a +1/+1 counter on it for each artifact you control other than Foo Bar.",
+        ] {
+            assert_eq!(grants(body), vec![true], "{body}");
+        }
+        assert_eq!(grants("{T}: Draw a card."), vec![false]);
+        assert!(!references_granting_object(&ragost_food_ability()));
+    }
+
+    #[test]
+    fn stamp_granter_fills_every_node_and_keeps_an_existing_stamp() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect};
+        use crate::types::ability_visit::nodes_mut;
+        let granter = ObjectIncarnationRef::of(ObjectId(5), 1);
+        let earlier = ObjectIncarnationRef::of(ObjectId(9), 4);
+        let mut nested = AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp);
+        nested.granting_object = Some(earlier);
+        let mut body = AbilityDefinition::new(AbilityKind::Activated, Effect::NoOp)
+            .sub_ability(AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp));
+        body.else_ability = Some(Box::new(nested));
+        let _ = nodes_mut::visit_ability_def(&mut body, &mut stamp_granter(granter));
+        assert_eq!(body.granting_object, Some(granter));
+        assert_eq!(body.sub_ability.unwrap().granting_object, Some(granter));
+        assert_eq!(body.else_ability.unwrap().granting_object, Some(earlier));
+
+        let mut trigger = TriggerDefinition::new(TriggerMode::Attacks)
+            .execute(AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp));
+        let _ = nodes_mut::visit_trigger(&mut trigger, &mut stamp_granter(granter));
+        assert_eq!(trigger.granting_object, Some(granter));
+        assert_eq!(trigger.execute.unwrap().granting_object, Some(granter));
+    }
 
     /// CR 514.2 + CR 109.4: `prune_until_next_turn_effects` arms an
     /// `UntilEndOfNextTurnOf { SpecificPlayer }` effect on the SNAPSHOTTED
@@ -21874,6 +22001,7 @@ mod tests {
         state.layers_dirty.mark_full();
         evaluate_layers(&mut state);
 
+        assert_eq!(state.objects[&artifact].abilities.len(), 1);
         assert_eq!(
             count_food_abilities(&state.objects[&artifact]),
             1,

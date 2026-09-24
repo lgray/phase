@@ -837,6 +837,16 @@ pub fn resolved_targets(
     // propagation in `effects::mod.rs::resolve_chain`.
     // CR 201.5a: an unwalked `GrantingObject` resolves to the exact current
     // ability source.
+    // CR 201.5a + CR 400.7: the stamped granter incarnation, and nothing once it has left.
+    if let (TargetFilter::GrantingObject, Some(granter)) =
+        (target_filter, ability.context.granting_object)
+    {
+        return granter
+            .is_current(state)
+            .then_some(TargetRef::Object(granter.object_id))
+            .into_iter()
+            .collect();
+    }
     if matches!(
         target_filter,
         TargetFilter::SelfRef | TargetFilter::GrantingObject
@@ -1364,11 +1374,14 @@ pub(crate) fn resolved_object_ids_for_filter_with_context(
             .then_some(ability.source_id)
             .into_iter()
             .collect(),
-        TargetFilter::GrantingObject => ability
-            .source_is_current(state)
-            .then_some(ability.source_id)
-            .into_iter()
-            .collect(),
+        TargetFilter::GrantingObject => match ability.context.granting_object {
+            Some(granter) => granter.is_current(state).then_some(granter.object_id),
+            None => ability
+                .source_is_current(state)
+                .then_some(ability.source_id),
+        }
+        .into_iter()
+        .collect(),
         // CR 400.7 + CR 603.7c: mirror the `resolved_targets` pin check on the
         // untargeted-pool path (the second SelfRef chokepoint).
         TargetFilter::ParentTarget => object_targets(&ability.live_object_targets(state)).collect(),
@@ -6347,6 +6360,36 @@ mod tests {
             Some(PlayerId(1)),
             "\"that player\" must still resolve to the scoped chooser"
         );
+    }
+
+    /// CR 201.5a + CR 400.7: the untargeted-pool reader names the stamped granter
+    /// incarnation, nothing once it left, and the source when unstamped.
+    #[test]
+    fn granting_object_pool_reads_the_stamped_incarnation() {
+        let mut state = GameState::new_two_player(42);
+        let mk = |state: &mut GameState, n: u64, name: &str| {
+            create_object(
+                state,
+                CardId(n),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Battlefield,
+            )
+        };
+        let host = mk(&mut state, 1, "Host");
+        let granter = mk(&mut state, 2, "Granter");
+        let mut ability = make_resolved_with_targets(vec![], host);
+        let pool = |state: &GameState, ability: &crate::types::ability::ResolvedAbility| {
+            resolved_object_ids_for_filter(state, ability, &TargetFilter::GrantingObject)
+        };
+        assert_eq!(pool(&state, &ability), vec![host]);
+        ability.context.granting_object = Some(
+            crate::types::identifiers::ObjectIncarnationRef::from_object(&state.objects[&granter]),
+        );
+        assert_eq!(pool(&state, &ability), vec![granter]);
+        crate::game::zones::move_to_zone(&mut state, granter, Zone::Exile, &mut Vec::new());
+        crate::game::zones::move_to_zone(&mut state, granter, Zone::Battlefield, &mut Vec::new());
+        assert!(pool(&state, &ability).is_empty());
     }
 
     /// CR 608.2c + 603.10a: Tier 1 — `SelfRef` with empty `ability.targets`

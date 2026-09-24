@@ -2762,3 +2762,404 @@ mod concretizer_seams {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// CR 201.5a granter stamp: every definition node of a granted body carries its
+// granter's incarnation, and resolution-time readers bind GrantingObject to it.
+// ---------------------------------------------------------------------------
+
+mod granter_stamp {
+    use engine::game::effects::attach::attach_to;
+    use engine::game::effects::resolve_ability_chain;
+    use engine::game::filter::{matches_target_filter, FilterContext};
+    use engine::game::layers::evaluate_layers;
+    use engine::game::quantity::resolve_quantity_with_targets;
+    use engine::game::scenario::{GameRunner, GameScenario, P0};
+    use engine::game::targeting::resolved_targets;
+    use engine::game::zones::move_to_zone;
+    use engine::types::ability::{
+        AbilityCondition, AbilityDefinition, AbilityKind, Comparator, Effect, ObjectScope,
+        QuantityExpr, QuantityRef, ResolvedAbility, SpellContext, TargetFilter, TargetRef,
+        TriggerDefinition,
+    };
+    use engine::types::actions::GameAction;
+    use engine::types::counter::CounterType;
+    use engine::types::game_state::GameState;
+    use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
+    use engine::types::mana::ManaCost;
+    use engine::types::phase::Phase;
+    use engine::types::triggers::TriggerMode;
+    use engine::types::zones::Zone;
+
+    const EXCLUSION_COUNT: &str =
+        "{T}: Put a +1/+1 counter on this creature for each artifact you control other than Foo Bar.";
+    const COUNTERS_PUMP: &str = "{T}: This creature gets +X/+0 until end of turn, where X is the number of +1/+1 counters on Foo Bar.";
+
+    struct Board {
+        runner: GameRunner,
+        host: ObjectId,
+        granters: Vec<ObjectId>,
+    }
+
+    fn relayer(state: &mut GameState) {
+        state.layers_dirty.mark_full();
+        evaluate_layers(state);
+    }
+
+    /// P0's 2/2 host with one +1/+1 counter, equipped by one "Foo Bar" (MV 5) per
+    /// entry of `granter_counters` granting `body`; `other` adds a MV-2 artifact.
+    fn board_with(body: &str, granter_counters: &[u32], other: bool) -> Board {
+        let text = format!("Equipped creature has \"{body}\"\nEquip {{1}}");
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let granters: Vec<ObjectId> = granter_counters
+            .iter()
+            .map(|&n| {
+                let fb = scenario
+                    .add_artifact_from_oracle(P0, "Foo Bar", &text)
+                    .with_subtypes(vec!["Equipment"])
+                    .with_mana_cost(ManaCost::generic(5))
+                    .id();
+                scenario.with_counter(fb, CounterType::Plus1Plus1, n);
+                fb
+            })
+            .collect();
+        scenario.with_library_top(P0, &["L1", "L2"]);
+        if other {
+            scenario
+                .add_artifact_from_oracle(P0, "Other", "")
+                .with_mana_cost(ManaCost::generic(2));
+        }
+        let mut runner = scenario.build();
+        let st = runner.state_mut();
+        st.objects
+            .get_mut(&host)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        for &fb in &granters {
+            attach_to(st, fb, host);
+        }
+        relayer(st);
+        Board {
+            runner,
+            host,
+            granters,
+        }
+    }
+
+    fn board(body: &str, other: bool) -> Board {
+        board_with(body, &[3], other)
+    }
+
+    fn last_ability(b: &Board) -> usize {
+        b.runner.state().objects[&b.host].abilities.len() - 1
+    }
+
+    fn activate(b: &mut Board, index: usize) {
+        b.runner
+            .act(GameAction::ActivateAbility {
+                source_id: b.host,
+                ability_index: index,
+            })
+            .unwrap();
+    }
+
+    fn activate_last(b: &mut Board) {
+        let index = last_ability(b);
+        activate(b, index);
+    }
+
+    fn p1p1(b: &Board, id: ObjectId) -> u32 {
+        b.runner.state().objects[&id]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn power(b: &Board) -> i32 {
+        b.runner.state().objects[&b.host].power.unwrap()
+    }
+
+    fn hand(b: &Board) -> usize {
+        b.runner.state().players[0].hand.len()
+    }
+
+    #[test]
+    fn exclusion_count_excludes_the_granter() {
+        let mut b = board(EXCLUSION_COUNT, true);
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(p1p1(&b, b.host), 2);
+    }
+
+    #[test]
+    fn exclusion_names_the_granter_incarnation_not_its_id() {
+        let mut b = board(EXCLUSION_COUNT, true);
+        let fb = b.granters[0];
+        let st = b.runner.state();
+        assert_eq!(
+            st.objects[&b.host].abilities[last_ability(&b)].granting_object,
+            Some(ObjectIncarnationRef::from_object(&st.objects[&fb]))
+        );
+        activate_last(&mut b);
+        let st = b.runner.state_mut();
+        move_to_zone(st, fb, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, fb, Zone::Battlefield, &mut Vec::new());
+        b.runner.advance_until_stack_empty();
+        assert_eq!(b.runner.state().objects[&fb].zone, Zone::Battlefield);
+        assert_eq!(p1p1(&b, b.host), 3);
+    }
+
+    #[test]
+    fn aggregate_excludes_the_granter() {
+        let mut b = board(
+            "{T}: You gain X life, where X is the greatest mana value among artifacts you control other than Foo Bar.",
+            true,
+        );
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(b.runner.state().players[0].life, 22);
+    }
+
+    #[test]
+    fn counters_read_the_granter() {
+        let mut b = board(COUNTERS_PUMP, false);
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(power(&b), 6);
+    }
+
+    #[test]
+    fn condition_exclusion_reads_the_granter() {
+        for (other, drawn) in [(false, 0), (true, 1)] {
+            let mut b = board(
+                "{T}: Draw a card if you control an artifact other than Foo Bar.",
+                other,
+            );
+            activate_last(&mut b);
+            b.runner.advance_until_stack_empty();
+            assert_eq!(hand(&b), drawn, "other={other}");
+        }
+    }
+
+    fn attack(b: &mut Board) {
+        for _ in 0..8 {
+            if matches!(
+                b.runner.state().waiting_for,
+                engine::types::game_state::WaitingFor::DeclareAttackers { .. }
+            ) {
+                break;
+            }
+            b.runner.act(GameAction::PassPriority).unwrap();
+        }
+        b.runner
+            .declare_attackers(&[(
+                b.host,
+                engine::game::combat::AttackTarget::Player(engine::game::scenario::P1),
+            )])
+            .unwrap();
+        b.runner.advance_until_stack_empty();
+    }
+
+    #[test]
+    fn granted_trigger_bodies_read_the_granter() {
+        let mut b = board(
+            "Whenever this creature attacks, put a +1/+1 counter on it for each artifact you control other than Foo Bar.",
+            true,
+        );
+        attack(&mut b);
+        assert_eq!(p1p1(&b, b.host), 2);
+
+        let mut b = board(
+            "Whenever this creature attacks, it gets +X/+0 until end of turn, where X is the number of +1/+1 counters on Foo Bar.",
+            false,
+        );
+        attack(&mut b);
+        assert_eq!(power(&b), 6);
+    }
+
+    #[test]
+    fn delayed_payload_carries_its_own_stamp() {
+        let mut b = board(
+            "{T}: At the beginning of the next end step, this creature gets +X/+0 until end of turn, where X is the number of +1/+1 counters on Foo Bar.",
+            false,
+        );
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(power(&b), 3);
+        b.runner.advance_to_end_step();
+        b.runner.advance_until_stack_empty();
+        assert_eq!(power(&b), 6);
+    }
+
+    #[test]
+    fn two_granters_grant_two_abilities() {
+        let mut b = board_with(COUNTERS_PUMP, &[3, 1], false);
+        let n = b.runner.state().objects[&b.host].abilities.len();
+        let first = n - 2;
+        let stamps: Vec<_> = b.runner.state().objects[&b.host].abilities[first..]
+            .iter()
+            .map(|a| a.granting_object.map(|g| g.object_id))
+            .collect();
+        assert_eq!(stamps.len(), 2);
+        assert_ne!(stamps[0], stamps[1]);
+        let mut gains = Vec::new();
+        for index in [first, first + 1] {
+            let before = power(&b);
+            activate(&mut b, index);
+            b.runner.advance_until_stack_empty();
+            gains.push(power(&b) - before);
+            b.runner
+                .state_mut()
+                .objects
+                .get_mut(&b.host)
+                .unwrap()
+                .tapped = false;
+        }
+        gains.sort_unstable();
+        assert_eq!(gains, vec![1, 3]);
+    }
+
+    #[test]
+    fn host_self_references_stay_on_the_host() {
+        let mut b = board(
+            "{T}: Put a +1/+1 counter on this creature for each artifact you control other than Foo Bar. You gain life equal to the number of +1/+1 counters on this creature.",
+            true,
+        );
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(p1p1(&b, b.host), 2);
+        assert_eq!(p1p1(&b, b.granters[0]), 3);
+        assert_eq!(b.runner.state().players[0].life, 22);
+    }
+
+    #[test]
+    fn stamp_is_omitted_when_absent_and_round_trips_when_present() {
+        let mut def = AbilityDefinition::new(AbilityKind::Activated, Effect::NoOp);
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(!json.contains("granting_object"), "{json}");
+        let mut trigger = TriggerDefinition::new(TriggerMode::Attacks);
+        let json = serde_json::to_string(&trigger).unwrap();
+        assert!(!json.contains("granting_object"), "{json}");
+        let mut context = SpellContext::default();
+        let json = serde_json::to_string(&context).unwrap();
+        assert!(!json.contains("granting_object"), "{json}");
+
+        let stamp = Some(ObjectIncarnationRef::of(ObjectId(7), 2));
+        def.granting_object = stamp;
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(json.contains("granting_object"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<AbilityDefinition>(&json).unwrap(),
+            def
+        );
+        trigger.granting_object = stamp;
+        let json = serde_json::to_string(&trigger).unwrap();
+        assert!(json.contains("granting_object"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<TriggerDefinition>(&json).unwrap(),
+            trigger
+        );
+        context.granting_object = stamp;
+        let json = serde_json::to_string(&context).unwrap();
+        assert!(json.contains("granting_object"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<SpellContext>(&json).unwrap(),
+            context
+        );
+    }
+
+    /// Building-block reads with the `ResolvedAbility` in scope: host 2/2 (one +1/+1
+    /// counter), granter "Foo Bar" 4/4 of MV 5 with three +1/+1 counters.
+    #[test]
+    fn stamped_granter_is_what_every_resolution_reader_names() {
+        let mut scenario = GameScenario::new();
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let fb = scenario
+            .add_creature(P0, "Foo Bar", 4, 4)
+            .with_mana_cost(ManaCost::generic(5))
+            .id();
+        scenario.with_counter(fb, CounterType::Plus1Plus1, 3);
+        scenario.with_counter(host, CounterType::Plus1Plus1, 1);
+        let mut state = scenario.build().state().clone();
+        relayer(&mut state);
+        let stamp = ObjectIncarnationRef::from_object(&state.objects[&fb]);
+        let ability = |granter: Option<ObjectIncarnationRef>| {
+            let mut a = ResolvedAbility::new(Effect::NoOp, vec![], host, P0);
+            a.context.granting_object = granter;
+            a
+        };
+        let q = |qty| QuantityExpr::Ref { qty };
+        let counters = q(QuantityRef::CountersOn {
+            scope: ObjectScope::GrantingObject,
+            counter_type: Some(CounterType::Plus1Plus1),
+        });
+        let power = q(QuantityRef::Power {
+            scope: ObjectScope::GrantingObject,
+        });
+        let mana_value = q(QuantityRef::ObjectManaValue {
+            scope: ObjectScope::GrantingObject,
+        });
+        let read = |st: &GameState, e: &QuantityExpr, a: &ResolvedAbility| {
+            resolve_quantity_with_targets(st, e, a)
+        };
+        let matches = |st: &GameState, id: ObjectId, a: &ResolvedAbility| {
+            matches_target_filter(
+                st,
+                id,
+                &TargetFilter::GrantingObject,
+                &FilterContext::from_ability(a),
+            )
+        };
+
+        let targets = |st: &GameState, a: &ResolvedAbility| {
+            resolved_targets(a, &TargetFilter::GrantingObject, st)
+        };
+        let gated_gain = |st: &GameState, a: &ResolvedAbility| {
+            let mut st = st.clone();
+            let gain = |n| Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: n },
+                player: TargetFilter::Controller,
+            };
+            let mut sub = ResolvedAbility::new(gain(1), vec![], host, P0);
+            sub.condition = Some(AbilityCondition::QuantityCheck {
+                lhs: mana_value.clone(),
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 5 },
+            });
+            let mut root = a.clone();
+            root.effect = gain(10);
+            root.sub_ability = Some(Box::new(sub));
+            let life = st.players[0].life;
+            resolve_ability_chain(&mut st, &root, &mut Vec::new(), 0).unwrap();
+            st.players[0].life - life
+        };
+
+        let stamped = ability(Some(stamp));
+        assert_eq!(targets(&state, &stamped), vec![TargetRef::Object(fb)]);
+        assert_eq!(gated_gain(&state, &stamped), 11);
+        assert_eq!(read(&state, &counters, &stamped), 3);
+        assert_eq!(read(&state, &power, &stamped), 7);
+        assert_eq!(read(&state, &mana_value, &stamped), 5);
+        assert!(matches(&state, fb, &stamped));
+        assert!(!matches(&state, host, &stamped));
+
+        let unbound = ability(None);
+        assert_eq!(targets(&state, &unbound), vec![TargetRef::Object(host)]);
+        assert_eq!(gated_gain(&state, &unbound), 10);
+        assert_eq!(read(&state, &counters, &unbound), 1);
+        assert_eq!(read(&state, &power, &unbound), 0);
+        assert!(!matches(&state, host, &unbound));
+        assert!(!matches(&state, fb, &unbound));
+
+        move_to_zone(&mut state, fb, Zone::Exile, &mut Vec::new());
+        move_to_zone(&mut state, fb, Zone::Battlefield, &mut Vec::new());
+        relayer(&mut state);
+        assert!(!matches(&state, fb, &stamped));
+        assert!(targets(&state, &stamped).is_empty());
+        assert_eq!(read(&state, &counters, &stamped), 3);
+    }
+}

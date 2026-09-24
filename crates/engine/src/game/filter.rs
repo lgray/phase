@@ -4983,9 +4983,17 @@ fn filter_inner_for_object(
         TargetFilter::Named { name } => obj.name == *name,
         // CR 400.3: Owner is a player-resolving filter (resolves to the owner of
         // source_id), meaningless as an object-matching predicate.
-        // CR 201.5a: an unwalked GrantingObject matches no object in a filter.
-        TargetFilter::Owner | TargetFilter::GrantingObject => false,
+        TargetFilter::Owner => false,
+        TargetFilter::GrantingObject => is_stamped_granter(obj, ability),
     }
+}
+
+/// CR 201.5a + CR 400.7: `obj` is the exact incarnation stamped on the ability's
+/// definition; unbound, nothing is.
+fn is_stamped_granter(obj: &GameObject, ability: Option<&ResolvedAbility>) -> bool {
+    ability
+        .and_then(|ability| ability.context.granting_object)
+        .is_some_and(|granter| ObjectIncarnationRef::from_object(obj) == granter)
 }
 
 /// Build a synthetic `GameObject` from a `TokenSpec` for filter evaluation
@@ -7699,6 +7707,8 @@ fn matches_filter_prop(
                         .iter()
                         .any(|t| matches!(t, TargetRef::Object(id) if *id == object_id))
                 })
+            } else if matches!(**reference, TargetFilter::GrantingObject) {
+                is_stamped_granter(obj, source.ability)
             } else {
                 crate::game::targeting::resolve_event_context_targets(state, reference, source.id)
                     .into_iter()

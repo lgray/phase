@@ -3564,6 +3564,7 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         taps_for_mana_produced: _,
         mana_ability_produced: _,
         clash_result: _,
+        granting_object: _,
     } = t;
 
     let mut acc = Axes::NONE;
@@ -5092,6 +5093,7 @@ fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
         // `types::ability::UnloweredGuard`.)
         unlowered_guard: _,
         face_down_in_exile: _,
+        granting_object: _,
     } = def;
 
     let mut acc = scan_effect(effect, mode);
