@@ -830,13 +830,6 @@ pub fn resolved_targets(
     target_filter: &TargetFilter,
     state: &GameState,
 ) -> Vec<TargetRef> {
-    // CR 608.2c: SelfRef is the printed-name anaphor (`~`) — its referent is
-    // the source object itself, never a chosen target. Must short-circuit
-    // before the `ability.targets` fallback so chained "Exile ~" sub-abilities
-    // don't accidentally inherit the parent's targets via the chain target
-    // propagation in `effects::mod.rs::resolve_chain`.
-    // CR 201.5a: an unwalked `GrantingObject` resolves to the exact current
-    // ability source.
     // CR 201.5a + CR 400.7: the stamped granter incarnation, and nothing once it has left.
     if let (TargetFilter::GrantingObject, Some(granter)) =
         (target_filter, ability.context.granting_object)
@@ -847,6 +840,13 @@ pub fn resolved_targets(
             .into_iter()
             .collect();
     }
+    // CR 608.2c: SelfRef is the printed-name anaphor (`~`) — its referent is
+    // the source object itself, never a chosen target. Must short-circuit
+    // before the `ability.targets` fallback so chained "Exile ~" sub-abilities
+    // don't accidentally inherit the parent's targets via the chain target
+    // propagation in `effects::mod.rs::resolve_chain`.
+    // CR 201.5a: an unstamped `GrantingObject` resolves to the exact current
+    // ability source.
     if matches!(
         target_filter,
         TargetFilter::SelfRef | TargetFilter::GrantingObject
@@ -1367,7 +1367,7 @@ pub(crate) fn resolved_object_ids_for_filter_with_context(
         // CR 400.7: self-reference resolves only to the exact source or its own
         // immediate recorded event successor; a blinked-and-returned source
         // (higher incarnation) finds nothing.
-        // CR 201.5a: an unwalked `GrantingObject` resolves to the exact current
+        // CR 201.5a: an unstamped `GrantingObject` resolves to the exact current
         // ability source.
         TargetFilter::SelfRef => ability
             .self_ref_is_current(state)

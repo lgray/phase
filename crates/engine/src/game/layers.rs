@@ -6921,7 +6921,7 @@ fn expand_granted_static_effects(
 }
 
 /// CR 201.5a: whether a granted body names its granter; only such a body is stamped.
-// Completeness comes from the serde derive; the typed alternative would be a hand-maintained field mirror.
+// Completeness comes from the types' Serialize impls; the typed alternative would be a hand-maintained field mirror.
 fn references_granting_object(body: &impl serde::Serialize) -> bool {
     fn names_granter(value: &serde_json::Value) -> bool {
         match value {
@@ -6953,7 +6953,7 @@ fn stamp_granter(
             DefinitionNodeMut::Trigger(trigger) => {
                 trigger.granting_object.get_or_insert(granter);
             }
-            // DEFERRED(phase 6a): StaticDefinition stamp. DEFERRED(phase 6b): ReplacementDefinition stamp.
+            // Static and replacement definitions carry no stamp field.
             DefinitionNodeMut::Static(_) | DefinitionNodeMut::Replacement(_) => {}
         }
         std::ops::ControlFlow::Continue(())
