@@ -2282,7 +2282,8 @@ pub(crate) fn try_parse_graveyard_cast_permission(
         && required_cast_keyword.is_none()
         && enters_with_counter.is_none()
         && graveyard_destination_replacement.is_none()
-        && extra_cost.is_none();
+        && extra_cost.is_none()
+        && is_punctuation_only(residual);
     // allow-noncombinator: typed `Vec<Zone>` membership, not text dispatch.
     if zones.contains(&Zone::Exile) && !own_unlimited_cast {
         return None;

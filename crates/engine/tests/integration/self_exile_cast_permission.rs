@@ -166,6 +166,42 @@ fn exiled_cards_without_an_own_exile_permission_are_not_castable() {
     }
 }
 
+/// A self exile permission is castable only when its condition parsed and holds.
+#[test]
+fn self_exile_permission_with_an_unparsed_condition_is_not_castable() {
+    let zombie = "You may cast this card from exile as long as you control a Zombie.";
+    let unparsed = "You may cast this card from exile as long as you control a ~ planeswalker.";
+    for (text, zombie_present, castable) in [
+        (zombie, false, false),
+        (zombie, true, true),
+        (unparsed, false, false),
+    ] {
+        let mut scenario = GameScenario::new_n_player(2, 42);
+        scenario.at_phase(Phase::PreCombatMain);
+        let carrier = scenario
+            .add_creature_to_exile(P0, "Exile Carrier", 2, 2)
+            .from_oracle_text(text)
+            .id();
+        if zombie_present {
+            scenario
+                .add_creature(P0, "Zombie", 2, 2)
+                .with_subtypes(vec!["Zombie"]);
+        }
+        let mut runner = scenario.build();
+        assert_eq!(
+            spell_objects_available_to_cast(runner.state(), P0).contains(&carrier),
+            castable,
+            "{text} zombie={zombie_present}"
+        );
+        let result = cast_spell(&mut runner, carrier);
+        if castable {
+            result.expect("carrier is cast from exile");
+        } else {
+            assert_not_castable_zone(result);
+        }
+    }
+}
+
 /// The graveyard half of Squee's permission keeps its graveyard-permission cast.
 #[test]
 fn squee_cast_from_graveyard_elects_its_graveyard_permission() {

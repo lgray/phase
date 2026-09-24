@@ -14901,6 +14901,44 @@ fn granted_self_exile_cast_permission_matches_its_graveyard_twin() {
     }
 }
 
+/// A self exile permission whose condition text does not parse is not modeled,
+/// directly or as a granted ability.
+#[test]
+fn self_exile_cast_permission_with_unparsed_condition_declines() {
+    let is_permission =
+        |mode: &StaticMode| matches!(mode, StaticMode::GraveyardCastPermission { .. });
+    let granted_permissions = |line: &str| -> Vec<Option<StaticCondition>> {
+        classify_quoted_inner(line)
+            .into_iter()
+            .filter_map(|modification| match modification {
+                ContinuousModification::AddStaticMode { mode } if is_permission(&mode) => {
+                    Some(None)
+                }
+                ContinuousModification::GrantStaticAbility { definition }
+                    if is_permission(&definition.mode) =>
+                {
+                    Some(definition.condition)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    let parsed = "You may cast this card from exile as long as you control a Zombie.";
+    let direct = parse_static_line(parsed).expect("parsed condition keeps the permission");
+    assert!(is_permission(&direct.mode) && direct.condition.is_some());
+    assert_eq!(granted_permissions(parsed), vec![direct.condition]);
+
+    let unparsed = "You may cast this card from exile as long as you control a ~ planeswalker.";
+    assert_eq!(
+        (
+            parse_static_line(unparsed).is_some_and(|definition| is_permission(&definition.mode)),
+            granted_permissions(unparsed),
+        ),
+        (false, vec![])
+    );
+}
+
 /// An exile tail outside a card's own unlimited cast permission is not
 /// modeled; a self graveyard permission keeps its zone.
 #[test]
