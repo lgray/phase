@@ -8,6 +8,7 @@ use crate::types::identifiers::{CardId, ObjectId, ObjectIncarnationRef};
 use crate::types::player::PlayerId;
 use crate::types::zones::{ExileCostSourceZone, Zone};
 
+use super::log;
 use super::players;
 use super::turn_control;
 
@@ -2355,17 +2356,22 @@ fn viewer_has_private_access_to_player(
 /// `GameEvent::ZoneChanged` records emitted on library → hand or hand → library
 /// moves (the `ZoneChangeRecord` embeds the full card name and type line).
 /// The structured game log already excludes these events; this closes the same
-/// hole on the raw event channel clients also consume.
+/// hole on the raw event channel clients also consume. A face-down move is gated
+/// by the log's event-time concealment authority, not by batch-end state.
 pub fn filter_events_for_viewer(
     events: &[GameEvent],
     state: &GameState,
     viewer: PlayerId,
 ) -> Vec<GameEvent> {
     let spectator = !state.players.iter().any(|player| player.id == viewer);
+    let batch = log::BatchIndex::new(events, state);
     events
         .iter()
-        .filter(|event| event_visible_to_viewer(event, state, viewer))
-        .map(|event| match event {
+        .enumerate()
+        .filter(|&(index, event)| {
+            event_visible_to_viewer(event, index, events, &batch, state, viewer)
+        })
+        .map(|(_, event)| match event {
             // `CardId` is assigned from the pre-shuffle object sequence when a
             // deck loads. An opponent can use it to recover hidden deck order,
             // including the identity of a face-down spell; only the public
@@ -2393,7 +2399,14 @@ pub fn filter_events_for_viewer(
         .collect()
 }
 
-fn event_visible_to_viewer(event: &GameEvent, state: &GameState, viewer: PlayerId) -> bool {
+fn event_visible_to_viewer(
+    event: &GameEvent,
+    index: usize,
+    events: &[GameEvent],
+    batch: &log::BatchIndex,
+    state: &GameState,
+    viewer: PlayerId,
+) -> bool {
     let can_view_private_for_player =
         |player: PlayerId| viewer_has_private_access_to_player(state, viewer, player);
 
@@ -2402,112 +2415,92 @@ fn event_visible_to_viewer(event: &GameEvent, state: &GameState, viewer: PlayerI
         // Individual draws identify the exact library card — only viewers with
         // private-zone authority for the drawer may see them.
         GameEvent::CardDrawn { player_id, .. } => can_view_private_for_player(*player_id),
+        // CR 400.2: a hidden-to-hidden move's record identifies the card, so only
+        // a viewer with private-zone authority for its owner may receive it.
         GameEvent::ZoneChanged {
-            object_id,
-            from,
-            to,
+            from: Some(Zone::Library),
+            to: Zone::Hand | Zone::Library,
             record,
             ..
-        } if *from == Some(Zone::Library) => library_zone_change_visible_to_viewer(
-            state,
-            viewer,
-            *object_id,
-            *to,
-            record.owner,
-            &can_view_private_for_player,
-        ),
-        // CR 701.17c + CR 400.2: a milled card can be found "as long as that
-        // zone is a public zone". Gate the action event with the SAME
-        // predicate as the library departure beside it, so the two wire
-        // channels can never disagree about one departure. CR 400.3 +
-        // CR 401.1: a library holds its owner's cards, so `player_id` is the
-        // owner when the object has already left `state.objects`.
-        GameEvent::Milled {
-            player_id,
-            object_id,
-            to,
-        } => library_zone_change_visible_to_viewer(
-            state,
-            viewer,
-            *object_id,
-            *to,
-            state
-                .objects
-                .get(object_id)
-                .map_or(*player_id, |obj| obj.owner),
-            &can_view_private_for_player,
-        ),
-        // CR 400.2: A mulligan moves cards from one hidden zone to another.
-        // The record contains the original hand identity, so only the owner
-        // or a viewer with private-zone authority may receive it.
-        GameEvent::ZoneChanged {
+        }
+        | GameEvent::ZoneChanged {
             from: Some(Zone::Hand),
             to: Zone::Library,
             record,
             ..
         } => can_view_private_for_player(record.owner),
-        // CR 702.143a: foretell exiles a hand card face down. The zone-change
-        // record snapshots its real name, so it is visible only to a viewer
-        // who may look at that face-down exiled card.
+        // CR 400.2 + CR 406.3: a move the log's event-time authority conceals
+        // identifies a hidden card, so only its audience receives the record.
         GameEvent::ZoneChanged {
             object_id,
-            from: Some(Zone::Hand),
-            to: Zone::Exile,
-            ..
-        } => state.objects.get(object_id).is_none_or(|obj| {
-            !obj.face_down
-                || face_down_exile_visible_to_viewer(
+            from: Some(_),
+            to,
+            record,
+        } => {
+            !log::is_concealed_move(events, index, batch, state)
+                || concealed_move_visible_to_viewer(
                     state,
                     *object_id,
-                    obj,
+                    *to,
+                    record.owner,
                     &can_view_private_for_player,
                 )
-        }),
+        }
+        // CR 701.17c + CR 400.2: a library departure has no face-up side, so a mill
+        // to a public zone gets its paired `ZoneChanged`'s verdict. CR 400.3 +
+        // CR 401.1: `player_id` is the owner when the object has left `state.objects`.
+        GameEvent::Milled {
+            player_id,
+            object_id,
+            to,
+        } => {
+            let owner = state
+                .objects
+                .get(object_id)
+                .map_or(*player_id, |obj| obj.owner);
+            match to {
+                Zone::Hand | Zone::Library => can_view_private_for_player(owner),
+                _ => {
+                    !log::arrived_face_down(batch, *object_id, index, state)
+                        || concealed_move_visible_to_viewer(
+                            state,
+                            *object_id,
+                            *to,
+                            owner,
+                            &can_view_private_for_player,
+                        )
+                }
+            }
+        }
         _ => true,
     }
 }
 
-/// Whether a library-origin `ZoneChanged` event may be sent to `viewer`.
-///
-/// The `ZoneChangeRecord` snapshots the card's real identity at move time, so
-/// face-down manifest/cloak moves and face-down exiles must be gated the same
-/// way `filter_state_for_viewer` gates the post-move object — not by a fixed
-/// destination-zone allowlist.
-fn library_zone_change_visible_to_viewer(
+/// Who may receive a concealed move's record: those who may see the card where it arrived.
+fn concealed_move_visible_to_viewer(
     state: &GameState,
-    viewer: PlayerId,
     object_id: ObjectId,
     to: Zone,
     owner: PlayerId,
     can_view_private_for_player: &impl Fn(PlayerId) -> bool,
 ) -> bool {
-    if matches!(to, Zone::Hand | Zone::Library) {
-        return viewer_has_private_access_to_player(state, viewer, owner);
+    let obj = state.objects.get(&object_id);
+    match to {
+        // CR 402.3 + CR 400.3: the card is in its owner's hand.
+        Zone::Hand => can_view_private_for_player(owner),
+        // CR 708.5: a face-down spell or permanent is seen by its controller or a look permission.
+        Zone::Battlefield | Zone::Stack => obj.is_some_and(|obj| {
+            can_view_private_for_player(obj.controller)
+                || viewer_may_look_at_face_down(state, object_id, can_view_private_for_player)
+        }),
+        // CR 406.3 + CR 702.143a: only an instruction or foretell lets a player look at a card
+        // exiled face down.
+        Zone::Exile => obj.is_some_and(|obj| {
+            face_down_exile_visible_to_viewer(state, object_id, obj, can_view_private_for_player)
+        }),
+        // CR 401.2: Players can't look at or change the order of cards in a library.
+        Zone::Library | Zone::Graveyard | Zone::Command => false,
     }
-
-    let Some(obj) = state.objects.get(&object_id) else {
-        return true;
-    };
-
-    if obj.face_down {
-        match to {
-            Zone::Battlefield | Zone::Stack => {
-                return can_view_private_for_player(obj.controller)
-                    || viewer_may_look_at_face_down(state, object_id, can_view_private_for_player);
-            }
-            Zone::Exile => {
-                return face_down_exile_visible_to_viewer(
-                    state,
-                    object_id,
-                    obj,
-                    can_view_private_for_player,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    true
 }
 
 /// Mirrors the face-down exile redaction in `filter_state_for_viewer`.

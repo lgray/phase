@@ -4,7 +4,7 @@ use engine::game::casting::spell_objects_available_to_cast;
 use engine::game::game_object::{AttachTarget, BackFaceData};
 use engine::game::log::resolve_log_entries;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::game::visibility::filter_state_for_viewer;
+use engine::game::visibility::{filter_events_for_viewer, filter_state_for_viewer};
 use engine::types::ability::{AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter};
 use engine::types::actions::GameAction;
 use engine::types::card_type::{CardType, CoreType};
@@ -21,6 +21,7 @@ use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
 
 const P2: PlayerId = PlayerId(2);
+const SPECTATOR: PlayerId = PlayerId(u8::MAX);
 const EXILE_HAND_THEN_DRAW: &str = "Exile all cards from target player's hand, then that player draws a card. That player loses 1 life.";
 
 fn names(entry: &GameLogEntry, id: ObjectId) -> bool {
@@ -54,6 +55,33 @@ fn has_elimination_line(entries: &[GameLogEntry], player: PlayerId) -> bool {
                 if *player_id == player && text == " is eliminated"
         )
     })
+}
+
+/// The moves of `id` whose record names it `name`.
+fn named_moves(events: &[GameEvent], id: ObjectId, name: &str) -> Vec<(Zone, Zone)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::ZoneChanged {
+                object_id,
+                from: Some(from),
+                to,
+                record,
+            } if *object_id == id && record.name == name => Some((*from, *to)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The moves of `id` named `name` that `viewer` receives on the raw event channel.
+fn viewer_named_moves(
+    events: &[GameEvent],
+    state: &GameState,
+    viewer: PlayerId,
+    id: ObjectId,
+    name: &str,
+) -> Vec<(Zone, Zone)> {
+    named_moves(&filter_events_for_viewer(events, state, viewer), id, name)
 }
 
 fn event_position(result: &ActionResult, predicate: impl Fn(&GameEvent) -> bool) -> Option<usize> {
@@ -235,6 +263,36 @@ fn discover_decline_keeps_the_card_unnamed() {
 
     assert!(move_position(&declined, found, Zone::Exile, Zone::Hand).is_some());
     assert_eq!(runner.state().objects[&found].zone, Zone::Hand);
+    let exile_to_hand = vec![(Zone::Exile, Zone::Hand)];
+    assert_eq!(
+        named_moves(&declined.events, found, "Probe Discovered"),
+        exile_to_hand
+    );
+    for viewer in [P1, SPECTATOR] {
+        assert!(viewer_named_moves(
+            &declined.events,
+            runner.state(),
+            viewer,
+            found,
+            "Probe Discovered"
+        )
+        .is_empty());
+    }
+    assert_eq!(
+        viewer_named_moves(
+            &declined.events,
+            runner.state(),
+            P0,
+            found,
+            "Probe Discovered"
+        ),
+        exile_to_hand
+    );
+    assert!(declined.log_entries.iter().any(|entry| matches!(
+        entry.segments.as_slice(),
+        [LogSegment::CardName { object_id, .. }, LogSegment::Text(text)]
+            if *object_id == spell && text == "'s effect resolves"
+    )));
     assert!(
         entries_naming(&declined.log_entries, found).is_empty(),
         "{:?}",
@@ -257,15 +315,28 @@ fn face_up_library_exile_stays_named() {
         )
         .id();
     let mut runner = scenario.build();
-    let before = runner.state().clone();
-    let outcome = runner.cast(spell).resolve();
-    outcome.assert_zone(&[top, second], Zone::Exile);
-    let entries = resolve_log_entries(outcome.events(), &before, outcome.state());
-    for id in [top, second] {
-        assert!(!outcome.state().objects[&id].face_down);
-        let naming = entries_naming(&entries, id);
+    let _ = runner.cast(spell).commit();
+    let mut resolved = None;
+    for _ in 0..4 {
+        let result = runner.act(GameAction::PassPriority).unwrap();
+        if move_position(&result, top, Zone::Library, Zone::Exile).is_some() {
+            resolved = Some(result);
+            break;
+        }
+    }
+    let resolved = resolved.expect("no resolution batch");
+    let state = runner.state();
+    let entries = &resolved.log_entries;
+    for (id, name) in [(top, "Probe Top"), (second, "Probe Second")] {
+        assert_eq!(state.objects[&id].zone, Zone::Exile);
+        assert!(!state.objects[&id].face_down);
+        let naming = entries_naming(entries, id);
         assert_eq!(naming.len(), 1, "{entries:?}");
         assert!(is_move_line(naming[0], id, Zone::Library, Zone::Exile));
+        assert_eq!(
+            viewer_named_moves(&resolved.events, state, P1, id, name),
+            vec![(Zone::Library, Zone::Exile)]
+        );
     }
 }
 
@@ -690,17 +761,30 @@ fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
         )
         .id();
     let mut runner = scenario.build();
-    let before = runner.state().clone();
-    let outcome = runner
-        .cast(spell)
-        .target_player(P1)
-        .search_first_legal()
-        .resolve();
-    let state = outcome.state();
-    assert!(left_library_for_exile(outcome.events(), found));
+    let _ = runner.cast(spell).target_player(P1).commit();
+    for _ in [P0, P1] {
+        runner.act(GameAction::PassPriority).unwrap();
+    }
+    let chosen = runner
+        .act(GameAction::SelectCards { cards: vec![found] })
+        .unwrap();
+    let state = runner.state();
+    let events = &chosen.events;
+    assert!(left_library_for_exile(events, found));
+    let library_to_exile = vec![(Zone::Library, Zone::Exile)];
+    assert_eq!(
+        named_moves(events, found, "Probe Foreign Found"),
+        library_to_exile
+    );
+    // CR 406.3: the owner may not look at the card; the searcher the look is bound to may.
+    assert!(viewer_named_moves(events, state, P1, found, "Probe Foreign Found").is_empty());
+    assert_eq!(
+        viewer_named_moves(events, state, P0, found, "Probe Foreign Found"),
+        library_to_exile
+    );
     // CR 701.24a: only the searched library is shuffled.
-    assert!(shuffled_library(outcome.events(), P1));
-    assert!(!shuffled_library(outcome.events(), P0));
+    assert!(shuffled_library(events, P1));
+    assert!(!shuffled_library(events, P0));
     // CR 406.3 + CR 608.2c: the searcher, not the owner, is the player the look is bound to.
     assert!(state.exile_links.iter().any(|link| link.exiled_id == found
         && matches!(
@@ -713,8 +797,8 @@ fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
     assert_eq!(view_name(state, P0, found), "Probe Foreign Found");
     assert!(spell_objects_available_to_cast(state, P0).contains(&found));
     assert_ne!(view_name(state, P1, found), "Probe Foreign Found");
-    let entries = resolve_log_entries(outcome.events(), &before, state);
-    assert!(entries_naming(&entries, found).is_empty(), "{entries:?}");
+    let entries = &chosen.log_entries;
+    assert!(entries_naming(entries, found).is_empty(), "{entries:?}");
 }
 
 /// Resolves The Creation of Avacyn's chapter I search for `found`, with Word of Seizing in P1's
@@ -901,6 +985,24 @@ fn beseech_chain_keeps_the_card_unnamed() {
     assert!(shuffled_library(&chosen.events, P0));
     assert!(move_position(&chosen, found, Zone::Exile, Zone::Hand).is_some());
     assert_eq!(runner.state().objects[&found].zone, Zone::Hand);
+    assert_eq!(
+        named_moves(&chosen.events, found, "Probe Beseeched"),
+        vec![(Zone::Library, Zone::Exile), (Zone::Exile, Zone::Hand)]
+    );
+    for viewer in [P1, SPECTATOR] {
+        assert!(viewer_named_moves(
+            &chosen.events,
+            runner.state(),
+            viewer,
+            found,
+            "Probe Beseeched"
+        )
+        .is_empty());
+    }
+    assert_eq!(
+        viewer_named_moves(&chosen.events, runner.state(), P0, found, "Probe Beseeched"),
+        vec![(Zone::Exile, Zone::Hand)]
+    );
     let entries = &chosen.log_entries;
     assert!(entries.iter().any(|entry| matches!(
         entry.segments.as_slice(),
@@ -908,4 +1010,51 @@ fn beseech_chain_keeps_the_card_unnamed() {
             if *object_id == spell && text == "'s effect resolves"
     )));
     assert!(entries_naming(entries, found).is_empty(), "{entries:?}");
+}
+
+const CULVERT_AMBUSHER: &str = "When this creature enters or is turned face up, target creature blocks this turn if able.\nDisguise {4}{G} (You may cast this card face down for {3} as a 2/2 creature with ward {2}. Turn it face up any time for its disguise cost.)";
+
+/// CR 708.5: only the controller may look at a card played face down, so only they receive the
+/// record naming it.
+#[test]
+fn face_down_play_keeps_the_card_out_of_opponents_events() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ambusher = scenario
+        .add_creature_to_hand_from_oracle(P0, "Culvert Ambusher", 4, 5, CULVERT_AMBUSHER)
+        .id();
+    let mut runner = scenario.build();
+    for _ in 0..3 {
+        runner.state_mut().players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Green,
+            ObjectId(0),
+            false,
+            vec![],
+        ));
+    }
+    let card_id = runner.state().objects[&ambusher].card_id;
+    let played = runner
+        .act(GameAction::PlayFaceDown {
+            object_id: ambusher,
+            card_id,
+        })
+        .unwrap();
+    let state = runner.state();
+    assert_eq!(state.objects[&ambusher].zone, Zone::Battlefield);
+    assert!(state.objects[&ambusher].face_down);
+    let hand_to_battlefield = vec![(Zone::Hand, Zone::Battlefield)];
+    assert_eq!(
+        named_moves(&played.events, ambusher, "Culvert Ambusher"),
+        hand_to_battlefield
+    );
+    for viewer in [P1, SPECTATOR] {
+        assert!(
+            viewer_named_moves(&played.events, state, viewer, ambusher, "Culvert Ambusher")
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        viewer_named_moves(&played.events, state, P0, ambusher, "Culvert Ambusher"),
+        hand_to_battlefield
+    );
 }
