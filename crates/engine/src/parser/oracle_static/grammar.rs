@@ -2076,26 +2076,29 @@ pub(crate) fn parse_basic_landwalk_qualifier(input: &str) -> OracleResult<'_, &'
 /// ("this card", "this creature", "this permanent", ...), the permission
 /// applies only to the source card itself, so it lowers to
 /// `TargetFilter::SelfRef`. The returned `bool` is the `self_ref_permission`
-/// flag: when `true`, the caller restricts the static to
-/// `active_zones: [Graveyard]` (CR 113.6b — a zone-restricted ability functions
+/// flag: when `true`, the caller restricts the static to the zones its
+/// permission names (CR 113.6b — a zone-restricted ability functions
 /// only from the zones it names). A non-self-reference filter (e.g. a creature
 /// type) falls through to `parse_type_phrase_folding` and is not zone-restricted here.
 pub(crate) fn parse_graveyard_permission_filter(input: &str) -> (TargetFilter, bool) {
-    // The self-reference token `~` is substituted for type phrases ("this
-    // creature", "this permanent", ...) by `normalize_self_references` before
-    // this parser runs; `SELF_REF_PARSE_ONLY_PHRASES` (e.g. "this card") are
-    // *excluded* from that normalization and reach this function verbatim. Both
-    // forms denote the permission's own source card.
-    for phrase in std::iter::once("~").chain(SELF_REF_PARSE_ONLY_PHRASES.iter().copied()) {
-        if all_consuming(tag::<_, _, OracleError<'_>>(phrase))
-            .parse(input)
-            .is_ok()
-        {
-            return (TargetFilter::SelfRef, true);
-        }
+    if all_consuming(parse_self_subject).parse(input).is_ok() {
+        return (TargetFilter::SelfRef, true);
     }
     let (filter, _) = parse_type_phrase_folding(input);
     (filter, false)
+}
+
+/// The permission's own source card as a cast-permission subject.
+pub(crate) fn parse_self_subject(input: &str) -> OracleResult<'_, &str> {
+    // `normalize_self_references` substitutes `~` for type phrases ("this
+    // creature", ...) but leaves `SELF_REF_PARSE_ONLY_PHRASES` ("this card")
+    // verbatim, so both forms denote the source card.
+    for phrase in std::iter::once("~").chain(SELF_REF_PARSE_ONLY_PHRASES.iter().copied()) {
+        if let Ok(parsed) = tag::<_, _, OracleError<'_>>(phrase).parse(input) {
+            return Ok(parsed);
+        }
+    }
+    Err(crate::parser::oracle_nom::error::oracle_err(input))
 }
 
 /// CR 601.3 + CR 113.6b: Parse the trailing condition gate on a graveyard

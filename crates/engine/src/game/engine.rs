@@ -7587,7 +7587,7 @@ fn drive_loop_action_iteration(
                 return Err(RecastAbort);
             };
             // Prover incomplete here, not a rules refusal: a slice whose steps name different
-            // triggers refuses at this opener on its second step.
+            // triggers refuses at the latest at this opener on its second step.
             let occurrence =
                 recorded_trigger_occurrence(clone, std::slice::from_ref(ctx)).ok_or(RecastAbort)?;
             entered = Some((occurrence.instance, player));
