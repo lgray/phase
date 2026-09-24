@@ -678,6 +678,9 @@ pub struct DerivedViews {
     /// next one belongs too.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub battlefield_keyword_badges: HashMap<ObjectId, Vec<Keyword>>,
+    /// CR 400.7 + CR 607.2a: the cards currently exiled with each battlefield permanent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub linked_exile_ids: BTreeMap<ObjectId, Vec<ObjectId>>,
 
     /// CR 509.1b + CR 611.2c: creatures with a live, temporary
     /// `CantBeBlocked` grant. The optional value is the granting source only
@@ -1581,6 +1584,12 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             .collect();
         if !badges.is_empty() {
             views.battlefield_keyword_badges.insert(obj_id, badges);
+        }
+        let linked: Vec<ObjectId> = crate::game::exile_links::live_links_for_source(state, obj_id)
+            .map(|link| link.exiled_id)
+            .collect();
+        if !linked.is_empty() {
+            views.linked_exile_ids.insert(obj_id, linked);
         }
         if let Some(source_id) = temporary_cant_be_blocked_source(state, obj_id) {
             views.temporary_cant_be_blocked.insert(obj_id, source_id);

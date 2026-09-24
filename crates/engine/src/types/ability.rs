@@ -17223,6 +17223,10 @@ pub enum Effect {
     HideawayConceal {
         #[serde(default = "default_target_filter_parent")]
         target: TargetFilter,
+        /// CR 406.3: `Some` binds the look to that player at resolution; `None`
+        /// leaves it with the source's controller (CR 702.75a).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grantee: Option<PermissionGrantee>,
     },
     /// CR 509.1g + CR 506.3e + CR 707.2: For each attacking creature matched by
     /// `source_filter`, create a token that's a copy of it and put that token
@@ -19142,8 +19146,8 @@ pub enum Effect {
     /// Heist finalizer — continuation stashed by `Effect::Heist`. The chosen
     /// card (carried on `ability.targets` by the `ChooseFromZoneChoice` answer
     /// handler) is exiled from its owner's library, turned face down (CR 406.3),
-    /// linked to the source so the controller may look at it (mirrors Hideaway's
-    /// `ExileLinkKind::HideawayLookable`), and granted a permanent
+    /// linked to the source with a look link bound to the heister (CR 406.3),
+    /// and granted a permanent
     /// `PlayFromExile` permission with any-type-or-color mana so it can be cast
     /// for as long as it remains exiled. Unit variant — no fields; the target is
     /// implicit in `ability.targets`.
@@ -21510,7 +21514,7 @@ impl Effect {
             // from the parent `Dig` continuation (`ParentTarget`); it is never
             // announced as a target, but surfacing the filter keeps chain-time
             // resolution consistent.
-            Effect::HideawayConceal { target } => Some(target),
+            Effect::HideawayConceal { target, .. } => Some(target),
 
             // Heist targets the opponent whose library is heisted.
             Effect::Heist { target, .. } => Some(target),

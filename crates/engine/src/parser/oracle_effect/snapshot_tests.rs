@@ -109,7 +109,8 @@ fn continuation_search_exile_then_shuffle() {
     assert!(matches!(
         &*conceal.effect,
         Effect::HideawayConceal {
-            target: TargetFilter::ParentTarget
+            target: TargetFilter::ParentTarget,
+            grantee: None,
         }
     ));
     let Some(shuffle) = conceal.sub_ability.as_ref() else {
@@ -144,7 +145,8 @@ fn praetors_grasp_conceals_the_foreign_search_result() {
     assert!(matches!(
         &*conceal.effect,
         Effect::HideawayConceal {
-            target: TargetFilter::ParentTarget
+            target: TargetFilter::ParentTarget,
+            grantee: None,
         }
     ));
 }
@@ -175,7 +177,8 @@ fn beseech_the_mirror_search_exiles_and_has_hand_fallback() {
     assert!(matches!(
         &*conceal.effect,
         Effect::HideawayConceal {
-            target: TargetFilter::ParentTarget
+            target: TargetFilter::ParentTarget,
+            grantee: None,
         }
     ));
     let shuffle = conceal

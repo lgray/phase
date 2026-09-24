@@ -3017,7 +3017,7 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::DestroyAll { target, .. }
         | Effect::SwitchPT { target }
         | Effect::ExileHaunting { target }
-        | Effect::HideawayConceal { target }
+        | Effect::HideawayConceal { target, .. }
         | Effect::ChooseCard { target, .. }
         // CR 701.27a: both scopes write ObjectPt on the target/population filter.
         | Effect::Transform { target, .. }

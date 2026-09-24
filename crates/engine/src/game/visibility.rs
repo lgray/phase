@@ -872,9 +872,9 @@ pub(crate) fn identity_projection_for_viewer(
 
     // CR 406.3: A card exiled face down can't be examined by any player
     // except when an instruction allows it. Two modeled look-permission classes:
-    // Foretell (the owner may look, CR 702.143e) and Hideaway (CR 702.75a — the
-    // controller of the permanent that exiled the card may look, keyed on the
-    // dedicated `ExileLinkKind::HideawayLookable` link). Every other face-down
+    // Foretell (the owner may look, CR 702.143e) and look links (CR 406.3 +
+    // CR 702.75a — the link's live rule or its latched players may look, keyed
+    // on the dedicated `ExileLinkKind::HideawayLookable` link). Every other face-down
     // exile class — including plain `TrackedBySource` exiles that grant no
     // look-permission (Bomat Courier's "(You can't look at it.)", Necropotence,
     // Asmodeus) — fails closed and redacts the card for every viewer.
@@ -889,19 +889,13 @@ pub(crate) fn identity_projection_for_viewer(
                 }
                 // CR 702.143e: foretold card — its owner may look.
                 let foretell_ok = obj.foretold && can_view_private_for_player(obj.owner);
-                // CR 702.75a + CR 607.2a: the controller of the permanent that
-                // exiled this card under Hideaway may look at it. Keyed on the
+                // CR 406.3 + CR 702.75a: a look link's live rule or its latch of
+                // every player once admitted lets them look. Keyed on the
                 // dedicated `HideawayLookable` link kind so plain
                 // `TrackedBySource` face-down exiles that grant no look-permission
                 // (Bomat Courier, Necropotence, Asmodeus) stay redacted.
-                let hideaway_lookable_by_viewer = state.exile_links.iter().any(|link| {
-                    link.exiled_id == *obj_id
-                        && link.kind == crate::types::game_state::ExileLinkKind::HideawayLookable
-                        && state
-                            .objects
-                            .get(&link.source_id)
-                            .is_some_and(|src| can_view_private_for_player(src.controller))
-                });
+                let hideaway_lookable_by_viewer =
+                    look_link_lets_view(state, *obj_id, &can_view_private_for_player);
                 // CR 406.3a + CR 406.3b: a player who holds an active
                 // play-from-exile grant for this face-down card may look at it —
                 // the grant that lets them cast it is the same authority that
@@ -2523,17 +2517,38 @@ fn face_down_exile_visible_to_viewer(
     obj: &crate::game::game_object::GameObject,
     can_view_private_for_player: &impl Fn(PlayerId) -> bool,
 ) -> bool {
-    use crate::types::game_state::ExileLinkKind;
     let foretell_ok = obj.foretold && can_view_private_for_player(obj.owner);
-    let hideaway_lookable_by_viewer = state.exile_links.iter().any(|link| {
+    foretell_ok || look_link_lets_view(state, object_id, can_view_private_for_player)
+}
+
+/// CR 406.3 + CR 702.75a: a look link lets the viewer look at face-down exiled
+/// `object_id` if its live rule admits them now or they are latched.
+fn look_link_lets_view(
+    state: &GameState,
+    object_id: ObjectId,
+    can_view_private_for_player: &impl Fn(PlayerId) -> bool,
+) -> bool {
+    state.exile_links.iter().any(|link| {
+        let crate::types::game_state::ExileLinkKind::HideawayLookable {
+            grant,
+            lookers,
+            source_incarnation,
+        } = &link.kind
+        else {
+            return false;
+        };
         link.exiled_id == object_id
-            && link.kind == ExileLinkKind::HideawayLookable
-            && state
-                .objects
-                .get(&link.source_id)
-                .is_some_and(|src| can_view_private_for_player(src.controller))
-    });
-    foretell_ok || hideaway_lookable_by_viewer
+            && (lookers
+                .iter()
+                .any(|player| can_view_private_for_player(*player))
+                || crate::game::exile_links::look_grant_admits(
+                    state,
+                    link.source_id,
+                    *grant,
+                    *source_incarnation,
+                )
+                .is_some_and(can_view_private_for_player))
+    })
 }
 
 /// CR 708.5: `viewer` may look at face-down permanent `obj_id` they do not

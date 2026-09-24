@@ -38,8 +38,12 @@ pub fn resolve(
             rng,
             ..
         } = state;
-        if let Some(set) = tracked_object_sets.get_mut(&id) {
+        let pile = tracked_object_sets.get_mut(&id).map(|set| {
             set.shuffle(rng);
+            set.clone()
+        });
+        if let Some(pile) = pile {
+            crate::game::exile_links::reset_look_latches(state, &pile);
         }
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::Shuffle,

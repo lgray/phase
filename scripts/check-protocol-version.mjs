@@ -12,14 +12,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // is a pre-emptive bump moved ahead of new `GameFormat` variants,
 // carrying no wire-shape change of its own; v78 adds the event-deadline
 // duration (`Duration::UntilEvent` and the transient effect's
-// `duration_event_source`).
+// `duration_event_source`); v79 reshapes the face-down exile look link
+// (`ExileLinkKind::HideawayLookable { grant, lookers, source_incarnation }`).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
-// +7: upstream's v76 CR 601.2f caster-elected cost-reduction ordering, the
-// v77 pre-emptive bump ahead of new format names, and the v78 CR 611.2a
-// event-deadline duration parse bump.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 7;
+// +8: upstream's v76 CR 601.2f caster-elected cost-reduction ordering, the
+// v77 pre-emptive bump ahead of new format names, the v78 CR 611.2a
+// event-deadline duration parse bump, and the v79 exile look-link reshape.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 8;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -47,8 +48,9 @@ const EXPECTED_MIN_LOBBY_PROTOCOL_FOR_DEFAULT_SCORING = 6;
 // stayed green — a v(n-1) host and a v(n) guest would then complete a
 // handshake and only fail when the incompatible payload arrived.
 const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
-// +6: wire 60 moves with full-game v78 for the event-deadline duration.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 6;
+// +7: wire 60 moves with full-game v78 for the event-deadline duration, and
+// wire 61 with full-game v79 for the exile look-link reshape.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 7;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

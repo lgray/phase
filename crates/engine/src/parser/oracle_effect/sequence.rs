@@ -5899,6 +5899,7 @@ fn append_conceal_sub_ability(dig: &mut AbilityDefinition) {
         AbilityKind::Spell,
         Effect::HideawayConceal {
             target: TargetFilter::ParentTarget,
+            grantee: None,
         },
     ));
     let mut cursor = dig;
