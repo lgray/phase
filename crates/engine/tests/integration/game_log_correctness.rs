@@ -683,8 +683,8 @@ fn add_free_instant(
         .id()
 }
 
-/// Passes priority until `player` holds it, then casts `spell` targeting `target` and resolves it.
-fn cast_on(runner: &mut GameRunner, player: PlayerId, spell: ObjectId, target: ObjectId) {
+/// Passes priority until `player` holds it.
+fn pass_priority_to(runner: &mut GameRunner, player: PlayerId) {
     for _ in 0..8 {
         if runner.state().priority_player == player
             && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
@@ -694,6 +694,11 @@ fn cast_on(runner: &mut GameRunner, player: PlayerId, spell: ObjectId, target: O
         runner.act(GameAction::PassPriority).unwrap();
     }
     assert_eq!(runner.state().priority_player, player);
+}
+
+/// Passes priority until `player` holds it, then casts `spell` targeting `target` and resolves it.
+fn cast_on(runner: &mut GameRunner, player: PlayerId, spell: ObjectId, target: ObjectId) {
+    pass_priority_to(runner, player);
     runner.cast(spell).target_objects(&[target]).resolve();
 }
 
@@ -1313,6 +1318,50 @@ fn auditore_ambush_illegal_creature_target_still_shuffles_the_searched_player() 
     assert_eq!(
         auditore_ambush_outcome(&[0, 1], true),
         (Zone::Graveyard, Zone::Hand, true, false)
+    );
+}
+
+const LEYLINE_OF_ANTICIPATION: &str = "If this card is in your opening hand, you may begin the game with it on the battlefield.\nYou may cast spells as though they had flash.";
+const LEYLINE_OF_SANCTITY: &str = "If this card is in your opening hand, you may begin the game with it on the battlefield.\nYou have hexproof. (You can't be the target of spells or abilities your opponents control.)";
+
+/// CR 608.2b: when the searched player becomes an illegal target, "if they search their library
+/// this way, they shuffle" needs information about them, so no library is shuffled.
+#[test]
+fn auditore_ambush_illegal_searched_player_shuffles_no_library() {
+    let mut scenario = searched_board();
+    let found = scenario.add_card_to_library_top(P1, "Ezio, Blade of Vengeance");
+    let bear = scenario.add_creature(P1, "Probe Bear", 2, 2).id();
+    scenario.add_enchantment_from_oracle(P1, "Leyline of Anticipation", LEYLINE_OF_ANTICIPATION);
+    let sanctity = scenario
+        .add_spell_to_hand(P1, "Leyline of Sanctity", false)
+        .as_enchantment()
+        .from_oracle_text(LEYLINE_OF_SANCTITY)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Auditore Ambush", false, AUDITORE_AMBUSH)
+        .id();
+    let mut runner = scenario.build();
+    let _ = runner
+        .cast(spell)
+        .modes(&[0, 1])
+        .target_object(bear)
+        .target_player(P1)
+        .commit();
+    pass_priority_to(&mut runner, P1);
+    let _ = runner.cast(sanctity).commit();
+    let events = drive_to_empty_stack(&mut runner, &[found]);
+    // CR 702.11c: the response made P1 an illegal target; the creature mode still resolved.
+    assert!(engine::game::static_abilities::player_has_hexproof(
+        runner.state(),
+        P1
+    ));
+    let objects = &runner.state().objects;
+    assert_eq!(objects[&bear].zone, Zone::Hand);
+    assert_eq!(objects[&found].zone, Zone::Library);
+    assert_eq!(
+        (shuffled_library(&events, P1), shuffled_library(&events, P0)),
+        (false, false)
     );
 }
 
