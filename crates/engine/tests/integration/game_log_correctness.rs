@@ -725,6 +725,26 @@ fn search_exile_face_down_hides_the_card_from_opponents() {
     assert_ne!(view_name(state, P1, found), "Probe Found");
 }
 
+/// CR 406.3: gaining control of the searching permanent does not grant a look at the card it
+/// exiled face down.
+#[test]
+fn search_exile_look_is_not_gained_by_taking_the_searching_permanent() {
+    let (found, lord, seize, mut runner) = broodlord_search_exiles_found();
+    cast_on(&mut runner, P1, seize, lord);
+    let state = runner.state();
+    assert_eq!(state.objects[&lord].controller, P1);
+    assert_eq!(view_name(state, P0, found), "Probe Found");
+    assert_eq!(view_name(state, P1, found), "Hidden Card");
+    assert!(state.exile_links.iter().any(|link| link.exiled_id == found
+        && matches!(
+            link.kind,
+            ExileLinkKind::HideawayLookable {
+                grant: LookGrant::Player { player: P0 },
+                ..
+            }
+        )));
+}
+
 /// CR 406.3: the searcher, not the owner, keeps the look at a card searched out of another
 /// player's library and exiled face down.
 #[test]
