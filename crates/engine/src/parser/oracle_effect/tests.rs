@@ -49257,7 +49257,7 @@ fn counted_exiled_this_way_cast_cap_the_window_cannot_represent_is_refused() {
 /// The refusal is STRUCTURAL at the construction seam, not only at the door.
 ///
 /// `from_among_batch_cast_driver` is the shared driver authority for all four
-/// `from among` arms. It must answer `None` for an unrepresentable printed cap
+/// `from among` arms. It must answer `Refused` for an unrepresentable printed cap
 /// on EVERY driver axis — free/`Cast` (which would otherwise pick
 /// `ResolutionWindow`), paid, land-play, and duration-bearing (which would
 /// otherwise pick `LingeringPermission`) — so that no reordering of the arms,
@@ -49276,21 +49276,21 @@ fn from_among_batch_cast_driver_refuses_an_unrepresentable_cap_on_every_axis() {
     // Representable bounds still pick their established drivers.
     assert!(
         matches!(
-            from_among_batch_cast_driver(Cast, true, free_ok),
-            Some(CastFromZoneDriver::ResolutionWindow { bounds })
+            lowering_without_stated_duration(Cast, true, free_ok),
+            FromAmongBatchLowering::Driver(CastFromZoneDriver::ResolutionWindow { bounds })
                 if bounds.max_casts == Some(2)
         ),
         "reach guard: the free, no-duration axis must still build a bounded window"
     );
     assert_eq!(
-        from_among_batch_cast_driver(Cast, true, durational_ok),
-        Some(LingeringPermission),
+        lowering_without_stated_duration(Cast, true, durational_ok),
+        FromAmongBatchLowering::Driver(LingeringPermission),
         "reach guard: a stated duration over an UNBOUNDED batch must still keep \
          the lingering grant"
     );
     assert_eq!(
-        from_among_batch_cast_driver(Cast, false, paid_ok),
-        Some(LingeringPermission),
+        lowering_without_stated_duration(Cast, false, paid_ok),
+        FromAmongBatchLowering::Driver(LingeringPermission),
         "reach guard: a paid UNBOUNDED batch cast must still keep the lingering grant"
     );
 
@@ -49302,12 +49302,47 @@ fn from_among_batch_cast_driver_refuses_an_unrepresentable_cap_on_every_axis() {
         ("land play", paid, Play, false),
     ] {
         assert_eq!(
-            from_among_batch_cast_driver(mode, without_paying, rest),
-            None,
+            lowering_without_stated_duration(mode, without_paying, rest),
+            FromAmongBatchLowering::Refused,
             "{label}: an unrepresentable printed cap must refuse, never downgrade \
              to a driver with no count channel"
         );
+        // And a STATED duration does not buy an unrepresentable cap a
+        // promotion either — `single_use` is a budget of ONE, not of `N`.
+        assert_eq!(
+            lowering_with_stated_duration(mode, without_paying, rest),
+            FromAmongBatchLowering::Refused,
+            "{label}: an unrepresentable printed cap must still refuse WITH a \
+             stated duration — the single-use grant carries a cap of one only"
+        );
     }
+}
+
+/// The two ways the `from among` mechanism authority is asked, spelled out so no
+/// row can silently pick up the other's answer.
+///
+/// `ParseContext::stated_clause_duration` carries a duration the positional strip
+/// seams peeled before the body parse — the fact that separates Locke, Treasure
+/// Hunter from Nathan Drake, Treasure Hunter, which are byte-identical at this
+/// point (see the field's own documentation).
+fn lowering_without_stated_duration(
+    mode: CardPlayMode,
+    without_paying: bool,
+    rest: &str,
+) -> FromAmongBatchLowering {
+    from_among_batch_cast_driver(mode, without_paying, rest, &ParseContext::default())
+}
+
+fn lowering_with_stated_duration(
+    mode: CardPlayMode,
+    without_paying: bool,
+    rest: &str,
+) -> FromAmongBatchLowering {
+    let ctx = ParseContext {
+        stated_clause_duration: Some(Duration::UntilEndOfTurn),
+        ..Default::default()
+    };
+    from_among_batch_cast_driver(mode, without_paying, rest, &ctx)
 }
 
 /// CR 608.2c: a printed `"up to N"` that reaches the TAIL branches — the ones
@@ -49403,38 +49438,54 @@ fn a_printed_cap_reaching_the_tail_branches_is_refused() {
 ///
 /// Each refusing row is paired with the SAME axis carrying an unbounded head, so
 /// no row can pass merely because that axis stopped producing a driver at all.
+///
+/// Every row here states NO duration. A cap of exactly one paired with a STATED
+/// duration is the one combination that is no longer refused — it promotes to the
+/// single-use grant — and that split is pinned by
+/// `a_stated_duration_promotes_a_paid_cap_of_one_to_a_single_use_grant`.
 #[test]
 fn from_among_batch_cast_driver_refuses_a_representable_cap_no_mechanism_can_carry() {
     // Sanwell, Avenger Ace (verbatim clause body): a PAID batch cast printing a
     // singular head noun. Six cards are exiled and exactly one may be cast; the
-    // lingering permission granted every matching one of the six.
+    // lingering permission granted every matching one of the six. CR 608.2g: it
+    // states no duration, so it has no later priority window and must NOT become
+    // a lingering grant of any kind — including the single-use one.
     assert_eq!(
-        from_among_batch_cast_driver(
+        lowering_without_stated_duration(
             Cast,
             false,
             "a vehicle or artifact creature spell from among them"
         ),
-        None,
+        FromAmongBatchLowering::Refused,
         "a paid batch cast printing a cap of one must refuse: the per-object \
          permission it would select cannot stop the second cast"
     );
-    // Chiss-Goria, Forge Tyrant (verbatim clause body): paid, capped, and
-    // duration-bearing at once.
+    // Paid, capped, and carrying a duration the fragment still holds — the
+    // mid-clause position no strip seam peels. NOT Chiss-Goria's real path: its
+    // trailing "this turn" is peeled by `strip_trailing_duration` before the body
+    // parse and arrives through `ParseContext::stated_clause_duration` instead
+    // (measured; see the promotion test). This row pins the mid-clause axis,
+    // where the duration is visible but the promotion is declined because the
+    // duration the grant would need was never peeled into the context.
     assert_eq!(
-        from_among_batch_cast_driver(Cast, false, "an artifact spell from among them this turn"),
-        None,
+        lowering_without_stated_duration(
+            Cast,
+            false,
+            "an artifact spell from among them this turn"
+        ),
+        FromAmongBatchLowering::Refused,
         "a paid, duration-bearing capped batch cast must refuse"
     );
     // The free duration-bearing axis in isolation (Ral, Leyline Prodigy's
     // mid-clause "this turn" shape, given a printed cap): the duration selects
     // the lingering mechanism, which still cannot hold the cap.
     assert_eq!(
-        from_among_batch_cast_driver(
+        lowering_without_stated_duration(
             Cast,
             true,
             "up to two spells from among them this turn without paying their mana costs"
         ),
-        None,
+        FromAmongBatchLowering::Refused,
         "a free but duration-bearing capped batch cast must refuse"
     );
     // CR 202.3: the running-total budget is a bound with no lingering channel
@@ -49442,18 +49493,18 @@ fn from_among_batch_cast_driver_refuses_a_representable_cap_no_mechanism_can_car
     // threaded only `max_casts` would leave this row granting an unbudgeted
     // permission.
     assert_eq!(
-        from_among_batch_cast_driver(
+        lowering_without_stated_duration(
             Cast,
             true,
             "spells with total mana value 10 or less from among them this turn without paying their mana costs"
         ),
-        None,
+        FromAmongBatchLowering::Refused,
         "a duration-bearing CR 202.3 running-total budget must refuse too"
     );
     // CR 305.1: the land-play axis has no during-resolution mechanism at all.
     assert_eq!(
-        from_among_batch_cast_driver(Play, false, "a land from among them"),
-        None,
+        lowering_without_stated_duration(Play, false, "a land from among them"),
+        FromAmongBatchLowering::Refused,
         "a capped land play must refuse"
     );
 
@@ -49482,12 +49533,103 @@ fn from_among_batch_cast_driver_refuses_a_representable_cap_no_mechanism_can_car
         ("land play", "lands from among them", Play, false),
     ] {
         assert_eq!(
-            from_among_batch_cast_driver(mode, without_paying, rest),
-            Some(LingeringPermission),
+            lowering_without_stated_duration(mode, without_paying, rest),
+            FromAmongBatchLowering::Driver(LingeringPermission),
             "reach guard ({label}): an unbounded head on this axis must still \
              build the lingering grant"
         );
     }
+}
+
+/// CR 601.2a + CR 611.2a + CR 608.2g: a PAID cap of exactly one, with a duration
+/// the strip seams peeled, promotes to the single-use grant instead of refusing.
+///
+/// This is the whole discriminator, asserted on both sides. Locke, Treasure
+/// Hunter and Nathan Drake, Treasure Hunter print the SAME clause body and arrive
+/// here byte-identical (`"a spell from among those cards"`); the only thing that
+/// separates them is whether a duration was peeled off an edge of the clause.
+/// CR 608.2g makes that separation a rules requirement, not a preference: a
+/// resolving object "continues to resolve, which may include casting other spells
+/// this way" and "no other spells can normally be cast … during resolution", so a
+/// clause stating no duration has no later priority window in which a lingering
+/// permission could be exercised.
+#[test]
+fn a_stated_duration_promotes_a_paid_cap_of_one_to_a_single_use_grant() {
+    // Locke, Treasure Hunter — "Until end of turn, you may cast a spell from
+    // among those cards" (leading duration, peeled by the chunk expansion).
+    let locke = "a spell from among those cards";
+    // Chiss-Goria, Forge Tyrant — "You may cast an artifact spell from among them
+    // this turn" (trailing duration, peeled by `strip_trailing_duration`).
+    let chiss_goria = "an artifact spell from among them";
+    // Sanwell, Avenger Ace — same grammar, no duration at any position.
+    let sanwell = "a vehicle or artifact creature spell from among them";
+
+    for (label, rest) in [("locke", locke), ("chiss-goria", chiss_goria)] {
+        assert_eq!(
+            lowering_with_stated_duration(Cast, false, rest),
+            FromAmongBatchLowering::SingleUseGrant,
+            "{label}: a paid cap of one WITH a stated duration is the single-use \
+             grant, not a refusal"
+        );
+        // DISCRIMINATING: the identical fragment without the peeled duration is
+        // Nathan Drake / Sanwell, and CR 608.2g forbids the lingering grant.
+        assert_eq!(
+            lowering_without_stated_duration(Cast, false, rest),
+            FromAmongBatchLowering::Refused,
+            "{label}: the SAME fragment with no stated duration must still refuse \
+             — this is the only thing separating Locke from Nathan Drake"
+        );
+    }
+    assert_eq!(
+        lowering_without_stated_duration(Cast, false, sanwell),
+        FromAmongBatchLowering::Refused,
+        "Sanwell states no duration and must keep its CR 608.2g refusal"
+    );
+
+    // CR 118.9: a FREE cap of one must NOT promote. `PlayFromExile` has no
+    // free-cast channel, so the promotion would silently make the player pay.
+    // MEASURED, and not the obvious shape: a free clause never reaches the
+    // promotion at all, because `clause_states_a_duration` reads the FRAGMENT and
+    // the peeled duration is not in it — so the mechanism is still
+    // `ResolutionWindow`, which carries a cap of one perfectly well. Aminatou's
+    // Augury's refusal therefore happens LATER, at the duration seam
+    // (`CastFromZoneDriver::with_lingering_duration` → `CAST_BOUND_LOST_TO_DURATION_GAP`,
+    // pinned by `leading_duration_over_a_capped_window_refuses`). Asserting the
+    // driver here rather than `Refused` records which of the two refusal paths a
+    // free clause takes; conflating them is what sent an earlier round of this
+    // work to the wrong seam entirely.
+    assert!(
+        matches!(
+            lowering_with_stated_duration(
+                Cast,
+                true,
+                "a spell of that type from among the exiled cards without paying its mana cost"
+            ),
+            FromAmongBatchLowering::Driver(CastFromZoneDriver::ResolutionWindow { bounds })
+                if bounds.max_casts == Some(1)
+        ),
+        "a FREE cap of one must keep the resolution window and be refused at the \
+         duration seam — it must never reach the paid single-use promotion, which \
+         cannot express 'without paying its mana cost'"
+    );
+
+    // A cap of TWO has no single-use form either — `single_use` is a
+    // budget of one. March of Reckless Joy and Ashiok keep refusing until the
+    // bool becomes a count.
+    assert_eq!(
+        lowering_with_stated_duration(Cast, false, "up to two spells from among those cards"),
+        FromAmongBatchLowering::Refused,
+        "a cap of two cannot be carried by a single-use grant"
+    );
+
+    // Reach guard: an UNBOUNDED paid clause with the same stated duration still
+    // takes the ordinary lingering driver, so the promotion above is a genuine
+    // cap decision and not "any paid duration-bearing clause now promotes".
+    assert_eq!(
+        lowering_with_stated_duration(Cast, false, "spells from among those cards"),
+        FromAmongBatchLowering::Driver(LingeringPermission),
+        "reach guard: an unbounded paid batch keeps the per-object lingering grant"
+    );
 }
 
 /// CR 608.2g: the self-library one-card driver is selected ONLY for an exact
@@ -72359,7 +72501,9 @@ fn walking_bulwark_comma_compound_carries_the_anchored_condition() {
     assert_eq!(
         subject[1].condition,
         Some(p3e_anchored()),
-        "C3.9: NEVER an unconditioned CanAttackWithDefender on an interposed line"
+        "an interposed line must NEVER yield an unconditioned \
+         CanAttackWithDefender — the interposed class is the permission's gate, \
+         so dropping it grants the permission unconditionally"
     );
     assert_eq!(subject[0].modifications, control[0].modifications);
     assert_eq!(subject[2].modifications, control[2].modifications);
@@ -72558,7 +72702,9 @@ fn adjacent_defender_grammars_keep_their_own_parse_on_the_effect_side() {
     assert_eq!(
         arm7_subject[0].condition,
         Some(p3e_anchored()),
-        "C3.9: the re-attached conjunct must carry the interposed class's condition"
+        "the re-attached conjunct must carry the interposed class's condition — \
+         a conjunct split off and rejoined without its gate is granted \
+         unconditionally"
     );
 
     // ARM 3 — the block-exception sibling on a targeted line. A too-greedy

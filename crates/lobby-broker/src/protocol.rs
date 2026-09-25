@@ -60,13 +60,26 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 79 — CR 406.3 exile look authority: `ExileLinkKind::HideawayLookable`
+/// 80 — CR 406.3 exile look authority: `ExileLinkKind::HideawayLookable`
 ///      changed from a unit variant to `{ grant, lookers, source_incarnation }`
 ///      in serialized `GameState`, and `source_incarnation` has no serde
 ///      default, so neither side parses the other's look links. A PARSE bump
 ///      like 78. `DerivedViews::linked_exile_ids` is new and the client renders
-///      it directly. Full-game peers and P2P move in lockstep (wire 61); lobby
+///      it directly. Full-game peers and P2P move in lockstep (wire 62); lobby
 ///      messages are unchanged.
+///
+/// 79 — CR 601.2f + CR 602.2b activated-ability cost-reduction election:
+///      `ReductionProvenance` gains `AbilityCostRider` and `TransientEffect`,
+///      new variants on a `#[serde(tag = "type", content = "data")]` enum with
+///      no fallback, so a v78 peer fails deserialization on either tag when an
+///      activation's election prompt carries one. A PARSE bump like 76, and as
+///      conditional: the prompt forms only when two orders of an activation's
+///      reductions lock different totals. `CostReductionEntry::minimum_mana`,
+///      `PendingCast::activation_cost_snapshot` and
+///      `WaitingFor::AbilityModeChoice::activation_cost_snapshot` are additive
+///      (`#[serde(default)]`, skipped at 0/`None`); every spell frame stays
+///      byte-identical to v78. Full-game peers and P2P move in lockstep
+///      (wire 61); lobby messages are unchanged.
 ///
 /// 78 — CR 611.2a + CR 601.2i event-deadline duration ("until a player casts
 ///      a creature spell"): `Duration::UntilEvent` is a new variant of an enum
@@ -617,7 +630,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 79;
+pub const PROTOCOL_VERSION: u32 = 80;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -1833,12 +1846,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 79);
+        assert_eq!(PROTOCOL_VERSION, 80);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 78);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 79);
     }
 
     #[test]

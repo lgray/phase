@@ -10735,7 +10735,15 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         // `Some(Permanent)` (CR 611.2a — an explicitly written window is a stated one).
         // Both carriers travel through this one call; only the head clause's carrier
         // is ungated.
-        return with_clause_chain_duration(parse_effect_clause(rest, ctx), duration);
+        //
+        // CR 611.2a: publish the peeled duration for the body parse (see
+        // `ParseContext::stated_clause_duration`). SAVE/RESTORE, not set/clear: this
+        // dispatch recurses, and a nested clause that states its own duration must not
+        // leave it standing for the enclosing one.
+        let restore = ctx.stated_clause_duration.replace(duration.clone());
+        let body = parse_effect_clause(rest, ctx);
+        ctx.stated_clause_duration = restore;
+        return with_clause_chain_duration(body, duration);
     }
 
     // CR 614.1a + CR 514.2: floating turn-bound zone-change redirect ("if one or
@@ -18722,8 +18730,21 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
 
     let (stripped, duration) = strip_trailing_duration(text);
     let stripped_lower = stripped.to_ascii_lowercase();
+    // CR 611.2a: publish the peeled trailing duration for the body parse (see
+    // `ParseContext::stated_clause_duration`). Overwrites ONLY when this seam
+    // actually peeled something: a clause with no trailing duration must leave the
+    // enclosing LEADING duration intact, or Locke's "Until end of turn, you may cast
+    // a spell from among those cards" would arrive at the mechanism decision looking
+    // exactly like Nathan Drake's undurated sibling. Restored afterwards so a peeled
+    // duration cannot leak into the next clause.
+    let restore = duration
+        .clone()
+        .map(|peeled| ctx.stated_clause_duration.replace(peeled));
     let mut clause = try_parse_create_token_sequence(TextPair::new(stripped, &stripped_lower), ctx)
         .unwrap_or_else(|| parse_imperative_effect(stripped, ctx));
+    if let Some(previous) = restore {
+        ctx.stated_clause_duration = previous;
+    }
     // CR 601.2c: paired with the reset at the top of this function. The count is
     // produced by the same parse that produced the target filter
     // (`parse_each_of_target_distribution`), so it is the primary authority for
@@ -26992,6 +27013,49 @@ fn exiled_cast_target_with_type_gate(rest: &str) -> TargetFilter {
     }
 }
 
+/// CR 608.2g + CR 611.2a: what a `from among …` batch anaphor lowers
+/// to, once its printed bound has been paired with the mechanism its grammar
+/// implies.
+///
+/// Three states rather than `Option<CastFromZoneDriver>`, because the pairing has
+/// three honest answers and an `Option` can only carry two. Overloading `None` to
+/// mean both "refuse" and "represent this a different way" is precisely the
+/// conflation that hides silent drops — the same medicine, for the same reason, as
+/// `CastCapReading`'s three-way split of what a bare `Option<u8>` used to encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FromAmongBatchLowering {
+    /// The mechanism can carry the printed bound. Lower to `Effect::CastFromZone`.
+    Driver(CastFromZoneDriver),
+    /// CR 611.2a + CR 601.2a: a PAID batch grant that prints a cap of exactly one
+    /// AND states a durational scope. No `CastFromZoneDriver` represents this —
+    /// `LingeringPermission` records an independent per-object permission with no
+    /// shared budget, so it would grant the whole batch — but
+    /// `CastingPermission::PlayFromExile { single_use: true }` does: it is a
+    /// grant-scoped budget of ONE shared across every object carrying the same
+    /// `single_use_group`. Chandra, Hope's Beacon +1 already lowers to that shape
+    /// through `try_parse_cast_from_tracked_exile_grant`; this is the same shape
+    /// reached from the batch-anaphor surfaces (Locke, Treasure Hunter;
+    /// Chiss-Goria, Forge Tyrant).
+    SingleUseGrant,
+    /// No representation carries the printed bound. The caller emits
+    /// the honest gap and must NOT substitute a mechanism, because every
+    /// substitution available is strictly more permissive than the instruction.
+    Refused,
+}
+
+impl FromAmongBatchLowering {
+    /// Adapt a pairing authority that has only the two classical answers. Used by
+    /// the batch surfaces whose mechanism can never be promoted (the private-zone
+    /// hand pick and the self-library peek), so the promotion stays confined to
+    /// the arms that bind a chain-published set.
+    fn from_driver(driver: Option<CastFromZoneDriver>) -> Self {
+        match driver {
+            Some(driver) => Self::Driver(driver),
+            None => Self::Refused,
+        }
+    }
+}
+
 /// CR 608.2g: Decide the casting MECHANISM for a "from among …" batch anaphor.
 ///
 /// CR 608.2g says a resolving object "continues to resolve, which may include
@@ -27034,7 +27098,8 @@ fn from_among_batch_cast_driver(
     mode: CardPlayMode,
     without_paying: bool,
     rest: &str,
-) -> Option<CastFromZoneDriver> {
+    ctx: &ParseContext,
+) -> FromAmongBatchLowering {
     // CR 608.2c (strict lowering): the printed bounds are read FIRST and then
     // handed, together with the mechanism this grammar implies, to the single
     // pairing authority. Deciding the mechanism first and reading the bound
@@ -27042,26 +27107,67 @@ fn from_among_batch_cast_driver(
     // two sorcery spells from among them" for a PAID or duration-bearing clause
     // landed on `LingeringPermission`, i.e. an uncapped later-priority
     // permission — strictly more permissive than the printed instruction.
-    let bounds = from_among_batch_bounds(rest)?;
+    let Some(bounds) = from_among_batch_bounds(rest) else {
+        return FromAmongBatchLowering::Refused;
+    };
     // CR 305.1 + CR 611.2a: the two grammars that mean "exercised at a later
     // priority window". A PAID batch cast (Sanwell, Avenger Ace: "you may cast a
     // Vehicle or artifact creature spell from among them") needs a mana-payment
     // window the free-cast window primitive does not model, and a CR 305.1 land
     // play is a special action with no during-resolution mechanism. A duration
-    // stated INSIDE the clause is the third: the two reconciliation seams
-    // (`CastFromZoneDriver::with_lingering_duration`, called from
-    // `with_clause_duration` and from the trailing-duration fixup) only see a
-    // duration the chain STRIPPED off an edge of the clause; Ral, Leyline
-    // Prodigy states it mid-clause — "you may cast instant and sorcery spells
-    // from among them THIS TURN without paying their mana costs" — so neither
-    // seam fires and the check has to happen here.
+    // stated INSIDE the clause is the third: Ral, Leyline Prodigy states it
+    // mid-clause — "you may cast instant and sorcery spells from among them THIS
+    // TURN without paying their mana costs" — where no positional strip seam
+    // peels it, so `clause_states_a_duration` reads it straight off the fragment.
+    //
+    // DELIBERATELY NOT WIDENED with `ctx.stated_clause_duration`. A peeled
+    // duration must not reach this selection: a FREE capped clause (Aminatou's
+    // Augury) currently builds `ResolutionWindow` here and is refused later at
+    // the duration seam as `CAST_BOUND_LOST_TO_DURATION_GAP`, and widening this
+    // line would move it to `UNREPRESENTABLE_CAST_CAP_GAP` — a different gap
+    // name for an unchanged behaviour, which is a coverage-provenance regression
+    // for no gain. `leading_duration_over_a_capped_window_refuses` pins that.
+    // The threaded fact is consulted only by the promotion below, which is the
+    // one decision it is needed for.
     let mechanism =
         if mode != CardPlayMode::Cast || !without_paying || clause_states_a_duration(rest) {
             CastMechanism::LingeringPermission
         } else {
             CastMechanism::ResolutionWindow
         };
-    CastFromZoneDriver::for_batch_bounds(mechanism, bounds)
+    if let Some(driver) = CastFromZoneDriver::for_batch_bounds(mechanism, bounds) {
+        return FromAmongBatchLowering::Driver(driver);
+    }
+    // CR 611.2a + CR 601.2a: the refusal above is the per-object permission
+    // saying it has no shared cast budget. One shape in this engine DOES have
+    // one, and only for the exact bound this clause printed:
+    // `PlayFromExile { single_use: true }` authorizes at most ONE cast across the
+    // whole grant, shared by every object stamped with its `single_use_group`.
+    //
+    // Three conditions, each load-bearing:
+    //   * `!without_paying` — `PlayFromExile` has no free-cast channel, so a free
+    //     clause promoted here would silently drop "without paying its mana
+    //     cost" and make the player pay. Those clauses keep the existing
+    //     `ResolutionWindow` path and its refusal.
+    //   * `bounds.is_exactly_one_cast()` — `single_use` is a budget of one and
+    //     cannot express `N > 1` (March of Reckless Joy's two, Ashiok's three) or
+    //     a CR 202.3 running-total budget. Those stay refused; see the
+    //     `single_use` bool→count follow-up.
+    //   * a STATED duration — CR 608.2g is explicit that a resolving object
+    //     "continues to resolve, which may include casting other spells this
+    //     way" and that "no other spells can normally be cast … during
+    //     resolution", so a clause that states no durational scope has no later
+    //     priority window in which a lingering permission could be exercised.
+    //     Granting one would be strictly more permissive than the card. Nathan
+    //     Drake, Treasure Hunter and Sanwell, Avenger Ace print this exact
+    //     grammar WITHOUT a duration and must keep refusing — and at this point
+    //     they are byte-identical to Locke, which is why the fact arrives by
+    //     channel rather than from `rest`.
+    let states_peeled_duration = ctx.stated_clause_duration.is_some();
+    if !without_paying && bounds.is_exactly_one_cast() && states_peeled_duration {
+        return FromAmongBatchLowering::SingleUseGrant;
+    }
+    FromAmongBatchLowering::Refused
 }
 
 /// CR 608.2g: the driver for the self-library-peek form of the bare `from among`
@@ -27117,21 +27223,32 @@ const UNREPRESENTABLE_CAST_CAP_GAP: &str = "unrepresentable_cast_cap";
 /// exiled cards`) build the identical `Effect::CastFromZone` and differ only in
 /// the target binding, so they share one constructor. Routing them through it is
 /// what makes the strict refusal STRUCTURAL rather than a per-arm convention: a
-/// `None` driver becomes the honest `Effect::Unimplemented` gap here, and no arm
-/// — present or future — can construct a `CastFromZone` that silently drops a
+/// `Refused` lowering becomes the honest `Effect::Unimplemented` gap here, and no
+/// arm — present or future — can construct a `CastFromZone` that silently drops a
 /// printed cast cap. `refuse_unrepresentable_cast_cap` normally refuses the same
 /// clause earlier, at the entry to `try_parse_cast_effect`; this seam is the
 /// construction-site guarantee that survives any later reordering of the arms.
+///
+/// [`FromAmongBatchLowering::SingleUseGrant`] is the third outcome and is decided
+/// here for the same reason the refusal is: this is the one place that turns a
+/// pairing verdict into an `Effect`, so a promotion decided anywhere else would
+/// leave an arm able to build the wrong shape.
 fn from_among_batch_cast_effect(
-    driver: Option<CastFromZoneDriver>,
+    lowering: FromAmongBatchLowering,
     target: TargetFilter,
     mode: CardPlayMode,
     without_paying: bool,
     constraint: Option<CastPermissionConstraint>,
     fragment: &str,
 ) -> Effect {
-    let Some(driver) = driver else {
-        return Effect::unimplemented(UNREPRESENTABLE_CAST_CAP_GAP, fragment);
+    let driver = match lowering {
+        FromAmongBatchLowering::Driver(driver) => driver,
+        FromAmongBatchLowering::Refused => {
+            return Effect::unimplemented(UNREPRESENTABLE_CAST_CAP_GAP, fragment);
+        }
+        FromAmongBatchLowering::SingleUseGrant => {
+            return single_use_tracked_set_cast_grant(mode, constraint, &target, fragment);
+        }
     };
     Effect::CastFromZone {
         target,
@@ -27145,6 +27262,148 @@ fn from_among_batch_cast_effect(
         mana_spend_permission: None,
         additional_cost: None,
         cast_cost_modifier: None,
+    }
+}
+
+/// CR 601.3: The restriction a `from among` batch target carries BEYOND its
+/// zone binding — i.e. the part of the caller's target that
+/// `single_use_tracked_set_cast_grant` would throw away when it rebinds to the
+/// tracked set.
+///
+/// `None` means the target is a pure zone binding and nothing is lost. `Some`
+/// means the target restricts WHICH members may be cast, and the promotion must
+/// either represent that restriction on `card_filter` or refuse.
+///
+/// Compared against the head gate rather than merely tested for presence,
+/// because the two arms legitimately agree: the bare-anaphor arm builds its
+/// target with `exiled_cast_target_with_type_gate`, which reads the SAME
+/// `parse_cast_type_gate` the promotion does, so Chiss-Goria's `Artifact`
+/// appears on both sides and is not a loss. A conjunction with more than one
+/// non-zone leg returns the whole target, which can never equal a single head
+/// gate — so it refuses, which is the conservative answer for a shape no caller
+/// builds today.
+fn discarded_cast_restriction(target: &TargetFilter) -> Option<&TargetFilter> {
+    match target {
+        TargetFilter::ExiledBySource => None,
+        TargetFilter::And { filters } => {
+            let mut non_zone = filters
+                .iter()
+                .filter(|leg| !matches!(leg, TargetFilter::ExiledBySource));
+            let only = non_zone.next()?;
+            if non_zone.next().is_some() {
+                return Some(target);
+            }
+            Some(only)
+        }
+        other => Some(other),
+    }
+}
+
+/// CR 601.2a + CR 611.2a: the duration-scoped, capped-at-one grant over
+/// a chain-published batch.
+///
+/// Identical in shape to what `try_parse_cast_from_tracked_exile_grant` builds for
+/// Chandra, Hope's Beacon +1 — deliberately, because it is the same instruction
+/// reached from a different printed surface. That function recognizes only the
+/// `from among [those|the] exiled cards` anaphor; this reaches the sibling
+/// surfaces (`from among them`, `from among those cards`) that the batch arms own.
+///
+/// THE BINDING IS ZONE-BLIND, and that is load-bearing rather than incidental.
+/// The batch arms hand this seam an exile-ledger target (`ExiledBySource`, via
+/// `exiled_cast_target_with_type_gate` / `ensure_exile_zone_on_cast_target`), which
+/// is correct for an exile-sourced batch and WRONG for any other: Locke, Treasure
+/// Hunter's pool is the GRAVEYARD ("each player mills a card … you may cast a spell
+/// from among those cards"), and an exile leg would resolve against an empty set and
+/// silently swallow the permission. `TargetFilter::TrackedSet { id: TrackedSetId(0) }`
+/// names the set the chain published without naming a zone, so the same grant serves
+/// a milled, exiled, or revealed batch. The caller's `target` is therefore discarded
+/// here rather than threaded — the discard is the fix, not a loss.
+///
+/// The clause's printed type restriction rides on the permission's `card_filter`
+/// (Chandra's `Typed{AnyOf[Instant,Sorcery]}`, Chiss-Goria's `Typed{Artifact}`)
+/// rather than on the target, because it restricts WHICH members of the bound set
+/// may be cast — exactly what that field is for.
+fn single_use_tracked_set_cast_grant(
+    mode: CardPlayMode,
+    constraint: Option<CastPermissionConstraint>,
+    target: &TargetFilter,
+    fragment: &str,
+) -> Effect {
+    // CR 601.2a: `CastingPermission::PlayFromExile` has no cast-constraint
+    // channel, so a clause carrying one (a timing rider) must not be promoted
+    // into a grant that would silently drop it. Same strict-lowering rule the
+    // counted free-cast arm applies for `Effect::FreeCastFromZones`.
+    if constraint.is_some() {
+        return Effect::unimplemented(UNREPRESENTABLE_CAST_CAP_GAP, fragment);
+    }
+    // CR 601.3 (a player may begin to cast a spell only if an effect allows it):
+    // the printed type restriction is part of WHAT the grant allows, so losing it
+    // authorizes casts the card does not. That restriction can be stated in
+    // either of two places, and this seam reads only one of them. A HEAD gate
+    // ("cast an artifact spell from among them" — Chiss-Goria) is recovered from
+    // the fragment by `parse_cast_type_gate` and becomes `card_filter` below. A
+    // SUFFIX gate ("cast a spell from among the instant or sorcery cards exiled
+    // this way") is lifted by `parse_from_among_exiled_this_way` into the
+    // caller's `target` instead — and the promotion DISCARDS that target, because
+    // it must (the target carries an exile-zone leg that is wrong for a milled
+    // pool; see below).
+    //
+    // THE GUARD COMPARES THE TWO, rather than testing either alone. An earlier
+    // cut asked only `head_gate.is_none()`, which caught the suffix-only form and
+    // silently passed the COMBINATION: "cast an artifact spell from among the
+    // instant or sorcery cards exiled this way" has a head gate, so it promoted
+    // with `card_filter: Some(Artifact)` and dropped the instant-or-sorcery leg —
+    // authorizing an artifact that is neither. Asking instead "does the discarded
+    // target carry a restriction the installed filter does not represent?" covers
+    // suffix-only, head-only, and both-at-once with one question, and a future
+    // producer of either gate inherits it.
+    //
+    // The refusal itself is an ENGINE LOWERING LIMITATION, not a rule: no CR
+    // speaks to where in a sentence a restriction is printed. Carrying the suffix
+    // gate across would mean stripping its zone leg and re-hosting the remainder
+    // on `card_filter`, a capability this seam does not have; an honest gap is
+    // the correct landing until it does. No corpus card prints either refused
+    // shape today (measured), so this costs no coverage and closes the widening.
+    let head_gate = parse_cast_type_gate(fragment);
+    if discarded_cast_restriction(target) != head_gate.as_ref() {
+        return Effect::unimplemented(UNREPRESENTABLE_CAST_CAP_GAP, fragment);
+    }
+    Effect::GrantCastingPermission {
+        permission: CastingPermission::PlayFromExile {
+            provenance: crate::types::ability::PlayFromExileProvenance::Impulse,
+            mode,
+            // CR 611.2a: PLACEHOLDER, patched by `apply_duration_to_effect`'s
+            // `GrantCastingPermission` arm, which writes this field
+            // unconditionally through `normalize_play_from_exile_duration`. That
+            // arm is the single authority for this carrier; writing the threaded
+            // duration here directly would bypass the normalization and be
+            // overwritten anyway. This seam is reached only when a duration WAS
+            // stated (`from_among_batch_cast_driver` requires it), so the patch
+            // is guaranteed to run — `locke_grants_a_single_use_cast_until_end_of_turn`
+            // asserts the installed window rather than trusting that.
+            duration: Duration::Permanent,
+            // CR 611.2a/b: placeholder — `grant_permission::resolve` rewrites
+            // this to the concrete grantee at grant time.
+            granted_to: crate::types::player::PlayerId(0),
+            frequency: CastFrequency::Unlimited,
+            source_id: None,
+            exiled_by_ability_controller: None,
+            mana_spend_permission: None,
+            card_filter: head_gate,
+            // Stamped with the resolving set's id at grant time
+            // (`grant_permission::resolve`), which is what makes the one-cast
+            // budget shared across exactly this batch and no other.
+            single_use_group: None,
+            single_use: true,
+            cast_cost_modifier: None,
+            alt_ability_cost: None,
+            land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            invalidation: None,
+        },
+        target: TargetFilter::TrackedSet {
+            id: TrackedSetId(0),
+        },
+        grantee: Default::default(),
     }
 }
 
@@ -28256,7 +28515,7 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
         );
         ensure_exile_zone_on_cast_target(&mut nonland_card_filter);
         return Some(from_among_batch_cast_effect(
-            from_among_batch_cast_driver(mode, without_paying, rest),
+            from_among_batch_cast_driver(mode, without_paying, rest, ctx),
             TargetFilter::And {
                 filters: vec![TargetFilter::ExiledBySource, nonland_card_filter],
             },
@@ -28302,7 +28561,7 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
     // Hellcarver Demon, and similar.
     if let Some(target) = parse_from_among_exiled_this_way(rest) {
         return Some(from_among_batch_cast_effect(
-            from_among_batch_cast_driver(mode, without_paying, rest),
+            from_among_batch_cast_driver(mode, without_paying, rest, ctx),
             target,
             mode,
             without_paying,
@@ -28384,12 +28643,14 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
                 // makes a future "up to two … from among those cards" hand form
                 // refuse instead of silently reaching a one-card pick.
                 return Some(from_among_batch_cast_effect(
-                    from_among_batch_bounds(rest).and_then(|bounds| {
-                        CastFromZoneDriver::for_batch_bounds(
-                            CastMechanism::ResolutionTimePrivateZonePick,
-                            bounds,
-                        )
-                    }),
+                    FromAmongBatchLowering::from_driver(from_among_batch_bounds(rest).and_then(
+                        |bounds| {
+                            CastFromZoneDriver::for_batch_bounds(
+                                CastMechanism::ResolutionTimePrivateZonePick,
+                                bounds,
+                            )
+                        },
+                    )),
                     hand_target,
                     mode,
                     without_paying,
@@ -28421,9 +28682,9 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
             // be selected only for an exact single-card cap — never for
             // "any number of" and never for `N > 1`. That gate lives in the
             // shared pairing authority, not here.
-            from_among_self_library_cast_driver(rest)
+            FromAmongBatchLowering::from_driver(from_among_self_library_cast_driver(rest))
         } else {
-            from_among_batch_cast_driver(mode, without_paying, rest)
+            from_among_batch_cast_driver(mode, without_paying, rest, ctx)
         };
         // CR 601.3: the clause's card-type restriction is part of the
         // cast-legality predicate and must ride on the permission's target
@@ -28447,7 +28708,7 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
         // surface form carries type-restricted members too (Eager Flameguide's
         // "creature spells", Kylox's "instant and/or sorcery spells").
         return Some(from_among_batch_cast_effect(
-            from_among_batch_cast_driver(mode, without_paying, rest),
+            from_among_batch_cast_driver(mode, without_paying, rest, ctx),
             exiled_cast_target_with_type_gate(rest),
             mode,
             without_paying,
@@ -39256,6 +39517,15 @@ pub(crate) fn parse_effect_chain_ir(
             in_trigger: ctx.in_trigger,
             bare_card_aggregate_source,
             nearest_dig_rest_zone,
+            // CR 611.2a: this chunk's leading duration was peeled by
+            // `sequence::expand_leading_duration_chunks` before the chunk text was
+            // handed to the body parser, so the body can no longer see it. Publish
+            // it for the clause lowering (see `ParseContext::stated_clause_duration`).
+            // Set from the CHUNK rather than inherited from `ctx`, so a duration
+            // stated by an earlier chunk cannot promote a later capped chunk that
+            // states none — the fail-open direction, pinned by
+            // `a_stated_duration_does_not_leak_into_the_next_clause`.
+            stated_clause_duration: chunk.leading_duration.clone(),
             // CR 701.42a: propagate the staged meld partner so a reflexive
             // "exile them, then meld them into R" sub-clause parsed inside this
             // chunk (Vanille's "If you do, …" body, which chunks to a single

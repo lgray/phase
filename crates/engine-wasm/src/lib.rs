@@ -1965,11 +1965,10 @@ pub fn submit_action(actor: u8, action: JsValue) -> JsValue {
         if debug_action.is_zero_count_create() {
             return match with_state(|state| {
                 preflight_debug_action_with_rejection(state, actor, debug_action)?;
-                Ok::<_, ActionRejection>(engine::types::game_state::ActionResult {
-                    events: vec![],
-                    waiting_for: state.waiting_for.clone(),
-                    log_entries: vec![],
-                })
+                Ok::<_, ActionRejection>(engine::types::game_state::ActionResult::applied(
+                    vec![],
+                    state.waiting_for.clone(),
+                ))
             }) {
                 Ok(result) => action_outcome(result),
                 Err(error) => error,
@@ -2180,11 +2179,10 @@ fn handle_debug_create_card_inner(
     })
     .unwrap_or_else(|_| Err(NOT_INITIALIZED_ERR.to_string()))?;
     if count == 0 {
-        return Ok(engine::types::game_state::ActionResult {
-            events: vec![],
+        return Ok(engine::types::game_state::ActionResult::applied(
+            vec![],
             waiting_for,
-            log_entries: vec![],
-        });
+        ));
     }
     let source = CARD_DB.with(|cell| {
         let db = cell.borrow();

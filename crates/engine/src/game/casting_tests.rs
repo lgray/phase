@@ -28189,6 +28189,7 @@ fn set_triggered_ability_mode_choice(state: &mut GameState, player: PlayerId, so
         is_activated: false,
         ability_index: None,
         ability_cost: None,
+        activation_cost_snapshot: None,
         unavailable_modes: vec![],
     };
 }
@@ -59389,6 +59390,444 @@ mod unreadable_additional_cost_is_refused_not_free {
             ),
             "an unpayable optional cost must be skipped, not offered — got {:?}",
             runner.state().waiting_for
+        );
+    }
+}
+
+/// CR 601.2f + CR 602.2b: the activation fold's default order is the MINIMUM over
+/// every order the caster could elect — the proof `fold_activation_cost` states,
+/// checked exhaustively as a building block over generic-only reductions with
+/// mixed floors, colored and colorless symbol counts, and raises.
+#[test]
+fn activation_fold_default_order_is_the_minimum_over_every_order() {
+    fn entry(index: u8, amount: u32, minimum_mana: u32) -> CostReductionEntry {
+        CostReductionEntry {
+            amount: ManaCost::generic(amount),
+            multiplier: 1,
+            reach: CostReductionReach::SpillsToGeneric,
+            provenance: ReductionProvenance::Static {
+                source: ObjectId(900),
+                ordinal: index,
+            },
+            display_name: format!("reducer {index}"),
+            minimum_mana,
+        }
+    }
+    fn permutations(n: usize) -> Vec<Vec<usize>> {
+        if n == 0 {
+            return vec![Vec::new()];
+        }
+        let mut out = Vec::new();
+        for rest in permutations(n - 1) {
+            for slot in 0..=rest.len() {
+                let mut order = rest.clone();
+                order.insert(slot, n - 1);
+                out.push(order);
+            }
+        }
+        out
+    }
+    fn total_mana(cost: &AbilityCost) -> u32 {
+        match cost {
+            AbilityCost::Mana {
+                cost: ManaCost::Cost { generic, shards },
+            } => *generic + shards.len() as u32,
+            _ => unreachable!("the fixture only builds bare mana costs"),
+        }
+    }
+
+    let shapes: [&[(u32, u32)]; 5] = [
+        &[(2, 1), (2, 0)],
+        &[(1, 0), (3, 1)],
+        &[(2, 2), (2, 0), (1, 1)],
+        &[(3, 1), (1, 2), (2, 0)],
+        &[(1, 1), (1, 1), (2, 0)],
+    ];
+    let mut observable = 0;
+    for generic in 0..=6u32 {
+        for shards in [Vec::new(), vec![ManaCostShard::Red]] {
+            for raise_total in [0u32, 2] {
+                for shape in shapes {
+                    let base = AbilityCost::Mana {
+                        cost: ManaCost::Cost {
+                            shards: shards.clone(),
+                            generic,
+                        },
+                    };
+                    let reductions: Vec<CostReductionEntry> = shape
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &(amount, floor))| entry(i as u8, amount, floor))
+                        .collect();
+                    let default =
+                        total_mana(&fold_activation_cost(&base, raise_total, &reductions, None));
+                    let totals: Vec<u32> = permutations(reductions.len())
+                        .into_iter()
+                        .map(|order| {
+                            let order: Vec<ReductionProvenance> =
+                                order.iter().map(|&i| reductions[i].provenance).collect();
+                            total_mana(&fold_activation_cost(
+                                &base,
+                                raise_total,
+                                &reductions,
+                                Some(&order),
+                            ))
+                        })
+                        .collect();
+                    let minimum = *totals.iter().min().unwrap();
+                    assert_eq!(
+                        default, minimum,
+                        "default must be the cheapest order: base {generic}+{shards:?}, \
+                         raise {raise_total}, reductions {shape:?}, orders gave {totals:?}"
+                    );
+                    if totals.iter().any(|&t| t != minimum) {
+                        observable += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Reach guard: the sweep must contain boards where the order is observable,
+    // or "default == minimum" would hold vacuously.
+    assert!(
+        observable > 0,
+        "the sweep must include order-observable boards"
+    );
+}
+
+/// CR 601.2f: "plus all additional costs and cost increases, and minus all cost
+/// reductions" — every raise is applied BEFORE any reduction, so a floored
+/// reduction sees the raised total. `{1}` + a `{2}` raise + a `-2` reduction that
+/// can't go below one mana locks `{1}`; reducing first would lock `{3}`, a total
+/// no legal order produces.
+#[test]
+fn activation_fold_applies_raises_before_reductions() {
+    let base = AbilityCost::Mana {
+        cost: ManaCost::generic(1),
+    };
+    let floored = CostReductionEntry {
+        amount: ManaCost::generic(2),
+        multiplier: 1,
+        reach: CostReductionReach::SpillsToGeneric,
+        provenance: ReductionProvenance::Static {
+            source: ObjectId(901),
+            ordinal: 0,
+        },
+        display_name: "Training Grounds".to_string(),
+        minimum_mana: 1,
+    };
+    assert_eq!(
+        fold_activation_cost(&base, 2, &[floored], None),
+        AbilityCost::Mana {
+            cost: ManaCost::generic(1)
+        }
+    );
+}
+
+/// CR 601.2f: both reachable-totals methods are EXACT — each finds precisely the
+/// set of generic amounts some order of the reducers leaves, with a witness
+/// order that really produces each one. Checked against a brute-force walk of
+/// every permutation over a deterministic sweep: the closed form on boards whose
+/// effective floors are all 0 or 1, the canonical search on every board.
+#[test]
+fn activation_reachable_totals_match_every_permutation() {
+    fn permutations(n: usize) -> Vec<Vec<usize>> {
+        if n == 0 {
+            return vec![Vec::new()];
+        }
+        let mut out = Vec::new();
+        for rest in permutations(n - 1) {
+            for slot in 0..=rest.len() {
+                let mut order = rest.clone();
+                order.insert(slot, n - 1);
+                out.push(order);
+            }
+        }
+        out
+    }
+    fn run(x: u32, steps: &[(u32, u32)], order: &[usize]) -> u32 {
+        order.iter().fold(x, |g, &i| {
+            let (amount, floor) = steps[i];
+            activation_generic_step(g, amount, floor)
+        })
+    }
+    fn check(x: u32, steps: &[(u32, u32)], found: &[(u32, Vec<usize>)], brute: &BTreeSet<u32>) {
+        let totals: BTreeSet<u32> = found.iter().map(|(total, _)| *total).collect();
+        assert_eq!(&totals, brute, "generic {x}, steps {steps:?}");
+        for (total, witness) in found {
+            let mut sorted = witness.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..steps.len()).collect::<Vec<_>>());
+            assert_eq!(run(x, steps, witness), *total);
+        }
+    }
+
+    // A small deterministic generator (no RNG dependency in the engine crate).
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = |bound: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % bound
+    };
+    let (mut zero_one_boards, mut multi_total_boards) = (0, 0);
+    for board in 0..800 {
+        let n = 1 + next(6) as usize; // 1..=6 reducers
+        let x = next(13) as u32;
+        // Half the boards keep every floor in {0, 1}; the rest reach 3.
+        let floor_bound = if board % 2 == 0 { 2 } else { 4 };
+        let steps: Vec<(u32, u32)> = (0..n)
+            .map(|_| (1 + next(4) as u32, next(floor_bound) as u32))
+            .collect();
+        let brute: BTreeSet<u32> = permutations(n)
+            .iter()
+            .map(|order| run(x, &steps, order))
+            .collect();
+        check(
+            x,
+            &steps,
+            &activation_totals_canonical_search(x, &steps),
+            &brute,
+        );
+        if activation_totals_route(&steps) == ActivationTotalsMethod::ZeroOneFloors {
+            check(
+                x,
+                &steps,
+                &activation_totals_zero_one_floors(x, &steps),
+                &brute,
+            );
+            zero_one_boards += 1;
+        }
+        if brute.len() > 1 {
+            multi_total_boards += 1;
+        }
+    }
+    // Reach guards: both methods were exercised, on boards where order matters.
+    assert!(zero_one_boards > 0);
+    assert!(multi_total_boards > 0);
+}
+
+/// CR 601.2f: the route keys on the COMPUTED effective floor of each reducer. A
+/// printed "can't reduce below two mana" floor is effective floor 1 against a
+/// cost with one coloured symbol (closed form), but effective floor 2 against a
+/// generic-only cost (canonical search) — and there both methods' boards agree
+/// with brute force (the sweep above). A floor-{0,1} board past the old
+/// sixteen-reducer bound still takes the closed form.
+#[test]
+fn activation_totals_route_on_the_computed_effective_floor() {
+    let floored_two = CostReductionEntry {
+        amount: ManaCost::generic(2),
+        multiplier: 1,
+        reach: CostReductionReach::SpillsToGeneric,
+        provenance: ReductionProvenance::Static {
+            source: ObjectId(960),
+            ordinal: 0,
+        },
+        display_name: "floor two".to_string(),
+        minimum_mana: 2,
+    };
+    let red_three = AbilityCost::Mana {
+        cost: ManaCost::Cost {
+            shards: vec![ManaCostShard::Red],
+            generic: 3,
+        },
+    };
+    let three = AbilityCost::Mana {
+        cost: ManaCost::generic(3),
+    };
+    let floor_on = |cost: &AbilityCost| activation_effective_floor(cost, &floored_two);
+    assert_eq!(floor_on(&red_three), 1);
+    assert_eq!(floor_on(&three), 2);
+    assert_eq!(
+        activation_totals_route(&[(2, floor_on(&red_three)), (2, 0)]),
+        ActivationTotalsMethod::ZeroOneFloors
+    );
+    assert_eq!(
+        activation_totals_route(&[(2, floor_on(&three)), (2, 0)]),
+        ActivationTotalsMethod::CanonicalSearch
+    );
+    let seventeen: Vec<(u32, u32)> = (0..17).map(|i| (1 + i % 2, i % 2)).collect();
+    assert_eq!(
+        activation_totals_route(&seventeen),
+        ActivationTotalsMethod::ZeroOneFloors
+    );
+}
+
+/// CR 601.2f: reduction amounts can be enormous — a dynamic count saturates at
+/// `u32::MAX` — and the closed form only COMPARES their sums with the generic
+/// mana, so it must neither overflow nor wrap. `{5}` with a saturated floor-1
+/// reduction and a floor-0 −2 still reaches exactly `{0}` (floor-1 first) and
+/// `{1}` (floor-0 first); two saturated reductions of one floor sum past
+/// `u32::MAX` and still leave only `{0}`.
+#[test]
+fn activation_totals_survive_saturated_reduction_amounts() {
+    let totals = |steps: &[(u32, u32)]| -> Vec<u32> {
+        activation_totals_zero_one_floors(5, steps)
+            .into_iter()
+            .map(|(total, _)| total)
+            .collect()
+    };
+    assert_eq!(totals(&[(2, 0), (u32::MAX, 1)]), vec![0, 1]);
+    assert_eq!(
+        totals(&[(u32::MAX, 1), (u32::MAX, 1), (u32::MAX, 0)]),
+        vec![0]
+    );
+    assert_eq!(totals(&[(u32::MAX, 0), (u32::MAX, 0), (1, 1)]), vec![0]);
+    // The canonical search takes the same amounts without overflow.
+    let canonical: Vec<u32> =
+        activation_totals_canonical_search(5, &[(u32::MAX, 2), (u32::MAX, 2), (2, 0)])
+            .into_iter()
+            .map(|(total, _)| total)
+            .collect();
+    assert_eq!(canonical, vec![0, 2]);
+
+    // End to end through the analyzer: a saturated floor-1 and a floor-0 −2 on
+    // `{5}` is a real election between `{0}` and `{1}`.
+    let entry = |amount: u32, minimum_mana: u32, ordinal: u8| CostReductionEntry {
+        amount: ManaCost::generic(amount),
+        multiplier: 1,
+        reach: CostReductionReach::SpillsToGeneric,
+        provenance: ReductionProvenance::Static {
+            source: ObjectId(970),
+            ordinal,
+        },
+        display_name: format!("reducer {ordinal}"),
+        minimum_mana,
+    };
+    let snapshot = ActivationCostSnapshot {
+        base_cost: AbilityCost::Mana {
+            cost: ManaCost::generic(5),
+        },
+        raise_total: 0,
+        reductions: vec![entry(u32::MAX, 1, 0), entry(2, 0, 1)],
+        lock: crate::types::casting_costs::ActivationCostLock::Open {
+            point: Default::default(),
+        },
+    };
+    let outcomes = analyze_activation_cost_election(&snapshot).expect("two totals");
+    let offered: Vec<u32> = outcomes
+        .iter()
+        .map(|o| o.locked_cost.mana_value())
+        .collect();
+    assert_eq!(offered, vec![0, 1]);
+}
+
+/// CR 601.2b + CR 601.2f: the X lock acts on an `XAnnounced` carrier ONLY. A
+/// carrier whose open lock names any other point passes through the X
+/// announcement neither folded nor locked, its concrete `{X}` leg left in
+/// `pending.cost` for the later point to price (`Announcement` stands in for a
+/// later point here: it is the only other variant). The `XAnnounced` control
+/// folds and locks on the same pending activation.
+#[test]
+fn the_x_lock_passes_through_a_carrier_deferred_to_another_point() {
+    use crate::types::casting_costs::{ActivationCostLock, ActivationCostLockPoint};
+    let x_leg = ManaCost::Cost {
+        shards: vec![ManaCostShard::X],
+        generic: 3,
+    };
+    let pending_with = |point: ActivationCostLockPoint| {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(9_910),
+            PlayerId(0),
+            "X Activator".to_string(),
+            Zone::Battlefield,
+        );
+        let snapshot = ActivationCostSnapshot {
+            base_cost: AbilityCost::Mana {
+                cost: x_leg.clone(),
+            },
+            raise_total: 0,
+            reductions: vec![CostReductionEntry {
+                amount: ManaCost::generic(2),
+                multiplier: 1,
+                reach: CostReductionReach::SpillsToGeneric,
+                provenance: ReductionProvenance::Static {
+                    source: ObjectId(971),
+                    ordinal: 0,
+                },
+                display_name: "reducer".to_string(),
+                minimum_mana: 0,
+            }],
+            lock: ActivationCostLock::Open { point },
+        };
+        let mut ability = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.set_chosen_x_recursive(2);
+        let mut cost = x_leg.clone();
+        cost.concretize_x(2);
+        state.pending_cast = Some(Box::new(PendingCast::for_activation(
+            source,
+            ability,
+            cost,
+            0,
+            Some(Box::new(snapshot)),
+        )));
+        state
+    };
+
+    let mut state = pending_with(ActivationCostLockPoint::Announcement);
+    let before = state.pending_cast.clone();
+    assert!(
+        deferred_activation_mana_for_x(before.as_deref().unwrap(), 2).is_none(),
+        "only an XAnnounced carrier prices the X cap"
+    );
+    assert_eq!(
+        lock_activation_cost_at_x(&mut state, PlayerId(0), None).unwrap(),
+        None
+    );
+    assert_eq!(state.pending_cast, before, "neither folded nor locked");
+    assert_eq!(state.pending_cast.as_ref().unwrap().cost.mana_value(), 5);
+
+    let mut state = pending_with(ActivationCostLockPoint::XAnnounced);
+    assert_eq!(
+        deferred_activation_mana_for_x(state.pending_cast.as_deref().unwrap(), 2)
+            .map(|cost| cost.mana_value()),
+        Some(3)
+    );
+    assert_eq!(
+        lock_activation_cost_at_x(&mut state, PlayerId(0), None).unwrap(),
+        None
+    );
+    let pending = state.pending_cast.as_deref().unwrap();
+    assert_eq!(pending.cost.mana_value(), 3, "folded against X=2");
+    assert!(matches!(
+        pending.activation_cost_snapshot.as_ref().unwrap().lock,
+        ActivationCostLock::Locked {
+            point: ActivationCostLockPoint::XAnnounced,
+            order: None,
+        }
+    ));
+}
+
+/// Every open lock point round-trips, tagged with its point.
+#[test]
+fn an_open_lock_round_trips_its_point() {
+    use crate::types::casting_costs::{ActivationCostLock, ActivationCostLockPoint};
+    assert_eq!(
+        serde_json::to_string(&ActivationCostLock::Open {
+            point: ActivationCostLockPoint::XAnnounced
+        })
+        .unwrap(),
+        r#"{"type":"Open","data":{"point":"XAnnounced"}}"#
+    );
+    for point in [
+        ActivationCostLockPoint::Announcement,
+        ActivationCostLockPoint::XAnnounced,
+    ] {
+        let lock = ActivationCostLock::Open { point };
+        let json = serde_json::to_string(&lock).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ActivationCostLock>(&json).unwrap(),
+            lock
         );
     }
 }

@@ -8065,11 +8065,10 @@ fn action_result_outcome(
     events: &mut Vec<GameEvent>,
     waiting_for: WaitingFor,
 ) -> ResolutionChoiceOutcome {
-    ResolutionChoiceOutcome::ActionResult(ActionResult {
-        events: std::mem::take(events),
+    ResolutionChoiceOutcome::ActionResult(ActionResult::applied(
+        std::mem::take(events),
         waiting_for,
-        log_entries: vec![],
-    })
+    ))
 }
 
 /// CR 608.2c + CR 603.7: Publish the EffectZoneChoice selection as the chain

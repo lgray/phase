@@ -10030,8 +10030,14 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         StaticCondition::SourceControllerEquals { .. } => ("SourceControllerEquals", Handled),
         StaticCondition::Unrecognized { .. } => ("Unrecognized", Handled),
         StaticCondition::None => ("None", Handled),
-        // Variants below are parsed but not classified as handled by the prior registry.
-        StaticCondition::HasMaxSpeed => ("HasMaxSpeed", Unhandled),
+        // CR 702.178a-b + CR 702.179e: resolved at runtime by
+        // `layers::evaluate_condition_with_context`'s `HasMaxSpeed` arm
+        // (`speed::has_max_speed`), consumed by
+        // `functioning_abilities::active_static_definitions`,
+        // `combat::creature_cant_attack`/`combat::can_block_pair`, and
+        // `casting::evaluate_cost_mod_static_condition`.
+        StaticCondition::HasMaxSpeed => ("HasMaxSpeed", Handled),
+        // Variant below is parsed but not classified as handled by the prior registry.
         StaticCondition::SpeedGE { .. } => ("SpeedGE", Unhandled),
         // Compound conditions — resolved recursively by
         // `layers::evaluate_condition`, which short-circuits And/Or and
@@ -20044,6 +20050,278 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
             .get("static_condition:IsMonarch"),
             Some(&FeatureSupport::Handled)
         );
+    }
+
+    /// Drift guard for the Aetherdrift max-speed coverage promotion:
+    /// `StaticCondition::HasMaxSpeed` is resolved at runtime by
+    /// `layers::evaluate_condition_with_context` (`speed::has_max_speed`),
+    /// consumed by `functioning_abilities::active_static_definitions`,
+    /// `combat::creature_cant_attack`/`combat::can_block_pair`, and
+    /// `casting::evaluate_cost_mod_static_condition` — so the classifier
+    /// must report it `Handled`. `SpeedGE` must stay `Unhandled`.
+    ///
+    /// Revert-failing: restore the pre-fix `HasMaxSpeed => (.., Unhandled)`
+    /// arm and the first assertion fails.
+    #[test]
+    fn has_max_speed_static_condition_is_handled_without_promoting_speed_ge() {
+        let (name, support) = static_condition_feature(&StaticCondition::HasMaxSpeed);
+        assert_eq!(name, "HasMaxSpeed");
+        assert_eq!(
+            support,
+            FeatureSupport::Handled,
+            "StaticCondition::HasMaxSpeed is resolved by \
+             layers::evaluate_condition_with_context (speed::has_max_speed)",
+        );
+
+        let (speed_ge_name, speed_ge_support) =
+            static_condition_feature(&StaticCondition::SpeedGE { threshold: 4 });
+        assert_eq!(speed_ge_name, "SpeedGE");
+        assert_eq!(
+            speed_ge_support,
+            FeatureSupport::Unhandled,
+            "SpeedGE must stay unpromoted alongside the HasMaxSpeed fix",
+        );
+
+        // `extract_static_condition_features` must surface the leaf under
+        // `Not` exactly as `static_condition_not_recurses_into_its_operand`
+        // proves for other leaves above — Hazoret's printed restriction is
+        // `Not(HasMaxSpeed)` ("can't attack or block unless you have max
+        // speed").
+        let mut features = HashMap::new();
+        extract_static_condition_features(
+            &StaticCondition::Not {
+                condition: Box::new(StaticCondition::HasMaxSpeed),
+            },
+            &mut features,
+        );
+        assert_eq!(
+            features.get("static_condition:HasMaxSpeed"),
+            Some(&FeatureSupport::Handled),
+            "the operand under `Not` must reach the classifier as Handled"
+        );
+        assert!(
+            !features.contains_key("static_condition:Not"),
+            "`Not` is a combinator and contributes no tag of its own"
+        );
+    }
+
+    /// Build a `CardFace` from verbatim Oracle text the same way
+    /// `game::scenario::build_face_from_oracle` does for the runtime harness —
+    /// every `ParsedAbilities` field is copied (abilities, triggers, statics,
+    /// replacements, modal, additional cost, strive cost, casting
+    /// restrictions/options, solve condition, parse warnings), and MTGJSON
+    /// keyword names are parsed then merged with `parsed.extracted_keywords`
+    /// through the production `merge_extracted_keywords` authority — so a
+    /// printed-keyword-only source (e.g. "Flying, haste") and a
+    /// parser-extracted source (e.g. a granted "has menace") cannot silently
+    /// drop each other.
+    fn max_speed_matrix_face(
+        name: &str,
+        oracle: &str,
+        keyword_names: &[&str],
+        core_types: &[&str],
+        subtypes: &[&str],
+    ) -> CardFace {
+        let type_strings: Vec<String> = core_types.iter().map(|t| t.to_string()).collect();
+        let subtype_strings: Vec<String> = subtypes.iter().map(|t| t.to_string()).collect();
+        // Mirrors `database::synthesis::prepare_oracle_parser_input`, which
+        // lowercases every MTGJSON keyword name before handing it to the
+        // parser as a hint. Several hint checks compare case-sensitively
+        // against a lowercase literal (e.g. `extract_granted_keyword_list`'s
+        // `n == "enchant"` multi-type gate) — passing MTGJSON's original
+        // casing ("Enchant") silently misses that gate and drops the whole
+        // "Enchant creature or Vehicle" keyword.
+        let kw_strings: Vec<String> = keyword_names
+            .iter()
+            .map(|k| k.to_ascii_lowercase())
+            .collect();
+
+        let parsed = crate::parser::parse_oracle_text(
+            oracle,
+            name,
+            &kw_strings,
+            &type_strings,
+            &subtype_strings,
+        );
+
+        let mut keywords: Vec<Keyword> = keyword_names
+            .iter()
+            .filter_map(|s| {
+                let kw: Keyword = s.parse().unwrap();
+                if matches!(kw, Keyword::Unknown(_)) {
+                    None
+                } else {
+                    Some(kw)
+                }
+            })
+            .collect();
+        crate::database::synthesis::merge_extracted_keywords(
+            &mut keywords,
+            parsed.extracted_keywords,
+        );
+
+        CardFace {
+            name: name.to_string(),
+            card_type: CardType {
+                core_types: core_types
+                    .iter()
+                    .map(|t| t.parse::<CoreType>().expect("known core type"))
+                    .collect(),
+                subtypes: subtype_strings,
+                supertypes: vec![],
+            },
+            oracle_text: Some(oracle.to_string()),
+            keywords,
+            abilities: parsed.abilities,
+            triggers: parsed.triggers,
+            static_abilities: parsed.statics,
+            replacements: parsed.replacements,
+            modal: parsed.modal,
+            additional_cost: parsed.additional_cost,
+            casting_restrictions: parsed.casting_restrictions,
+            casting_options: parsed.casting_options,
+            solve_condition: parsed.solve_condition,
+            strive_cost: parsed.strive_cost,
+            parse_warnings: parsed.parse_warnings,
+            ..make_face()
+        }
+    }
+
+    /// One row of the ten-card matrix: (name, verbatim Oracle text, MTGJSON
+    /// keyword hints, core types, subtypes).
+    type MaxSpeedMatrixRow = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+        &'static [&'static str],
+    );
+
+    /// The complete 2026-09-24 MTGJSON population of Standard-legal cards whose
+    /// SOLE provisional coverage gap was `ResolverFeature:static_condition:
+    /// HasMaxSpeed` (Tsagan, Raider Warlord has the same sole gap but is not
+    /// Standard legal, so it is deliberately excluded). Oracle text, keyword
+    /// arrays, types, and subtypes are verbatim from MTGJSON, spanning all
+    /// five shapes the classifier promotion must cover: continuous P/T
+    /// (Gastal Raider, Nesting Bot, Swiftwing Assailant, Walking Sarcophagus),
+    /// continuous keyword grants (Burnout Bashtronaut, Gastal Raider, Gastal
+    /// Thrillseeker, Streaking Oilgorger, Swiftwing Assailant), a negated
+    /// combat restriction (Hazoret), an off-zone cast permission (Lightwheel),
+    /// and a cost reduction (Racers' Scoreboard).
+    ///
+    /// Revert-failing: reverting only the `static_condition_feature` arm
+    /// leaves every row's `ResolverFeature:static_condition:HasMaxSpeed` gap
+    /// in place, so every row in this table fails its `supported` /
+    /// `gap_count` assertions.
+    #[test]
+    fn max_speed_standard_cards_ten_card_matrix_reports_zero_gaps() {
+        let rows: [MaxSpeedMatrixRow; 10] = [
+            (
+                "Burnout Bashtronaut",
+                "Menace\nStart your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\n{2}: This creature gets +1/+0 until end of turn.\nMax speed — This creature has double strike.",
+                &["Max speed", "Menace", "Start your engines!"],
+                &["Creature"],
+                &["Goblin", "Warrior"],
+            ),
+            (
+                "Gastal Raider",
+                "Start your engines!\nWhen this creature enters, target opponent reveals their hand. You choose an instant or sorcery card from it. That player discards that card.\nMax speed — This creature gets +1/+1 and has menace.",
+                &["Max speed", "Start your engines!"],
+                &["Creature"],
+                &["Vampire", "Rogue"],
+            ),
+            (
+                "Gastal Thrillseeker",
+                "Start your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nWhen this creature enters, it deals 1 damage to target opponent and you gain 1 life.\nMax speed — This creature has deathtouch and haste.",
+                &["Max speed", "Start your engines!"],
+                &["Creature"],
+                &["Lizard", "Berserker"],
+            ),
+            (
+                "Hazoret, Godseeker",
+                "Indestructible, haste\nStart your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\n{1}, {T}: Target creature with power 2 or less can't be blocked this turn.\nHazoret can't attack or block unless you have max speed.",
+                &["Haste", "Indestructible", "Start your engines!"],
+                &["Creature"],
+                &["God"],
+            ),
+            (
+                "Lightwheel Enhancements",
+                "Enchant creature or Vehicle\nStart your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nEnchanted permanent gets +1/+1 and has vigilance.\nMax speed — You may cast this card from your graveyard.",
+                &["Enchant", "Max speed", "Start your engines!"],
+                &["Enchantment"],
+                &["Aura"],
+            ),
+            (
+                "Nesting Bot",
+                "Start your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nWhen this creature dies, create a 1/1 colorless Servo artifact creature token.\nMax speed — This creature gets +1/+0.",
+                &["Max speed", "Start your engines!"],
+                &["Artifact", "Creature"],
+                &["Robot"],
+            ),
+            (
+                "Racers' Scoreboard",
+                "Start your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nWhen this artifact enters, draw two cards, then discard a card.\nMax speed — Spells you cast cost {1} less to cast.",
+                &["Max speed", "Start your engines!"],
+                &["Artifact"],
+                &[],
+            ),
+            (
+                "Streaking Oilgorger",
+                "Flying, haste\nStart your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nMax speed — This creature has lifelink.",
+                &["Flying", "Haste", "Max speed", "Start your engines!"],
+                &["Creature"],
+                &["Vampire"],
+            ),
+            (
+                "Swiftwing Assailant",
+                "Flying\nStart your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nMax speed — This creature gets +0/+1 and has vigilance.",
+                &["Flying", "Max speed", "Start your engines!"],
+                &["Creature"],
+                &["Bird", "Warrior"],
+            ),
+            (
+                "Walking Sarcophagus",
+                "Start your engines! (If you have no speed, it starts at 1. It increases once on each of your turns when an opponent loses life. Max speed is 4.)\nMax speed — This creature gets +1/+2.",
+                &["Max speed", "Start your engines!"],
+                &["Artifact", "Creature"],
+                &["Zombie", "Cat"],
+            ),
+        ];
+
+        for (name, oracle, keyword_names, core_types, subtypes) in rows {
+            let face = max_speed_matrix_face(name, oracle, keyword_names, core_types, subtypes);
+
+            // Positive reach guard: the row's own parse must contain at least
+            // one HasMaxSpeed leaf before coverage classifies it — otherwise a
+            // card whose "Max speed —" line silently failed to parse would
+            // still read `gap_count: 0` for the wrong reason.
+            let mut features = HashMap::new();
+            extract_card_features(&face, &mut features);
+            assert_eq!(
+                features.get("static_condition:HasMaxSpeed"),
+                Some(&FeatureSupport::Handled),
+                "{name}: parse must surface a HasMaxSpeed leaf before coverage is meaningful"
+            );
+
+            let card = coverage_result_for_face(face);
+            assert!(
+                card.supported,
+                "{name}: expected supported=true, gaps: {:?}",
+                card.gap_details
+            );
+            assert_eq!(
+                card.gap_count, 0,
+                "{name}: expected zero gaps, got {:?}",
+                card.gap_details
+            );
+            assert!(
+                !card
+                    .gap_details
+                    .iter()
+                    .any(|gap| gap.handler == "ResolverFeature:static_condition:HasMaxSpeed"),
+                "{name}: the named HasMaxSpeed resolver-feature gap must be gone"
+            );
+        }
     }
 
     #[test]

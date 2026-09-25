@@ -36765,7 +36765,10 @@ fn weathered_sentinels_line_is_consumed_by_the_non_attached_static_production() 
     let lower = P3_WEATHERED_SENTINELS_L2.to_lowercase();
     let tp = TextPair::new(P3_WEATHERED_SENTINELS_L2, &lower);
     let def = super::evasion::parse_can_attack_despite_defender(&tp, P3_WEATHERED_SENTINELS_L2)
-        .expect("C3.1: production (b) itself must consume this line, not a shadowing branch");
+        .expect(
+            "production (b) — `parse_can_attack_despite_defender` — must parse the \
+             Weathered Sentinels line directly",
+        );
     assert_eq!(def.mode, StaticMode::CanAttackWithDefender);
     assert_eq!(def.affected, Some(TargetFilter::SelfRef));
     assert_eq!(
@@ -37000,7 +37003,9 @@ fn unrecognized_interposed_class_is_permanently_inert_and_leaves_the_card_red() 
     assert_eq!(
         crate::game::coverage::card_face_gaps(&ok_face),
         Vec::<String>::new(),
-        "the anchored class must be GREEN — Phase 1's C1.5 labelling is FINAL"
+        "a RECOGNIZED anchored class must report NO coverage gap — the gap signal \
+         comes from the unenforceable marker, not from `CanAttackWithDefender` \
+         being unsupported in the registry"
     );
 }
 

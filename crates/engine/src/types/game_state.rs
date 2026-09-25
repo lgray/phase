@@ -7135,6 +7135,14 @@ pub struct PendingCast {
     /// default governs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_reduction_election: Option<crate::types::casting_costs::CostReductionElection>,
+    /// CR 601.2f + CR 602.2b: the ACTIVATION cost-modifier carrier — every
+    /// modifier that applied to this activation, captured once at its fold,
+    /// and whether its total is locked. Present on every activation that has
+    /// passed its fold; `None` for spells, the mana-free loyalty fast path,
+    /// and pendings that predate it. Its presence is also what marks a
+    /// `WaitingFor::OrderCostReductions` prompt as an activation election.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_cost_snapshot: Option<Box<crate::types::casting_costs::ActivationCostSnapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_cost: Option<AbilityCost>,
     /// CR 601.2h: Random cost elements are paid after every nonrandom element.
@@ -7796,6 +7804,7 @@ impl PendingCast {
             declared_mana_additions: Vec::new(),
             accepted_cost_reductions: Vec::new(),
             cost_reduction_election: None,
+            activation_cost_snapshot: None,
             activation_cost: None,
             deferred_random_discard_cost: None,
             activation_ability_index: None,
@@ -7835,6 +7844,23 @@ impl PendingCast {
     pub fn with_payment_mode(mut self, payment_mode: CastPaymentMode) -> Self {
         self.payment_mode = payment_mode;
         self
+    }
+
+    /// CR 602.2b: the root of an in-flight ACTIVATED ability. Every activation
+    /// root is built here, so each one must name its cost-modifier carrier
+    /// (`None` only for the mana-free loyalty fast path and legacy callers) —
+    /// the carrier cannot be silently dropped by a fresh root.
+    pub fn for_activation(
+        source_id: ObjectId,
+        ability: ResolvedAbility,
+        cost: ManaCost,
+        ability_index: usize,
+        activation_cost_snapshot: Option<Box<crate::types::casting_costs::ActivationCostSnapshot>>,
+    ) -> Self {
+        let mut pending = Self::new(source_id, CardId(0), ability, cost);
+        pending.activation_ability_index = Some(ability_index);
+        pending.activation_cost_snapshot = activation_cost_snapshot;
+        pending
     }
 
     /// Starts the trigger transaction for an announced, target-bearing
@@ -14108,6 +14134,12 @@ pub enum WaitingFor {
         /// CR 602.2a: Announce → choose modes → choose targets → pay costs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ability_cost: Option<AbilityCost>,
+        /// CR 601.2f + CR 602.2b: for activated abilities, the activation's
+        /// cost-modifier carrier. This variant holds an in-flight activation
+        /// without a `PendingCast`, so the carrier rides here until mode
+        /// selection builds one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activation_cost_snapshot: Option<Box<crate::types::casting_costs::ActivationCostSnapshot>>,
         /// Mode indices unavailable due to NoRepeatThisTurn/NoRepeatThisGame constraints.
         /// CR 700.2: Engine computes which modes have been previously chosen; frontend uses this to disable them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -16712,6 +16744,62 @@ pub struct ActionResult {
     pub waiting_for: WaitingFor,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub log_entries: Vec<super::log::GameLogEntry>,
+    /// Whether the action happened or ended an in-progress activation that
+    /// could not be completed. Omitted when `Applied`, so every ordinary result
+    /// serializes exactly as it did before the field existed.
+    #[serde(default, skip_serializing_if = "ActionDisposition::is_applied")]
+    pub disposition: ActionDisposition,
+}
+
+impl ActionResult {
+    /// An ordinary result: the action happened. Every ordinary path builds its
+    /// result here, so none can end up `Reversed` by accident.
+    pub fn applied(events: Vec<GameEvent>, waiting_for: WaitingFor) -> Self {
+        Self {
+            events,
+            waiting_for,
+            log_entries: Vec::new(),
+            disposition: ActionDisposition::Applied,
+        }
+    }
+
+    pub fn with_log_entries(mut self, log_entries: Vec<super::log::GameLogEntry>) -> Self {
+        self.log_entries = log_entries;
+        self
+    }
+
+    /// CR 602.2b + CR 601.2h: the action ended an in-progress activation that
+    /// could not be completed. The action boundary restores the state from
+    /// before the action and applies only `waiting_for`; the result carries no
+    /// events and is not a history entry.
+    pub fn reversed(waiting_for: WaitingFor) -> Self {
+        Self {
+            events: Vec::new(),
+            waiting_for,
+            log_entries: Vec::new(),
+            disposition: ActionDisposition::Reversed,
+        }
+    }
+}
+
+/// Whether an action happened (the ordinary case) or reversed an activation
+/// that could not be completed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActionDisposition {
+    #[default]
+    Applied,
+    /// CR 602.2b + CR 601.2h: "Unpayable costs can't be paid." An activation
+    /// whose elected total cannot be paid is reversed to the state before it
+    /// began. The action boundary restored its pre-action snapshot, applied only
+    /// the reversal, ran no auto-pass, and committed no lifecycle facts; it is
+    /// not recorded as a takeback point.
+    Reversed,
+}
+
+impl ActionDisposition {
+    pub fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36875,6 +36963,7 @@ mod tests {
                 declared_mana_additions: Vec::new(),
                 accepted_cost_reductions: Vec::new(),
                 cost_reduction_election: None,
+                activation_cost_snapshot: None,
                 activation_cost: None,
                 deferred_random_discard_cost: None,
                 activation_ability_index: None,
@@ -37150,6 +37239,7 @@ mod tests {
             is_activated: true,
             ability_index: Some(0),
             ability_cost: None,
+            activation_cost_snapshot: None,
             unavailable_modes: vec![],
         }));
         variants.push(Box::new(WaitingFor::PayCost {
@@ -37318,6 +37408,7 @@ mod tests {
             declared_mana_additions: Vec::new(),
             accepted_cost_reductions: Vec::new(),
             cost_reduction_election: None,
+            activation_cost_snapshot: None,
             activation_cost: None,
             deferred_random_discard_cost: None,
             activation_ability_index: None,
@@ -37464,13 +37555,12 @@ mod tests {
 
     #[test]
     fn action_result_contains_events_and_waiting_for() {
-        let result = ActionResult {
-            events: vec![GameEvent::GameStarted],
-            waiting_for: WaitingFor::Priority {
+        let result = ActionResult::applied(
+            vec![GameEvent::GameStarted],
+            WaitingFor::Priority {
                 player: PlayerId(0),
             },
-            log_entries: vec![],
-        };
+        );
         assert_eq!(result.events.len(), 1);
     }
 
