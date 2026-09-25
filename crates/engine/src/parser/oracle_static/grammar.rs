@@ -881,7 +881,7 @@ pub(crate) fn parse_enchanted_equipped_predicate(
     };
     let body_lower = body_tp.lower;
 
-    // CR 702.3b (:3915) + CR 508.1c (:2270): "can attack [<class>] as though
+    // CR 702.3b + CR 508.1c: "can attack [<class>] as though
     // <pronoun> didn't have defender" on an attached subject (and on the plural
     // subjects the creatures-you-control prefix handler at line ~620 routes here).
     // Shares ONE recognizer with the non-attached static production, the
@@ -976,7 +976,7 @@ pub(crate) fn parse_enchanted_equipped_predicate(
                 if companions.is_empty() {
                     return Vec::new();
                 }
-                // CR 508.1c (:2270): the printed trailing gate governs EVERY
+                // CR 508.1c: the printed trailing gate governs EVERY
                 // conjunct, not just the first. The recursion above is handed
                 // `companion_pred`, which comes from the body AFTER the trailing
                 // condition was split off — so a companion never sees that gate on

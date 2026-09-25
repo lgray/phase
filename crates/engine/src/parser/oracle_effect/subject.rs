@@ -2294,7 +2294,7 @@ fn try_parse_can_attack_with_defender(
     // indexes the original-case text.
     let subject = text[..subject_lower.len()].trim();
     let application = parse_subject_application_for(subject, ctx, AnaphorConsumer::AffectedObject)?;
-    // CR 611.2a (:2911): the permission's duration comes from the RECOGNIZED
+    // CR 611.2a: the permission's duration comes from the RECOGNIZED
     // defender-exception segment, never from the whole clause. Base derived it
     // from a bare whole-clause substring test for the words "this turn", which
     // cannot tell a duration adverbial

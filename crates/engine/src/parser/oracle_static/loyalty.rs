@@ -39,8 +39,8 @@ pub(crate) fn parse_loyalty_activation_timing_permission(
         Ok((i, condition_text.to_string()))
     })
     .map(|(condition_text, _)| {
-        parse_static_condition(&condition_text).unwrap_or(StaticCondition::Unrecognized {
-            text: condition_text,
+        parse_static_condition(&condition_text).unwrap_or_else(|| {
+            unparsed_gate_condition(&condition_text, ConditionGatePolarity::Positive)
         })
     })?;
 

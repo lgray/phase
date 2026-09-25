@@ -2,7 +2,7 @@
 // crate's own unit-test censuses use. `#[path]` rather than a copy: `src/source_census.rs` is
 // `#![cfg(test)]`, and `cfg(test)` HOLDS in this venue too (an integration target is built with
 // `--test`), so one implementation serves both without shipping guard code in a release build.
-// MEASURED, not assumed — the alternative already in this tree is `test_support.rs` / `support.rs`,
+// MEASURED, not assumed â€” the alternative already in this tree is `test_support.rs` / `support.rs`,
 // twin files kept equal by a comment asking a human to remember.
 #[path = "../../src/source_census.rs"]
 mod source_census;
@@ -250,6 +250,7 @@ mod demilich_helbrute_graveyard_exile_cost;
 mod demon_of_fates_design;
 mod descendants_fury_sacrificed_referent_4795;
 mod descendants_path_shared_creature_type_gate;
+mod desperate_futurescribe_instead;
 mod destroy_redirect_to_battlefield_delivery_tail;
 mod deterministic_blocker_prompt_order;
 mod deterministic_game_state_serde;
@@ -925,6 +926,7 @@ mod issue_8760_airbend_any_number;
 mod issue_8773_class_copy_enters_at_level_one;
 mod issue_879_obsessive_pursuit;
 mod issue_8807_void_mirror_colored_mana;
+mod issue_9143_mad_wizards_lair_pipeline;
 mod issue_9180_force_block_named_attacker_not_attacking;
 mod issue_924_offspring;
 mod issue_927_tireless_provisioner;
@@ -1126,6 +1128,7 @@ mod peter_parker_modal_back_face_cast;
 mod phantom_general_token_anthem;
 mod phyrexian_fleshgorger_ward;
 mod plaguecrafter_etb_class;
+mod player_action_recording_after_choice;
 mod player_scope_linked_exile_batch;
 mod ponder_decline_shuffle_regression;
 mod power_fist_combat_damage_regression;
@@ -1137,6 +1140,7 @@ mod prepared_state_serde;
 mod primo_unbounded_fractal_counters;
 mod printed_ability_order;
 mod printed_damage_prevention_survives_turn;
+mod proctor_of_potential_restriction;
 mod proliferate_zero_counter;
 mod promise_of_loyalty;
 mod pulse_of_the_forge;
@@ -1258,6 +1262,7 @@ mod support;
 mod support_keyword_cr_701_41a;
 mod suppressor_skyguard_prevent_2924;
 mod surveil_rest_pile_redirect_continuation;
+mod surveillance_phantasm_scry_or_surveil;
 mod swans_prevention_followup;
 mod swarm_combat_witness;
 mod tales_of_the_ancestors_catch_up_draw;
@@ -1378,7 +1383,7 @@ mod yenna_aura_token_copy;
 mod yuriko_combat_damage;
 
 // Folded in from former top-level tests/*.rs files (each was its own ~130MB
-// test binary linking the full engine — see no_top_level_test_binaries).
+// test binary linking the full engine â€” see no_top_level_test_binaries).
 mod a_killer_among_us;
 mod a_sigil_of_myrkul;
 mod aang_journey_partial_fail_to_find_2722;
@@ -1611,6 +1616,7 @@ mod sauron_dino_devotee_modal_anaphor_7031;
 mod scarblade_malice_delayed_dies_762;
 mod scry_choice_not_clobbered_by_triggers;
 mod scry_substituted_draw_per_card_replacement;
+mod scry_surveil_empty_library;
 mod secret_of_bloodbending_control_window;
 mod security_bypass_attacking_alone;
 mod she_hulk_wallbreaker_becomes_blocked_4599;

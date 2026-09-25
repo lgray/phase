@@ -1,10 +1,10 @@
-//! CR 702.3b (docs/MagicCompRules.txt:3915) + CR 609.4 (:2854): the ONE
+//! CR 702.3b + CR 609.4: the ONE
 //! recognizer for the defender-exception grammar
 //! "<subject> can attack [<segment>] as though <pronoun> didn't have defender".
 //!
 //! `<segment>` — the INTERPOSED SEGMENT — names the class of defenders the
 //! permission covers ("players who attacked you during their last turn",
-//! CR 508.6 :2327). SIX EDITED CALL SITES share this module — productions (a),
+//! CR 508.6). SIX EDITED CALL SITES share this module — productions (a),
 //! (b) and (c), the conjunctive static splitter, the continuous compound, and
 //! the shared recognition predicate `is_can_attack_despite_defender_predicate`
 //! — so the class cannot be supported on one printed shape and misparsed on
@@ -48,10 +48,10 @@ pub(crate) enum DefenderExceptionSegment {
     /// and a payload nobody reads would misstate where that authority lives.
     DurationAdverbial,
     /// `parse_inner_condition` recognized the normalized clause AND it has a
-    /// defending-player-anchored reading. CR 508.1b (:2268) is what CREATES the
-    /// creature->target pairing this reading is relative to; CR 508.1c (:2270)
-    /// then checks restrictions against it; CR 611.3a (:2926) keeps the
-    /// STATIC-side effect unlocked, and CR 611.2c (:2913) does the same job for
+    /// defending-player-anchored reading. CR 508.1b is what CREATES the
+    /// creature->target pairing this reading is relative to; CR 508.1c
+    /// then checks restrictions against it; CR 611.3a keeps the
+    /// STATIC-side effect unlocked, and CR 611.2c does the same job for
     /// the RESOLUTION-side production (c) and the continuous compound, which
     /// 611.3a by its own text does not cover.
     /// The class is answerable per proposed pairing.
@@ -331,7 +331,7 @@ fn classify_interposed_segment(segment: &str) -> DefenderExceptionSegment {
     }
 }
 
-/// CR 109.5 (:610): rewrite the RELATIVE-CLAUSE surface a defender-exception line
+/// CR 109.5: rewrite the RELATIVE-CLAUSE surface a defender-exception line
 /// prints ("players who <clause>") to the CLAUSAL surface
 /// `parse_inner_condition` owns ("a player <clause>"). Purely a
 /// subject/quantifier transform: the quantifier and the relativizer are the only
@@ -375,7 +375,7 @@ mod tests {
 
     const ANCHORED_CLAUSE: &str = "attacked you during their last turn";
 
-    /// CR 508.6 (:2327): every `alt` member of the relative-clause -> clausal
+    /// CR 508.6: every `alt` member of the relative-clause -> clausal
     /// normalization, TABLE-DRIVEN so deleting any member reds a NAMED entry.
     #[test]
     fn every_relative_clause_surface_normalizes_and_anchors() {

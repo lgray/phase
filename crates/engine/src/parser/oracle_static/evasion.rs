@@ -886,7 +886,7 @@ pub(crate) fn is_forced_block_static_candidate(lower: &str) -> bool {
 /// `combine_conditions` rather than one replacing the other. All emitted
 /// definitions share the original full-line description, matching the convention
 /// used by other compound handlers (e.g., `CantBeEquipped` + `CantBeEnchanted`).
-/// CR 702.3b (:3915) + CR 509.1b (:2857): the MIRROR of
+/// CR 702.3b + CR 509.1b: the MIRROR of
 /// [`try_split_and_can_attack_despite_defender`] — a defender exception printed
 /// FIRST, with a rules-bearing companion clause after it:
 ///
@@ -939,7 +939,7 @@ pub(crate) fn try_defender_exception_with_companion(text: &str) -> Option<Vec<St
     if let Some(affected) = companion.affected.clone() {
         permission = permission.affected(affected);
     }
-    // CR 508.1c (:2270): the interposed class (if any) and the line's own printed
+    // CR 508.1c: the interposed class (if any) and the line's own printed
     // gate are INDEPENDENT restrictions — same conjoin authority as production (b)
     // and the forward splitter.
     if let Some(condition) =
@@ -960,7 +960,7 @@ pub(crate) fn try_split_and_can_attack_despite_defender(
     // a word — so the tag begins at "and", not at the leading space. We then
     // strip the trailing space of `before` to produce clean Line A text.
     //
-    // CR 702.3b (:3915): the SHARED recognizer, so the interposed class cannot be
+    // CR 702.3b: the SHARED recognizer, so the interposed class cannot be
     // supported on the non-conjunctive shape and misparsed here. NOTE the third
     // binding: base DISCARDED `rest` as `_rest`; the widened form MUST bind it,
     // because the combinator's output type is no longer a `&str` with a length.
@@ -1013,7 +1013,7 @@ pub(crate) fn try_split_and_can_attack_despite_defender(
     if let Some(affected) = template.affected.clone() {
         companion = companion.affected(affected);
     }
-    // CR 508.1c (:2270): the interposed class and Line A's OWN condition are
+    // CR 508.1c: the interposed class and Line A's OWN condition are
     // INDEPENDENT gates and both must hold, so they conjoin rather than one
     // replacing the other. SAME helper and SAME `(Some, Some)` arm as production
     // (b). Guarded by `spire_serpent_conjunctive_split_composes_both_conditions`
@@ -3124,7 +3124,7 @@ pub(crate) fn parse_can_attack_despite_defender(
         None => (*tp, None),
     };
 
-    // CR 702.3b (:3915) + CR 609.4 (:2854): ONE recognizer for this grammar, shared
+    // CR 702.3b + CR 609.4: ONE recognizer for this grammar, shared
     // with the attached-subject arm, the effect-side production, the conjunctive
     // static splitter and the effect-side continuous compound — so the class cannot
     // be supported on one printed shape and misparsed on another.
@@ -3179,7 +3179,7 @@ pub(crate) fn parse_can_attack_despite_defender(
     let mut def = StaticDefinition::new(StaticMode::CanAttackWithDefender)
         .affected(affected)
         .description(description.to_string());
-    // CR 508.1c (:2270): the interposed class and a trailing " as long as " gate are
+    // CR 508.1c: the interposed class and a trailing " as long as " gate are
     // INDEPENDENT restrictions and both must hold, so they compose with `And` rather
     // than one replacing the other. `needs_defending_player_anchor` walks leaves
     // (`any_leaf`), so the compound still defers correctly at creature level.
@@ -3205,7 +3205,7 @@ pub(crate) fn parse_can_attack_despite_defender(
     Some(def)
 }
 
-/// CR 508.1c (:2270): two independent gates on one static conjoin.
+/// CR 508.1c: two independent gates on one static conjoin.
 ///
 /// `pub(super)` so the attached-subject production in `grammar.rs` conjoins
 /// through this one authority rather than growing a second spelling.

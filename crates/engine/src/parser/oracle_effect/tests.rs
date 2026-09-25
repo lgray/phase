@@ -72020,8 +72020,8 @@ fn frost_breath_plural_anaphor_keeps_parent_target() {
 }
 
 // =========================================================================
-// THE INTERPOSED DEFENDER-CLASS GRAMMAR, EFFECT SIDE (CR 702.3b :3915 +
-// CR 609.4 :2854 + CR 611.2c :2913). The `ROW n` / `ARM n` banners below label
+// THE INTERPOSED DEFENDER-CLASS GRAMMAR, EFFECT SIDE (CR 702.3b +
+// CR 609.4 + CR 611.2c). The `ROW n` / `ARM n` banners below label
 // the sections of this group and share their numbering with the static-side
 // counterparts in `oracle_static/tests.rs`.
 //
@@ -72074,7 +72074,7 @@ fn p3e_anchored() -> StaticCondition {
 
 /// ROW 4, EFFECT ARM: where the permission's duration comes from.
 ///
-/// CR 611.2a (:2911): the duration of the granted permission is the one the
+/// CR 611.2a: the duration of the granted permission is the one the
 /// PERMISSION prints, and production (c) reads it off the RECOGNIZED
 /// defender-exception segment. Base instead asked `lower.contains("this turn")`
 /// over the whole clause, which cannot distinguish two different jobs the same
@@ -72212,7 +72212,7 @@ fn defender_exception_duration_comes_from_the_segment_not_the_subject() {
 
 /// ROW 7 ARM (iii): the class is supported on production
 /// (c), `try_parse_can_attack_with_defender` — a RESOLUTION-side continuous
-/// effect, authorized by CR 611.2c (:2913) rather than CR 611.3a.
+/// effect, authorized by CR 611.2c rather than CR 611.3a.
 ///
 /// Attributed by OUTPUT SHAPE: an `Effect::GenericEffect` carrying an
 /// `AddStaticMode` modification, which ONLY production (c) produces, plus a direct
@@ -72272,8 +72272,8 @@ fn interposed_class_is_supported_on_the_effect_production() {
 }
 
 /// ROW 8, ARM 6: the CONTINUOUS COMPOUND
-/// (`build_defender_attack_continuous_compound`, CR 702.3b + CR 510.1c :2403 +
-/// CR 611.2c :2913) carries the anchored condition.
+/// (`build_defender_attack_continuous_compound`, CR 702.3b + CR 510.1c +
+/// CR 611.2c) carries the anchored condition.
 ///
 /// A PAIR in ONE test on Walking Bulwark's VERBATIM printed line — the only corpus
 /// card that reaches this production.

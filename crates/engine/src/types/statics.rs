@@ -2483,9 +2483,9 @@ pub enum StaticModeKind {
 /// the creature OFFERED so the per-pairing authority
 /// (`combat::attacker_can_attack_target`) can decide.
 ///
-/// CR 508.1c (docs/MagicCompRules.txt:2270) checks restrictions against the
+/// CR 508.1c checks restrictions against the
 /// DECLARATION, so an unanchored restriction is not yet disobeyed.
-/// CR 702.3b (:3915) is excepted by a permission, so an unanchored permission is
+/// CR 702.3b is excepted by a permission, so an unanchored permission is
 /// not yet spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefendingPlayerAnchorPolarity {

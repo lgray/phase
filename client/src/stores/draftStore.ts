@@ -240,10 +240,16 @@ function beginLifecycle(): number {
   // was down during one draft must get a fresh chance in the next, or three
   // transient failures would silently disable it for the rest of the session.
   resetLlmDraftBreaker();
-  useDraftStore.setState({
+  useDraftStore.setState((state) => ({
     ...initialState,
+    // Bot difficulty is the player's setup choice, not per-draft state. The
+    // setup screen stays mounted while a start loads (the card database fetch
+    // for Sealed/Hard+ can take seconds), so resetting it here would show the
+    // selector snap back to Medium even though the chosen value was already
+    // captured and forwarded to the engine.
+    difficulty: state.difficulty,
     interactionGeneration: lifecycleGeneration,
-  });
+  }));
   return lifecycleGeneration;
 }
 

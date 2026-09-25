@@ -1942,7 +1942,7 @@ fn blocker_can_block_shadow_gated(
     can_block_shadow_exists && blocker_can_block_shadow(state, blocker)
 }
 
-/// CR 702.3b (docs/MagicCompRules.txt:3915) + CR 506.2 (:2202) + CR 508.5 (:2323):
+/// CR 702.3b + CR 506.2 + CR 508.5:
 /// may `obj` attack despite `Keyword::Defender`?
 ///
 /// THE single defender-permission authority. Every creature-level eligibility
@@ -4562,7 +4562,7 @@ fn attacker_can_attack_target(
         }
     }
 
-    // CR 702.3b (:3915) + CR 508.1c (:2270) + CR 508.5 (:2323): a Defender
+    // CR 702.3b + CR 508.1c + CR 508.5: a Defender
     // creature's permission may itself be gated on the DEFENDING PLAYER
     // ("can attack players who attacked you..."). The creature-level sites DEFER
     // such a gate and offer the creature; this is the authority they defer TO,
@@ -9354,8 +9354,8 @@ mod tests {
 
     // ===== ROW 1 — the intrinsic anchored permission is offered and scoped =====
 
-    /// CR 702.3b (docs/MagicCompRules.txt:3915) + CR 508.1b (:2268) + CR 508.6
-    /// (:2327): a Defender creature carrying an INTRINSIC self-referential
+    /// CR 702.3b + CR 508.1b + CR 508.6:
+    /// a Defender creature carrying an INTRINSIC self-referential
     /// ANCHORED permission is OFFERED as an eligible attacker AND its
     /// `legal_targets` equals EXACTLY the qualifying player set.
     ///
@@ -9822,7 +9822,7 @@ mod tests {
     // ===== ROW 4 — the new arm narrows no pairing legal at base, + the
     // present-but-unanchored sibling =====
 
-    /// CR 702.3b (:3915) + CR 508.1c (:2270): the new per-pairing arm narrows NO
+    /// CR 702.3b + CR 508.1c: the new per-pairing arm narrows NO
     /// pairing that is legal at base, and a permission whose condition is PRESENT
     /// but UNANCHORED is evaluated normally at creature level rather than
     /// deferred.
@@ -10017,7 +10017,7 @@ mod tests {
 
     // ===== ROW 6 — union and coexistence, axes (a) and (b) =====
 
-    /// CR 508.5a (:2325) + CR 702.3b (:3915) + CR 508.1c (:2270): two
+    /// CR 508.5a + CR 702.3b + CR 508.1c: two
     /// INCOMPARABLE anchored permissions on ONE creature UNION correctly, and an
     /// anchored PERMISSION and an anchored PROHIBITION coexist on one board with
     /// OPPOSITE verdicts from the one deferral rule.
@@ -10267,7 +10267,7 @@ mod tests {
 
     // ===== ROW 7 — the CR gate stack is not dropped =====
 
-    /// CR 702.26b (docs/MagicCompRules.txt:4180): a phased-out permanent is
+    /// CR 702.26b: a phased-out permanent is
     /// treated as though it does not exist, so the permission it carries does not
     /// function — the Defender creature is NOT offered and every pairing is
     /// refused. PAIRED IN THE SAME FIXTURE with the phased-IN reading, where the
@@ -10326,7 +10326,7 @@ mod tests {
         }
     }
 
-    /// CR 113.6 (:771) + CR 113.6b (:775): an ability that states which zones it
+    /// CR 113.6 + CR 113.6b: an ability that states which zones it
     /// functions in functions ONLY from those zones. FIVE readings in one
     /// fixture, each paired with its functioning control:
     ///
@@ -10503,7 +10503,7 @@ mod tests {
     /// `combat::attacked_player_for_target` returns `None` for
     /// `Planeswalker(_) | Battle(_)`, and the anchored evaluator is
     /// `attacked.is_some_and(..)`, so a creature of this class can never legally
-    /// attack a planeswalker (CR 506.3 :2208).
+    /// attack a planeswalker (CR 506.3).
     #[test]
     fn anchored_remote_permission_does_not_scale_static_scans_with_the_defender_universe() {
         let mut boards = Vec::new();
@@ -11132,8 +11132,8 @@ mod tests {
 
     // ===== ROW 1 (REAL CARD) — the parser -> combat seam =====
 
-    /// CR 702.3b (docs/MagicCompRules.txt:3915) + CR 508.6 (:2327) + CR 609.4
-    /// (:2854): the target card's printed SECOND LINE parses to a
+    /// CR 702.3b + CR 508.6 + CR 609.4:
+    /// the target card's printed SECOND LINE parses to a
     /// `CanAttackWithDefender` carrying the ANCHORED
     /// `AnyPlayerAttackedYouLastTurn { scope: AttackedPlayer }`.
     ///
@@ -11197,7 +11197,7 @@ mod tests {
             Some(StaticCondition::AnyPlayerAttackedYouLastTurn {
                 scope: crate::types::ability::AttackedYouScope::AttackedPlayer,
             }),
-            "CR 508.1b (:2268) + CR 508.6 (:2327): the class is answerable PER PROPOSED \
+            "CR 508.1b + CR 508.6: the class is answerable PER PROPOSED \
              PAIRING, so it carries the ANCHORED scope, not the existential default"
         );
         // POSITIVE SHAPE, not merely the absence of the Defender grant: before this
@@ -11303,8 +11303,8 @@ mod tests {
 
     // ===== ROW 2 (REAL CARD) — integration FROM THE REAL CARD =====
 
-    /// CR 508.1a (docs/MagicCompRules.txt:2266) + CR 508.1c (:2270) + CR 508.6
-    /// (:2327): with the card's OWN PARSED statics on the board, the Defender
+    /// CR 508.1a + CR 508.1c + CR 508.6:
+    /// with the card's OWN PARSED statics on the board, the Defender
     /// creature is OFFERED as an attacker and its PUBLISHED per-attacker target list
     /// equals EXACTLY the qualifying player set — a PROPER SUBSET of the attackable
     /// universe.
@@ -11370,13 +11370,13 @@ mod tests {
         // (a) OFFERED.
         assert!(
             by_attacker.contains_key(&wall),
-            "CR 508.1a (:2266): the creature must be offered; published map = {by_attacker:?}"
+            "CR 508.1a: the creature must be offered; published map = {by_attacker:?}"
         );
         // (b) SCOPED — an EQUALITY against a PROPER SUBSET of {P1, P2}.
         assert_eq!(
             by_attacker[&wall],
             vec![AttackTarget::Player(PlayerId(1))],
-            "CR 508.6 (:2327) + CR 508.1c (:2270): only the player who attacked P0 qualifies"
+            "CR 508.6 + CR 508.1c: only the player who attacked P0 qualifies"
         );
         // the hostile fixture's verdict.
         assert!(
@@ -11388,7 +11388,7 @@ mod tests {
 
     // ===== ROW 3 (REAL CARD) — the published display surface agrees, whole =====
 
-    /// CR 508.1a (:2266) + CR 508.1c (:2270): the PUBLISHED display surface AGREES,
+    /// CR 508.1a + CR 508.1c: the PUBLISHED display surface AGREES,
     /// WHOLE. ONE read of `build_declare_attackers_waiting_for` shows all three
     /// observables together — the creature in the eligible-attacker set, NO
     /// `CantAttack` badge on it, and its published per-attacker list equal to the
@@ -11473,7 +11473,7 @@ mod tests {
         // (i) ELIGIBLE.
         assert!(
             valid_attacker_ids.contains(&wall),
-            "CR 508.1a (:2266): the permitted Defender creature must be in the \
+            "CR 508.1a: the permitted Defender creature must be in the \
              eligible-attacker set; got {valid_attacker_ids:?}"
         );
         // (ii) NOT BADGED — the display must not contradict (i).
@@ -11482,7 +11482,7 @@ mod tests {
                 attacker_constraints.get(&wall),
                 Some(CombatRequirement::CantAttack { .. })
             ),
-            "CR 508.1c (:2270): a creature the engine offers must not also carry a \
+            "CR 508.1c: a creature the engine offers must not also carry a \
              CantAttack badge; got {:?}",
             attacker_constraints.get(&wall)
         );
@@ -11500,7 +11500,7 @@ mod tests {
         assert_eq!(
             by_attacker[&wall],
             vec![AttackTarget::Player(PlayerId(1))],
-            "CR 508.6 (:2327): the published list is the qualifying set, a PROPER SUBSET"
+            "CR 508.6: the published list is the qualifying set, a PROPER SUBSET"
         );
     }
 
