@@ -2769,6 +2769,8 @@ mod concretizer_seams {
 // ---------------------------------------------------------------------------
 
 mod granter_stamp {
+    use engine::game::contraptions::resolve as resolve_contraptions;
+    use engine::game::deck_loading::create_contraption_deck_card;
     use engine::game::effects::attach::attach_to;
     use engine::game::effects::resolve_ability_chain;
     use engine::game::filter::{matches_target_filter, FilterContext};
@@ -2778,18 +2780,23 @@ mod granter_stamp {
     use engine::game::targeting::resolved_targets;
     use engine::game::zones::move_to_zone;
     use engine::types::ability::{
-        AbilityCondition, AbilityDefinition, AbilityKind, Comparator, Effect, ObjectScope,
-        QuantityExpr, QuantityRef, ResolvedAbility, SpellContext, TargetFilter, TargetRef,
-        TriggerDefinition,
+        AbilityCondition, AbilityDefinition, AbilityKind, Comparator, ContinuousModification,
+        Effect, EffectScope, ObjectScope, PtValue, QuantityExpr, QuantityModification, QuantityRef,
+        ReplacementDefinition, ResolvedAbility, SpellContext, TapStateChange, TargetFilter,
+        TargetRef, TriggerDefinition,
     };
     use engine::types::actions::GameAction;
+    use engine::types::card::CardFace;
+    use engine::types::card_type::{CardType, CoreType};
     use engine::types::counter::CounterType;
-    use engine::types::game_state::GameState;
+    use engine::types::game_state::{GameState, WaitingFor};
     use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
     use engine::types::mana::ManaCost;
     use engine::types::phase::Phase;
+    use engine::types::replacements::ReplacementEvent;
     use engine::types::triggers::TriggerMode;
     use engine::types::zones::Zone;
+    use std::sync::Arc;
 
     const EXCLUSION_COUNT: &str =
         "{T}: Put a +1/+1 counter on this creature for each artifact you control other than Foo Bar.";
@@ -3578,5 +3585,215 @@ mod granter_stamp {
             create_token("a 1/1 green Ooze creature token with \"This token can't block.\"");
         assert_eq!(token_pt(&runner, ooze), (Some(1), Some(1)));
         assert_eq!(token_stamps(&runner, ooze), vec![None]);
+    }
+
+    /// Adds to each Foo Bar a grant of `replacement` to its equipped creature.
+    fn grant_replacement(b: &mut Board, replacement: ReplacementDefinition) {
+        let st = b.runner.state_mut();
+        for fb in &b.granters {
+            let fb = st.objects.get_mut(fb).unwrap();
+            let mut grant = super::grant_ability_static(&fb.base_static_definitions);
+            grant.modifications = vec![ContinuousModification::GrantReplacement {
+                replacement: Box::new(replacement.clone()),
+            }];
+            fb.static_definitions.push(grant.clone());
+            Arc::make_mut(&mut fb.base_static_definitions).push(grant);
+        }
+        relayer(st);
+    }
+
+    /// Taps `id`, then untaps it with an effect; returns whether it untapped.
+    fn untap(b: &mut Board, id: ObjectId) -> bool {
+        let st = b.runner.state_mut();
+        st.objects.get_mut(&id).unwrap().tapped = true;
+        let untap = ResolvedAbility::new(
+            Effect::SetTapState {
+                target: TargetFilter::Any,
+                scope: EffectScope::Single,
+                state: TapStateChange::Untap,
+            },
+            vec![TargetRef::Object(id)],
+            id,
+            P0,
+        );
+        resolve_ability_chain(st, &untap, &mut Vec::new(), 0).unwrap();
+        !b.runner.state().objects[&id].tapped
+    }
+
+    /// CR 201.5a + CR 614.1: a granted replacement's `valid_card` names its granter.
+    #[test]
+    fn granted_replacement_applies_to_the_granters_event() {
+        let mut b = board_with("{T}: Draw a card.", &[3, 1], false);
+        grant_replacement(
+            &mut b,
+            ReplacementDefinition::new(ReplacementEvent::Untap)
+                .valid_card(TargetFilter::GrantingObject),
+        );
+        let (host, granters) = (b.host, b.granters.clone());
+        assert_eq!(
+            installed_replacement_stamps(&b),
+            granters
+                .iter()
+                .map(|&fb| Some(stamp_of(&b, fb)))
+                .collect::<Vec<_>>()
+        );
+        for fb in granters {
+            assert!(!untap(&mut b, fb), "each granter's untap is replaced");
+        }
+        assert!(untap(&mut b, host), "the host's untap is not");
+
+        let mut b = board("{T}: Draw a card.", false);
+        grant_replacement(
+            &mut b,
+            ReplacementDefinition::new(ReplacementEvent::Untap).valid_card(TargetFilter::SelfRef),
+        );
+        let (host, fb) = (b.host, b.granters[0]);
+        assert_eq!(installed_replacement_stamps(&b), vec![None]);
+        assert!(untap(&mut b, fb));
+        assert!(!untap(&mut b, host));
+    }
+
+    /// The stamps on the replacements granted to the host.
+    fn installed_replacement_stamps(b: &Board) -> Vec<Option<ObjectIncarnationRef>> {
+        let host = &b.runner.state().objects[&b.host];
+        let base = host.base_replacement_definitions.len();
+        host.replacement_definitions.as_slice()[base..]
+            .iter()
+            .map(|r| r.granting_object)
+            .collect()
+    }
+
+    /// CR 201.5a + CR 614.6: a granted replacement's execute reads its granter.
+    #[test]
+    fn granted_replacement_execute_reads_the_granter() {
+        let mut b = board("{T}: Draw a card.", false);
+        grant_replacement(
+            &mut b,
+            ReplacementDefinition::new(ReplacementEvent::Untap)
+                .valid_card(TargetFilter::SelfRef)
+                .execute(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::PutCounter {
+                        counter_type: CounterType::Plus1Plus1,
+                        count: QuantityExpr::Ref {
+                            qty: QuantityRef::CountersOn {
+                                scope: ObjectScope::GrantingObject,
+                                counter_type: Some(CounterType::Plus1Plus1),
+                            },
+                        },
+                        target: TargetFilter::SelfRef,
+                    },
+                )),
+        );
+        let host = b.host;
+        assert!(!untap(&mut b, host));
+        assert_eq!(p1p1(&b, host), 4);
+    }
+
+    /// A creature token named `name` with power and toughness `pt`.
+    fn creature_token(name: &str, pt: PtValue) -> Effect {
+        Effect::Token {
+            name: name.to_string(),
+            power: pt.clone(),
+            toughness: pt,
+            types: vec!["Creature".to_string(), name.to_string()],
+            colors: Vec::new(),
+            keywords: Vec::new(),
+            tapped: false,
+            count: QuantityExpr::Fixed { value: 1 },
+            owner: TargetFilter::Controller,
+            attach_to: None,
+            enters_attacking: false,
+            supertypes: Vec::new(),
+            static_abilities: Vec::new(),
+            enter_with_counters: Vec::new(),
+        }
+    }
+
+    /// CR 201.5a + CR 614.1a: a granted token substitution reads its granter.
+    #[test]
+    fn granted_token_substitution_reads_the_granter() {
+        let mut b = board("{T}: Draw a card.", false);
+        let counters_on_granter = PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::CountersOn {
+                scope: ObjectScope::GrantingObject,
+                counter_type: Some(CounterType::Plus1Plus1),
+            },
+        });
+        grant_replacement(
+            &mut b,
+            ReplacementDefinition::new(ReplacementEvent::CreateToken).execute(
+                AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    creature_token("Angel", counters_on_granter),
+                ),
+            ),
+        );
+        let create = ResolvedAbility::new(
+            creature_token("Spirit", PtValue::Fixed(1)),
+            Vec::new(),
+            b.host,
+            P0,
+        );
+        let st = b.runner.state_mut();
+        resolve_ability_chain(st, &create, &mut Vec::new(), 0).unwrap();
+        let tokens: Vec<_> = st
+            .battlefield
+            .iter()
+            .map(|id| &st.objects[id])
+            .filter(|o| o.name == "Angel" || o.name == "Spirit")
+            .map(|o| (o.name.clone(), o.power, o.toughness))
+            .collect();
+        assert_eq!(tokens, vec![("Angel".to_string(), Some(3), Some(3))]);
+    }
+
+    /// How many Contraptions `source` assembles when told to assemble one.
+    fn assembles(b: &mut Board, source: ObjectId) -> u32 {
+        let st = b.runner.state_mut();
+        for name in ["Cog", "Gear"] {
+            let face = CardFace {
+                name: name.to_string(),
+                card_type: CardType {
+                    supertypes: Vec::new(),
+                    core_types: vec![CoreType::Artifact],
+                    subtypes: vec!["Contraption".to_string()],
+                },
+                ..CardFace::default()
+            };
+            create_contraption_deck_card(st, &face, P0);
+        }
+        let assemble = ResolvedAbility::new(
+            Effect::AssembleContraptions {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+            Vec::new(),
+            source,
+            P0,
+        );
+        resolve_contraptions(st, &assemble, &mut Vec::new()).unwrap();
+        let WaitingFor::ChooseOneOfBranch { branches, .. } = &st.waiting_for else {
+            panic!("expected the sprocket choice, got {:?}", st.waiting_for);
+        };
+        let Effect::AssembleContraptionOnSprocket { remaining, .. } = &*branches[0].effect else {
+            panic!("expected an assemble branch");
+        };
+        remaining + 1
+    }
+
+    /// CR 201.5a + CR 701.45a: a granted assemble replacement's `valid_card` names its granter.
+    #[test]
+    fn granted_assemble_replacement_applies_to_the_granters_assemble() {
+        let doubling = ReplacementDefinition::new(ReplacementEvent::AssembleContraption)
+            .valid_card(TargetFilter::GrantingObject)
+            .quantity_modification(QuantityModification::Times { factor: 2 });
+        let mut b = board("{T}: Draw a card.", false);
+        grant_replacement(&mut b, doubling.clone());
+        let fb = b.granters[0];
+        assert_eq!(assembles(&mut b, fb), 2);
+
+        let mut b = board("{T}: Draw a card.", false);
+        grant_replacement(&mut b, doubling);
+        let host = b.host;
+        assert_eq!(assembles(&mut b, host), 1);
     }
 }

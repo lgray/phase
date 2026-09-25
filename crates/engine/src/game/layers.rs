@@ -6953,8 +6953,9 @@ fn stamp_granter(
             DefinitionNodeMut::Static(static_def) => {
                 static_def.granting_object.get_or_insert(granter);
             }
-            // Replacement definitions carry no stamp field.
-            DefinitionNodeMut::Replacement(_) => {}
+            DefinitionNodeMut::Replacement(replacement) => {
+                replacement.granting_object.get_or_insert(granter);
+            }
         }
         std::ops::ControlFlow::Continue(())
     }
@@ -8983,6 +8984,9 @@ fn apply_continuous_effect_filtered(
                 ContinuousModification::GrantStaticAbility { definition } => {
                     references_granting_object(definition)
                 }
+                ContinuousModification::GrantReplacement { replacement } => {
+                    references_granting_object(replacement)
+                }
                 _ => false,
             }
     });
@@ -9607,14 +9611,20 @@ fn apply_continuous_effect_filtered(
             // each layer pass (`obj.replacement_definitions` was reset to base at
             // the start of the pass); structural-equality dedup keeps repeated
             // grants (multiple sources, or a single static parsed twice)
-            // idempotent, matching the GrantTrigger / GrantStaticAbility invariant.
+            // idempotent, matching the GrantTrigger / GrantStaticAbility invariant,
+            // unless the body names its granter (CR 201.5a), whose stamp keeps each
+            // granter's copy apart.
             ContinuousModification::GrantReplacement { replacement } => {
+                let mut granted = *replacement.clone();
+                if let Some(granter) = stamp_granter_as {
+                    let _ = nodes_mut::visit_replacement(&mut granted, &mut stamp_granter(granter));
+                }
                 if !obj
                     .replacement_definitions
                     .iter_all()
-                    .any(|rd| rd == replacement.as_ref())
+                    .any(|rd| rd == &granted)
                 {
-                    obj.replacement_definitions.push(*replacement.clone());
+                    obj.replacement_definitions.push(granted);
                 }
             }
             ContinuousModification::AddStaticMode { mode } => {
@@ -10093,7 +10103,9 @@ mod tests {
 
     #[test]
     fn stamp_granter_fills_every_node_and_keeps_an_existing_stamp() {
-        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect};
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, ReplacementDefinition,
+        };
         use crate::types::ability_visit::nodes_mut;
         let granter = ObjectIncarnationRef::of(ObjectId(5), 1);
         let earlier = ObjectIncarnationRef::of(ObjectId(9), 4);
@@ -10112,6 +10124,22 @@ mod tests {
         let _ = nodes_mut::visit_trigger(&mut trigger, &mut stamp_granter(granter));
         assert_eq!(trigger.granting_object, Some(granter));
         assert_eq!(trigger.execute.unwrap().granting_object, Some(granter));
+
+        let nested = ReplacementDefinition::new(ReplacementEvent::Destroy);
+        assert!(!references_granting_object(&nested));
+        let mut body = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::AddTargetReplacement {
+                replacement: Box::new(nested),
+                target: TargetFilter::GrantingObject,
+            },
+        );
+        assert!(references_granting_object(&body));
+        let _ = nodes_mut::visit_ability_def(&mut body, &mut stamp_granter(granter));
+        let Effect::AddTargetReplacement { replacement, .. } = &*body.effect else {
+            unreachable!()
+        };
+        assert_eq!(replacement.granting_object, Some(granter));
     }
 
     /// CR 514.2 + CR 109.4: `prune_until_next_turn_effects` arms an
