@@ -4824,6 +4824,7 @@ fn static_binds_nothing(static_ability: &StaticDefinition) -> bool {
         bypass_beneficiary,
         protection_does_not_remove,
         room_door,
+        granting_object,
     } = static_ability;
     condition.is_none()
         && per_player_condition.is_none()
@@ -4837,6 +4838,7 @@ fn static_binds_nothing(static_ability: &StaticDefinition) -> bool {
         && bypass_beneficiary.is_none()
         && protection_does_not_remove.is_none()
         && room_door.is_none()
+        && granting_object.is_none()
 }
 
 /// CR 608.2c: the one object class a static ability granted by a

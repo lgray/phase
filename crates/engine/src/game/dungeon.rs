@@ -1167,6 +1167,7 @@ pub fn room_effects(
                         bypass_beneficiary: None,
                         protection_does_not_remove: None,
                         room_door: None,
+                        granting_object: None,
                     }],
                     triggers: Vec::new(),
                 },

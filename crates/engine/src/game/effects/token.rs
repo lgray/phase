@@ -676,6 +676,7 @@ fn build_token_spec(
     if let Some(incarnation) = ability.source_incarnation {
         let creator = ObjectIncarnationRef::of(ability.source_id, incarnation);
         for static_def in static_abilities.iter_mut() {
+            crate::game::layers::stamp_static_granter(static_def, creator);
             crate::game::ability_utils::concretize_granting_object_in_static(static_def, creator);
         }
     }

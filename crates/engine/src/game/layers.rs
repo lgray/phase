@@ -6413,6 +6413,7 @@ fn gather_ring_emblem_continuous_effects(
             condition: None,
             mode: StaticMode::Continuous,
             characteristic_defining: false,
+            granter: None,
         });
     }
 }
@@ -6803,6 +6804,7 @@ fn active_continuous_effects_from_static_definitions(
                 condition: retained_condition.clone(),
                 mode: def.mode.clone(),
                 characteristic_defining: def.characteristic_defining,
+                granter: def.granting_object,
             });
         }
     }
@@ -6850,10 +6852,9 @@ fn expand_granted_static_effects(
     // references bind to that object.
     let mut concretized = inner.clone();
     if let Some(host) = state.objects.get(&host_source_id) {
-        super::ability_utils::concretize_granting_object_in_static(
-            &mut concretized,
-            ObjectIncarnationRef::from_object(host),
-        );
+        let host = ObjectIncarnationRef::from_object(host);
+        stamp_static_granter(&mut concretized, host);
+        super::ability_utils::concretize_granting_object_in_static(&mut concretized, host);
     }
     let inner = &concretized;
     let inner_affected = inner.affected.clone().unwrap_or(TargetFilter::Any);
@@ -6909,6 +6910,7 @@ fn expand_granted_static_effects(
                 condition: retained_inner_condition.clone(),
                 mode: inner.mode.clone(),
                 characteristic_defining: inner.characteristic_defining,
+                granter: inner.granting_object,
             });
         }
     }
@@ -6948,10 +6950,21 @@ fn stamp_granter(
             DefinitionNodeMut::Trigger(trigger) => {
                 trigger.granting_object.get_or_insert(granter);
             }
-            // Static and replacement definitions carry no stamp field.
-            DefinitionNodeMut::Static(_) | DefinitionNodeMut::Replacement(_) => {}
+            DefinitionNodeMut::Static(static_def) => {
+                static_def.granting_object.get_or_insert(granter);
+            }
+            // Replacement definitions carry no stamp field.
+            DefinitionNodeMut::Replacement(_) => {}
         }
         std::ops::ControlFlow::Continue(())
+    }
+}
+
+/// CR 201.5a: the stamping rule for a static installed on an object other than
+/// `granter` — a granted static or a created token's static.
+pub(crate) fn stamp_static_granter(def: &mut StaticDefinition, granter: ObjectIncarnationRef) {
+    if references_granting_object(def) {
+        let _ = nodes_mut::visit_static(def, &mut stamp_granter(granter));
     }
 }
 
@@ -7081,6 +7094,7 @@ fn expand_granted_activated_abilities(
                     condition: None,
                     mode: StaticMode::Continuous,
                     characteristic_defining: false,
+                    granter: None,
                 });
                 next_mod_index += 1;
             }
@@ -7181,6 +7195,7 @@ fn expand_granted_triggered_abilities(
                     condition: None,
                     mode: StaticMode::Continuous,
                     characteristic_defining: false,
+                    granter: None,
                 });
                 next_mod_index += 1;
             }
@@ -7364,6 +7379,7 @@ pub(crate) fn gather_transient_continuous_effects(
                 condition: retained_condition.clone(),
                 mode: StaticMode::Continuous,
                 characteristic_defining: false,
+                granter: None,
             });
         }
     }
@@ -8837,6 +8853,11 @@ fn apply_continuous_effect_filtered(
         .unwrap_or(PlayerId(0));
     let dynamic_uses_recipient =
         dynamic_pt_expr.is_some_and(crate::game::quantity::quantity_expr_uses_recipient);
+    // CR 201.5a: the effect's static names its granter when it was granted.
+    let quantity_ctx = QuantityContext {
+        granting_object: effect.granter,
+        ..QuantityContext::new(effect.source_id)
+    };
     // The shared value is read ONLY by the per-recipient loop below (`for &id in
     // affected_ids`, its single reader), so an effect whose affected set is
     // empty on this pass has nothing to spend it on. No CR annotation: the
@@ -8874,11 +8895,11 @@ fn apply_continuous_effect_filtered(
         (Some(value), false) if !affected_ids.is_empty() => {
             #[cfg(test)]
             record_shared_dynamic_quantity_resolution();
-            Some(crate::game::quantity::resolve_quantity(
+            Some(crate::game::quantity::resolve_quantity_with_ctx(
                 state,
                 value,
                 effect_controller,
-                effect.source_id,
+                quantity_ctx.clone(),
             ))
         }
         _ => None,
@@ -8959,6 +8980,9 @@ fn apply_continuous_effect_filtered(
                 ContinuousModification::GrantTrigger { trigger } => {
                     references_granting_object(trigger)
                 }
+                ContinuousModification::GrantStaticAbility { definition } => {
+                    references_granting_object(definition)
+                }
                 _ => false,
             }
     });
@@ -8969,12 +8993,14 @@ fn apply_continuous_effect_filtered(
         // The immutable read finishes before the mutable borrow of `obj` below.
         let dynamic_pt = if dynamic_uses_recipient {
             dynamic_pt_expr.map(|value| {
-                crate::game::quantity::resolve_quantity_with_recipient(
+                crate::game::quantity::resolve_quantity_with_ctx(
                     state,
                     value,
                     effect_controller,
-                    effect.source_id,
-                    id,
+                    QuantityContext {
+                        recipient: Some(id),
+                        ..quantity_ctx.clone()
+                    },
                 )
             })
         } else {
@@ -9560,6 +9586,9 @@ fn apply_continuous_effect_filtered(
             // `GrantTrigger` / `AddStaticMode` idempotency invariant in this match).
             ContinuousModification::GrantStaticAbility { definition } => {
                 let mut granted = *definition.clone();
+                if let Some(granter) = stamp_granter_as {
+                    let _ = nodes_mut::visit_static(&mut granted, &mut stamp_granter(granter));
+                }
                 if let Some(granter) = granter {
                     super::ability_utils::concretize_granting_object_in_static(
                         &mut granted,

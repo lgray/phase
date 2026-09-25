@@ -3485,4 +3485,98 @@ mod granter_stamp {
             );
         }
     }
+
+    /// CR 201.5a + CR 613.4c: a granted static's quantity excludes its granter.
+    #[test]
+    fn granted_static_quantity_excludes_the_granter() {
+        for (other, host_power) in [(true, 5), (false, 3)] {
+            let b = board(
+                "This creature gets +X/+0, where X is the greatest mana value among artifacts you control other than Foo Bar.",
+                other,
+            );
+            assert_eq!(power(&b), host_power, "other={other}");
+            assert_eq!(
+                installed_stamps(&b),
+                vec![Some(stamp_of(&b, b.granters[0]))]
+            );
+        }
+        let b = board("This creature gets +1/+0.", true);
+        assert_eq!(power(&b), 4);
+        assert_eq!(installed_stamps(&b), vec![None]);
+    }
+
+    fn stamp_of(b: &Board, id: ObjectId) -> ObjectIncarnationRef {
+        ObjectIncarnationRef::from_object(&b.runner.state().objects[&id])
+    }
+
+    /// The stamps on the statics granted to the host.
+    fn installed_stamps(b: &Board) -> Vec<Option<ObjectIncarnationRef>> {
+        let st = b.runner.state();
+        let host = &st.objects[&b.host];
+        let base = host.base_static_definitions.len();
+        host.static_definitions.as_slice()[base..]
+            .iter()
+            .map(|s| s.granting_object)
+            .collect()
+    }
+
+    /// Foo Bar (beside a MV-2 "Other" artifact) creates `token`; returns Foo Bar and the Ooze.
+    fn create_token(token: &str) -> (GameRunner, ObjectId, ObjectId) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let fb = scenario
+            .add_artifact_from_oracle(P0, "Foo Bar", &format!("{{T}}: Create {token}"))
+            .id();
+        scenario.add_artifact_from_oracle(P0, "Other", "");
+        let mut runner = scenario.build();
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: fb,
+                ability_index: 0,
+            })
+            .unwrap();
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        let ooze = *st
+            .battlefield
+            .iter()
+            .find(|id| st.objects[id].name == "Ooze")
+            .expect("the Ooze token");
+        (runner, fb, ooze)
+    }
+
+    fn token_pt(runner: &GameRunner, ooze: ObjectId) -> (Option<i32>, Option<i32>) {
+        let token = &runner.state().objects[&ooze];
+        (token.power, token.toughness)
+    }
+
+    fn token_stamps(runner: &GameRunner, ooze: ObjectId) -> Vec<Option<ObjectIncarnationRef>> {
+        runner.state().objects[&ooze]
+            .base_static_definitions
+            .iter()
+            .map(|s| s.granting_object)
+            .collect()
+    }
+
+    /// CR 201.5a + CR 604.3: a token's P/T CDA excludes the object that created it.
+    #[test]
+    fn token_cda_excludes_its_creator() {
+        let (mut runner, fb, ooze) = create_token(
+            "a green Ooze creature token with \"This token's power and toughness are each equal to the number of artifacts you control other than Foo Bar.\"",
+        );
+        let creator = ObjectIncarnationRef::from_object(&runner.state().objects[&fb]);
+        assert_eq!(token_pt(&runner, ooze), (Some(1), Some(1)));
+        assert_eq!(token_stamps(&runner, ooze), vec![Some(creator)]);
+        // CR 400.7: the returned Foo Bar is a new object, so the token counts it.
+        let st = runner.state_mut();
+        move_to_zone(st, fb, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, fb, Zone::Battlefield, &mut Vec::new());
+        relayer(st);
+        assert_eq!(token_pt(&runner, ooze), (Some(2), Some(2)));
+
+        let (runner, _, ooze) =
+            create_token("a 1/1 green Ooze creature token with \"This token can't block.\"");
+        assert_eq!(token_pt(&runner, ooze), (Some(1), Some(1)));
+        assert_eq!(token_stamps(&runner, ooze), vec![None]);
+    }
 }
