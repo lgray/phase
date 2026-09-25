@@ -25042,6 +25042,64 @@ fn extract_player_anchor_in_chain(clause: &ParsedEffectClause) -> Option<TargetF
     None
 }
 
+/// CR 608.2c + CR 115.1: The player a search in `clause` or its `sub_ability`
+/// chain declares as its target ("search target opponent's library"), if any.
+fn declared_searched_player(clause: &ParsedEffectClause) -> Option<TargetFilter> {
+    let declared = |effect: &Effect| match effect {
+        Effect::SearchLibrary {
+            target_player: Some(filter),
+            ..
+        } => match filter {
+            TargetFilter::Player => Some(filter.clone()),
+            TargetFilter::Typed(tf)
+                if tf.type_filters.is_empty()
+                    && tf.properties.is_empty()
+                    && matches!(tf.controller, None | Some(ControllerRef::Opponent)) =>
+            {
+                Some(filter.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(found) = declared(&clause.effect) {
+        return Some(found);
+    }
+    let mut sub = clause.sub_ability.as_deref();
+    while let Some(def) = sub {
+        if let Some(found) = declared(&def.effect) {
+            return Some(found);
+        }
+        sub = def.sub_ability.as_deref();
+    }
+    None
+}
+
+/// CR 608.2c + CR 115.1 + CR 701.24a: "that player shuffles" after a search of
+/// a declared player target shuffles that player's library, so each such
+/// anaphor in `clause` binds to the search's player-target slot.
+fn bind_searched_player_shuffle(clause: &mut ParsedEffectClause, searched: &TargetFilter) {
+    let bind = |effect: &mut Effect| {
+        if let Effect::Shuffle { target } = effect {
+            let names_searched = matches!(
+                target,
+                TargetFilter::ParentTargetController
+                    | TargetFilter::TriggeringPlayer
+                    | TargetFilter::ParentTarget
+            ) || (*target == *searched && *target != TargetFilter::Player);
+            if names_searched {
+                *target = TargetFilter::ParentTargetSlot { index: 0 };
+            }
+        }
+    };
+    bind(&mut clause.effect);
+    let mut sub = clause.sub_ability.as_deref_mut();
+    while let Some(def) = sub {
+        bind(def.effect.as_mut());
+        sub = def.sub_ability.as_deref_mut();
+    }
+}
+
 /// CR 108.3 + CR 109.4: Map a chain-level anchor subject (a `TargetFilter`
 /// player reference established by a prior clause) to the `PlayerFilter` a
 /// villainous-choice `ChooseOneOf` chooser should adopt when the choice
@@ -36731,6 +36789,9 @@ pub(crate) fn parse_effect_chain_ir(
     // player performs the action. Only propagates within a single sentence /
     // chain; the anchor is reset at each top-level call.
     let mut anchor_subject: Option<TargetFilter> = None;
+    // CR 608.2c: a caster-subject chunk does not disarm this, because "that
+    // player" still names the searched player after "You may cast that card".
+    let mut searched_player: Option<TargetFilter> = None;
     let mut chunk_diagnostics: Vec<OracleDiagnostic> = Vec::new();
     // CR 608.2c: "Repeat the following process N times." appears as its own
     // sentence before the body clause. The count is stashed here and applied
@@ -39769,6 +39830,12 @@ pub(crate) fn parse_effect_chain_ir(
                 let text_lower_for_anchor = text.to_lowercase();
                 apply_anchor_subject_to_clause(&mut clause, anchor, &text_lower_for_anchor);
             }
+        }
+        if searched_player.is_none() {
+            searched_player = declared_searched_player(&clause);
+        }
+        if let Some(ref searched) = searched_player {
+            bind_searched_player_shuffle(&mut clause, searched);
         }
 
         // Anaphoric resolution: parse-time pronoun→parent-target rewrites.

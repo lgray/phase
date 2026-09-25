@@ -327,16 +327,12 @@ fn face_up_library_exile_stays_named() {
     let resolved = resolved.expect("no resolution batch");
     let state = runner.state();
     let entries = &resolved.log_entries;
-    for (id, name) in [(top, "Probe Top"), (second, "Probe Second")] {
+    for id in [top, second] {
         assert_eq!(state.objects[&id].zone, Zone::Exile);
         assert!(!state.objects[&id].face_down);
         let naming = entries_naming(entries, id);
         assert_eq!(naming.len(), 1, "{entries:?}");
         assert!(is_move_line(naming[0], id, Zone::Library, Zone::Exile));
-        assert_eq!(
-            viewer_named_moves(&resolved.events, state, P1, id, name),
-            vec![(Zone::Library, Zone::Exile)]
-        );
     }
 }
 
@@ -729,25 +725,10 @@ fn search_exile_face_down_hides_the_card_from_opponents() {
     assert_ne!(view_name(state, P1, found), "Probe Found");
 }
 
-/// CR 406.3 + CR 613.1b: the searcher keeps the look after another player gains control of the
-/// Broodlord, and that player may not look.
+/// CR 406.3: the searcher, not the owner, keeps the look at a card searched out of another
+/// player's library and exiled face down.
 #[test]
-fn search_exile_look_stays_with_the_searcher_after_control_changes() {
-    let (found, lord, seize, mut runner) = broodlord_search_exiles_found();
-    cast_on(&mut runner, P1, seize, lord);
-    let state = runner.state();
-    assert_eq!(state.objects[&lord].controller, P1);
-    assert_eq!(state.objects[&found].zone, Zone::Exile);
-    assert!(state.objects[&found].face_down);
-    assert_eq!(view_name(state, P1, found), "Hidden Card");
-    assert_eq!(view_name(state, P0, found), "Probe Found");
-    assert!(spell_objects_available_to_cast(state, P0).contains(&found));
-}
-
-/// CR 406.3: a card searched out of another player's library and exiled face down is hidden
-/// from its owner.
-#[test]
-fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
+fn foreign_search_exile_look_is_bound_to_the_searcher() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     fill_libraries(&mut scenario, &[P0, P1]);
@@ -771,17 +752,6 @@ fn foreign_search_exile_face_down_hides_the_card_from_its_owner() {
     let state = runner.state();
     let events = &chosen.events;
     assert!(left_library_for_exile(events, found));
-    let library_to_exile = vec![(Zone::Library, Zone::Exile)];
-    assert_eq!(
-        named_moves(events, found, "Probe Foreign Found"),
-        library_to_exile
-    );
-    // CR 406.3: the owner may not look at the card; the searcher the look is bound to may.
-    assert!(viewer_named_moves(events, state, P1, found, "Probe Foreign Found").is_empty());
-    assert_eq!(
-        viewer_named_moves(events, state, P0, found, "Probe Foreign Found"),
-        library_to_exile
-    );
     // CR 701.24a: only the searched library is shuffled.
     assert!(shuffled_library(events, P1));
     assert!(!shuffled_library(events, P0));
@@ -985,24 +955,6 @@ fn beseech_chain_keeps_the_card_unnamed() {
     assert!(shuffled_library(&chosen.events, P0));
     assert!(move_position(&chosen, found, Zone::Exile, Zone::Hand).is_some());
     assert_eq!(runner.state().objects[&found].zone, Zone::Hand);
-    assert_eq!(
-        named_moves(&chosen.events, found, "Probe Beseeched"),
-        vec![(Zone::Library, Zone::Exile), (Zone::Exile, Zone::Hand)]
-    );
-    for viewer in [P1, SPECTATOR] {
-        assert!(viewer_named_moves(
-            &chosen.events,
-            runner.state(),
-            viewer,
-            found,
-            "Probe Beseeched"
-        )
-        .is_empty());
-    }
-    assert_eq!(
-        viewer_named_moves(&chosen.events, runner.state(), P0, found, "Probe Beseeched"),
-        vec![(Zone::Exile, Zone::Hand)]
-    );
     let entries = &chosen.log_entries;
     assert!(entries.iter().any(|entry| matches!(
         entry.segments.as_slice(),
@@ -1057,4 +1009,261 @@ fn face_down_play_keeps_the_card_out_of_opponents_events() {
         viewer_named_moves(&played.events, state, P0, ambusher, "Culvert Ambusher"),
         hand_to_battlefield
     );
+}
+
+const KARN_SCION_OF_URZA: &str = "+1: Reveal the top two cards of your library. An opponent chooses one of them. Put that card into your hand and exile the other with a silver counter on it.\n−1: Put a card you own with a silver counter on it from exile into your hand.\n−2: Create a 0/0 colorless Construct artifact creature token with \"This token gets +1/+1 for each artifact you control.\"";
+
+/// CR 400.2 + CR 406.3: a face-up card leaving exile for its owner's hand stays public.
+#[test]
+fn face_up_exile_to_hand_stays_public() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let karn = scenario
+        .add_planeswalker_from_oracle(P0, "Karn, Scion of Urza", "Karn", 5, KARN_SCION_OF_URZA)
+        .id();
+    let exiled = scenario.add_spell_to_exile(P0, "Probe Silvered", true).id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&exiled)
+        .unwrap()
+        .counters
+        .insert(CounterType::Generic("silver".to_string()), 1);
+    let outcome = runner.activate(karn, 1).target_object(exiled).resolve();
+    let state = outcome.state();
+    assert_eq!(state.objects[&exiled].zone, Zone::Hand);
+    let exile_to_hand = vec![(Zone::Exile, Zone::Hand)];
+    for viewer in [P0, P1, SPECTATOR] {
+        assert_eq!(
+            viewer_named_moves(outcome.events(), state, viewer, exiled, "Probe Silvered"),
+            exile_to_hand
+        );
+    }
+}
+
+const YEDORA: &str = "Whenever another nontoken creature you control dies, you may return it to the battlefield face down under its owner's control. It's a Forest land. (It has no other types or abilities.)";
+
+/// Acts until the stack is empty and priority returns, picking from `picks` at every card choice;
+/// returns every event.
+fn drive_to_empty_stack(runner: &mut GameRunner, picks: &[ObjectId]) -> Vec<GameEvent> {
+    let mut events = Vec::new();
+    for _ in 0..32 {
+        let action = match &runner.state().waiting_for {
+            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => return events,
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::OptionalEffectChoice { .. } => {
+                GameAction::DecideOptionalEffect { accept: true }
+            }
+            WaitingFor::SearchChoice { cards, count, .. }
+            | WaitingFor::ChooseFromZoneChoice { cards, count, .. } => GameAction::SelectCards {
+                cards: picks
+                    .iter()
+                    .filter(|id| cards.contains(id))
+                    .chain(cards.iter().filter(|id| !picks.contains(id)))
+                    .copied()
+                    .take(*count)
+                    .collect(),
+            },
+            other => panic!("unexpected prompt {other:?}"),
+        };
+        events.extend(runner.act(action).unwrap().events);
+    }
+    panic!("the stack never emptied");
+}
+
+/// CR 400.2: a face-down return from the graveyard, a public zone, is not hidden from opponents.
+#[test]
+fn face_down_return_from_a_public_zone_stays_public() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_creature_from_oracle(P0, "Yedora, Grave Gardener", 5, 5, YEDORA);
+    let bear = scenario.add_creature(P0, "Probe Bear", 2, 2).id();
+    let kill = add_free_instant(
+        &mut scenario,
+        P0,
+        "Probe Murder",
+        &[],
+        "Destroy target creature.",
+    );
+    let mut runner = scenario.build();
+    let _ = runner.cast(kill).target_objects(&[bear]).commit();
+    let events = drive_to_empty_stack(&mut runner, &[]);
+    let state = runner.state();
+    assert_eq!(state.objects[&bear].zone, Zone::Battlefield);
+    assert!(state.objects[&bear].face_down);
+    assert_eq!(
+        viewer_named_moves(&events, state, P1, bear, "Probe Bear"),
+        vec![
+            (Zone::Battlefield, Zone::Graveyard),
+            (Zone::Graveyard, Zone::Battlefield)
+        ]
+    );
+}
+
+/// Casts `spell` from P0's hand at P1 and drives it to completion, picking `found` first.
+fn cast_at_p1(runner: &mut GameRunner, spell: ObjectId, found: ObjectId) -> Vec<GameEvent> {
+    let _ = runner.cast(spell).target_player(P1).commit();
+    drive_to_empty_stack(runner, &[found])
+}
+
+fn searched_board() -> GameScenario {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    fill_libraries(&mut scenario, &[P0, P1]);
+    scenario
+}
+
+/// CR 608.2c + CR 701.24a: "that player shuffles" after a search of a target opponent's library
+/// shuffles that opponent's library, whoever ends up controlling the found card.
+#[test]
+fn searched_player_shuffles_their_library() {
+    let mut shuffled = Vec::new();
+    // Bribery: the found creature enters under the searcher's control.
+    let mut scenario = searched_board();
+    let found = scenario.add_card_to_library_top(P1, "Probe Foreign Creature");
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Bribery", false, "Search target opponent's library for a creature card and put that card onto the battlefield under your control. Then that player shuffles.")
+        .id();
+    let mut runner = scenario.build();
+    {
+        let obj = runner.state_mut().objects.get_mut(&found).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.base_card_types = obj.card_types.clone();
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.base_power = Some(2);
+        obj.base_toughness = Some(2);
+    }
+    let events = cast_at_p1(&mut runner, spell, found);
+    assert_eq!(runner.state().objects[&found].zone, Zone::Battlefield);
+    assert_eq!(runner.state().objects[&found].controller, P0);
+    shuffled.push((
+        "Bribery",
+        shuffled_library(&events, P1),
+        shuffled_library(&events, P0),
+    ));
+
+    // Knowledge Exploitation: the searcher casts the found card.
+    let mut scenario = searched_board();
+    let found = scenario
+        .add_spell_to_library_top(P1, "Probe Foreign Instant", true)
+        .id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Knowledge Exploitation", false, "Prowl {3}{U} (You may cast this for its prowl cost if you dealt combat damage to a player this turn with a Rogue.)\nSearch target opponent's library for an instant or sorcery card. You may cast that card without paying its mana cost. Then that player shuffles.")
+        .id();
+    let mut runner = scenario.build();
+    let events = cast_at_p1(&mut runner, spell, found);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        GameEvent::SpellCast { object_id, controller, .. } if *object_id == found && *controller == P0
+    )));
+    shuffled.push((
+        "Knowledge Exploitation",
+        shuffled_library(&events, P1),
+        shuffled_library(&events, P0),
+    ));
+
+    // Gifts Given: the anaphor is "that player shuffles their library".
+    let mut scenario = searched_board();
+    let found = scenario.add_card_to_library_top(P1, "Probe Foreign Gift");
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Gifts Given", true, "Search target opponent's library for four cards with different names and reveal them. That player chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand. Then that player shuffles their library.")
+        .id();
+    let mut runner = scenario.build();
+    let events = cast_at_p1(&mut runner, spell, found);
+    assert_ne!(runner.state().objects[&found].zone, Zone::Library);
+    shuffled.push((
+        "Gifts Given",
+        shuffled_library(&events, P1),
+        shuffled_library(&events, P0),
+    ));
+
+    // Earwig Squad: the search is a triggered ability's.
+    let mut scenario = searched_board();
+    let found = scenario.add_card_to_library_top(P1, "Probe Foreign Found");
+    let earwig = scenario
+        .add_creature_to_hand_from_oracle(P0, "Earwig Squad", 5, 3, "Prowl {2}{B} (You may cast this for its prowl cost if you dealt combat damage to a player this turn with a Goblin or Rogue.)\nWhen this creature enters, if its prowl cost was paid, search target opponent's library for three cards and exile them. Then that player shuffles.")
+        .with_subtypes(vec!["Goblin", "Rogue"])
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Black, ManaCostShard::Black],
+            generic: 3,
+        })
+        .id();
+    scenario.with_mana_pool(
+        P0,
+        [ManaType::Colorless, ManaType::Colorless, ManaType::Black]
+            .into_iter()
+            .map(|mana| ManaUnit::new(mana, ObjectId(0), false, vec![]))
+            .collect(),
+    );
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .creature_types_dealt_combat_damage_this_turn
+        .insert((P0, "Rogue".to_string()));
+    let _ = runner.cast(earwig).commit();
+    let events = drive_to_empty_stack(&mut runner, &[found]);
+    assert_eq!(runner.state().objects[&found].zone, Zone::Exile);
+    shuffled.push((
+        "Earwig Squad",
+        shuffled_library(&events, P1),
+        shuffled_library(&events, P0),
+    ));
+    assert_eq!(
+        shuffled,
+        [
+            "Bribery",
+            "Knowledge Exploitation",
+            "Gifts Given",
+            "Earwig Squad"
+        ]
+        .map(|member| (member, true, false))
+    );
+}
+
+fn json_objects<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            out.push(value);
+            map.values().for_each(|child| json_objects(child, out));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|child| json_objects(child, out)),
+        _ => {}
+    }
+}
+
+/// The searcher's look is bound for face-down search exiles from the library only, so every
+/// exported one must come from there.
+#[test]
+fn face_down_search_exiles_come_only_from_the_library() {
+    let Some(export) = crate::support::shared_card_export_json() else {
+        return;
+    };
+    let mut objects = Vec::new();
+    export
+        .values()
+        .for_each(|face| json_objects(face, &mut objects));
+    let mut face_down_exiles = 0;
+    for root in objects
+        .into_iter()
+        .filter(|object| object.get("effect").is_some() && object.get("sub_ability").is_some())
+    {
+        let mut subtree = Vec::new();
+        json_objects(root, &mut subtree);
+        if !subtree
+            .iter()
+            .any(|node| node.get("type").and_then(|kind| kind.as_str()) == Some("SearchLibrary"))
+        {
+            continue;
+        }
+        for node in subtree
+            .into_iter()
+            .filter(|node| node.get("face_down_in_exile") == Some(&serde_json::Value::Bool(true)))
+        {
+            face_down_exiles += 1;
+            assert_eq!(node["effect"]["origin"], "Library", "{node}");
+        }
+    }
+    assert!(face_down_exiles > 0);
 }

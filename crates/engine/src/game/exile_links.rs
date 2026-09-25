@@ -2,7 +2,8 @@ use serde::Serialize;
 
 use crate::types::ability::{Duration, ResolvedAbility};
 use crate::types::game_state::{
-    ExileLink, ExileLinkKind, ExiledStopInput, GameState, LookGrant, RepeatUntilStopWitness,
+    ExileLink, ExileLinkKind, ExiledStopInput, GameState, LibrarySearchDeliveryResume, LookGrant,
+    RepeatUntilStopWitness,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
@@ -122,6 +123,37 @@ pub(crate) fn push_look_link(
             lookers,
             source_incarnation,
         },
+    );
+}
+
+/// CR 406.3 + CR 701.23a: the searcher looked at the card before exiling it
+/// face down, so they may keep looking at it.
+pub(crate) fn link_search_look(
+    state: &mut GameState,
+    exiled_id: ObjectId,
+    source_id: Option<ObjectId>,
+) {
+    // A scoped search names a set of searchers, not the one player a fixed grant needs.
+    let searcher = match &state.pending_library_search_delivery {
+        Some(LibrarySearchDeliveryResume::Standard { searcher, .. }) => Some(*searcher),
+        Some(LibrarySearchDeliveryResume::Scoped { .. }) | None => None,
+    };
+    let (Some(searcher), Some(source_id)) = (searcher, source_id) else {
+        return;
+    };
+    if !state
+        .objects
+        .get(&exiled_id)
+        .is_some_and(|obj| obj.zone == Zone::Exile && obj.face_down)
+    {
+        return;
+    }
+    push_look_link(
+        state,
+        exiled_id,
+        source_id,
+        LookGrant::Player { player: searcher },
+        searcher,
     );
 }
 

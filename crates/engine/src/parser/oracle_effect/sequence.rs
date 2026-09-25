@@ -1008,8 +1008,7 @@ fn parse_exile_rest_clause(lower: &str) -> bool {
 /// information suffix). Composes the (pronoun × optional "face down") axes with
 /// nom combinators rather than enumerating the permutations as match-arm
 /// literals; the clause-boundary splitter has already stripped the leading
-/// "then" connector. It also recognizes the restatement of a search result's
-/// exile.
+/// "then" connector.
 fn parse_exile_looked_at_card(lower: &str) -> Option<bool> {
     let trimmed = lower.trim().trim_end_matches('.').trim_end();
     let (rest, _) = tag::<_, _, OracleError<'_>>("exile ").parse(trimmed).ok()?;

@@ -4,13 +4,12 @@ use std::sync::Arc;
 use crate::types::action_rejection::ActionRejection;
 use crate::types::events::{GameEvent, LibrarySearchCardFaceView, LibrarySearchCardView};
 use crate::types::game_state::{
-    CastOfferKind, GameState, LibraryKnowledgeStamp, PayCostKind, WaitingFor,
+    CastOfferKind, GameState, LibraryKnowledgeStamp, PayCostKind, WaitingFor, ZoneChangeRecord,
 };
 use crate::types::identifiers::{CardId, ObjectId, ObjectIncarnationRef};
 use crate::types::player::PlayerId;
 use crate::types::zones::{ExileCostSourceZone, Zone};
 
-use super::log;
 use super::players;
 use super::turn_control;
 
@@ -2571,6 +2570,11 @@ fn event_visible_to_viewer(
 ) -> bool {
     let can_view_private_for_player =
         |player: PlayerId| viewer_has_private_access_to_player(state, viewer, player);
+    let search_audience = |record: &ZoneChangeRecord| {
+        record
+            .trigger_source_context()
+            .and_then(|context| hidden_search_viewers.get(&context.identity.reference))
+    };
 
     match event {
         GameEvent::HiddenSearchViewed { audience, .. } => audience.contains(&viewer),
@@ -2653,16 +2657,20 @@ fn event_visible_to_viewer(
         // the same resolution is still producing events.  The record's
         // event-time source context is the only durable marker; the live object
         // has already cleared its exile face-down designation on zone exit.
+        // CR 708.5 + CR 406.3: a face-down move out of the hand reaches only
+        // the viewers who may look at the card, unless the hidden-search
+        // audience already decides it.
         GameEvent::ZoneChanged {
             object_id,
-            from: Some(Zone::Exile),
+            from: Some(from @ (Zone::Exile | Zone::Hand)),
             to,
             record,
             ..
         } if record
             .trigger_source_context
             .as_ref()
-            .is_some_and(|context| context.face_down) =>
+            .is_some_and(|context| context.face_down)
+            && (*from == Zone::Exile || search_audience(record).is_none()) =>
         {
             // Once a hidden-search card arrives face-up in a public zone, the
             // departure is public even when its source incarnation was learned
@@ -2676,17 +2684,7 @@ fn event_visible_to_viewer(
             {
                 return true;
             }
-            let Some(audience) = record
-                .trigger_source_context()
-                .map(|context| context.identity.reference)
-                .and_then(|identity| hidden_search_viewers.get(&identity))
-            else {
-                // A face-down Exile departure without hidden-search audience
-                // evidence is an ordinary public face-down Exile move
-                // (foretell/hideaway), not a hidden-search event.
-                return true;
-            };
-            if audience.contains(&viewer) {
+            if search_audience(record).is_some_and(|audience| audience.contains(&viewer)) {
                 return true;
             }
             match to {

@@ -163,7 +163,7 @@ fn is_redundant_log_event(events: &[GameEvent], index: usize) -> bool {
 type BatchMove<'a> = (usize, Option<Zone>, &'a ZoneChangeRecord);
 
 /// Batch look-ups gathered once, so no per-event check rescans the batch or the journal.
-pub(crate) struct BatchIndex<'a> {
+struct BatchIndex<'a> {
     /// Each object's moves, ascending by position.
     moves: HashMap<ObjectId, Vec<BatchMove<'a>>>,
     turn_starts: Vec<usize>,
@@ -174,7 +174,7 @@ pub(crate) struct BatchIndex<'a> {
 }
 
 impl<'a> BatchIndex<'a> {
-    pub(crate) fn new(events: &'a [GameEvent], state: &GameState) -> Self {
+    fn new(events: &'a [GameEvent], state: &GameState) -> Self {
         let mut batch = Self {
             moves: HashMap::new(),
             turn_starts: Vec::new(),
@@ -241,7 +241,7 @@ fn departed_face_up(from: Zone, record: &ZoneChangeRecord) -> bool {
 }
 
 /// Face-down status in exile is applied after the move is recorded.
-pub(crate) fn arrived_face_down(
+fn arrived_face_down(
     batch: &BatchIndex,
     object_id: ObjectId,
     index: usize,
@@ -258,7 +258,7 @@ pub(crate) fn arrived_face_down(
 
 /// CR 400.2 + CR 406.3: a move is narrated only if the card was face up in a public zone on one
 /// side of it.
-pub(crate) fn is_concealed_move(
+fn is_concealed_move(
     events: &[GameEvent],
     index: usize,
     batch: &BatchIndex,
