@@ -18303,6 +18303,22 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &mut ParseContext) -> ParsedEffectClaus
                         // prints nor an honest record of the gap — it is a third behaviour
                         // the printed text does not license.
                         //
+                        // Before gapping, attempt the whole-body graveyard-redirect
+                        // authority (`parse_windowed_graveyard_redirect_install`):
+                        // a chain-position "If <subject> would be put into <graveyard>
+                        // ..., exile it instead" sentence (Magus of the Will's
+                        // one-line activated body) never reaches the line-level
+                        // replacement dispatcher, so without this attempt it gaps
+                        // here while the identical sentence on its own line
+                        // lowers. The authority's own mandatory "if ... would be
+                        // put into ... graveyard ... instead" grammar is the
+                        // single recognition gate — anything outside the class
+                        // still falls through to the gap below. (Sibling attempt
+                        // serves the IR path's deferred marks at
+                        // `oracle::resolve_guards_in_ability`; a clause deferred
+                        // there never reaches this inline verdict, so the
+                        // populations are disjoint.)
+                        //
                         // Gapping HERE rather than at the resolver is required, not
                         // incidental. The `has_unimplemented`-keyed routing gates trial-parse
                         // a line STANDALONE, so a mark is invisible to them where a gap is
@@ -18313,6 +18329,13 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &mut ParseContext) -> ParsedEffectClaus
                         // re-routes its line and loses its `replacement_structure`.
                         // CR 614.1a: the EVENT reading IS the replacement reading, so this
                         // seam records only `Replacement`.
+                        if let Some(effect) =
+                            super::oracle_replacement::parse_windowed_graveyard_redirect_install(
+                                &clause_text,
+                            )
+                        {
+                            return parsed_clause(effect);
+                        }
                         return parsed_clause(gap_diagnosis::clause_gap_unimplemented_as(
                             ClauseGapKind::Replacement,
                             &clause_text,

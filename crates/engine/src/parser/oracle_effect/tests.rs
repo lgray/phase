@@ -41736,6 +41736,28 @@ fn unlowerable_event_guard_re_records_over_the_full_clause() {
     );
 }
 
+/// CR 614.1a: a chain-position windowed graveyard redirect lowers through the
+/// whole-body authority instead of gapping. Magus of the Will's one-line
+/// activated body never reaches the line-level replacement dispatcher, so this
+/// sentence arrived at the Event-guard seam as an
+/// `Unimplemented("unparsed_replacement")` stub while the identical sentence on
+/// its own line lowered — and the runtime replacement never installed.
+#[test]
+fn chain_position_windowed_graveyard_redirect_lowers() {
+    let def = parse_effect_chain(
+        "If a card would be put into your graveyard from anywhere this turn, exile that card instead.",
+        AbilityKind::Activated,
+    );
+    assert!(
+        chain_has_add_target_replacement(&def),
+        "chain-position graveyard redirect must lower to AddTargetReplacement: {def:?}"
+    );
+    assert!(
+        !chain_has_unimplemented(&def),
+        "no Unimplemented clause may remain: {def:?}"
+    );
+}
+
 // V10c — WITHDRAWN with the O2 apparatus it was the last surviving half of.
 //
 // V10c asserted that the seam DEFERS a CR 615.5 "prevented this way" rider — i.e. that
