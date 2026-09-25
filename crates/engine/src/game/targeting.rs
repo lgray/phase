@@ -1195,7 +1195,7 @@ pub(crate) fn resolve_parent_slot_from_root(
 /// `effects::resolve_player_for_context_ref`), slot conditions, filter
 /// matching, and every effect subject resolved by
 /// `effects::resolved_effect_object_ids`. Callers that still read
-/// `resolved_targets`' whole-chain return for a `ParentTargetSlot` filter
+/// `resolved_targets`' return for a `ParentTargetSlot` filter
 /// (first object or whole list) bypass it: destroy, bounce, sacrifice, counter,
 /// put-on-top-or-bottom, exchange control, pair with, change targets, the
 /// damage-replacement filters, gain control's give, and the
@@ -1210,10 +1210,20 @@ pub(crate) fn resolve_live_parent_slot_from_root(
     let illegal_at_resolution = resolution_carrier_entry(state, ability)
         .and_then(StackEntry::ability)
         .is_some_and(|root| {
-            // CR 608.2b: the base is a node on the root's own chain and no earlier mode carries an else branch, so its targets are a suffix of the stamped list.
-            let ahead = super::ability_utils::flatten_targets_in_chain(root).len()
-                - super::ability_utils::flatten_targets_in_chain(parent_slot_base(state, ability))
-                    .len();
+            use super::ability_utils::flatten_targets_in_chain as flatten;
+            let base = parent_slot_base(state, ability);
+            let branch =
+                |node: Option<&ResolvedAbility>| node.map_or(0, |node| flatten(node).len());
+            // CR 608.2b: illegal targets won't be affected by parts of the effect for which they're illegal.
+            let ahead: usize =
+                std::iter::successors(Some(root), |node| node.sub_ability.as_deref())
+                    .take_while(|node| !std::ptr::eq(*node, base))
+                    .map(|node| {
+                        flatten(node).len()
+                            - branch(node.sub_ability.as_deref())
+                            - branch(node.else_ability.as_deref())
+                    })
+                    .sum();
             root.illegal_target_slots.contains(&(ahead + index))
         });
     if illegal_at_resolution {
@@ -6961,6 +6971,70 @@ mod tests {
             resolve_parent_slot_from_root(&state, &body, 0),
             Some(creature),
             "a leftover ordinal does not renumber a chain that is not resolving"
+        );
+    }
+
+    /// CR 608.2b: an earlier mode's else-branch targets are numbered after the
+    /// resolving mode's in the stamp, so they do not shift its slots.
+    #[test]
+    fn earlier_mode_else_targets_do_not_shift_the_resolving_mode_slots() {
+        let mut state = GameState::new_two_player(42);
+        let source = ObjectId(99);
+        let creature = TargetRef::Object(ObjectId(1));
+        let other = TargetRef::Object(ObjectId(3));
+        let player = TargetRef::Player(PlayerId(1));
+        let target_only = |target: TargetRef, ordinal: Option<usize>| {
+            let mut node = ResolvedAbility::new(
+                crate::types::ability::Effect::TargetOnly {
+                    target: TargetFilter::Any,
+                },
+                vec![target],
+                source,
+                PlayerId(0),
+            );
+            node.modal_instruction_ordinal = ordinal;
+            node
+        };
+        // Stamp numbering: [creature, player, other].
+        let root = target_only(creature, Some(0))
+            .else_ability(target_only(other, None))
+            .sub_ability(target_only(player.clone(), Some(1)));
+        let body = target_only(player.clone(), None);
+        state.resolving_stack_entry = Some(StackEntry {
+            id: ObjectId(500),
+            source_id: source,
+            controller: PlayerId(0),
+            kind: StackEntryKind::ActivatedAbility {
+                source_id: source,
+                ability: Box::new(root),
+            },
+        });
+        state.resolving_modal_instruction = Some(1);
+        assert_eq!(
+            resolve_parent_slot_from_root(&state, &body, 0),
+            Some(player.clone()),
+            "reach guard: this mode's declared slot 0 is the player"
+        );
+
+        let set_illegal = |state: &mut GameState, slots: Vec<usize>| {
+            state
+                .resolving_stack_entry
+                .as_mut()
+                .and_then(StackEntry::ability_mut)
+                .unwrap()
+                .illegal_target_slots = slots;
+        };
+        set_illegal(&mut state, vec![2]);
+        assert_eq!(
+            resolve_live_parent_slot_from_root(&state, &body, 0),
+            Some(player),
+            "an illegal else-branch target does not drop this mode's slot 0"
+        );
+        set_illegal(&mut state, vec![1]);
+        assert_eq!(
+            resolve_live_parent_slot_from_root(&state, &body, 0),
+            None,
+            "whole-chain slot 1 is this mode's slot 0"
         );
     }
 
