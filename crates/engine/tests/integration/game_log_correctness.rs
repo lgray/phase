@@ -57,6 +57,16 @@ fn has_elimination_line(entries: &[GameLogEntry], player: PlayerId) -> bool {
     })
 }
 
+fn has_resolution_line(entries: &[GameLogEntry], spell: ObjectId) -> bool {
+    entries.iter().any(|entry| {
+        matches!(
+            entry.segments.as_slice(),
+            [LogSegment::CardName { object_id, .. }, LogSegment::Text(text)]
+                if *object_id == spell && text == "'s effect resolves"
+        )
+    })
+}
+
 /// The moves of `id` whose record names it `name`.
 fn named_moves(events: &[GameEvent], id: ObjectId, name: &str) -> Vec<(Zone, Zone)> {
     events
@@ -209,11 +219,7 @@ fn face_down_exile_and_draw_stay_unnamed() {
     outcome.assert_zone(&[hidden], Zone::Exile);
     assert!(outcome.state().objects[&hidden].face_down);
     let entries = resolve_log_entries(outcome.events(), &before, outcome.state());
-    assert!(entries.iter().any(|entry| matches!(
-        entry.segments.as_slice(),
-        [LogSegment::CardName { object_id, .. }, LogSegment::Text(text)]
-            if *object_id == spell && text == "'s effect resolves"
-    )));
+    assert!(has_resolution_line(&entries, spell), "{entries:?}");
     assert!(entries_naming(&entries, hidden).is_empty(), "{entries:?}");
 
     let mut scenario = GameScenario::new();
@@ -227,6 +233,7 @@ fn face_down_exile_and_draw_stay_unnamed() {
     let outcome = runner.cast(spell).resolve();
     outcome.assert_zone(&[drawn], Zone::Hand);
     let entries = resolve_log_entries(outcome.events(), &before, outcome.state());
+    assert!(has_resolution_line(&entries, spell), "{entries:?}");
     assert!(entries
         .iter()
         .filter(|entry| entry.presentation.visibility == LogVisibility::Public)
@@ -474,6 +481,11 @@ fn turn_crossing_elimination_hides_leavers_face_up_exile() {
     let turn_start = turn_started_position(&result).expect("batch crosses a turn start");
     assert!(kept_move < eliminated && eliminated < turn_start);
 
+    assert!(
+        has_elimination_line(&result.log_entries, P2),
+        "{:?}",
+        result.log_entries
+    );
     assert!(
         entries_naming(&result.log_entries, kept).is_empty(),
         "{:?}",
@@ -788,6 +800,7 @@ fn foreign_search_exile_look_is_bound_to_the_searcher() {
     assert!(spell_objects_available_to_cast(state, P0).contains(&found));
     assert_ne!(view_name(state, P1, found), "Probe Foreign Found");
     let entries = &chosen.log_entries;
+    assert!(has_resolution_line(entries, spell), "{entries:?}");
     assert!(entries_naming(entries, found).is_empty(), "{entries:?}");
 }
 
@@ -1239,6 +1252,104 @@ fn searched_player_shuffles_their_library() {
             "Earwig Squad"
         ]
         .map(|member| (member, true, false))
+    );
+}
+
+const AUDITORE_AMBUSH: &str = "Choose one or both —\n• Return target creature to its owner's hand.\n• Target player searches their library and/or graveyard for a card named Ezio, Blade of Vengeance, reveals it, and puts it into their hand. If they search their library this way, they shuffle.";
+
+/// Casts Auditore Ambush from P0 with `modes` at P1's bear and at P1 as the searching player,
+/// optionally bolting the bear in response, and drives it to an empty stack; returns the zones of
+/// the bear and P1's Ezio, then whether P1's and P0's libraries were shuffled.
+fn auditore_ambush_outcome(modes: &[usize], bolt_the_creature: bool) -> (Zone, Zone, bool, bool) {
+    let mut scenario = searched_board();
+    let found = scenario.add_card_to_library_top(P1, "Ezio, Blade of Vengeance");
+    let bear = scenario.add_creature(P1, "Probe Bear", 2, 2).id();
+    let bolt = scenario.add_bolt_to_hand(P0);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Auditore Ambush", false, AUDITORE_AMBUSH)
+        .id();
+    let mut runner = scenario.build();
+    let cast = runner.cast(spell).modes(modes);
+    let cast = if modes.contains(&0) {
+        cast.target_object(bear)
+    } else {
+        cast
+    };
+    let mut commit = cast.target_player(P1).commit();
+    if bolt_the_creature {
+        let _ = commit.cast(bolt).target_object(bear).commit();
+    }
+    let events = drive_to_empty_stack(&mut runner, &[found]);
+    let objects = &runner.state().objects;
+    (
+        objects[&bear].zone,
+        objects[&found].zone,
+        shuffled_library(&events, P1),
+        shuffled_library(&events, P0),
+    )
+}
+
+/// CR 700.2c + CR 608.2c: "they" in the search mode is that mode's target player, whichever
+/// mode is chosen with it.
+#[test]
+fn auditore_ambush_both_modes_shuffle_the_searched_players_library() {
+    assert_eq!(
+        auditore_ambush_outcome(&[0, 1], false),
+        (Zone::Hand, Zone::Hand, true, false)
+    );
+}
+
+#[test]
+fn auditore_ambush_search_mode_alone_shuffles_the_searched_players_library() {
+    assert_eq!(
+        auditore_ambush_outcome(&[1], false),
+        (Zone::Battlefield, Zone::Hand, true, false)
+    );
+}
+
+/// CR 608.2b: the illegal creature target does not stop the search mode's legal target player.
+#[test]
+fn auditore_ambush_illegal_creature_target_still_shuffles_the_searched_player() {
+    assert_eq!(
+        auditore_ambush_outcome(&[0, 1], true),
+        (Zone::Graveyard, Zone::Hand, true, false)
+    );
+}
+
+const DROMOKAS_COMMAND: &str = "Choose two —\n• Prevent all damage target instant or sorcery spell would deal this turn.\n• Target player sacrifices an enchantment of their choice.\n• Put a +1/+1 counter on target creature.\n• Target creature you control fights target creature you don't control.";
+
+/// CR 701.14b: when the fight mode's opposing fighter is an illegal target, neither creature fights.
+#[test]
+fn illegal_later_mode_fighter_means_no_fight() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let countered = scenario.add_creature(P0, "Probe Countered", 1, 5).id();
+    let fighter = scenario.add_creature(P0, "Probe Fighter", 2, 6).id();
+    let foe = scenario.add_creature(P1, "Probe Foe", 4, 3).id();
+    let bolt = scenario.add_bolt_to_hand(P0);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Dromoka's Command", true, DROMOKAS_COMMAND)
+        .id();
+    let mut runner = scenario.build();
+    let mut commit = runner
+        .cast(spell)
+        .modes(&[2, 3])
+        .target_objects(&[countered, fighter, foe])
+        .commit();
+    let _ = commit.cast(bolt).target_object(foe).commit();
+    drive_to_empty_stack(&mut runner, &[]);
+    let objects = &runner.state().objects;
+    assert_eq!(objects[&foe].zone, Zone::Graveyard);
+    assert_eq!(
+        objects[&countered].counters.get(&CounterType::Plus1Plus1),
+        Some(&1)
+    );
+    assert_eq!(
+        (
+            objects[&countered].damage_marked,
+            objects[&fighter].damage_marked
+        ),
+        (0, 0)
     );
 }
 
