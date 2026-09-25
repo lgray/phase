@@ -9517,9 +9517,9 @@ fn apply_continuous_effect_filtered(
             // GrantAbility — whether from a single static with repeated
             // modifications (e.g., Ragost parses the "have ..." clause twice)
             // or from multiple sources granting the same ability — must not
-            // stack, unless the body names its granter (CR 201.5a), whose stamp
-            // keeps each granter's copy apart (CR 113.2c). Structural equality
-            // dedup keeps the grant idempotent.
+            // stack, unless a granter stamp (CR 201.5a) keeps each granter's copy
+            // apart (CR 113.2c). Structural equality dedup keeps the grant
+            // idempotent.
             ContinuousModification::GrantAbility { definition } => {
                 // CR 201.5a + CR 613.1f: concretize any granter by-name
                 // self-reference (`GrantingObject`) in the cloned body to the
@@ -9611,9 +9611,8 @@ fn apply_continuous_effect_filtered(
             // each layer pass (`obj.replacement_definitions` was reset to base at
             // the start of the pass); structural-equality dedup keeps repeated
             // grants (multiple sources, or a single static parsed twice)
-            // idempotent, matching the GrantTrigger / GrantStaticAbility invariant,
-            // unless the body names its granter (CR 201.5a), whose stamp keeps each
-            // granter's copy apart.
+            // idempotent, matching the GrantTrigger / GrantStaticAbility invariant;
+            // a granter stamp (CR 201.5a) keeps each granter's copy apart.
             ContinuousModification::GrantReplacement { replacement } => {
                 let mut granted = *replacement.clone();
                 if let Some(granter) = stamp_granter_as {
