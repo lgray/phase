@@ -1658,18 +1658,32 @@ async fn reconnect_seat_while_session_locked(
     session: &mut GameSession,
     player_token: &str,
 ) -> Result<GameState, String> {
-    let game_code = session.game_code.clone();
     let player = session
         .player_for_token(player_token)
         .ok_or_else(|| "Invalid player token".to_string())?;
-    let outcome = state.lock().await.attempt_reconnect(&game_code, player);
+    admit_seat_return_while_session_locked(state, session, player).await?;
+    Ok(server_core::filter_state_for_player(&session.state, player))
+}
+
+/// The grace decision every seat return makes before any presence, sender or
+/// lobby mutation: consumes the seat's disconnect record and marks it connected,
+/// or refuses a return whose grace period has lapsed.
+async fn admit_seat_return_while_session_locked(
+    state: &SharedState,
+    session: &mut GameSession,
+    player: PlayerId,
+) -> Result<(), String> {
+    let outcome = state
+        .lock()
+        .await
+        .attempt_reconnect(&session.game_code, player);
     match outcome {
         // `NotFound` means the player was never marked disconnected, which has
         // always been allowed to reconnect anyway.
         server_core::reconnect::ReconnectResult::Ok { .. }
         | server_core::reconnect::ReconnectResult::NotFound => {
             session.mark_connected(player);
-            Ok(server_core::filter_state_for_player(&session.state, player))
+            Ok(())
         }
         server_core::reconnect::ReconnectResult::Expired => {
             Err("Reconnect grace period expired".to_string())
@@ -1907,15 +1921,10 @@ async fn return_full_seat_while_session_locked(
     player: PlayerId,
     tx: &mpsc::UnboundedSender<ServerMessage>,
     hello: Option<&ClientHelloInfo>,
-) {
+) -> Result<(), String> {
     let game_code = session.game_code.clone();
     let was_disconnected = !session.connected[player.0 as usize];
-    session.mark_connected(player);
-    state
-        .lock()
-        .await
-        .reconnect
-        .remove_disconnect(&game_code, player);
+    admit_seat_return_while_session_locked(state, session, player).await?;
     install_full_sender_while_state_locked(connections, &game_code, player, tx).await;
     if player == PlayerId(0) {
         let (host_version, host_build_commit) = hello
@@ -1945,6 +1954,7 @@ async fn return_full_seat_while_session_locked(
             let _ = sender.send(message.clone());
         }
     }
+    Ok(())
 }
 
 /// Disconnect a Full-game seat only when this socket still owns its sender-map
@@ -9143,21 +9153,24 @@ async fn handle_client_message(
                             if session.is_pregame() {
                                 // Hosting reconnect: game exists but hasn't started yet.
                                 match session.player_for_token(&player_token) {
-                                    Some(player) => {
-                                        return_full_seat_while_session_locked(
-                                            state,
-                                            connections,
-                                            lobby,
-                                            lobby_subscribers,
-                                            &mut session,
+                                    Some(player) => match return_full_seat_while_session_locked(
+                                        state,
+                                        connections,
+                                        lobby,
+                                        lobby_subscribers,
+                                        &mut session,
+                                        player,
+                                        tx,
+                                        identity.client_hello.as_ref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => ReconnectOutcome::HostingOk {
                                             player,
-                                            tx,
-                                            identity.client_hello.as_ref(),
-                                        )
-                                        .await;
-                                        let slot_info = session.player_slot_info();
-                                        ReconnectOutcome::HostingOk { player, slot_info }
-                                    }
+                                            slot_info: session.player_slot_info(),
+                                        },
+                                        Err(e) => ReconnectOutcome::Err(e),
+                                    },
                                     None => {
                                         ReconnectOutcome::Err("Invalid player token".to_string())
                                     }
@@ -15633,6 +15646,29 @@ mod issue_4548_full_create_tests {
             let _host = return_as(&url, None, &room.reconnect()).await;
             assert_eq!(room.listing().await, ["Added"]);
             assert!(snapshot_lists(&url, &room.code).await);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_host_returning_after_its_grace_expired_is_refused_and_the_room_stays_delisted() {
+        let (url, server, _temp_dir, app) = spawn_full_mode_server().await;
+        timed(server, async {
+            let mut room = host_room(&url, 2, true, None).await;
+            app.sessions.lock().await.reconnect.grace_period = Duration::ZERO;
+            assert_eq!(room.drop_host(&app).await, ["Removed"]);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+
+            assert_eq!(
+                refusal(fresh_attempt(&url, &room.reconnect()).await),
+                "Reconnect grace period expired"
+            );
+            assert!(room.listing().await.is_empty());
+            assert!(!snapshot_lists(&url, &room.code).await);
+            assert_eq!(
+                refusal(fresh_attempt(&url, &password_join(&room.code, None, None)).await),
+                server_core::session::HOST_AWAY_REFUSAL
+            );
         })
         .await;
     }
