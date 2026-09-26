@@ -22878,8 +22878,7 @@ fn find_pay_life_cost(
     }
 }
 
-/// CR 201.5a: the granter stamped on the activated ability at `ability_index`,
-/// which cost-eligibility filters naming that granter read (CR 602.2b + CR 601.2h).
+/// CR 201.5a: the granter stamped on the activated ability at `ability_index`.
 pub(crate) fn activated_ability_granting_object(
     state: &GameState,
     source_id: ObjectId,

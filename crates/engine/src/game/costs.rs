@@ -1690,11 +1690,10 @@ fn pay_ability_cost_inner(
                 Some(TargetFilter::SpecificObject { id }) => *id,
                 // CR 201.5a + CR 400.7: the granter stamped on the paying ability, while it is that object.
                 Some(TargetFilter::GrantingObject) => {
-                    match scope.granting_object(state, source_id).filter(|granter| {
-                        state.objects.get(&granter.object_id).is_some_and(|obj| {
-                            ObjectIncarnationRef::from_object(obj) == *granter
-                        })
-                    }) {
+                    match scope
+                        .granting_object(state, source_id)
+                        .filter(|granter| granter.is_current(state))
+                    {
                         Some(granter) => granter.object_id,
                         None => return Ok(payment_failed("the granter is gone")),
                     }
