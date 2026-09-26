@@ -6096,7 +6096,7 @@ fn materialize_fixed_shortcut(
     // PR-7 Phase 4d-ii / P7 v3 (CR 732.2a): an object-growth loop (buyback recast, or a
     // multi-activation mana engine) settles with an EMPTY stack and grows a projected resource,
     // so the per-beat auto-pass drive below never recognizes its recurrence. Route it to the
-    // INJECTOR instead, which drives one real period per cycle on a clone. The routing signal is
+    // INJECTOR instead, which drives one real period per cycle. The routing signal is
     // the recorded period read for this proposal's proposer (`shortcut_route`, SITE C below) —
     // which beats can open a period is the record's own type to say, and this site states no list
     // of them; the `seq` rides
