@@ -1574,29 +1574,79 @@ async fn lock_session(
 }
 
 /// The session/registry pair a join is now made of: the session issues the
-/// token, the registry indexes it, both under one held session guard. Returns
-/// the guard so the caller can keep working on the joined session without
-/// re-locking it.
-///
-/// This crossing's base answer to an absent game *is* the relocated refusal, so
-/// `lock_session`'s `Err` is carried through unchanged into the caller's
-/// existing error arm.
+/// token, the registry indexes it, both under the caller's held session guard.
+/// Returns the guard so the caller can keep working on the joined session
+/// without re-locking it.
 async fn join_game_seat(
     state: &SharedState,
-    game_code: &str,
+    mut session: OwnedMutexGuard<GameSession>,
     deck: engine::game::deck_loading::PlayerDeckPayload,
     deck_choice: Option<DeckChoice>,
     display_name: String,
     reservation_token: Option<String>,
 ) -> Result<(OwnedMutexGuard<GameSession>, String, GameState), String> {
-    let mut session = lock_session(state, game_code).await?;
     let (player_token, filtered) =
         session.join_with_reservation(deck, deck_choice, display_name, reservation_token)?;
+    let game_code = session.game_code.clone();
     state
         .lock()
         .await
-        .index_token(player_token.clone(), game_code);
+        .index_token(player_token.clone(), &game_code);
     Ok((session, player_token, filtered))
+}
+
+/// The lobby row's build and password gates for a guest, as the frame that
+/// refuses it.
+fn lobby_admission(
+    lob: &lobby_broker::lobby::LobbyManager,
+    game_code: &str,
+    guest_commit: &str,
+    password: Option<&str>,
+) -> Result<(), Box<ServerMessage>> {
+    let host_commit = lob.host_build_commit(game_code).unwrap_or("");
+    if let BuildCommitCheck::Reject { host, guest } = check_build_commit(host_commit, guest_commit)
+    {
+        warn!(game = %game_code, %host, %guest, "build mismatch — refusing join");
+        return Err(Box::new(ServerMessage::error(format!(
+            "Build mismatch: host is on {host}, you are on {guest}. Refresh to update."
+        ))));
+    }
+    match lob.verify_password(game_code, password) {
+        Ok(()) => Ok(()),
+        Err(e) if e == "password_required" => {
+            info!(game = %game_code, "password required, prompting client");
+            Err(Box::new(ServerMessage::PasswordRequired {
+                game_code: game_code.to_string(),
+            }))
+        }
+        Err(e) => {
+            warn!(game = %game_code, error = %e, "password verification failed");
+            Err(Box::new(ServerMessage::error(e)))
+        }
+    }
+}
+
+/// Locks the session a seat or reservation is issued under, deciding the lobby
+/// admission inside that guard. A join precondition decided under the lobby
+/// lock and acted on after that lock is released, under the session lock,
+/// never sees a change that lands in between.
+async fn lock_session_for_admission(
+    state: &SharedState,
+    lobby: &SharedLobby,
+    game_code: &str,
+    guest_commit: &str,
+    password: Option<&str>,
+) -> Result<OwnedMutexGuard<GameSession>, Box<ServerMessage>> {
+    let session = lock_session(state, game_code)
+        .await
+        .map_err(|e| Box::new(ServerMessage::error(e)))?;
+    lobby_admission(
+        lobby.lock().await.lobby(),
+        game_code,
+        guest_commit,
+        password,
+    )?;
+    Ok(session)
 }
 
 /// The session/registry pair `SessionManager::handle_reconnect` used to be,
@@ -8045,54 +8095,23 @@ async fn join_game_with_password_full(
         return;
     }
 
-    {
-        let lob_guard = lobby.lock().await;
-        let lob = lob_guard.lobby();
-
-        // Build-commit gate: see `check_build_commit` for the
-        // policy. If both host and guest publish commits and they
-        // differ, the guest is running a different engine than the
-        // host and joining would diverge GameState on resolution.
-        let guest_commit = identity
-            .client_hello
-            .as_ref()
-            .map(|h| h.build_commit.as_str())
-            .unwrap_or("");
-        let host_commit = lob.host_build_commit(&game_code).unwrap_or("");
-        if let BuildCommitCheck::Reject { host, guest } =
-            check_build_commit(host_commit, guest_commit)
-        {
-            warn!(game = %game_code, %host, %guest, "build mismatch — refusing join");
-            let msg = ServerMessage::error(format!(
-                "Build mismatch: host is on {host}, you are on {guest}. Refresh to update."
-            ));
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = socket.send(Message::text(json)).await;
-            }
-            return;
+    let guest_commit = identity
+        .client_hello
+        .as_ref()
+        .map(|h| h.build_commit.clone())
+        .unwrap_or_default();
+    // Refuses ahead of deck resolution; `lock_session_for_admission` decides.
+    let preflight = lobby_admission(
+        lobby.lock().await.lobby(),
+        &game_code,
+        &guest_commit,
+        password.as_deref(),
+    );
+    if let Err(msg) = preflight {
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = socket.send(Message::text(json)).await;
         }
-
-        match lob.verify_password(&game_code, password.as_deref()) {
-            Ok(()) => {}
-            Err(e) if e == "password_required" => {
-                info!(game = %game_code, "password required, prompting client");
-                let msg = ServerMessage::PasswordRequired {
-                    game_code: game_code.clone(),
-                };
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    let _ = socket.send(Message::text(json)).await;
-                }
-                return;
-            }
-            Err(e) => {
-                warn!(game = %game_code, error = %e, "password verification failed");
-                let msg = ServerMessage::error(e);
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    let _ = socket.send(Message::text(json)).await;
-                }
-                return;
-            }
-        }
+        return;
     }
 
     if let Some(token) = reservation_token.as_deref() {
@@ -8139,10 +8158,28 @@ async fn join_game_with_password_full(
     // after the joiner receives their direct error (mirrors the seat-delta path).
     let mut start_error_broadcast: Option<String> = None;
 
+    let session = match lock_session_for_admission(
+        state,
+        lobby,
+        &game_code,
+        &guest_commit,
+        password.as_deref(),
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(msg) => {
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = socket.send(Message::text(json)).await;
+            }
+            return;
+        }
+    };
+
     let join_outcome = {
         match join_game_seat(
             state,
-            &game_code,
+            session,
             resolved,
             Some(DeckChoice::DeckList(Box::new(deck))),
             display_name,
@@ -8701,9 +8738,39 @@ async fn handle_client_message(
                 }
                 return;
             }
-            // A lobby-registered room admits only through the lobby join path.
-            let registered = lobby.lock().await.lobby().has_game(&game_code);
-            if registered {
+            if reject_joining_current_game(identity, lobby, &game_code, socket)
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            let resolved = match resolve_deck(db, &deck) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    error!(game = %game_code, error = %e, "JoinGame: deck resolve failed");
+                    let msg = ServerMessage::error(e);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = socket.send(Message::text(json)).await;
+                    }
+                    return;
+                }
+            };
+
+            let session = match lock_session(state, &game_code).await {
+                Ok(session) => session,
+                Err(e) => {
+                    let msg = ServerMessage::error(e);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = socket.send(Message::text(json)).await;
+                    }
+                    return;
+                }
+            };
+            // A lobby room admits only through the lobby join path, decided by
+            // the session's own lobby record under the guard that seats.
+            if session.lobby_meta.is_some() {
+                drop(session);
                 join_game_with_password_full(
                     socket,
                     state,
@@ -8725,30 +8792,12 @@ async fn handle_client_message(
                 .await;
                 return;
             }
-            if reject_joining_current_game(identity, lobby, &game_code, socket)
-                .await
-                .is_err()
-            {
-                return;
-            }
-
-            let resolved = match resolve_deck(db, &deck) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    error!(game = %game_code, error = %e, "JoinGame: deck resolve failed");
-                    let msg = ServerMessage::error(e);
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = socket.send(Message::text(json)).await;
-                    }
-                    return;
-                }
-            };
 
             // Same provenance record as `JoinGameWithPassword` below: a seat
             // filled without its submitted list restores empty on restart.
             match join_game_seat(
                 state,
-                &game_code,
+                session,
                 resolved,
                 Some(DeckChoice::DeckList(Box::new(deck))),
                 String::new(),
@@ -9859,60 +9908,35 @@ async fn handle_client_message(
             let mut reservation_expires_at_ms = None;
             let mut reservation_counted_in_info = false;
 
-            let mut info = {
+            let guest_commit = identity
+                .client_hello
+                .as_ref()
+                .map(|h| h.build_commit.clone())
+                .unwrap_or_default();
+            let lookup = {
                 let lob_guard = lobby.lock().await;
                 let lob = lob_guard.lobby();
-
-                let guest_commit = identity
-                    .client_hello
-                    .as_ref()
-                    .map(|h| h.build_commit.as_str())
-                    .unwrap_or("");
-                let host_commit = lob.host_build_commit(&game_code).unwrap_or("");
-                if let BuildCommitCheck::Reject { host, guest } =
-                    check_build_commit(host_commit, guest_commit)
-                {
-                    warn!(game = %game_code, %host, %guest, "build mismatch — refusing lookup");
-                    if let Ok(json) = serde_json::to_string(&ServerMessage::error(format!(
-                        "Build mismatch: host is on {host}, you are on {guest}. Refresh to update."
-                    ))) {
+                // Existence first: `verify_password` reports a missing game
+                // as untyped prose, and a caller waiting on a pre-minted
+                // code keys on the typed code.
+                match lob.join_target_info(&game_code) {
+                    None => Err(Box::new(ServerMessage::error_with_code(
+                        ServerErrorCode::GameNotFound,
+                        format!("Game not found in lobby: {game_code}"),
+                    ))),
+                    Some(info) => {
+                        lobby_admission(lob, &game_code, &guest_commit, password.as_deref())
+                            .map(|()| info)
+                    }
+                }
+            };
+            let mut info = match lookup {
+                Ok(info) => info,
+                Err(msg) => {
+                    if let Ok(json) = serde_json::to_string(&msg) {
                         let _ = socket.send(Message::text(json)).await;
                     }
                     return;
-                } else {
-                    // Existence first: `verify_password` reports a missing game
-                    // as untyped prose, and a caller waiting on a pre-minted
-                    // code keys on the typed code.
-                    let Some(info) = lob.join_target_info(&game_code) else {
-                        let msg = ServerMessage::error_with_code(
-                            ServerErrorCode::GameNotFound,
-                            format!("Game not found in lobby: {game_code}"),
-                        );
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            let _ = socket.send(Message::text(json)).await;
-                        }
-                        return;
-                    };
-                    match lob.verify_password(&game_code, password.as_deref()) {
-                        Ok(()) => info,
-                        Err(e) if e == "password_required" => {
-                            let msg = ServerMessage::PasswordRequired {
-                                game_code: game_code.clone(),
-                            };
-                            if let Ok(json) = serde_json::to_string(&msg) {
-                                let _ = socket.send(Message::text(json)).await;
-                            }
-                            return;
-                        }
-                        Err(e) => {
-                            warn!(game = %game_code, error = %e, "lookup password verification failed");
-                            let msg = ServerMessage::error(e);
-                            if let Ok(json) = serde_json::to_string(&msg) {
-                                let _ = socket.send(Message::text(json)).await;
-                            }
-                            return;
-                        }
-                    }
                 }
             };
 
@@ -10043,11 +10067,16 @@ async fn handle_client_message(
                 if info.is_p2p {
                     let reserve_result = {
                         let mut lob = lobby.lock().await;
-                        lob.lobby_mut().reserve_seat(
-                            &game_code,
-                            display_name.unwrap_or_else(|| "Player".to_string()),
-                            &SysEnv,
-                        )
+                        lobby_admission(lob.lobby(), &game_code, &guest_commit, password.as_deref())
+                            .and_then(|()| {
+                                lob.lobby_mut()
+                                    .reserve_seat(
+                                        &game_code,
+                                        display_name.unwrap_or_else(|| "Player".to_string()),
+                                        &SysEnv,
+                                    )
+                                    .map_err(|e| Box::new(ServerMessage::error(e)))
+                            })
                     };
                     match reserve_result {
                         Ok(reservation) => {
@@ -10069,8 +10098,7 @@ async fn handle_client_message(
                                 }
                             }
                         }
-                        Err(e) => {
-                            let msg = ServerMessage::error(e);
+                        Err(msg) => {
                             if let Ok(json) = serde_json::to_string(&msg) {
                                 let _ = socket.send(Message::text(json)).await;
                             }
@@ -10078,16 +10106,19 @@ async fn handle_client_message(
                         }
                     }
                 } else {
-                    // This crossing's base answer to an absent game *is* the
-                    // relocated refusal, so `lock_session`'s `Err` feeds the
-                    // existing error arm unchanged.
-                    let reserve_result = {
-                        match lock_session(state, &game_code).await {
-                            Ok(mut session) => session
-                                .reserve_seat(display_name.unwrap_or_else(|| "Player".to_string())),
-                            Err(error) => Err(error),
-                        }
-                    };
+                    let reserve_result = lock_session_for_admission(
+                        state,
+                        lobby,
+                        &game_code,
+                        &guest_commit,
+                        password.as_deref(),
+                    )
+                    .await
+                    .and_then(|mut session| {
+                        session
+                            .reserve_seat(display_name.unwrap_or_else(|| "Player".to_string()))
+                            .map_err(|e| Box::new(ServerMessage::error(e)))
+                    });
                     match reserve_result {
                         Ok(reservation) => {
                             reservation_token = Some(reservation.token.clone());
@@ -10117,8 +10148,7 @@ async fn handle_client_message(
                                 }
                             }
                         }
-                        Err(e) => {
-                            let msg = ServerMessage::error(e);
+                        Err(msg) => {
                             if let Ok(json) = serde_json::to_string(&msg) {
                                 let _ = socket.send(Message::text(json)).await;
                             }
@@ -15434,9 +15464,13 @@ mod issue_4548_full_create_tests {
         }
     }
 
-    /// The reply that settles a join, reservation or reconnect.
     async fn send_and_reply(sock: &mut TestWs, frame: &ClientMessage) -> ServerMessage {
         send_test_message(sock, frame, false).await;
+        settled_reply(sock).await
+    }
+
+    /// The reply that settles a join, reservation or reconnect.
+    async fn settled_reply(sock: &mut TestWs) -> ServerMessage {
         loop {
             let reply = recv_server_message(sock).await;
             if matches!(
@@ -15664,6 +15698,117 @@ mod issue_4548_full_create_tests {
                     .expect("listed")
                     .host_build_commit,
                 "build-c"
+            );
+        })
+        .await;
+    }
+
+    /// Returns once `holders` references to the session exist: a task that
+    /// looked the session up keeps its handle while it waits for the guard.
+    async fn await_session_waiters<T>(handle: &Arc<T>, holders: usize) {
+        while Arc::strong_count(handle) < holders {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_seat_queued_behind_a_host_return_is_admitted_on_the_returned_build() {
+        let (url, server, _temp_dir, app) = spawn_full_mode_server().await;
+        timed(server, async {
+            for reserve in [false, true] {
+                let mut room = host_room(&url, 2, true, None).await;
+                room.drop_host(&app).await;
+                let entry = if reserve {
+                    reserve_lookup(&room.code)
+                } else {
+                    password_join(&room.code, None, None)
+                };
+                let mut host_b = connect_as(&url, "build-b").await;
+                let mut guest = connect_and_hello(url.clone()).await;
+                let handle = app
+                    .sessions
+                    .lock()
+                    .await
+                    .session(&room.code)
+                    .expect("session");
+                let held = handle.lock().await;
+                let idle = Arc::strong_count(&handle);
+                send_test_message(&mut host_b, &room.reconnect(), false).await;
+                await_session_waiters(&handle, idle + 1).await;
+                send_test_message(&mut guest, &entry, false).await;
+                await_session_waiters(&handle, idle + 2).await;
+                drop(held);
+
+                assert!(matches!(
+                    settled_reply(&mut host_b).await,
+                    ServerMessage::SessionAttached { .. }
+                ));
+                let reply = refusal(settled_reply(&mut guest).await);
+                assert!(
+                    reply.starts_with("Build mismatch"),
+                    "reserve={reserve}: {reply}"
+                );
+                let session = handle.lock().await;
+                assert_eq!(
+                    session
+                        .player_tokens
+                        .iter()
+                        .filter(|t| !t.is_empty())
+                        .count(),
+                    1
+                );
+                assert!(session.reservations.is_empty());
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_legacy_join_queued_behind_a_room_create_takes_the_lobby_path() {
+        let (url, server, _temp_dir, app) = spawn_full_mode_server().await;
+        timed(server, async {
+            let mut host = connect_and_hello(url.clone()).await;
+            let mut guest = connect_and_hello(url.clone()).await;
+            let mut create = room_frame(2, true, Some("pw"));
+            let ClientMessage::CreateGameWithSettings { requested_code, .. } = &mut create else {
+                unreachable!()
+            };
+            *requested_code = Some("BOTLJ1".to_string());
+
+            let registry = app.sessions.lock().await;
+            send_test_message(&mut host, &create, false).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            send_test_message(&mut guest, &legacy_join("BOTLJ1"), false).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(registry);
+
+            let created = loop {
+                if let reply @ (ServerMessage::GameCreated { .. } | ServerMessage::Error { .. }) =
+                    recv_server_message(&mut host).await
+                {
+                    break reply;
+                }
+            };
+            assert_eq!(created_code(created), "BOTLJ1");
+            let reply = settled_reply(&mut guest).await;
+            assert!(
+                matches!(reply, ServerMessage::PasswordRequired { .. }),
+                "{reply:?}"
+            );
+            let handle = app
+                .sessions
+                .lock()
+                .await
+                .session("BOTLJ1")
+                .expect("session");
+            let session = handle.lock().await;
+            assert_eq!(
+                session
+                    .player_tokens
+                    .iter()
+                    .filter(|t| !t.is_empty())
+                    .count(),
+                1
             );
         })
         .await;
