@@ -8952,31 +8952,42 @@ pub(crate) fn drive_persistent_axis_collapse(
     let _guard = SimulationProbeGuard::enter(); // held across the whole drive
     #[cfg(feature = "test-support")]
     let mut take_cost = crate::game::perf_counters::TakeCostRecorder::begin(n);
-    let mut committed = state.clone();
+    // One rollback snapshot per take: every cycle drives `state` in place, and a failed cycle
+    // restores the snapshot and re-drives the delivered prefix, which is deterministic from it.
+    let snapshot = state.clone();
     #[cfg(feature = "test-support")]
     crate::game::perf_counters::record_drive_snapshot();
+    // The accept beat cleared the sequence and handed priority to the living seat; re-seed a
+    // Priority window for the loop CONTROLLER (not `active_player`: `reset_priority` grants the
+    // active player, but the loop may be an instant-speed period on an opponent's turn).
+    let reseed = |state: &mut GameState| {
+        priority::reset_priority(state);
+        state.priority_player = controller;
+        state.waiting_for = WaitingFor::Priority { player: controller };
+    };
     let mut delivered = 0;
     for i in 0..n {
         #[cfg(feature = "test-support")]
         take_cost.begin_cycle();
-        let mut work = committed.clone();
-        #[cfg(feature = "test-support")]
-        crate::game::perf_counters::record_drive_snapshot();
-        // The accept beat cleared the sequence and handed priority to the living seat; re-seed a
-        // Priority window for the loop CONTROLLER (not `active_player`: `reset_priority` grants the
-        // active player, but the loop may be an instant-speed period on an opponent's turn).
-        priority::reset_priority(&mut work);
-        work.priority_player = controller;
-        work.waiting_for = WaitingFor::Priority { player: controller };
-        if drive_loop_sequence_iteration(&mut work, seq, i, &expected_defs).is_err() {
-            break; // commit the successful prefix; the caller hands priority back
+        reseed(state);
+        if drive_loop_sequence_iteration(state, seq, i, &expected_defs).is_err() {
+            // Commit the successful prefix; the caller hands priority back.
+            *state = snapshot;
+            let prefix = delivered;
+            delivered = 0;
+            for j in 0..prefix {
+                reseed(state);
+                if drive_loop_sequence_iteration(state, seq, j, &expected_defs).is_err() {
+                    break;
+                }
+                delivered += 1;
+            }
+            break;
         }
-        committed = work;
         delivered += 1;
         #[cfg(feature = "test-support")]
         take_cost.end_cycle();
     }
-    *state = committed;
     #[cfg(feature = "test-support")]
     {
         take_cost.finish(delivered);
