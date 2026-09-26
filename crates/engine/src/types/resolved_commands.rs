@@ -4400,4 +4400,147 @@ mod tests {
             "a record for another source"
         );
     }
+
+    #[test]
+    fn entries_since_past_the_end_is_empty() {
+        let mut journal = ResolvedRulesJournal::default();
+        journal.begin_proposal().unwrap();
+        journal.begin_proposal().unwrap();
+        let len = journal.entries().len();
+        assert!(len >= 2, "reach: the proposals journaled their entries");
+        assert_eq!(&journal.entries_since(0), journal.entries());
+        assert_eq!(
+            journal.entries_since(1),
+            journal.entries().iter().skip(1).cloned().collect()
+        );
+        assert!(journal.entries_since(len).is_empty());
+        assert!(journal.entries_since(len + 1).is_empty());
+    }
+
+    /// Every indexed read against the linear scan it replaces, on `journal`'s own records and
+    /// on one absent key of each kind.
+    fn assert_index_answers_as_the_scan(label: &str, journal: &ResolvedRulesJournal) {
+        for (position, node) in journal.nodes().iter().enumerate() {
+            let first = journal
+                .nodes()
+                .iter()
+                .position(|candidate| candidate.identity == node.identity);
+            if first == Some(position) {
+                assert_eq!(journal.node_index(node.identity).ok(), first, "{label}");
+                assert!(journal.contains_node(node.identity), "{label}");
+            }
+        }
+        for record in journal.produced_mana() {
+            let pip = record.unit.pip_id;
+            assert_eq!(
+                journal.index.produced.get(&pip).copied(),
+                journal
+                    .produced_mana()
+                    .iter()
+                    .position(|candidate| candidate.unit.pip_id == pip),
+                "{label}"
+            );
+            assert!(journal.has_produced_pip(pip), "{label}");
+            let source = record.unit.source_id;
+            assert_eq!(
+                journal.latest_mana_producer_for_source(source),
+                journal
+                    .produced_mana()
+                    .iter()
+                    .rev()
+                    .find(|candidate| candidate.unit.source_id == source)
+                    .map(|candidate| candidate.producer),
+                "{label}"
+            );
+        }
+        for record in journal.spent_mana() {
+            let pip = record.unit.pip_id;
+            assert_eq!(
+                journal.index.spent.get(&pip).copied(),
+                journal
+                    .spent_mana()
+                    .iter()
+                    .position(|candidate| candidate.unit.pip_id == pip),
+                "{label}"
+            );
+            assert!(journal.spent_pip_exists(pip), "{label}");
+        }
+        let installs: Vec<DelayedTriggerOrigin> = journal
+            .entries()
+            .iter()
+            .filter_map(delayed_install_origin)
+            .collect();
+        for origin in &installs {
+            assert_eq!(
+                journal.delayed_install_origins_sharing(origin.token, origin.instance),
+                installs
+                    .iter()
+                    .filter(|candidate| candidate.token == origin.token
+                        || candidate.instance == origin.instance)
+                    .copied()
+                    .collect::<Vec<_>>(),
+                "{label}"
+            );
+        }
+
+        let absent_node = RulesExecutionNodeRef::Proposal(ResolvedCommandOrdinal(u64::MAX));
+        assert!(journal.node_index(absent_node).is_err(), "{label}");
+        assert!(!journal.contains_node(absent_node), "{label}");
+        assert!(!journal.has_produced_pip(ManaPipId(u64::MAX)), "{label}");
+        assert!(!journal.spent_pip_exists(ManaPipId(u64::MAX)), "{label}");
+        assert_eq!(
+            journal.latest_mana_producer_for_source(ObjectId(u64::MAX)),
+            None,
+            "{label}"
+        );
+        assert!(
+            journal
+                .delayed_install_origins_sharing(
+                    DelayedTriggerToken(u64::MAX),
+                    DelayedTriggerInstanceId(u64::MAX)
+                )
+                .is_empty(),
+            "{label}"
+        );
+    }
+
+    #[test]
+    fn journal_index_answers_as_the_scan_on_a_rebound_cast() {
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::game::scenario_db::GameScenarioDbExt;
+        use crate::types::game_state::GameState;
+        use crate::types::phase::Phase;
+        use crate::types::zones::Zone;
+
+        let db = crate::test_support::shared_card_db();
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let strike = scenario.add_real_card(P0, "Distortion Strike", Zone::Hand, db);
+        scenario.add_real_card(P0, "Island", Zone::Battlefield, db);
+        let bears = scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+        let mut runner = scenario.build();
+        runner.cast(strike).target_object(bears).resolve();
+
+        let live = runner.state();
+        let journal = &live.resolved_rules_journal;
+        assert!(
+            !journal.nodes().is_empty()
+                && !journal.produced_mana().is_empty()
+                && !journal.spent_mana().is_empty()
+                && journal
+                    .entries()
+                    .iter()
+                    .any(|entry| delayed_install_origin(entry).is_some()),
+            "reach: the cast journals a node, produced and spent mana, and rebound's delayed \
+             trigger ({} nodes, {} produced, {} spent)",
+            journal.nodes().len(),
+            journal.produced_mana().len(),
+            journal.spent_mana().len()
+        );
+        assert_index_answers_as_the_scan("live", journal);
+
+        let reloaded: GameState =
+            serde_json::from_str(&serde_json::to_string(live).unwrap()).expect("the state reloads");
+        assert_index_answers_as_the_scan("reloaded", &reloaded.resolved_rules_journal);
+    }
 }

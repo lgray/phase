@@ -1340,3 +1340,50 @@ fn a_revealed_hojo_does_not_block_the_mana_engine_shortcut() {
     }
     assert!(mana_engine_offered_beside_hojo_in(Zone::Graveyard));
 }
+
+/// A source's latest mana producer is its most recent activation, before and after a reload.
+#[test]
+fn latest_producer_names_the_second_basalt_activation() {
+    let db = shared_card_db().expect("the integration card fixture loads");
+    let mut rig = setup(false, LoopDetectionMode::Off, db);
+    let mana = mana_ability_index(rig.runner.state(), rig.basalt)
+        .expect("Basalt publishes its mana ability");
+    let untap = untap_ability_index(rig.runner.state(), rig.basalt)
+        .expect("Basalt publishes its untap ability");
+    activate_and_settle(&mut rig.runner, rig.basalt, mana);
+    activate_and_settle(&mut rig.runner, rig.basalt, untap);
+    activate_and_settle(&mut rig.runner, rig.basalt, mana);
+
+    let live = rig.runner.state();
+    let reloaded: GameState =
+        serde_json::from_str(&serde_json::to_string(live).expect("the state serializes"))
+            .expect("the state reloads");
+    for (label, state) in [("live", live), ("reloaded", &reloaded)] {
+        let journal = &state.resolved_rules_journal;
+        let producers: Vec<_> = journal
+            .produced_mana()
+            .iter()
+            .filter(|record| record.unit.source_id == rig.basalt)
+            .map(|record| record.producer)
+            .collect();
+        assert!(
+            producers
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                >= 2,
+            "reach ({label}): two Basalt activations produced mana, got {producers:?}"
+        );
+        let latest = journal.latest_mana_producer_for_source(rig.basalt);
+        assert_eq!(
+            latest,
+            producers.last().copied(),
+            "{label}: the latest producer is the last record's"
+        );
+        assert_ne!(
+            latest,
+            producers.first().copied(),
+            "{label}: the latest producer is not the first activation's"
+        );
+    }
+}

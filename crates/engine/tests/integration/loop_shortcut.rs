@@ -26,6 +26,9 @@ use engine::analysis::resource::{
 };
 use engine::game::derived_views::{FamilyCollapseState, UnboundedFamily};
 use engine::game::engine::{apply, EngineError};
+use engine::game::perf_counters::{
+    take_cost_records, take_cost_snapshot, TakeCostCounters, TakeCostRecord,
+};
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
@@ -9573,6 +9576,179 @@ fn accepted_fixed_count_bounds_the_boundary_collapse_prompt() {
     // The bound is honored end-to-end: submitting exactly N is still accepted.
     apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 7 })
         .expect("collapsing at exactly the accepted count is legal");
+}
+
+// ===========================================================================
+// A replay take's per-cycle history work does not grow with its count.
+// ===========================================================================
+
+/// A per-turn history vector a replay take appends to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TakeHistoryVector {
+    JournalEntries,
+    ProducedMana,
+    SpentMana,
+    BattlefieldEntries,
+    CountersAdded,
+}
+
+impl TakeHistoryVector {
+    /// Whether `original` is inline, and whether `copy` shares its chunks.
+    fn inline_and_shared(self, original: &GameState, copy: &GameState) -> (bool, bool) {
+        fn of<A: Clone>(original: &im::Vector<A>, copy: &im::Vector<A>) -> (bool, bool) {
+            (original.is_inline(), original.ptr_eq(copy))
+        }
+        let (journal, copied) = (
+            &original.resolved_rules_journal,
+            &copy.resolved_rules_journal,
+        );
+        match self {
+            Self::JournalEntries => of(journal.entries(), copied.entries()),
+            Self::ProducedMana => of(journal.produced_mana(), copied.produced_mana()),
+            Self::SpentMana => of(journal.spent_mana(), copied.spent_mana()),
+            Self::BattlefieldEntries => of(
+                &original.battlefield_entries_this_turn,
+                &copy.battlefield_entries_this_turn,
+            ),
+            Self::CountersAdded => of(
+                &original.counter_added_this_turn,
+                &copy.counter_added_this_turn,
+            ),
+        }
+    }
+}
+
+/// A map-backed per-turn history field.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TakeHistoryMap {
+    AbilityResolutions,
+    ActivatedAbilities,
+    TrackedObjectSets,
+    TrackedSetMemberCauses,
+}
+
+impl TakeHistoryMap {
+    fn len(self, state: &GameState) -> usize {
+        match self {
+            Self::AbilityResolutions => state.ability_resolutions_this_turn.len(),
+            Self::ActivatedAbilities => state.activated_abilities_this_turn.len(),
+            Self::TrackedObjectSets => state.tracked_object_sets.len(),
+            Self::TrackedSetMemberCauses => state.tracked_set_member_causes.len(),
+        }
+    }
+}
+
+/// The one take the meter recorded since its last reset.
+fn only_take(n: u32) -> TakeCostRecord {
+    let records = take_cost_records();
+    assert_eq!(
+        records.len(),
+        1,
+        "the take at {n} drives the replay exactly once"
+    );
+    records.into_iter().next().expect("one take record")
+}
+
+fn history_copies(cycle: &TakeCostCounters) -> u64 {
+    cycle.history_entries_copied + cycle.history_map_entries_unshared
+}
+
+/// Drives `take` on a fresh board at a small count and at `large`, and checks that the history
+/// entries copied per cycle stay within twice the small take's maximum, that every keyed journal
+/// read examines at most the record it finds, that each take snapshots the state once, and that a
+/// state copy after the large take shares every history structure it grew (`grown`, `maps`).
+/// `take` builds its board, calls `perf_counters::reset`, performs the take and returns the state.
+pub(crate) fn assert_take_history_work_is_flat(
+    large: u32,
+    grown: &[TakeHistoryVector],
+    maps: &[TakeHistoryMap],
+    mut take: impl FnMut(u32) -> GameState,
+) {
+    const SMALL: u32 = 3;
+    take(SMALL);
+    let small = only_take(SMALL);
+    let state = take(large);
+    let large_take = only_take(large);
+
+    for (record, n) in [(&small, SMALL), (&large_take, large)] {
+        assert_eq!(
+            (record.count, record.delivered, record.cycles.len()),
+            (n, n, n as usize),
+            "reach: the take at {n} delivers every cycle"
+        );
+        assert_eq!(
+            record.whole_take.drive_snapshots, 1,
+            "the take at {n} snapshots the state once"
+        );
+        for (cycle, counts) in record.cycles.iter().enumerate() {
+            assert!(
+                counts.journal_records_examined <= counts.journal_keyed_reads,
+                "cycle {cycle} of the take at {n}: each keyed journal read examines at most the \
+                 record it finds ({counts:?})"
+            );
+        }
+    }
+    assert!(
+        small
+            .cycles
+            .iter()
+            .map(|c| c.journal_keyed_reads)
+            .sum::<u64>()
+            > 0,
+        "reach: the small take reads the journal by key"
+    );
+    let most = |record: &TakeCostRecord| record.cycles.iter().map(history_copies).max();
+    let (small_most, large_most) = (most(&small).unwrap_or(0), most(&large_take).unwrap_or(0));
+    assert!(
+        small_most > 0,
+        "reach: the small take copies history entries"
+    );
+    assert!(
+        large_most <= 2 * small_most,
+        "history entries copied per cycle grow with the count: {large_most} at {large} against \
+         {small_most} at {SMALL}"
+    );
+
+    let before = take_cost_snapshot();
+    let copy = state.clone();
+    let copied = take_cost_snapshot().since(before);
+    for vector in grown {
+        let (inline, shared) = vector.inline_and_shared(&state, &copy);
+        assert!(!inline, "reach: {vector:?} outgrew its inline chunk");
+        assert!(shared, "a state copy shares {vector:?}");
+    }
+    for map in maps {
+        assert!(map.len(&state) > 0, "reach: {map:?} holds entries");
+    }
+    assert_eq!(copied.state_copies, 1, "reach: one state copy was taken");
+    assert_eq!(
+        copied.history_map_entries_unshared, 0,
+        "a state copy shares every map-backed history entry"
+    );
+}
+
+/// The Sprout Swarm collapse's per-cycle history work does not grow with its count.
+#[test]
+fn sprout_take_history_work_is_flat_per_cycle() {
+    assert_take_history_work_is_flat(
+        32,
+        &[
+            TakeHistoryVector::JournalEntries,
+            TakeHistoryVector::ProducedMana,
+            TakeHistoryVector::SpentMana,
+            TakeHistoryVector::BattlefieldEntries,
+        ],
+        &[TakeHistoryMap::AbilityResolutions],
+        |n| {
+            let mut state = r6a_offer_state();
+            r6a_declare_and_accept_all(&mut state, P0, n);
+            r6a_drive_to_boundary(&mut state);
+            engine::game::perf_counters::reset();
+            apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
+                .expect("the loop controller collapses at the accepted count");
+            state
+        },
+    );
 }
 
 /// R6a FIX-2 (CR 732.2c). MEASURED DEFECT in the first cut of the collapse bound: the stash

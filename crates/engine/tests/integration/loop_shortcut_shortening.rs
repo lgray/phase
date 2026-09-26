@@ -1611,3 +1611,31 @@ fn a_shortened_cascade_spanning_declaration_seats_the_shortener() {
          and a count containing a crossing does not move that seat"
     );
 }
+
+/// The shortened mana engine's per-cycle history work does not grow with its count.
+#[test]
+fn mana_engine_take_history_work_is_flat_per_cycle() {
+    use crate::loop_shortcut::{
+        assert_take_history_work_is_flat, TakeHistoryMap, TakeHistoryVector,
+    };
+
+    let db = crate::support::shared_card_db().expect("the integration card fixture loads");
+    assert_take_history_work_is_flat(
+        32,
+        &[
+            TakeHistoryVector::JournalEntries,
+            TakeHistoryVector::ProducedMana,
+            TakeHistoryVector::SpentMana,
+        ],
+        &[
+            TakeHistoryMap::AbilityResolutions,
+            TakeHistoryMap::ActivatedAbilities,
+        ],
+        |n| {
+            let mut state = mana_engine_window(db, n + 1);
+            engine::game::perf_counters::reset();
+            shorten(&mut state, n).expect("the named place is in range");
+            state
+        },
+    );
+}

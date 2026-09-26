@@ -1252,3 +1252,35 @@ fn kilo_reported_capture_interaction_picker_suggests_the_full_ceiling() {
         "CR 732.2c: the wire declare binds the same count the React echo binds"
     );
 }
+
+/// The Kilo collapse's per-cycle history work does not grow with its count.
+#[test]
+fn kilo_take_history_work_is_flat_per_cycle() {
+    use crate::loop_shortcut::{
+        assert_take_history_work_is_flat, TakeHistoryMap, TakeHistoryVector,
+    };
+
+    assert_take_history_work_is_flat(
+        32,
+        &[
+            TakeHistoryVector::JournalEntries,
+            TakeHistoryVector::ProducedMana,
+            TakeHistoryVector::SpentMana,
+            TakeHistoryVector::CountersAdded,
+        ],
+        &[
+            TakeHistoryMap::AbilityResolutions,
+            TakeHistoryMap::ActivatedAbilities,
+        ],
+        |n| {
+            let mut state = load_migrated_dump();
+            drive_one_live_cycle(&mut state, &FIXTURE_IDS);
+            drive_all_accept_n(&mut state, n);
+            drive_to_collapse_boundary(&mut state);
+            engine::game::perf_counters::reset();
+            apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
+                .expect("P0 names the finite collapse count");
+            state
+        },
+    );
+}

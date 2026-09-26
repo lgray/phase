@@ -770,3 +770,51 @@ fn the_ring_road_is_asked_before_the_recorded_road() {
     }
     panic!("the committed board reached no offer in {BEAT_CAP} beats");
 }
+
+/// Offers `board` and takes it at `n`, metering only the take.
+fn metered_take(board: Board, n: u32) -> GameState {
+    let (mut drive, _) = offered(board).expect("the board builds from the card fixture");
+    engine::game::perf_counters::reset();
+    drive.take(IterationCount::Fixed(n));
+    drive.state().clone()
+}
+
+/// Board A's take: its per-cycle history work does not grow with its count.
+#[test]
+fn trigger_driven_take_history_work_is_flat_per_cycle_a() {
+    use crate::loop_shortcut::{
+        assert_take_history_work_is_flat, TakeHistoryMap, TakeHistoryVector,
+    };
+
+    assert_take_history_work_is_flat(
+        32,
+        &[
+            TakeHistoryVector::JournalEntries,
+            TakeHistoryVector::BattlefieldEntries,
+        ],
+        &[
+            TakeHistoryMap::AbilityResolutions,
+            TakeHistoryMap::TrackedObjectSets,
+            TakeHistoryMap::TrackedSetMemberCauses,
+        ],
+        |n| metered_take(Board::A, n),
+    );
+}
+
+/// Board B's take: its per-cycle history work does not grow with its count.
+#[test]
+fn trigger_driven_take_history_work_is_flat_per_cycle_b() {
+    use crate::loop_shortcut::{
+        assert_take_history_work_is_flat, TakeHistoryMap, TakeHistoryVector,
+    };
+
+    assert_take_history_work_is_flat(
+        32,
+        &[
+            TakeHistoryVector::JournalEntries,
+            TakeHistoryVector::BattlefieldEntries,
+        ],
+        &[TakeHistoryMap::AbilityResolutions],
+        |n| metered_take(Board::B, n),
+    );
+}
