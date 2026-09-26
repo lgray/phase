@@ -8950,10 +8950,18 @@ pub(crate) fn drive_persistent_axis_collapse(
         .map(|c| loop_action_expected_def(state, c))
         .collect();
     let _guard = SimulationProbeGuard::enter(); // held across the whole drive
+    #[cfg(feature = "test-support")]
+    let mut take_cost = crate::game::perf_counters::TakeCostRecorder::begin(n);
     let mut committed = state.clone();
+    #[cfg(feature = "test-support")]
+    crate::game::perf_counters::record_drive_snapshot();
     let mut delivered = 0;
     for i in 0..n {
+        #[cfg(feature = "test-support")]
+        take_cost.begin_cycle();
         let mut work = committed.clone();
+        #[cfg(feature = "test-support")]
+        crate::game::perf_counters::record_drive_snapshot();
         // The accept beat cleared the sequence and handed priority to the living seat; re-seed a
         // Priority window for the loop CONTROLLER (not `active_player`: `reset_priority` grants the
         // active player, but the loop may be an instant-speed period on an opponent's turn).
@@ -8965,10 +8973,45 @@ pub(crate) fn drive_persistent_axis_collapse(
         }
         committed = work;
         delivered += 1;
+        #[cfg(feature = "test-support")]
+        take_cost.end_cycle();
     }
     *state = committed;
+    #[cfg(feature = "test-support")]
+    {
+        take_cost.finish(delivered);
+        append_take_end_digest(state, delivered);
+    }
     // `_guard` drops HERE — before the caller re-drains — so the restored beat is offer-eligible.
     delivered
+}
+
+/// Appends `<thread name> delivered=<d> digest=<hex>` to the file `PHASE_TAKE_END_DIGEST_FILE`
+/// names, hashing the whole end state so two builds' takes compare line by line.
+#[cfg(feature = "test-support")]
+fn append_take_end_digest(state: &GameState, delivered: u32) {
+    use std::hash::{Hash, Hasher};
+    use std::io::Write;
+    let Some(path) = std::env::var_os("PHASE_TAKE_END_DIGEST_FILE") else {
+        return;
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(state)
+        .expect("a game state serializes")
+        .hash(&mut hasher);
+    let line = format!(
+        "{} delivered={delivered} digest={:016x}\n",
+        std::thread::current().name().unwrap_or("?"),
+        hasher.finish()
+    );
+    // One `write_all` of the whole line in append mode, so concurrent test processes never
+    // interleave within a line.
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(line.as_bytes()))
+        .expect("the take end digest file is writable");
 }
 
 /// CR 732.2a / CR 111.1 / CR 110.5b / CR 707.2: when an accepted convoke/tap-cost object-growth

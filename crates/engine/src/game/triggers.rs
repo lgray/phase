@@ -1034,10 +1034,16 @@ pub fn apply_resolved_delayed_trigger(
     // The resolved-rules journal is the durable install-root authority. A
     // one-shot may already have fired and left `delayed_triggers`, but replay
     // must still never reuse its CR 603.7 identity.
+    #[cfg(feature = "test-support")]
+    crate::game::perf_counters::record_journal_keyed_read();
     let installed_provenances = state
         .resolved_rules_journal
         .entries()
         .iter()
+        .inspect(|_| {
+            #[cfg(feature = "test-support")]
+            crate::game::perf_counters::record_journal_record_examined();
+        })
         .filter_map(|entry| entry.command.as_ref())
         .filter_map(|command| match command {
             crate::types::resolved_commands::ResolvedRulesCommand::DelayedTriggerInstall(

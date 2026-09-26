@@ -9,6 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::game::combat::{AttackTarget, CombatParticipation};
 use crate::game::game_object::AttachTarget;
+#[cfg(feature = "test-support")]
+use crate::game::perf_counters;
 use crate::game::triggers::{ConsumedTriggerEventOccurrence, PendingTriggerContext};
 
 use super::ability::{ContinuousModification, TriggerDefinitionRef};
@@ -1932,7 +1934,8 @@ pub enum RulesExecutionNodeKind {
 ///
 /// bundle_parent lets a triggered mana ability remain selectable with its
 /// causing activation while retaining its own distinct causal node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 pub struct SettlementNode {
     pub ordinal: SettlementNodeOrdinal,
     pub identity: RulesExecutionNodeRef,
@@ -1951,8 +1954,38 @@ pub struct SettlementNode {
     pub journal_ordinals: Vec<ResolvedCommandOrdinal>,
 }
 
+#[cfg(feature = "test-support")]
+impl Clone for SettlementNode {
+    fn clone(&self) -> Self {
+        crate::game::perf_counters::record_history_entry_copied();
+        let Self {
+            ordinal,
+            identity,
+            kind,
+            caused_by,
+            depends_on,
+            bundle_parent,
+            produced_pips,
+            spent_pips,
+            journal_ordinals,
+        } = self;
+        Self {
+            ordinal: *ordinal,
+            identity: *identity,
+            kind: kind.clone(),
+            caused_by: *caused_by,
+            depends_on: depends_on.clone(),
+            bundle_parent: *bundle_parent,
+            produced_pips: produced_pips.clone(),
+            spent_pips: spent_pips.clone(),
+            journal_ordinals: journal_ordinals.clone(),
+        }
+    }
+}
+
 /// One command slot assigned to a journal node.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 pub struct ResolvedCommandJournalEntry {
     pub ordinal: ResolvedCommandOrdinal,
     pub node: RulesExecutionNodeRef,
@@ -1962,11 +1995,41 @@ pub struct ResolvedCommandJournalEntry {
     pub command: Option<ResolvedRulesCommand>,
 }
 
+#[cfg(feature = "test-support")]
+impl Clone for ResolvedCommandJournalEntry {
+    fn clone(&self) -> Self {
+        crate::game::perf_counters::record_history_entry_copied();
+        let Self {
+            ordinal,
+            node,
+            command,
+        } = self;
+        Self {
+            ordinal: *ordinal,
+            node: *node,
+            command: command.clone(),
+        }
+    }
+}
+
 /// Exact stamped mana created by one node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 pub struct ProducedManaUnit {
     pub unit: ManaUnit,
     pub producer: RulesExecutionNodeRef,
+}
+
+#[cfg(feature = "test-support")]
+impl Clone for ProducedManaUnit {
+    fn clone(&self) -> Self {
+        crate::game::perf_counters::record_history_entry_copied();
+        let Self { unit, producer } = self;
+        Self {
+            unit: unit.clone(),
+            producer: *producer,
+        }
+    }
 }
 
 impl PartialEq for ProducedManaUnit {
@@ -1980,12 +2043,32 @@ impl PartialEq for ProducedManaUnit {
 impl Eq for ProducedManaUnit {}
 
 /// Exact mana unit consumed for one cost component, in consumption order.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 pub struct SpentManaUnit {
     pub unit: ManaUnit,
     pub producer: RulesExecutionNodeRef,
     pub payment: RulesExecutionNodeRef,
     pub recipient: ManaPaymentRecipient,
+}
+
+#[cfg(feature = "test-support")]
+impl Clone for SpentManaUnit {
+    fn clone(&self) -> Self {
+        crate::game::perf_counters::record_history_entry_copied();
+        let Self {
+            unit,
+            producer,
+            payment,
+            recipient,
+        } = self;
+        Self {
+            unit: unit.clone(),
+            producer: *producer,
+            payment: *payment,
+            recipient: recipient.clone(),
+        }
+    }
 }
 
 impl PartialEq for SpentManaUnit {
@@ -2113,19 +2196,29 @@ impl ResolvedRulesJournal {
     }
 
     pub fn has_produced_pip(&self, pip: ManaPipId) -> bool {
-        self.produced_mana
-            .iter()
-            .any(|record| record.unit.pip_id == pip)
+        #[cfg(feature = "test-support")]
+        perf_counters::record_journal_keyed_read();
+        self.produced_mana.iter().any(|record| {
+            #[cfg(feature = "test-support")]
+            perf_counters::record_journal_record_examined();
+            record.unit.pip_id == pip
+        })
     }
 
     pub fn latest_mana_producer_for_source(
         &self,
         source_id: super::identifiers::ObjectId,
     ) -> Option<RulesExecutionNodeRef> {
+        #[cfg(feature = "test-support")]
+        perf_counters::record_journal_keyed_read();
         self.produced_mana
             .iter()
             .rev()
-            .find(|record| record.unit.source_id == source_id)
+            .find(|record| {
+                #[cfg(feature = "test-support")]
+                perf_counters::record_journal_record_examined();
+                record.unit.source_id == source_id
+            })
             .map(|record| record.producer)
     }
 
@@ -2237,11 +2330,13 @@ impl ResolvedRulesJournal {
     ) -> Result<(), ResolvedRulesJournalError> {
         Self::require_stamped(unit.pip_id)?;
         let node_index = self.node_index(producer)?;
-        if self
-            .produced_mana
-            .iter()
-            .any(|record| record.unit.pip_id == unit.pip_id)
-        {
+        #[cfg(feature = "test-support")]
+        perf_counters::record_journal_keyed_read();
+        if self.produced_mana.iter().any(|record| {
+            #[cfg(feature = "test-support")]
+            perf_counters::record_journal_record_examined();
+            record.unit.pip_id == unit.pip_id
+        }) {
             return Err(ResolvedRulesJournalError::DuplicateProducedPip(unit.pip_id));
         }
         self.nodes[node_index].produced_pips.push(unit.pip_id);
@@ -2277,11 +2372,13 @@ impl ResolvedRulesJournal {
             if !seen.insert(unit.pip_id) || self.spent_pip_exists(unit.pip_id) {
                 return Err(ResolvedRulesJournalError::DuplicateSpentPip(unit.pip_id));
             }
-            let Some(produced) = self
-                .produced_mana
-                .iter()
-                .find(|record| record.unit.pip_id == unit.pip_id)
-            else {
+            #[cfg(feature = "test-support")]
+            perf_counters::record_journal_keyed_read();
+            let Some(produced) = self.produced_mana.iter().find(|record| {
+                #[cfg(feature = "test-support")]
+                perf_counters::record_journal_record_examined();
+                record.unit.pip_id == unit.pip_id
+            }) else {
                 return Err(ResolvedRulesJournalError::UnknownProducedPip(unit.pip_id));
             };
             if !dependencies.contains(&produced.producer) {
@@ -2334,10 +2431,16 @@ impl ResolvedRulesJournal {
         let units = spent
             .iter()
             .map(|unit| {
+                #[cfg(feature = "test-support")]
+                perf_counters::record_journal_keyed_read();
                 let producer = self
                     .spent_mana
                     .iter()
-                    .find(|record| record.payment == payment && record.unit.pip_id == unit.pip_id)
+                    .find(|record| {
+                        #[cfg(feature = "test-support")]
+                        perf_counters::record_journal_record_examined();
+                        record.payment == payment && record.unit.pip_id == unit.pip_id
+                    })
                     .expect("recorded spent mana must retain its producer")
                     .producer;
                 ResolvedManaSpentUnit {
@@ -2680,9 +2783,15 @@ impl ResolvedRulesJournal {
         &self,
         identity: RulesExecutionNodeRef,
     ) -> Result<usize, ResolvedRulesJournalError> {
+        #[cfg(feature = "test-support")]
+        perf_counters::record_journal_keyed_read();
         self.nodes
             .iter()
-            .position(|node| node.identity == identity)
+            .position(|node| {
+                #[cfg(feature = "test-support")]
+                perf_counters::record_journal_record_examined();
+                node.identity == identity
+            })
             .ok_or(ResolvedRulesJournalError::UnknownNode(identity))
     }
 
@@ -2695,9 +2804,13 @@ impl ResolvedRulesJournal {
     }
 
     fn spent_pip_exists(&self, pip: ManaPipId) -> bool {
-        self.spent_mana
-            .iter()
-            .any(|record| record.unit.pip_id == pip)
+        #[cfg(feature = "test-support")]
+        perf_counters::record_journal_keyed_read();
+        self.spent_mana.iter().any(|record| {
+            #[cfg(feature = "test-support")]
+            perf_counters::record_journal_record_examined();
+            record.unit.pip_id == pip
+        })
     }
 
     fn require_stamped(pip: ManaPipId) -> Result<(), ResolvedRulesJournalError> {

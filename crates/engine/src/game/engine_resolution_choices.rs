@@ -9409,10 +9409,16 @@ pub(crate) fn validate_resolution_cast_delayed_trigger_receipts(
                     })
             })
             .count();
+        #[cfg(feature = "test-support")]
+        crate::game::perf_counters::record_journal_keyed_read();
         let journal_matches = state
             .resolved_rules_journal
             .entries()
             .iter()
+            .inspect(|_| {
+                #[cfg(feature = "test-support")]
+                crate::game::perf_counters::record_journal_record_examined();
+            })
             .filter_map(|entry| entry.command.as_ref())
             .filter_map(|command| match command {
                 crate::types::resolved_commands::ResolvedRulesCommand::DelayedTriggerInstall(

@@ -1977,7 +1977,8 @@ impl ZoneChangeRecord {
 
 /// CR 403.3: Snapshot of an object's properties at the time it enters the battlefield,
 /// enabling data-driven ETB condition queries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 pub struct BattlefieldEntryRecord {
     pub object_id: ObjectId,
     pub name: String,
@@ -2003,6 +2004,33 @@ pub struct BattlefieldEntryRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<Keyword>,
     pub controller: PlayerId,
+}
+
+#[cfg(feature = "test-support")]
+impl Clone for BattlefieldEntryRecord {
+    fn clone(&self) -> Self {
+        crate::game::perf_counters::record_history_entry_copied();
+        let Self {
+            object_id,
+            name,
+            core_types,
+            subtypes,
+            supertypes,
+            colors,
+            keywords,
+            controller,
+        } = self;
+        Self {
+            object_id: *object_id,
+            name: name.clone(),
+            core_types: core_types.clone(),
+            subtypes: subtypes.clone(),
+            supertypes: supertypes.clone(),
+            colors: colors.clone(),
+            keywords: keywords.clone(),
+            controller: *controller,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -2459,7 +2487,8 @@ impl Default for DamageRecord {
 /// event-time characteristics, so dynamic quantities can later answer
 /// "for each +1/+1 counter you've put on creatures under your control this turn"
 /// even if the recipient has changed zones or characteristics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 pub struct CounterAddedRecord {
     pub actor: PlayerId,
     pub object_id: ObjectId,
@@ -2478,6 +2507,49 @@ pub struct CounterAddedRecord {
     pub owner: PlayerId,
     #[serde(default, with = "counter_map_serde")]
     pub counters: HashMap<CounterType, u32>,
+}
+
+#[cfg(feature = "test-support")]
+impl Clone for CounterAddedRecord {
+    fn clone(&self) -> Self {
+        crate::game::perf_counters::record_history_entry_copied();
+        let Self {
+            actor,
+            object_id,
+            counter_type,
+            count,
+            name,
+            core_types,
+            subtypes,
+            supertypes,
+            keywords,
+            power,
+            toughness,
+            colors,
+            mana_value,
+            controller,
+            owner,
+            counters,
+        } = self;
+        Self {
+            actor: *actor,
+            object_id: *object_id,
+            counter_type: counter_type.clone(),
+            count: *count,
+            name: name.clone(),
+            core_types: core_types.clone(),
+            subtypes: subtypes.clone(),
+            supertypes: supertypes.clone(),
+            keywords: keywords.clone(),
+            power: *power,
+            toughness: *toughness,
+            colors: colors.clone(),
+            mana_value: *mana_value,
+            controller: *controller,
+            owner: *owner,
+            counters: counters.clone(),
+        }
+    }
 }
 
 /// CR 607.2a + CR 406.6: Tracks the link between an exiling source and the exiled card.
@@ -20014,12 +20086,29 @@ macro_rules! declare_game_state {
             $visibility:vis $field:ident: $field_type:ty,
         )*
     ) => {
-        #[derive(Debug, Clone, Serialize)]
+        #[derive(Debug, Serialize)]
+        #[cfg_attr(not(feature = "test-support"), derive(Clone))]
         pub struct GameState {
             $(
                 $(#[$attribute])*
                 $visibility $field: $field_type,
             )*
+        }
+
+        #[cfg(feature = "test-support")]
+        impl Clone for GameState {
+            fn clone(&self) -> Self {
+                let copy = Self {
+                    $(
+                        $field: self.$field.clone(),
+                    )*
+                };
+                crate::game::perf_counters::record_state_copy();
+                crate::game::perf_counters::record_history_map_entries_unshared(
+                    history_map_entries_unshared(self, &copy),
+                );
+                copy
+            }
         }
 
         #[derive(Deserialize)]
@@ -22626,6 +22715,39 @@ declare_game_state! {
     /// boundary, so it is excluded from serialization and structural equality.
     #[serde(skip)]
     pub combat_prevention_tally: Option<HashMap<AppliedReplacementKey, i32>>,
+}
+
+/// The map-backed history entries `copy` does not share with `original`, a nested causes map
+/// counting its inner entries with its own.
+#[cfg(feature = "test-support")]
+fn history_map_entries_unshared(original: &GameState, copy: &GameState) -> u64 {
+    use crate::game::perf_counters::Unshared;
+    let causes = original
+        .tracked_set_member_causes
+        .unshared(&copy.tracked_set_member_causes);
+    let inner_causes: u64 = if causes > 0 {
+        original
+            .tracked_set_member_causes
+            .values()
+            .map(|members| members.len() as u64)
+            .sum()
+    } else {
+        0
+    };
+    original
+        .tracked_object_sets
+        .unshared(&copy.tracked_object_sets)
+        + causes
+        + inner_causes
+        + original
+            .ability_resolutions_this_turn
+            .unshared(&copy.ability_resolutions_this_turn)
+        + original
+            .activated_abilities_this_turn
+            .unshared(&copy.activated_abilities_this_turn)
+        + original
+            .batched_zone_change_trigger_fired
+            .unshared(&copy.batched_zone_change_trigger_fired)
 }
 
 /// Selects the persistence contract for materializing raw game-state fields.
@@ -27417,10 +27539,13 @@ impl GameState {
     }
 
     fn rules_execution_node_is_live(&self, node: RulesExecutionNodeRef) -> bool {
-        self.resolved_rules_journal
-            .nodes()
-            .iter()
-            .any(|candidate| candidate.identity == node)
+        #[cfg(feature = "test-support")]
+        crate::game::perf_counters::record_journal_keyed_read();
+        self.resolved_rules_journal.nodes().iter().any(|candidate| {
+            #[cfg(feature = "test-support")]
+            crate::game::perf_counters::record_journal_record_examined();
+            candidate.identity == node
+        })
     }
 
     /// CR 800.4: Begin the distinct execution node for one player leaving the
