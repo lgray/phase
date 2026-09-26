@@ -3183,6 +3183,10 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
 
       cancelHosting: () => {
         p2pHostingAttempt += 1;
+        // A closed host socket leaves the room alive for the reconnect grace.
+        if (hostWs?.readyState === WebSocket.OPEN) {
+          hostWs.send(JSON.stringify({ type: "AbandonGame" }));
+        }
         closeHostWebSocket();
         disposeActiveP2PHost();
         if (activeBroker) {

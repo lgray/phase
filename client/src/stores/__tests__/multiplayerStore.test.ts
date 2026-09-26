@@ -1352,6 +1352,34 @@ describe("multiplayerStore", () => {
     expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(false);
   });
 
+  it("abandons a Full-mode room before closing the host socket on cancel", async () => {
+    useMultiplayerStore.getState().startHosting(
+      hostingSettings(),
+      { main_deck: ["Forest"], sideboard: [], commander: [] },
+      HOST_URL,
+    );
+    await waitFor(() => expect(socketMocks.send).toHaveBeenCalled());
+    emitServerMessage("GameCreated", {
+      game_code: "ABCDE",
+      player_token: "host-token",
+      full_key: { game_code: "ABCDE", generation: 1 },
+    });
+    const ws = socketMocks.currentWs!;
+    const sentTypes = () =>
+      socketMocks.send.mock.calls.map(
+        (call) => (JSON.parse(call[0] as string) as { type: string }).type,
+      );
+    expect(sentTypes()).toContain("CreateGameWithSettings");
+
+    useMultiplayerStore.getState().cancelHosting();
+
+    const abandonIndex = sentTypes().indexOf("AbandonGame");
+    expect(abandonIndex).toBeGreaterThanOrEqual(0);
+    expect(socketMocks.send.mock.invocationCallOrder[abandonIndex]).toBeLessThan(
+      ws.close.mock.invocationCallOrder[0],
+    );
+  });
+
   // V-U15h — the LIVE mid-game reconnect, the third `openServerHostSocket`
   // call site. The only case in this file that needs fake timers, so they are
   // scoped to this block: installing them suite-wide would perturb two
