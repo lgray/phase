@@ -1380,6 +1380,66 @@ describe("multiplayerStore", () => {
     );
   });
 
+  it("drops a host socket that finishes connecting after cancel", async () => {
+    const openDefault = vi.mocked(openPhaseSocket).getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(openPhaseSocket).mockImplementationOnce(async (...args) => {
+      await gate;
+      return openDefault(...args);
+    });
+    useMultiplayerStore.getState().startHosting(
+      hostingSettings(),
+      { main_deck: ["Forest"], sideboard: [], commander: [] },
+      HOST_URL,
+    );
+    expect(useMultiplayerStore.getState().hostingStatus).toBe("connecting");
+
+    useMultiplayerStore.getState().cancelHosting();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const ws = socketMocks.currentWs!;
+    expect(ws).not.toBeNull();
+    emitServerMessage("GameCreated", {
+      game_code: "ABCDE",
+      player_token: "host-token",
+      full_key: { game_code: "ABCDE", generation: 1 },
+    });
+
+    expect(socketMocks.send).not.toHaveBeenCalled();
+    expect(ws.close).toHaveBeenCalled();
+    expect(useMultiplayerStore.getState().hostingStatus).toBe("idle");
+  });
+
+  it("ignores a host dial that fails after cancel", async () => {
+    const lostToasts = () =>
+      [...useMultiplayerStore.getState().toasts.values()].filter(
+        (toast) => toast.message === "Connection to server lost.",
+      ).length;
+    const failDial = async (cancelFirst: boolean) => {
+      let fail!: () => void;
+      vi.mocked(openPhaseSocket).mockImplementationOnce(
+        () => new Promise((_, reject) => (fail = () => reject(new Error("down")))),
+      );
+      useMultiplayerStore.getState().startHosting(
+        hostingSettings(),
+        { main_deck: ["Forest"], sideboard: [], commander: [] },
+        HOST_URL,
+      );
+      if (cancelFirst) useMultiplayerStore.getState().cancelHosting();
+      fail();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    await failDial(false);
+    expect(lostToasts()).toBe(1);
+    useMultiplayerStore.setState({ toasts: new Map() });
+    await failDial(true);
+    expect(lostToasts()).toBe(0);
+  });
+
   // V-U15h — the LIVE mid-game reconnect, the third `openServerHostSocket`
   // call site. The only case in this file that needs fake timers, so they are
   // scoped to this block: installing them suite-wide would perturb two

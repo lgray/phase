@@ -159,6 +159,8 @@ let activeBrokerGameCode: string | null = null;
 let activeP2PHostAdapter: P2PHostAdapter | null = null;
 let activeP2PHostGameId: string | null = null;
 let p2pHostingAttempt = 0;
+// A server-host dial acts after its socket opens only while it is the latest.
+let serverHostAttempt = 0;
 
 function asDeckPayload(deck: HostingDeck): {
   main_deck: string[];
@@ -2729,10 +2731,12 @@ async function openServerHostSocket(
     return;
   }
 
+  const attempt = ++serverHostAttempt;
   let socket;
   try {
     socket = await openPhaseSocket(url);
   } catch (err) {
+    if (attempt !== serverHostAttempt) return;
     if (
       err instanceof HandshakeError &&
       err.kind === "protocol_mismatch"
@@ -2745,6 +2749,10 @@ async function openServerHostSocket(
       hostWs = null;
       onReopen();
     }
+    return;
+  }
+  if (attempt !== serverHostAttempt) {
+    socket.ws.close();
     return;
   }
 
@@ -3183,6 +3191,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
 
       cancelHosting: () => {
         p2pHostingAttempt += 1;
+        serverHostAttempt += 1;
         // A closed host socket leaves the room alive for the reconnect grace.
         if (hostWs?.readyState === WebSocket.OPEN) {
           hostWs.send(JSON.stringify({ type: "AbandonGame" }));
