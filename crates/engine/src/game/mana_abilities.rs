@@ -2627,6 +2627,7 @@ fn pay_selected_mana_ability_exile_cost(
             state,
             pending.player,
             pending.source_id,
+            None,
             effective_zone,
             filter,
             count,
@@ -4807,7 +4808,7 @@ fn exile_cost_choice(
     if zone == Zone::Library {
         return None;
     }
-    let cards = eligible_exile_cost_objects(state, player, source_id, zone, filter, count)
+    let cards = eligible_exile_cost_objects(state, player, source_id, None, zone, filter, count)
         .into_iter()
         .filter(|id| !deferred_spell_sacrifice_reserved(state, *id))
         .collect();
@@ -4834,6 +4835,7 @@ fn prepare_deterministic_exile_cost_selection(
         state,
         pending.player,
         pending.source_id,
+        None,
         Zone::Library,
         None,
         count,
@@ -4867,7 +4869,7 @@ fn sacrifice_cost_choice(
 ) -> Option<(usize, Vec<ObjectId>)> {
     let (count, filter) = super::casting::find_non_self_sacrifice_cost(cost.as_ref()?)?;
     let permanents =
-        super::casting::find_eligible_sacrifice_targets(state, player, source_id, filter);
+        super::casting::find_eligible_sacrifice_targets(state, player, source_id, None, filter);
     Some((count as usize, permanents))
 }
 

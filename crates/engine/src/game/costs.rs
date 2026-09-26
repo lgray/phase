@@ -74,10 +74,11 @@ fn find_eligible_exile_targets(
     state: &GameState,
     player: PlayerId,
     source_id: ObjectId,
+    granting_object: Option<ObjectIncarnationRef>,
     zone: Zone,
     filter: Option<&TargetFilter>,
 ) -> Vec<ObjectId> {
-    let ctx = FilterContext::from_source(state, source_id);
+    let ctx = FilterContext::from_source(state, source_id).with_granting_object(granting_object);
     let player_state = state.players.get(player.0 as usize);
 
     match zone {
@@ -222,6 +223,22 @@ pub(crate) enum PaymentScope<'a> {
         ability: &'a ResolvedAbility,
         cost_move_root: ResolutionCostMoveRoot,
     },
+}
+
+impl PaymentScope<'_> {
+    /// CR 201.5a: the granter stamped on the ability whose cost is being paid.
+    fn granting_object(
+        &self,
+        state: &GameState,
+        source_id: ObjectId,
+    ) -> Option<ObjectIncarnationRef> {
+        match self {
+            PaymentScope::Activation { ability_index, .. } => {
+                super::casting::activated_ability_granting_object(state, source_id, *ability_index)
+            }
+            PaymentScope::Resolution { ability, .. } => ability.context.granting_object,
+        }
+    }
 }
 
 /// The owner of a resolution-time non-self cost move. Only an accepted
@@ -1081,7 +1098,13 @@ fn pay_ability_cost_inner(
         } if matches!(scope, PaymentScope::Resolution { .. }) => {
             let count =
                 resolve_cost_quantity(state, count, player, source_id, scope).max(0) as usize;
-            let eligible = find_eligible_discard_targets(state, player, source_id, filter.as_ref());
+            let eligible = find_eligible_discard_targets(
+                state,
+                player,
+                source_id,
+                scope.granting_object(state, source_id),
+                filter.as_ref(),
+            );
             if eligible.len() < count {
                 return Ok(payment_failed("not enough cards to discard"));
             }
@@ -1256,6 +1279,7 @@ fn pay_ability_cost_inner(
                 state,
                 player,
                 source_id,
+                scope.granting_object(state, source_id),
                 effective_zone,
                 filter.as_ref(),
             );
@@ -1654,7 +1678,9 @@ fn pay_ability_cost_inner(
         AbilityCost::RemoveCounter {
             count,
             counter_type,
-            target: target @ (None | Some(TargetFilter::SpecificObject { .. })),
+            target:
+                target @ (None
+                | Some(TargetFilter::SpecificObject { .. } | TargetFilter::GrantingObject)),
             ..
         } => {
             // CR 201.5a + CR 602.2b + CR 601.2h: a fixed- or ALL-count cost naming one
@@ -1662,6 +1688,17 @@ fn pay_ability_cost_inner(
             // here like `~`.
             let payer = match target {
                 Some(TargetFilter::SpecificObject { id }) => *id,
+                // CR 201.5a + CR 400.7: the granter stamped on the paying ability, while it is that object.
+                Some(TargetFilter::GrantingObject) => {
+                    match scope.granting_object(state, source_id).filter(|granter| {
+                        state.objects.get(&granter.object_id).is_some_and(|obj| {
+                            ObjectIncarnationRef::from_object(obj) == *granter
+                        })
+                    }) {
+                        Some(granter) => granter.object_id,
+                        None => return Ok(payment_failed("the granter is gone")),
+                    }
+                }
                 _ => source_id,
             };
             if *count == REMOVE_COUNTER_COST_ALL
@@ -2365,7 +2402,13 @@ fn can_pay_resolution(
             let count = u32::try_from(resolve_quantity_with_targets(state, count, ability).max(0))
                 .unwrap_or(0) as usize;
             let eligible =
-                find_eligible_discard_targets(state, payer, ability.source_id, filter.as_ref());
+                find_eligible_discard_targets(
+                    state,
+                    payer,
+                    ability.source_id,
+                    ability.context.granting_object,
+                    filter.as_ref(),
+                );
             eligible.len() >= count
         }
         // CR 406.6: Non-self exile cost at resolution time (e.g., The Mimeoplasm's
@@ -2383,6 +2426,7 @@ fn can_pay_resolution(
                 state,
                 payer,
                 ability.source_id,
+                ability.context.granting_object,
                 effective_zone,
                 filter.as_ref(),
             );
@@ -2433,6 +2477,7 @@ fn can_pay_resolution(
                 state,
                 payer,
                 ability.source_id,
+                ability.context.granting_object,
                 &cost.target,
             );
             cost.requirement
@@ -3022,6 +3067,52 @@ mod tests {
             Some(&2)
         );
         assert_eq!(scenario.state.objects[&src].counters.get(&charge), Some(&1));
+    }
+
+    /// CR 201.5a + CR 400.7 + CR 601.2h: a remove-counter cost naming the granter pays
+    /// from the incarnation stamped on the paying ability, and not from a new object.
+    #[test]
+    fn remove_counter_cost_naming_the_granter_pays_from_the_stamped_granter() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+        use crate::types::identifiers::ObjectIncarnationRef;
+        let charge = CounterType::Generic("charge".to_string());
+        for stale in [false, true] {
+            let mut scenario = GameScenario::new();
+            let src = scenario.add_creature(P0, "Host", 2, 2).id();
+            let granter = scenario.add_creature(P0, "Granter", 0, 3).id();
+            scenario.with_counter(src, charge.clone(), 1);
+            scenario.with_counter(granter, charge.clone(), 3);
+            let cost = AbilityCost::RemoveCounter {
+                count: 1,
+                counter_type: CounterMatch::OfType(charge.clone()),
+                target: Some(TargetFilter::GrantingObject),
+                selection: Default::default(),
+            };
+            let mut stamp = ObjectIncarnationRef::from_object(&scenario.state.objects[&granter]);
+            stamp.incarnation += u64::from(stale);
+            let mut def =
+                AbilityDefinition::new(AbilityKind::Activated, Effect::NoOp).cost(cost.clone());
+            def.granting_object = Some(stamp);
+            std::sync::Arc::make_mut(&mut scenario.state.objects.get_mut(&src).unwrap().abilities)
+                .push(def);
+            let paid = pay_ability_cost_for_activation(
+                &mut scenario.state,
+                P0,
+                src,
+                &cost,
+                Some(0),
+                &mut Vec::new(),
+            )
+            .is_ok_and(|outcome| matches!(outcome, PaymentOutcome::Paid));
+            assert_eq!(paid, !stale, "stale={stale}");
+            let expected = if stale { 3 } else { 2 };
+            assert_eq!(
+                scenario.state.objects[&granter].counters.get(&charge),
+                Some(&expected),
+                "stale={stale}"
+            );
+            assert_eq!(scenario.state.objects[&src].counters.get(&charge), Some(&1));
+        }
     }
 
     /// Activation-scope `can_pay` against `state` for `source`.

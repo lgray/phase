@@ -2776,7 +2776,7 @@ mod granter_stamp {
     use engine::game::filter::{matches_target_filter, FilterContext};
     use engine::game::layers::evaluate_layers;
     use engine::game::quantity::resolve_quantity_with_targets;
-    use engine::game::scenario::{GameRunner, GameScenario, P0};
+    use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
     use engine::game::targeting::resolved_targets;
     use engine::game::zones::move_to_zone;
     use engine::types::ability::{
@@ -3795,5 +3795,155 @@ mod granter_stamp {
         grant_replacement(&mut b, doubling);
         let host = b.host;
         assert_eq!(assembles(&mut b, host), 1);
+    }
+
+    const SACRIFICE_THRESHOLD: &str = "Sacrifice a creature with power less than the number of +1/+1 counters on Foo Bar: Draw a card.";
+
+    /// CR 201.5a + CR 118.3 via CR 602.2b: a cost's eligibility threshold reads the
+    /// paying ability's granter, so two granters' copies on one host differ.
+    #[test]
+    fn cost_eligibility_threshold_reads_the_granter() {
+        for (granter, allowed) in [(0, true), (1, false)] {
+            let mut b = board_built(SACRIFICE_THRESHOLD, &[3, 1], None, "", |s| {
+                s.add_creature(P0, "Fodder", 2, 2);
+            });
+            let fodder = object_named(&b, "Fodder");
+            let index = ability_for_granter(&b, b.granters[granter]);
+            assert_eq!(try_activate(&mut b, index), allowed, "granter={granter}");
+            if allowed {
+                let WaitingFor::PayCost { choices, .. } = &b.runner.state().waiting_for else {
+                    panic!("expected the sacrifice choice");
+                };
+                assert_eq!(choices, &vec![fodder]);
+                b.runner
+                    .act(GameAction::SelectCards {
+                        cards: vec![fodder],
+                    })
+                    .unwrap();
+            }
+            b.runner.advance_until_stack_empty();
+            let expected = if allowed {
+                Zone::Graveyard
+            } else {
+                Zone::Battlefield
+            };
+            assert_eq!(
+                b.runner.state().objects[&fodder].zone,
+                expected,
+                "granter={granter}"
+            );
+            assert_eq!(hand(&b), usize::from(allowed), "granter={granter}");
+        }
+    }
+
+    /// CR 201.5a + CR 701.13a: "Exile The Dominion Bracelet" exiles the granter
+    /// from the battlefield, whoever controls it (CR 301.5d).
+    #[test]
+    fn exile_cost_naming_the_granter_exiles_the_granter() {
+        for bracelet_controller in [P0, P1] {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let host = scenario.add_creature(P0, "Bearer", 14, 14).id();
+            let bracelet = scenario
+                .add_artifact_from_oracle(P0, "The Dominion Bracelet", super::THE_DOMINION_BRACELET)
+                .with_subtypes(vec!["Equipment"])
+                .id();
+            let mut runner = scenario.build();
+            let st = runner.state_mut();
+            attach_to(st, bracelet, host);
+            st.objects.get_mut(&bracelet).unwrap().base_controller = Some(bracelet_controller);
+            relayer(st);
+            let index = runner.state().objects[&host].abilities.len() - 1;
+            runner
+                .act(GameAction::ActivateAbility {
+                    source_id: host,
+                    ability_index: index,
+                })
+                .unwrap_or_else(|e| panic!("controller={bracelet_controller:?}: {e:?}"));
+            let WaitingFor::PayCost { choices, .. } = &runner.state().waiting_for else {
+                panic!("expected the exile choice, controller={bracelet_controller:?}");
+            };
+            assert_eq!(choices, &vec![bracelet]);
+            runner
+                .act(GameAction::SelectCards {
+                    cards: vec![bracelet],
+                })
+                .unwrap_or_else(|e| panic!("controller={bracelet_controller:?}: {e:?}"));
+            runner.advance_until_stack_empty();
+            assert_eq!(runner.state().objects[&bracelet].zone, Zone::Exile);
+            assert_eq!(runner.state().objects[&host].zone, Zone::Battlefield);
+        }
+    }
+
+    /// CR 109.5 + CR 601.2a: a spell's "exile a creature you control" cost reads the
+    /// caster, not the owner of the card cast from another player's exile.
+    #[test]
+    fn exile_cost_you_control_reads_the_payer() {
+        use engine::types::ability::{
+            CardPlayMode, CastingPermission, Duration, PlayFromExileProvenance,
+        };
+        use engine::types::game_state::CastPaymentMode;
+        use engine::types::statics::CastFrequency;
+        use engine::types::zones::EtbTapState;
+        const NECROTIC_FUMES: &str = "As an additional cost to cast this spell, exile a creature you control.\nExile target creature or planeswalker.";
+
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let mine = scenario.add_vanilla(P0, 2, 2);
+        let theirs = scenario.add_vanilla(P1, 2, 2);
+        let victim = scenario.add_vanilla(P1, 3, 3);
+        let fumes = {
+            let mut b = scenario.add_spell_to_exile(P1, "Necrotic Fumes", false);
+            b.from_oracle_text(NECROTIC_FUMES);
+            b.with_mana_cost(ManaCost::default());
+            b.id()
+        };
+        let mut runner = scenario.build();
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&fumes)
+            .unwrap()
+            .casting_permissions
+            .push(CastingPermission::PlayFromExile {
+                provenance: PlayFromExileProvenance::Impulse,
+                duration: Duration::UntilEndOfTurn,
+                granted_to: P0,
+                mode: CardPlayMode::Play,
+                frequency: CastFrequency::Unlimited,
+                source_id: None,
+                invalidation: None,
+                exiled_by_ability_controller: None,
+                mana_spend_permission: None,
+                card_filter: None,
+                single_use_group: None,
+                single_use: false,
+                cast_cost_modifier: None,
+                alt_ability_cost: None,
+                land_enter_tapped: EtbTapState::Unspecified,
+            });
+        let card_id = runner.state().objects[&fumes].card_id;
+        runner
+            .act(GameAction::CastSpell {
+                object_id: fumes,
+                card_id,
+                targets: vec![],
+                payment_mode: CastPaymentMode::Auto,
+            })
+            .unwrap();
+        runner
+            .act(GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(victim)),
+            })
+            .unwrap();
+        let WaitingFor::PayCost { choices, .. } = &runner.state().waiting_for else {
+            panic!("expected the exile choice");
+        };
+        assert_eq!(choices, &vec![mine]);
+        runner
+            .act(GameAction::SelectCards { cards: vec![mine] })
+            .unwrap();
+        assert_eq!(runner.state().objects[&mine].zone, Zone::Exile);
+        assert_eq!(runner.state().objects[&theirs].zone, Zone::Battlefield);
     }
 }
