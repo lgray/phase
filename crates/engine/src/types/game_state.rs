@@ -27529,22 +27529,12 @@ impl GameState {
     /// parent before a later nested mana activation observes that scope.
     fn live_active_rules_execution_node(&mut self) -> Option<RulesExecutionNodeRef> {
         let node = self.active_rules_execution_node?;
-        if self.rules_execution_node_is_live(node) {
+        if self.resolved_rules_journal.contains_node(node) {
             Some(node)
         } else {
             self.active_rules_execution_node = None;
             None
         }
-    }
-
-    fn rules_execution_node_is_live(&self, node: RulesExecutionNodeRef) -> bool {
-        #[cfg(feature = "test-support")]
-        crate::game::perf_counters::record_journal_keyed_read();
-        self.resolved_rules_journal.nodes().iter().any(|candidate| {
-            #[cfg(feature = "test-support")]
-            crate::game::perf_counters::record_journal_record_examined();
-            candidate.identity == node
-        })
     }
 
     /// CR 800.4: Begin the distinct execution node for one player leaving the
@@ -27585,7 +27575,7 @@ impl GameState {
         caused_by: Option<RulesExecutionNodeRef>,
     ) -> RulesExecutionNodeRef {
         let parent = caused_by
-            .filter(|node| self.rules_execution_node_is_live(*node))
+            .filter(|node| self.resolved_rules_journal.contains_node(*node))
             .or_else(|| self.live_active_rules_execution_node());
         self.resolved_rules_journal
             .begin_triggered_mana(source, trigger, parent)

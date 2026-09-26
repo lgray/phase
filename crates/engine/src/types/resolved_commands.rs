@@ -22,8 +22,8 @@ use super::game_state::{
     TransientContinuousEffect, ZoneChangeRecord,
 };
 use super::identifiers::{
-    DelayedTriggerInstanceId, DelayedTriggerToken, ObjectId, ObjectIncarnationRef, TriggerFiring,
-    LEGACY_INCARNATION,
+    DelayedTriggerInstanceId, DelayedTriggerOrigin, DelayedTriggerToken, ObjectId,
+    ObjectIncarnationRef, TriggerFiring, LEGACY_INCARNATION,
 };
 use super::mana::{ManaPipId, ManaUnit};
 use super::player::{PlayerCounterKind, PlayerId};
@@ -2124,6 +2124,53 @@ pub struct ResolvedRulesJournal {
     nodes: im::Vector<SettlementNode>,
     produced_mana: im::Vector<ProducedManaUnit>,
     spent_mana: im::Vector<SpentManaUnit>,
+    index: JournalIndex,
+}
+
+/// Where each keyed record sits in the journal's vectors. A function of those vectors, kept by the
+/// journal's own appenders and rebuilt on load; never serialized.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct JournalIndex {
+    nodes: im::HashMap<RulesExecutionNodeRef, usize>,
+    produced: im::HashMap<ManaPipId, usize>,
+    spent: im::HashMap<ManaPipId, usize>,
+    latest_producer: im::HashMap<ObjectId, usize>,
+    delayed_by_token: im::HashMap<DelayedTriggerToken, im::Vector<usize>>,
+    delayed_by_instance: im::HashMap<DelayedTriggerInstanceId, im::Vector<usize>>,
+}
+
+impl JournalIndex {
+    fn record_delayed_install(&mut self, position: usize, entry: &ResolvedCommandJournalEntry) {
+        if let Some(origin) = delayed_install_origin(entry) {
+            self.delayed_by_token
+                .entry(origin.token)
+                .or_default()
+                .push_back(position);
+            self.delayed_by_instance
+                .entry(origin.instance)
+                .or_default()
+                .push_back(position);
+        }
+    }
+}
+
+/// CR 603.7: the origin of the delayed-trigger install an entry records, if it records one.
+fn delayed_install_origin(entry: &ResolvedCommandJournalEntry) -> Option<DelayedTriggerOrigin> {
+    match &entry.command {
+        Some(ResolvedRulesCommand::DelayedTriggerInstall(command)) => {
+            command.trigger.provenance.origin()
+        }
+        _ => None,
+    }
+}
+
+/// Counts one keyed journal read, and the record it found if any.
+#[cfg(feature = "test-support")]
+fn meter_keyed_read(found: bool) {
+    perf_counters::record_journal_keyed_read();
+    if found {
+        perf_counters::record_journal_record_examined();
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2163,14 +2210,16 @@ impl<'de> Deserialize<'de> for ResolvedRulesJournal {
         D: Deserializer<'de>,
     {
         let wire = ResolvedRulesJournalWire::deserialize(deserializer)?;
-        let journal = Self {
+        let mut journal = Self {
             next_command_ordinal: wire.next_command_ordinal,
             next_settlement_node_ordinal: wire.next_settlement_node_ordinal,
             entries: wire.entries,
             nodes: wire.nodes,
             produced_mana: wire.produced_mana,
             spent_mana: wire.spent_mana,
+            index: JournalIndex::default(),
         };
+        journal.rebuild_index();
         journal
             .validate_serialized_authority()
             .map_err(serde::de::Error::custom)?;
@@ -2202,30 +2251,59 @@ impl ResolvedRulesJournal {
     }
 
     pub fn has_produced_pip(&self, pip: ManaPipId) -> bool {
+        let found = self.index.produced.contains_key(&pip);
         #[cfg(feature = "test-support")]
-        perf_counters::record_journal_keyed_read();
-        self.produced_mana.iter().any(|record| {
-            #[cfg(feature = "test-support")]
-            perf_counters::record_journal_record_examined();
-            record.unit.pip_id == pip
-        })
+        meter_keyed_read(found);
+        found
     }
 
     pub fn latest_mana_producer_for_source(
         &self,
-        source_id: super::identifiers::ObjectId,
+        source_id: ObjectId,
     ) -> Option<RulesExecutionNodeRef> {
+        let producer = self
+            .index
+            .latest_producer
+            .get(&source_id)
+            .map(|&position| self.produced_mana[position].producer);
         #[cfg(feature = "test-support")]
-        perf_counters::record_journal_keyed_read();
-        self.produced_mana
-            .iter()
-            .rev()
-            .find(|record| {
-                #[cfg(feature = "test-support")]
+        meter_keyed_read(producer.is_some());
+        producer
+    }
+
+    pub fn contains_node(&self, node: RulesExecutionNodeRef) -> bool {
+        self.node_index(node).is_ok()
+    }
+
+    /// CR 603.7: the origins of the recorded delayed-trigger installs sharing `token` or
+    /// `instance`, in journal order.
+    pub(crate) fn delayed_install_origins_sharing(
+        &self,
+        token: DelayedTriggerToken,
+        instance: DelayedTriggerInstanceId,
+    ) -> Vec<DelayedTriggerOrigin> {
+        let mut positions: Vec<usize> = self
+            .index
+            .delayed_by_token
+            .get(&token)
+            .into_iter()
+            .chain(self.index.delayed_by_instance.get(&instance))
+            .flatten()
+            .copied()
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        #[cfg(feature = "test-support")]
+        {
+            perf_counters::record_journal_keyed_read();
+            for _ in &positions {
                 perf_counters::record_journal_record_examined();
-                record.unit.source_id == source_id
-            })
-            .map(|record| record.producer)
+            }
+        }
+        positions
+            .into_iter()
+            .filter_map(|position| delayed_install_origin(&self.entries[position]))
+            .collect()
     }
 
     pub fn next_command_ordinal(&self) -> ResolvedCommandOrdinal {
@@ -2248,7 +2326,7 @@ impl ResolvedRulesJournal {
             node: identity,
             command: None,
         });
-        self.nodes.push_back(SettlementNode {
+        self.push_node(SettlementNode {
             ordinal,
             identity,
             kind: RulesExecutionNodeKind::Proposal,
@@ -2284,7 +2362,7 @@ impl ResolvedRulesJournal {
             node: identity,
             command: None,
         });
-        self.nodes.push_back(SettlementNode {
+        self.push_node(SettlementNode {
             ordinal,
             identity,
             kind: RulesExecutionNodeKind::PlayerLeave,
@@ -2336,16 +2414,13 @@ impl ResolvedRulesJournal {
     ) -> Result<(), ResolvedRulesJournalError> {
         Self::require_stamped(unit.pip_id)?;
         let node_index = self.node_index(producer)?;
-        #[cfg(feature = "test-support")]
-        perf_counters::record_journal_keyed_read();
-        if self.produced_mana.iter().any(|record| {
-            #[cfg(feature = "test-support")]
-            perf_counters::record_journal_record_examined();
-            record.unit.pip_id == unit.pip_id
-        }) {
+        if self.has_produced_pip(unit.pip_id) {
             return Err(ResolvedRulesJournalError::DuplicateProducedPip(unit.pip_id));
         }
         self.nodes[node_index].produced_pips.push(unit.pip_id);
+        let position = self.produced_mana.len();
+        self.index.produced.insert(unit.pip_id, position);
+        self.index.latest_producer.insert(unit.source_id, position);
         self.produced_mana
             .push_back(ProducedManaUnit { unit, producer });
         Ok(())
@@ -2379,13 +2454,14 @@ impl ResolvedRulesJournal {
             if !seen.insert(unit.pip_id) || self.spent_pip_exists(unit.pip_id) {
                 return Err(ResolvedRulesJournalError::DuplicateSpentPip(unit.pip_id));
             }
+            let produced = self
+                .index
+                .produced
+                .get(&unit.pip_id)
+                .map(|&position| &self.produced_mana[position]);
             #[cfg(feature = "test-support")]
-            perf_counters::record_journal_keyed_read();
-            let Some(produced) = self.produced_mana.iter().find(|record| {
-                #[cfg(feature = "test-support")]
-                perf_counters::record_journal_record_examined();
-                record.unit.pip_id == unit.pip_id
-            }) else {
+            meter_keyed_read(produced.is_some());
+            let Some(produced) = produced else {
                 return Err(ResolvedRulesJournalError::UnknownProducedPip(unit.pip_id));
             };
             if !dependencies.contains(&produced.producer) {
@@ -2405,6 +2481,11 @@ impl ResolvedRulesJournal {
         let payment_index = self.node_index(payment)?;
         self.nodes[payment_index].depends_on = dependencies;
         self.nodes[payment_index].spent_pips = spent.iter().map(|unit| unit.pip_id).collect();
+        for (offset, unit) in spent.iter().enumerate() {
+            self.index
+                .spent
+                .insert(unit.pip_id, self.spent_mana.len() + offset);
+        }
         self.spent_mana.extend(
             spent
                 .iter()
@@ -2438,16 +2519,15 @@ impl ResolvedRulesJournal {
         let units = spent
             .iter()
             .map(|unit| {
+                let record = self
+                    .index
+                    .spent
+                    .get(&unit.pip_id)
+                    .map(|&position| &self.spent_mana[position])
+                    .filter(|record| record.payment == payment);
                 #[cfg(feature = "test-support")]
-                perf_counters::record_journal_keyed_read();
-                let producer = self
-                    .spent_mana
-                    .iter()
-                    .find(|record| {
-                        #[cfg(feature = "test-support")]
-                        perf_counters::record_journal_record_examined();
-                        record.payment == payment && record.unit.pip_id == unit.pip_id
-                    })
+                meter_keyed_read(record.is_some());
+                let producer = record
                     .expect("recorded spent mana must retain its producer")
                     .producer;
                 ResolvedManaSpentUnit {
@@ -2727,7 +2807,7 @@ impl ResolvedRulesJournal {
             node: identity,
             command: None,
         });
-        self.nodes.push_back(SettlementNode {
+        self.push_node(SettlementNode {
             ordinal,
             identity,
             kind,
@@ -2749,11 +2829,14 @@ impl ResolvedRulesJournal {
         self.ensure_command_capacity()?;
         let node_index = self.node_index(node)?;
         let ordinal = self.allocate_command();
-        self.entries.push_back(ResolvedCommandJournalEntry {
+        let entry = ResolvedCommandJournalEntry {
             ordinal,
             node,
             command: Some(command),
-        });
+        };
+        self.index
+            .record_delayed_install(self.entries.len(), &entry);
+        self.entries.push_back(entry);
         self.nodes[node_index].journal_ordinals.push(ordinal);
         Ok(ordinal)
     }
@@ -2790,16 +2873,10 @@ impl ResolvedRulesJournal {
         &self,
         identity: RulesExecutionNodeRef,
     ) -> Result<usize, ResolvedRulesJournalError> {
+        let position = self.index.nodes.get(&identity).copied();
         #[cfg(feature = "test-support")]
-        perf_counters::record_journal_keyed_read();
-        self.nodes
-            .iter()
-            .position(|node| {
-                #[cfg(feature = "test-support")]
-                perf_counters::record_journal_record_examined();
-                node.identity == identity
-            })
-            .ok_or(ResolvedRulesJournalError::UnknownNode(identity))
+        meter_keyed_read(position.is_some());
+        position.ok_or(ResolvedRulesJournalError::UnknownNode(identity))
     }
 
     fn bundle_owner(
@@ -2811,13 +2888,41 @@ impl ResolvedRulesJournal {
     }
 
     fn spent_pip_exists(&self, pip: ManaPipId) -> bool {
+        let found = self.index.spent.contains_key(&pip);
         #[cfg(feature = "test-support")]
-        perf_counters::record_journal_keyed_read();
-        self.spent_mana.iter().any(|record| {
-            #[cfg(feature = "test-support")]
-            perf_counters::record_journal_record_examined();
-            record.unit.pip_id == pip
-        })
+        meter_keyed_read(found);
+        found
+    }
+
+    fn push_node(&mut self, node: SettlementNode) {
+        self.index
+            .nodes
+            .entry(node.identity)
+            .or_insert(self.nodes.len());
+        self.nodes.push_back(node);
+    }
+
+    /// Rebuilds the lookup index from the vectors. A repeated key keeps its first position, as the
+    /// forward scans it answers for would; `validate_serialized_authority` rejects the repeats a
+    /// valid journal cannot hold.
+    fn rebuild_index(&mut self) {
+        let mut index = JournalIndex::default();
+        for (position, node) in self.nodes.iter().enumerate() {
+            index.nodes.entry(node.identity).or_insert(position);
+        }
+        for (position, record) in self.produced_mana.iter().enumerate() {
+            index.produced.entry(record.unit.pip_id).or_insert(position);
+            index
+                .latest_producer
+                .insert(record.unit.source_id, position);
+        }
+        for (position, record) in self.spent_mana.iter().enumerate() {
+            index.spent.entry(record.unit.pip_id).or_insert(position);
+        }
+        for (position, entry) in self.entries.iter().enumerate() {
+            index.record_delayed_install(position, entry);
+        }
+        self.index = index;
     }
 
     fn require_stamped(pip: ManaPipId) -> Result<(), ResolvedRulesJournalError> {
