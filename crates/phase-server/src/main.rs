@@ -1635,8 +1635,8 @@ async fn reconnect_seat_while_session_locked(
 /// before the mutation begins. Callers release both guards before persistence
 /// and socket I/O. Seat-presence and lobby-listing fan-outs are the exception:
 /// they are sent under the session guard so they stay ordered with the
-/// transition they describe, and they are unbounded channel sends taken at the
-/// last lock tier, so they never wait.
+/// transition they describe, and they take only `lobby` and `lobby_subscribers`,
+/// which the declared order places below it.
 ///
 /// **The sender-map half is not covered by the session guard.** The reaper's
 /// and the lobby-expiry sweep's `prune_game_connections`, the seat-mutate arm's
