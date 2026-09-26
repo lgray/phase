@@ -219,18 +219,35 @@ pub(crate) trait Unshared {
     fn unshared(&self, copy: &Self) -> u64;
 }
 
-// A std map or set copy shares none of its entries.
+// An `im` copy shares every entry while it is `ptr_eq` to its original, and none after a write.
 #[cfg(feature = "test-support")]
-impl<K, V, S> Unshared for std::collections::HashMap<K, V, S> {
-    fn unshared(&self, _copy: &Self) -> u64 {
-        self.len() as u64
+impl<K, V, S> Unshared for im::HashMap<K, V, S>
+where
+    K: std::hash::Hash + Eq + Clone,
+    V: Clone,
+    S: std::hash::BuildHasher,
+{
+    fn unshared(&self, copy: &Self) -> u64 {
+        if self.ptr_eq(copy) {
+            0
+        } else {
+            self.len() as u64
+        }
     }
 }
 
 #[cfg(feature = "test-support")]
-impl<T, S> Unshared for std::collections::HashSet<T, S> {
-    fn unshared(&self, _copy: &Self) -> u64 {
-        self.len() as u64
+impl<T, S> Unshared for im::HashSet<T, S>
+where
+    T: std::hash::Hash + Eq + Clone,
+    S: std::hash::BuildHasher,
+{
+    fn unshared(&self, copy: &Self) -> u64 {
+        if self.ptr_eq(copy) {
+            0
+        } else {
+            self.len() as u64
+        }
     }
 }
 

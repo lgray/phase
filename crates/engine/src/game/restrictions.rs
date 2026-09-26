@@ -430,7 +430,7 @@ pub fn record_battlefield_entry(
     }
 
     let record = battlefield_entry_record_for(obj);
-    state.battlefield_entries_this_turn.push(record);
+    state.battlefield_entries_this_turn.push_back(record);
 }
 
 fn entry_controller_matches(
@@ -3304,7 +3304,7 @@ mod tests {
         let mut state = crate::types::game_state::GameState::new_two_player(42);
         state
             .battlefield_entries_this_turn
-            .push(BattlefieldEntryRecord {
+            .push_back(BattlefieldEntryRecord {
                 object_id: ObjectId(99),
                 name: "Green Creature".to_string(),
                 core_types: vec![CoreType::Creature],
@@ -3373,7 +3373,7 @@ mod tests {
                 for _ in 0..*count {
                     state
                         .battlefield_entries_this_turn
-                        .push(BattlefieldEntryRecord {
+                        .push_back(BattlefieldEntryRecord {
                             object_id: ObjectId(next_id),
                             name: "Bear".to_string(),
                             core_types: vec![CoreType::Creature],

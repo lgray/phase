@@ -3789,10 +3789,10 @@ fn redact_hidden_library_identity_carriers(
             .copied()
             .collect();
         if !hidden.is_empty() {
-            for members in filtered.tracked_object_sets.values_mut() {
+            for (_, members) in filtered.tracked_object_sets.iter_mut() {
                 members.retain(|id| !hidden.contains(id));
             }
-            for causes in filtered.tracked_set_member_causes.values_mut() {
+            for (_, causes) in filtered.tracked_set_member_causes.iter_mut() {
                 causes.retain(|id, _| !hidden.contains(id));
             }
         }

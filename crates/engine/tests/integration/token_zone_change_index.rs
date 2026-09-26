@@ -1471,7 +1471,12 @@ fn declined_copy_replacement_records_the_token_entry_without_parking_it() {
     // The Embalm token entered under its OWN identity, once per ledger. It is a 0/0 Shapeshifter
     // copy of Vizier with no copy target chosen, so CR 704.5f puts it into the graveyard right
     // after — the ENTRY still happened and is still recorded, which is the point.
-    let entry = runner.state().battlefield_entries_this_turn.to_vec();
+    let entry = runner
+        .state()
+        .battlefield_entries_this_turn
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(
         entry.len(),
         1,

@@ -2120,10 +2120,10 @@ impl std::error::Error for ResolvedRulesJournalError {}
 pub struct ResolvedRulesJournal {
     next_command_ordinal: u64,
     next_settlement_node_ordinal: u64,
-    entries: Vec<ResolvedCommandJournalEntry>,
-    nodes: Vec<SettlementNode>,
-    produced_mana: Vec<ProducedManaUnit>,
-    spent_mana: Vec<SpentManaUnit>,
+    entries: im::Vector<ResolvedCommandJournalEntry>,
+    nodes: im::Vector<SettlementNode>,
+    produced_mana: im::Vector<ProducedManaUnit>,
+    spent_mana: im::Vector<SpentManaUnit>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2131,13 +2131,13 @@ struct ResolvedRulesJournalWire {
     next_command_ordinal: u64,
     next_settlement_node_ordinal: u64,
     #[serde(default)]
-    entries: Vec<ResolvedCommandJournalEntry>,
+    entries: im::Vector<ResolvedCommandJournalEntry>,
     #[serde(default)]
-    nodes: Vec<SettlementNode>,
+    nodes: im::Vector<SettlementNode>,
     #[serde(default)]
-    produced_mana: Vec<ProducedManaUnit>,
+    produced_mana: im::Vector<ProducedManaUnit>,
     #[serde(default)]
-    spent_mana: Vec<SpentManaUnit>,
+    spent_mana: im::Vector<SpentManaUnit>,
 }
 
 impl Serialize for ResolvedRulesJournal {
@@ -2179,20 +2179,26 @@ impl<'de> Deserialize<'de> for ResolvedRulesJournal {
 }
 
 impl ResolvedRulesJournal {
-    pub fn entries(&self) -> &[ResolvedCommandJournalEntry] {
+    pub fn entries(&self) -> &im::Vector<ResolvedCommandJournalEntry> {
         &self.entries
     }
 
-    pub fn nodes(&self) -> &[SettlementNode] {
+    pub fn nodes(&self) -> &im::Vector<SettlementNode> {
         &self.nodes
     }
 
-    pub fn produced_mana(&self) -> &[ProducedManaUnit] {
+    pub fn produced_mana(&self) -> &im::Vector<ProducedManaUnit> {
         &self.produced_mana
     }
 
-    pub fn spent_mana(&self) -> &[SpentManaUnit] {
+    pub fn spent_mana(&self) -> &im::Vector<SpentManaUnit> {
         &self.spent_mana
+    }
+
+    /// The entries from `start` on; empty when `start` is past the end, as it is once a turn
+    /// boundary has truncated the journal under a caller's earlier length.
+    pub fn entries_since(&self, start: usize) -> im::Vector<ResolvedCommandJournalEntry> {
+        self.entries.skip(start.min(self.entries.len()))
     }
 
     pub fn has_produced_pip(&self, pip: ManaPipId) -> bool {
@@ -2237,12 +2243,12 @@ impl ResolvedRulesJournal {
         let command = self.allocate_command();
         let ordinal = self.allocate_node();
         let identity = RulesExecutionNodeRef::Proposal(command);
-        self.entries.push(ResolvedCommandJournalEntry {
+        self.entries.push_back(ResolvedCommandJournalEntry {
             ordinal: command,
             node: identity,
             command: None,
         });
-        self.nodes.push(SettlementNode {
+        self.nodes.push_back(SettlementNode {
             ordinal,
             identity,
             kind: RulesExecutionNodeKind::Proposal,
@@ -2273,12 +2279,12 @@ impl ResolvedRulesJournal {
         let command = self.allocate_command();
         let ordinal = self.allocate_node();
         let identity = RulesExecutionNodeRef::PlayerLeave(command);
-        self.entries.push(ResolvedCommandJournalEntry {
+        self.entries.push_back(ResolvedCommandJournalEntry {
             ordinal: command,
             node: identity,
             command: None,
         });
-        self.nodes.push(SettlementNode {
+        self.nodes.push_back(SettlementNode {
             ordinal,
             identity,
             kind: RulesExecutionNodeKind::PlayerLeave,
@@ -2340,7 +2346,8 @@ impl ResolvedRulesJournal {
             return Err(ResolvedRulesJournalError::DuplicateProducedPip(unit.pip_id));
         }
         self.nodes[node_index].produced_pips.push(unit.pip_id);
-        self.produced_mana.push(ProducedManaUnit { unit, producer });
+        self.produced_mana
+            .push_back(ProducedManaUnit { unit, producer });
         Ok(())
     }
 
@@ -2715,12 +2722,12 @@ impl ResolvedRulesJournal {
         let command = self.allocate_command();
         let ordinal = self.allocate_node();
         let identity = identity_for(ordinal);
-        self.entries.push(ResolvedCommandJournalEntry {
+        self.entries.push_back(ResolvedCommandJournalEntry {
             ordinal: command,
             node: identity,
             command: None,
         });
-        self.nodes.push(SettlementNode {
+        self.nodes.push_back(SettlementNode {
             ordinal,
             identity,
             kind,
@@ -2742,7 +2749,7 @@ impl ResolvedRulesJournal {
         self.ensure_command_capacity()?;
         let node_index = self.node_index(node)?;
         let ordinal = self.allocate_command();
-        self.entries.push(ResolvedCommandJournalEntry {
+        self.entries.push_back(ResolvedCommandJournalEntry {
             ordinal,
             node,
             command: Some(command),
@@ -3886,7 +3893,7 @@ mod tests {
         let mut duplicate_spend = journal.clone();
         let mut duplicate_entry = duplicate_spend.entries[3].clone();
         duplicate_entry.ordinal = ResolvedCommandOrdinal(4);
-        duplicate_spend.entries.push(duplicate_entry);
+        duplicate_spend.entries.push_back(duplicate_entry);
         duplicate_spend.nodes[1]
             .journal_ordinals
             .push(ResolvedCommandOrdinal(4));

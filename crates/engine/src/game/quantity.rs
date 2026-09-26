@@ -22462,7 +22462,9 @@ mod tests {
         causes.insert(sacrificed, ThisWayCause::Sacrificed);
         causes.insert(milled, ThisWayCause::Milled);
         causes.insert(sacrificed_to_exile, ThisWayCause::Sacrificed);
-        state.tracked_set_member_causes.insert(set_id, causes);
+        state
+            .tracked_set_member_causes
+            .insert(set_id, causes.into_iter().collect());
 
         let creature_filter = Box::new(TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)));
         let count_for = |caused_by| {
@@ -22736,7 +22738,9 @@ mod tests {
         causes.insert(disc_creature_a, ThisWayCause::Discarded);
         causes.insert(disc_creature_b, ThisWayCause::Discarded);
         causes.insert(disc_instant, ThisWayCause::Discarded);
-        state.tracked_set_member_causes.insert(set_id, causes);
+        state
+            .tracked_set_member_causes
+            .insert(set_id, causes.into_iter().collect());
 
         let count_for = |caused_by| {
             let expr = QuantityExpr::Ref {
@@ -22811,7 +22815,9 @@ mod tests {
         let mut causes = HashMap::new();
         causes.insert(cr_a, ThisWayCause::Discarded);
         causes.insert(cr_b, ThisWayCause::Discarded);
-        state.tracked_set_member_causes.insert(set_id, causes);
+        state
+            .tracked_set_member_causes
+            .insert(set_id, causes.into_iter().collect());
 
         let expr = QuantityExpr::Ref {
             qty: QuantityRef::DistinctCardTypes {

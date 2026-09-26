@@ -194,7 +194,7 @@ pub(crate) struct ProductKnowledgeState {
     pub(crate) zone_change_library_knowledge_stamps: Vec<ZoneChangeLibraryKnowledgeStamp>,
 }
 
-/// Serde module for `HashMap<(ObjectId, usize), u32>` — JSON requires string keys,
+/// Serde module for a `(ObjectId, usize) -> u32` map — JSON requires string keys,
 /// so we serialize the tuple as `"objectId_index"` (e.g. `"42_0"`).
 mod tuple_key_map {
     use super::*;
@@ -203,14 +203,12 @@ mod tuple_key_map {
     use serde::{Deserializer, Serializer};
     use std::fmt;
 
-    pub fn serialize<S, H>(
-        map: &HashMap<(ObjectId, usize), u32, H>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<'a, M, S>(map: &'a M, serializer: S) -> Result<S::Ok, S::Error>
     where
+        &'a M: IntoIterator<Item = (&'a (ObjectId, usize), &'a u32)>,
         S: Serializer,
     {
-        let mut entries: Vec<_> = map.iter().collect();
+        let mut entries: Vec<_> = map.into_iter().collect();
         entries.sort_unstable_by_key(|(key, _)| *key);
 
         let mut ser_map = serializer.serialize_map(Some(entries.len()))?;
@@ -220,14 +218,15 @@ mod tuple_key_map {
         ser_map.end()
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<(ObjectId, usize), u32>, D::Error>
+    pub fn deserialize<'de, D, M>(deserializer: D) -> Result<M, D::Error>
     where
         D: Deserializer<'de>,
+        M: Default + Extend<((ObjectId, usize), u32)>,
     {
-        struct TupleKeyVisitor;
+        struct TupleKeyVisitor<T>(std::marker::PhantomData<T>);
 
-        impl<'de> Visitor<'de> for TupleKeyVisitor {
-            type Value = HashMap<(ObjectId, usize), u32>;
+        impl<'de, T: Default + Extend<((ObjectId, usize), u32)>> Visitor<'de> for TupleKeyVisitor<T> {
+            type Value = T;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("a map with \"objectId_index\" string keys")
@@ -237,7 +236,7 @@ mod tuple_key_map {
             where
                 M: MapAccess<'de>,
             {
-                let mut map = HashMap::new();
+                let mut map = T::default();
                 while let Some((key, val)) = access.next_entry::<String, u32>()? {
                     let (oid_str, idx_str) = key
                         .split_once('_')
@@ -247,13 +246,13 @@ mod tuple_key_map {
                         .map(ObjectId)
                         .map_err(de::Error::custom)?;
                     let idx = idx_str.parse::<usize>().map_err(de::Error::custom)?;
-                    map.insert((oid, idx), val);
+                    map.extend([((oid, idx), val)]);
                 }
                 Ok(map)
             }
         }
 
-        deserializer.deserialize_map(TupleKeyVisitor)
+        deserializer.deserialize_map(TupleKeyVisitor(std::marker::PhantomData))
     }
 }
 
@@ -20769,8 +20768,8 @@ declare_game_state! {
     /// CR 608.2c: Object sets a resolving ability publishes for its own later
     /// instructions to name ("those cards", "that creature").
     #[serde(default)]
-    #[serde(serialize_with = "crate::types::deterministic_serde::hash_map")]
-    pub tracked_object_sets: HashMap<TrackedSetId, Vec<ObjectId>>,
+    #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map")]
+    pub tracked_object_sets: im::HashMap<TrackedSetId, Vec<ObjectId>>,
 
     #[serde(default)]
     pub next_tracked_set_id: u64,
@@ -20848,9 +20847,9 @@ declare_game_state! {
     /// resolves is still produced by that instruction. Members are absent only
     /// where the producer names no "<verb>ed this way" action at all, and those
     /// are read by `caused_by: None` references.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    #[serde(serialize_with = "crate::types::deterministic_serde::hash_map_of_hash_map")]
-    pub tracked_set_member_causes: HashMap<TrackedSetId, HashMap<ObjectId, ThisWayCause>>,
+    #[serde(default, skip_serializing_if = "im::HashMap::is_empty")]
+    #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map_of_im_hash_map")]
+    pub tracked_set_member_causes: im::HashMap<TrackedSetId, im::HashMap<ObjectId, ThisWayCause>>,
 
     /// CR 701.24c-e + CR 608.2c: players explicitly designated by a tracked-set
     /// producer even when their subject population is empty. The object ledger
@@ -21315,10 +21314,10 @@ declare_game_state! {
     pub triggers_fired_this_game: HashSet<TriggerDefinitionRef>,
     #[serde(
         default,
-        skip_serializing_if = "HashMap::is_empty",
+        skip_serializing_if = "im::HashMap::is_empty",
         with = "tuple_key_map"
     )]
-    pub activated_abilities_this_turn: HashMap<(ObjectId, usize), u32>,
+    pub activated_abilities_this_turn: im::HashMap<(ObjectId, usize), u32>,
     #[serde(
         default,
         skip_serializing_if = "HashMap::is_empty",
@@ -21426,10 +21425,10 @@ declare_game_state! {
     /// Cleared in `start_next_turn` alongside other per-turn counters.
     #[serde(
         default,
-        skip_serializing_if = "HashMap::is_empty",
+        skip_serializing_if = "im::HashMap::is_empty",
         with = "tuple_key_map"
     )]
-    pub ability_resolutions_this_turn: HashMap<(ObjectId, usize), u32>,
+    pub ability_resolutions_this_turn: im::HashMap<(ObjectId, usize), u32>,
     /// CR 601.2a: Tracks which graveyard-cast permission sources have been
     /// used this turn. Keyed by the granting permanent's ObjectId.
     /// CR 400.7: Zone change creates new ObjectId, naturally resetting.
@@ -21682,8 +21681,8 @@ declare_game_state! {
     /// characteristics for filtered "tokens you created this turn" quantities.
     #[serde(default, skip_serializing_if = "im::Vector::is_empty")]
     pub created_tokens_this_turn: im::Vector<ZoneChangeRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub counter_added_this_turn: Vec<CounterAddedRecord>,
+    #[serde(default, skip_serializing_if = "im::Vector::is_empty")]
+    pub counter_added_this_turn: im::Vector<CounterAddedRecord>,
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
     pub players_who_discarded_card_this_turn: HashSet<PlayerId>,
@@ -21706,12 +21705,12 @@ declare_game_state! {
     /// `process_triggers` pass over the same `ZoneChanged` events from
     /// stacking duplicate batched triggers (issue #3866) without suppressing a
     /// later distinct leave by the same object in the same turn.
-    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
-    pub batched_zone_change_trigger_fired: HashSet<(TriggerDefinitionRef, u32, usize)>,
+    #[serde(default, skip_serializing_if = "im::HashSet::is_empty")]
+    #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_set")]
+    pub batched_zone_change_trigger_fired: im::HashSet<(TriggerDefinitionRef, u32, usize)>,
     /// CR 403.3: Battlefield entry snapshots this turn, enabling data-driven ETB queries.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub battlefield_entries_this_turn: Vec<BattlefieldEntryRecord>,
+    #[serde(default, skip_serializing_if = "im::Vector::is_empty")]
+    pub battlefield_entries_this_turn: im::Vector<BattlefieldEntryRecord>,
     /// CR 120.1: Damage records this turn for "was dealt damage by" condition queries.
     /// Backed by `im::Vector` so `GameState::clone()` structurally shares the
     /// `DamageRecord` snapshots (each holds a `String` + several `Vec`s) instead
@@ -27976,14 +27975,14 @@ impl GameState {
             exile_links: Vec::new(),
             paradigm_primed: Vec::new(),
             delayed_triggers: Vec::new(),
-            tracked_object_sets: HashMap::new(),
+            tracked_object_sets: im::HashMap::new(),
             next_tracked_set_id: 1,
             chain_tracked_set_id: None,
             return_result_frames: BTreeMap::new(),
             active_return_result_occurrence: None,
             next_return_result_occurrence_id: default_next_return_result_occurrence_id(),
             resolving_modal_instruction: None,
-            tracked_set_member_causes: HashMap::new(),
+            tracked_set_member_causes: im::HashMap::new(),
             tracked_set_participants: HashMap::new(),
             commander_cast_count: HashMap::new(),
             commander_cast_owners: HashMap::new(),
@@ -28027,7 +28026,7 @@ impl GameState {
             trigger_fire_counts_this_turn: HashMap::new(),
             triggers_fired_this_turn_per_opponent: HashSet::new(),
             triggers_fired_this_game: HashSet::new(),
-            activated_abilities_this_turn: HashMap::new(),
+            activated_abilities_this_turn: im::HashMap::new(),
             activated_abilities_this_game: HashMap::new(),
             crew_activated_this_turn: HashSet::new(),
             crew_resolved_this_turn: HashSet::new(),
@@ -28037,7 +28036,7 @@ impl GameState {
             object_tap_count_this_turn: std::collections::HashMap::new(),
             object_counter_placement_count_this_turn: std::collections::HashMap::new(),
             pending_attack_trigger_events: Vec::new(),
-            ability_resolutions_this_turn: HashMap::new(),
+            ability_resolutions_this_turn: im::HashMap::new(),
             graveyard_cast_permissions_used: HashSet::new(),
             graveyard_cast_permissions_used_per_type: HashSet::new(),
             pending_permanent_type_slot: None,
@@ -28072,14 +28071,14 @@ impl GameState {
             creatures_blocked_this_turn: HashSet::new(),
             players_who_created_token_this_turn: HashSet::new(),
             created_tokens_this_turn: im::Vector::new(),
-            counter_added_this_turn: Vec::new(),
+            counter_added_this_turn: im::Vector::new(),
             players_who_discarded_card_this_turn: HashSet::new(),
             cards_discarded_this_turn_by_player: HashMap::new(),
             players_who_sacrificed_artifact_this_turn: HashSet::new(),
             sacrificed_permanents_this_turn: im::Vector::new(),
             zone_changes_this_turn: im::Vector::new(),
-            batched_zone_change_trigger_fired: HashSet::new(),
-            battlefield_entries_this_turn: Vec::new(),
+            batched_zone_change_trigger_fired: im::HashSet::new(),
+            battlefield_entries_this_turn: im::Vector::new(),
             damage_dealt_this_turn: im::Vector::new(),
             creatures_exploited_this_turn: im::Vector::new(),
             assassin_or_commander_dealt_combat_damage_this_turn: HashSet::new(),
@@ -33398,9 +33397,9 @@ mod tests {
     }
 
     #[derive(Serialize)]
-    struct TupleKeyFixture<'a> {
+    struct TupleKeyFixture {
         #[serde(serialize_with = "tuple_key_map::serialize")]
-        values: &'a HashMap<(ObjectId, usize), u32, ReverseBuildHasher>,
+        values: HashMap<(ObjectId, usize), u32, ReverseBuildHasher>,
     }
 
     #[derive(Serialize)]
@@ -33721,7 +33720,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&TupleKeyFixture {
-                values: &tuple_values,
+                values: tuple_values,
             })
             .expect("tuple-key fixture should serialize"),
             r#"{"values":{"7_0":10,"7_1":11,"7_2":12}}"#

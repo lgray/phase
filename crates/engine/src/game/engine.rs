@@ -9515,14 +9515,11 @@ fn handle_respond_to_shortcut(
 
 fn remember_public_reveals(state: &mut GameState, events: &[GameEvent], journal_start: usize) {
     // The journal is truncated at turn boundaries, so an action that
-    // auto-advances across a turn leaves `journal_start` past the current end.
-    // Clamp with `get(..)` so a truncated journal yields no this-action
-    // controller reveals rather than panicking on an out-of-bounds slice.
+    // auto-advances across a turn leaves `journal_start` past the current end,
+    // where `entries_since` yields no this-action controller reveals.
     let controller_reveals = state
         .resolved_rules_journal
-        .entries()
-        .get(journal_start..)
-        .unwrap_or(&[])
+        .entries_since(journal_start)
         .iter()
         .filter_map(|entry| entry.command.as_ref())
         .filter_map(|command| match command {
