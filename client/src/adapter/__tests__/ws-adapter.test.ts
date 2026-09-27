@@ -171,8 +171,9 @@ describe("WebSocketAdapter", () => {
     MockWebSocket.last = null;
     adapter = new WebSocketAdapter(
       "wss://localhost:9374/ws",
-      "host",
+      "join",
       { main_deck: [], sideboard: [] },
+      "GAME01",
     );
     const initPromise = adapter.initialize();
     ws = await completeHandshake(adapter);
@@ -1653,13 +1654,28 @@ describe("WebSocketAdapter", () => {
     });
   });
 
+  it("refuses a server host bring-up outside the lobby without opening a socket", async () => {
+    MockWebSocket.last = null;
+    const hostAdapter = new WebSocketAdapter(
+      "ws://localhost:9374/ws",
+      "host",
+      { main_deck: [], sideboard: [] },
+    );
+
+    const outcome = trackRejection(hostAdapter.initialize());
+
+    await expect(outcome()).resolves.toMatchObject({ code: "WS_ERROR", recoverable: false });
+    expect(MockWebSocket.last).toBeNull();
+  });
+
   describe("send() error handling", () => {
     it("rejects initialize when the post-handshake setup frame cannot be sent", async () => {
       MockWebSocket.last = null;
       const setupFailingAdapter = new WebSocketAdapter(
         "ws://localhost:9374/ws",
-        "host",
+        "join",
         { main_deck: [], sideboard: [] },
+        "ABC123",
       );
       const initPromise = setupFailingAdapter.initialize();
       await Promise.resolve();
