@@ -15541,6 +15541,26 @@ mod issue_4548_full_create_tests {
     }
 
     #[tokio::test]
+    async fn an_accepted_abandon_delists_and_retires_a_public_room() {
+        let (url, server, _temp_dir, _app) = spawn_full_mode_server().await;
+        timed(server, async {
+            let mut room = host_room(&url, 2, true, None).await;
+            let host = room.host.as_mut().expect("host socket open");
+            send_test_message(host, &ClientMessage::AbandonGame, false).await;
+            let frames = frames_until_pong(host).await;
+            assert!(frames
+                .iter()
+                .any(|f| matches!(f, ServerMessage::GameAbandoned { .. })));
+            assert_eq!(room.listing().await, ["Removed"]);
+            assert!(!snapshot_lists(&url, &room.code).await);
+            let join = fresh_attempt(&url, &password_join(&room.code, None, None)).await;
+            let expected = format!("Game not found in lobby: {}", room.code);
+            assert_eq!(refusal(join), expected);
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn every_join_entry_is_refused_while_the_host_is_away() {
         let (url, server, _temp_dir, app) = spawn_full_mode_server().await;
         timed(server, async {

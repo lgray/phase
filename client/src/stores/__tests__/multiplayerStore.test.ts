@@ -78,6 +78,7 @@ import {
   saveWsSession,
 } from "../../services/multiplayerSession";
 import { HandshakeError, openPhaseSocket, withReconnect } from "../../services/openPhaseSocket";
+import { NativeEngineSocket } from "../../services/nativeEngineSocket";
 import {
   BrokerRequestError,
   LobbyCapabilityError,
@@ -125,6 +126,25 @@ const socketMocks = vi.hoisted(() => ({
     onerror: (() => void) | null;
     onclose: (() => void) | null;
   } | null,
+}));
+
+const tauriMocks = vi.hoisted(() => ({
+  bridgeListener: null as ((event: unknown) => void) | null,
+  invoke: vi.fn(),
+  isDesktopTauri: vi.fn(() => false),
+}));
+vi.mock("@tauri-apps/api/core", async (importActual) => ({
+  ...(await importActual<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    constructor(callback: (event: unknown) => void) {
+      tauriMocks.bridgeListener = callback;
+    }
+  },
+  invoke: tauriMocks.invoke,
+}));
+vi.mock("../../services/platform", async (importActual) => ({
+  ...(await importActual<typeof import("../../services/platform")>()),
+  isDesktopTauri: tauriMocks.isDesktopTauri,
 }));
 
 vi.mock("../../network/connection", () => ({
@@ -1352,7 +1372,7 @@ describe("multiplayerStore", () => {
     expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(false);
   });
 
-  it("abandons a Full-mode room before closing the host socket on cancel", async () => {
+  it("closes a cancelled host socket after a bounded wait for GameAbandoned", async () => {
     useMultiplayerStore.getState().startHosting(
       hostingSettings(),
       { main_deck: ["Forest"], sideboard: [], commander: [] },
@@ -1371,13 +1391,67 @@ describe("multiplayerStore", () => {
       );
     expect(sentTypes()).toContain("CreateGameWithSettings");
 
-    useMultiplayerStore.getState().cancelHosting();
+    vi.useFakeTimers();
+    try {
+      useMultiplayerStore.getState().cancelHosting();
 
-    const abandonIndex = sentTypes().indexOf("AbandonGame");
-    expect(abandonIndex).toBeGreaterThanOrEqual(0);
-    expect(socketMocks.send.mock.invocationCallOrder[abandonIndex]).toBeLessThan(
-      ws.close.mock.invocationCallOrder[0],
-    );
+      expect(sentTypes()).toContain("AbandonGame");
+      expect(ws.close).not.toHaveBeenCalled();
+      vi.runOnlyPendingTimers();
+      expect(ws.close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a cancelled LAN host bridge open until the server confirms the abandon", async () => {
+    const log: string[] = [];
+    let deliverAbandon: (() => void) | null = null;
+    const bridgeMessage = (type: string, data: unknown) =>
+      tauriMocks.bridgeListener!({ type: "message", text: JSON.stringify({ type, data }) });
+    tauriMocks.isDesktopTauri.mockReturnValue(true);
+    tauriMocks.invoke.mockImplementation(async (command: string, args: { text?: string }) => {
+      const frame = args.text ? `:${(JSON.parse(args.text) as { type: string }).type}` : "";
+      log.push(`${command}${frame}`);
+      if (command === "connect_lan_server") return 7;
+      if (frame === ":AbandonGame") {
+        deliverAbandon = () => {
+          log.push("delivered");
+          bridgeMessage("GameAbandoned", { game_code: "ABCDE" });
+        };
+      }
+      return undefined;
+    });
+    vi.mocked(openPhaseSocket).mockImplementationOnce(async (url) => {
+      const ws = new NativeEngineSocket({ type: "lan", url, origin: "https://phase-rs.dev" });
+      await waitFor(() => expect(ws.readyState).toBe(NativeEngineSocket.OPEN));
+      return { serverInfo: { mode: "Full", protocolVersion: 14 }, ws } as unknown as Awaited<
+        ReturnType<typeof openPhaseSocket>
+      >;
+    });
+    try {
+      useMultiplayerStore.getState().startHosting(
+        hostingSettings(),
+        { main_deck: ["Forest"], sideboard: [], commander: [] },
+        "ws://192.168.1.10:9374/ws",
+      );
+      await waitFor(() => expect(log).toContain("lan_bridge_send:CreateGameWithSettings"));
+      bridgeMessage("GameCreated", {
+        game_code: "ABCDE",
+        player_token: "host-token",
+        full_key: { game_code: "ABCDE", generation: 1 },
+      });
+      useMultiplayerStore.getState().cancelHosting();
+      expect(useMultiplayerStore.getState().hostingStatus).toBe("idle");
+      await waitFor(() => expect(deliverAbandon).not.toBeNull());
+      expect(log).not.toContain("lan_bridge_close");
+      deliverAbandon!();
+      await waitFor(() => expect(log).toContain("lan_bridge_close"));
+      expect(log.indexOf("delivered")).toBeLessThan(log.indexOf("lan_bridge_close"));
+    } finally {
+      tauriMocks.isDesktopTauri.mockReturnValue(false);
+      tauriMocks.invoke.mockReset();
+    }
   });
 
   it("drops a host socket that finishes connecting after cancel", async () => {

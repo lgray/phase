@@ -1905,6 +1905,23 @@ function closeHostWebSocket(): void {
   }
 }
 
+const ABANDON_CLOSE_TIMEOUT_MS = 5_000;
+
+// Closing a LAN bridge drops frames it has not yet written, so wait for the server's reply.
+function abandonThenClose(ws: PhaseSocketTransport): void {
+  const close = () => {
+    clearTimeout(timer);
+    ws.close();
+  };
+  const timer = setTimeout(close, ABANDON_CLOSE_TIMEOUT_MS);
+  ws.onerror = null;
+  ws.onclose = null;
+  ws.onmessage = (event) => {
+    if ((JSON.parse(event.data) as { type: string }).type === "GameAbandoned") close();
+  };
+  ws.send(JSON.stringify({ type: "AbandonGame" }));
+}
+
 function activeServerHostingSocket(get: () => MultiplayerState): PhaseSocketTransport | null {
   if (hostWs) {
     if (hostWs.readyState !== WebSocket.OPEN) {
@@ -3194,7 +3211,8 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         p2pHostingAttempt += 1;
         // A closed host socket leaves the room alive for the reconnect grace.
         if (hostWs?.readyState === WebSocket.OPEN) {
-          hostWs.send(JSON.stringify({ type: "AbandonGame" }));
+          abandonThenClose(hostWs);
+          hostWs = null;
         }
         closeHostWebSocket();
         disposeActiveP2PHost();
