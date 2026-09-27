@@ -553,7 +553,8 @@ fn build_game_started_messages(
         .map(PlayerId)
         .filter(|player| !session.ai_seats.contains(player))
         .map(|player| {
-            // A joiner learns its seat token only here; a host already has its own.
+            // A joiner whose seat starts the game learns its seat token only here; every
+            // other seat already holds its own.
             let token = joiner
                 .filter(|(seat, _)| *seat == player)
                 .map(|(_, token)| token.to_string());
@@ -8205,8 +8206,8 @@ async fn join_game_with_password_full(
     .await;
 }
 
-/// Seats a guest under the held session guard and starts the game when the
-/// join fills it; shared by every guest join so none seats without the start.
+/// Seats a guest under the held session guard and starts an auto-start room the join
+/// fills; the one seat path for every guest join.
 #[allow(clippy::too_many_arguments)]
 async fn seat_guest_and_start(
     socket: &mut NegotiatedSocket,
@@ -8263,7 +8264,7 @@ async fn seat_guest_and_start(
             Ok((mut session, player_token, filtered_state)) => {
                 session.set_card_names(db.card_names());
                 let joiner = session.player_for_token(&player_token).unwrap();
-                info!(game = %game_code, player = ?joiner, "player joined via lobby");
+                info!(game = %game_code, player = ?joiner, "player joined");
 
                 if let Some(token) = reservation_token.as_deref() {
                     identity
@@ -8492,7 +8493,7 @@ async fn seat_guest_and_start(
             .await;
         }
         Err(e) => {
-            error!(game = %game_code, error = %e, "JoinGameWithPassword failed");
+            error!(game = %game_code, error = %e, "guest join failed");
             let msg = ServerMessage::error(e);
             if let Ok(json) = serde_json::to_string(&msg) {
                 let _ = socket.send(Message::text(json)).await;
