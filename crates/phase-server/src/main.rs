@@ -6,7 +6,7 @@ mod metrics;
 mod persistence;
 mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -56,7 +56,8 @@ use server_core::client_message_wire_guard::{
 };
 use server_core::draft_action_payload_guard::guard_draft_action_payload;
 use server_core::draft_session::{
-    draft_seats_needing_auto_pick, DraftMatchPlayer, DraftMatchSpawn, DraftSessionManager,
+    draft_seats_needing_auto_pick, DraftMatchPlayer, DraftMatchSpawn, DraftSession,
+    DraftSessionManager, DRAFT_HOST_SEAT,
 };
 use server_core::draft_wire_guard::{
     guard_chaos_layout_for_kind, guard_create_draft_with_settings, guard_draft_action,
@@ -211,7 +212,8 @@ fn restore_persisted_draft_session(
     row_draft_code: &str,
     persisted: server_core::persist::PersistedDraftSession,
     drafts: &mut DraftSessionManager,
-) -> Result<(Option<RegisterGameRequest>, Option<u32>), String> {
+    lob: &mut lobby_broker::lobby::LobbyManager,
+) -> Result<draft_core::types::DraftStatus, String> {
     if persisted.draft_code != row_draft_code {
         return Err("persisted draft code does not match its database row".to_string());
     }
@@ -220,11 +222,65 @@ fn restore_persisted_draft_session(
         .sessions
         .get(row_draft_code)
         .ok_or_else(|| "admitted persisted draft session is missing".to_string())?;
-    let restored_snapshot = restored.to_persisted();
-    Ok((
-        server_core::persist::restored_draft_lobby_register_request(&restored_snapshot),
-        restored.timer_remaining_ms,
-    ))
+    if let Some(request) =
+        server_core::persist::restored_draft_lobby_register_request(&restored.to_persisted())
+    {
+        lob.register_game(row_draft_code, request, &SysEnv);
+        lob.mark_host_away(row_draft_code);
+    }
+    Ok(restored.session.status)
+}
+
+/// Restores every persisted draft row, deleting the ones that cannot be
+/// admitted, and re-arms the pick timer of each pod restored mid-draft.
+/// Returns the number restored.
+async fn restore_persisted_drafts(
+    game_db: &SharedGameDb,
+    draft_state: &SharedDraftState,
+    lobby: &SharedLobby,
+    connections: &SharedConnections,
+    pick_seconds: u32,
+) -> u32 {
+    let persisted_drafts = match game_db.load_all_drafts() {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!(error = %e, "failed to load persisted draft sessions");
+            return 0;
+        }
+    };
+    let mut dsm = draft_state.lock().await;
+    let mut lob_guard = lobby.lock().await;
+    let lob = lob_guard.lobby_mut();
+    let mut restored_drafts = 0u32;
+    for (draft_code, json) in &persisted_drafts {
+        match serde_json::from_str::<server_core::persist::PersistedDraftSession>(json) {
+            Ok(ps) => match restore_persisted_draft_session(draft_code, ps, &mut dsm, lob) {
+                Ok(status) => {
+                    if status == draft_core::types::DraftStatus::Drafting {
+                        spawn_pick_timer(
+                            draft_state.clone(),
+                            connections.clone(),
+                            draft_code.clone(),
+                            pick_seconds,
+                        );
+                    }
+                    restored_drafts += 1;
+                }
+                Err(error) => {
+                    warn!(draft = %draft_code, error = %error, "invalid persisted draft session, deleting");
+                    let _ = game_db.delete_draft_session(draft_code);
+                }
+            },
+            Err(e) => {
+                warn!(draft = %draft_code, error = %e, "failed to restore draft session, deleting");
+                let _ = game_db.delete_draft_session(draft_code);
+            }
+        }
+    }
+    if restored_drafts > 0 {
+        info!(count = restored_drafts, "restored draft sessions from disk");
+    }
+    restored_drafts
 }
 
 /// The startup restore owner keeps a session private until this handoff has
@@ -1603,6 +1659,23 @@ async fn join_game_seat(
     Ok((session, player_token, filtered))
 }
 
+/// The lobby row's build gate for a guest joining a game room or a draft pod.
+fn build_admission(
+    lob: &lobby_broker::lobby::LobbyManager,
+    code: &str,
+    guest_commit: &str,
+) -> Result<(), String> {
+    let host_commit = lob.host_build_commit(code).unwrap_or("");
+    if let BuildCommitCheck::Reject { host, guest } = check_build_commit(host_commit, guest_commit)
+    {
+        warn!(game = %code, %host, %guest, "build mismatch — refusing join");
+        return Err(format!(
+            "Build mismatch: host is on {host}, you are on {guest}. Refresh to update."
+        ));
+    }
+    Ok(())
+}
+
 /// The lobby row's build and password gates for a guest, as the frame that
 /// refuses it.
 fn lobby_admission(
@@ -1611,14 +1684,8 @@ fn lobby_admission(
     guest_commit: &str,
     password: Option<&str>,
 ) -> Result<(), Box<ServerMessage>> {
-    let host_commit = lob.host_build_commit(game_code).unwrap_or("");
-    if let BuildCommitCheck::Reject { host, guest } = check_build_commit(host_commit, guest_commit)
-    {
-        warn!(game = %game_code, %host, %guest, "build mismatch — refusing join");
-        return Err(Box::new(ServerMessage::error(format!(
-            "Build mismatch: host is on {host}, you are on {guest}. Refresh to update."
-        ))));
-    }
+    build_admission(lob, game_code, guest_commit)
+        .map_err(|refusal| Box::new(ServerMessage::error(refusal)))?;
     match lob.verify_password(game_code, password) {
         Ok(()) => Ok(()),
         Err(e) if e == "password_required" => {
@@ -2074,9 +2141,12 @@ async fn install_draft_sender_while_state_locked(
 /// identity. The session operation and map replacement share draft-state ->
 /// connections lock ordering, preventing a fan-out from observing a renewed
 /// seat paired with its former socket.
+#[allow(clippy::too_many_arguments)]
 async fn reconnect_draft_seat(
     draft_state: &SharedDraftState,
     connections: &SharedConnections,
+    lobby: &SharedLobby,
+    lobby_subscribers: &SharedLobbySubscribers,
     identity: &mut SocketIdentity,
     draft_code: String,
     player_token: String,
@@ -2099,6 +2169,17 @@ async fn reconnect_draft_seat(
         .ok_or_else(|| "Invalid player token".to_string())?;
     let view = manager.handle_reconnect(&draft_code, &player_token)?;
     install_draft_sender_while_state_locked(connections, &draft_code, seat, tx).await;
+    if seat == DRAFT_HOST_SEAT {
+        let (host_version, host_build_commit) = identity
+            .client_hello
+            .as_ref()
+            .map(|h| (h.client_version.clone(), h.build_commit.clone()))
+            .unwrap_or_default();
+        transition_listing(lobby, lobby_subscribers, &draft_code, |lob| {
+            lob.mark_host_returned(&draft_code, host_version, host_build_commit)
+        })
+        .await;
+    }
     drop(manager);
 
     identity.draft_code = Some(draft_code);
@@ -2280,6 +2361,8 @@ async fn attach_current_draft_match(
 async fn disconnect_draft_seat_if_current(
     draft_state: &SharedDraftState,
     connections: &SharedConnections,
+    lobby: &SharedLobby,
+    lobby_subscribers: &SharedLobbySubscribers,
     identity: &SocketIdentity,
     tx: &mpsc::UnboundedSender<ServerMessage>,
 ) {
@@ -2310,7 +2393,18 @@ async fn disconnect_draft_seat_if_current(
     }
 
     players.remove(&player_id);
+    drop(conns);
     manager.handle_disconnect(draft_code, seat);
+    // Not status-gated: the registry holds a draft code only while its pod is in
+    // `Lobby`, apart from the gap between `StartDraft`'s status change and its
+    // unregister, where a seat-0 transition can emit one extra listing delta that
+    // the status refusal makes harmless.
+    if seat == DRAFT_HOST_SEAT {
+        transition_listing(lobby, lobby_subscribers, draft_code, |lob| {
+            lob.mark_host_away(draft_code)
+        })
+        .await;
+    }
 }
 
 /// `thread_stack_size` governs Tokio's worker and blocking threads, but
@@ -2637,43 +2731,14 @@ async fn serve() {
             }
         }
 
-        // Restore persisted draft sessions from disk
-        match game_db.load_all_drafts() {
-            Ok(persisted_drafts) => {
-                let mut dsm = draft_sessions.lock().await;
-                let mut lob_guard = lobby.lock().await;
-                let lob = lob_guard.lobby_mut();
-                let mut restored_drafts = 0u32;
-                for (draft_code, json) in &persisted_drafts {
-                    match serde_json::from_str::<server_core::persist::PersistedDraftSession>(json)
-                    {
-                        Ok(ps) => match restore_persisted_draft_session(draft_code, ps, &mut dsm) {
-                            Ok((register_req, timer_ms)) => {
-                                if let Some(req) = register_req {
-                                    lob.register_game(draft_code, req, &SysEnv);
-                                }
-                                if let Some(ms) = timer_ms {
-                                    info!(draft = %draft_code, remaining_ms = ms, "draft session has pending timer");
-                                }
-                                restored_drafts += 1;
-                            }
-                            Err(error) => {
-                                warn!(draft = %draft_code, error = %error, "invalid persisted draft session, deleting");
-                                let _ = game_db.delete_draft_session(draft_code);
-                            }
-                        },
-                        Err(e) => {
-                            warn!(draft = %draft_code, error = %e, "failed to restore draft session, deleting");
-                            let _ = game_db.delete_draft_session(draft_code);
-                        }
-                    }
-                }
-                if restored_drafts > 0 {
-                    info!(count = restored_drafts, "restored draft sessions from disk");
-                }
-            }
-            Err(e) => error!(error = %e, "failed to load persisted draft sessions"),
-        }
+        restore_persisted_drafts(
+            &game_db,
+            &draft_sessions,
+            &lobby,
+            &connections,
+            DRAFT_PICK_TIMER_SECONDS,
+        )
+        .await;
     }
 
     // Spawn background task for grace period and lobby expiry
@@ -2764,8 +2829,9 @@ async fn serve() {
                 // critical section, and the session the retire needs is read
                 // from that guard before it is dropped. A contended game is
                 // skipped, not waited on.
+                let live_drafts = live_draft_codes(&bg_draft_state, &expired_lobby).await;
                 let mut mgr = bg_state.lock().await;
-                handle_expired_lobby_games(&mut mgr, &bg_game_db, &expired_lobby)
+                handle_expired_lobby_games(&mut mgr, &bg_game_db, &expired_lobby, &live_drafts)
             };
             // Every tick, not only the ticks a lobby entry lapsed: the
             // tournament half of this sweep runs on its own lifecycle clocks
@@ -2833,61 +2899,17 @@ async fn serve() {
             // Before the draft sweep: `draft_sessions` is ordered before `lobby`.
             drop(broker);
 
-            // Check draft disconnect grace period expiry — auto-pick for disconnected seats
-            let draft_expired = {
-                let mut mgr = bg_draft_state.lock().await;
-                mgr.reconnect.check_expired_with_players()
-            };
-            if !draft_expired.is_empty() {
-                let mut mgr = bg_draft_state.lock().await;
-                for (draft_code, player_id) in &draft_expired {
-                    let seat = player_id.0;
-                    if let Some(session) = mgr.sessions.get(draft_code.as_str()) {
-                        if session.session.status == draft_core::types::DraftStatus::Drafting
-                            && !session.connected[seat as usize]
-                        {
-                            match mgr.pick_random_for_seat(draft_code, seat, None) {
-                                Ok(()) => {
-                                    info!(
-                                        draft = %draft_code,
-                                        seat,
-                                        "auto-picked for disconnected seat (grace expired)"
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        draft = %draft_code,
-                                        seat,
-                                        error = %e,
-                                        "auto-pick on grace expiry failed"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                // Broadcast updated views + persist for any modified drafts
-                let affected_drafts: Vec<String> = draft_expired
-                    .iter()
-                    .map(|(code, _)| code.clone())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                drop(mgr);
-                for draft_code in &affected_drafts {
-                    // Broadcast to players
-                    broadcast_draft_views(draft_code, &bg_connections, &bg_draft_state).await;
-                    // Broadcast to spectators
-                    broadcast_draft_spectator_views(
-                        draft_code,
-                        &bg_draft_state,
-                        &bg_draft_spectators,
-                    )
-                    .await;
-                    // Persist
-                    persist_draft_session_async(&bg_game_db, draft_code, &bg_draft_state).await;
-                }
-            }
+            sweep_draft_seat_expiry(
+                &bg_draft_state,
+                &bg_state,
+                &bg_connections,
+                &bg_draft_spectators,
+                &bg_game_spectators,
+                &bg_lobby,
+                &bg_lobby_subs,
+                &bg_game_db,
+            )
+            .await;
         }
     });
 
@@ -3743,6 +3765,7 @@ mod restored_draft_startup_tests {
         DeckAddableCards, DraftConfig, DraftKind, DraftSource, PodPolicy, SpectatorVisibility,
         TournamentFormat,
     };
+    use lobby_broker::lobby::LobbyManager;
     use server_core::draft_session::DraftSessionManager;
     use server_core::persist::{PersistedDraftSession, PersistedLobbyMeta};
 
@@ -3778,19 +3801,27 @@ mod restored_draft_startup_tests {
     fn persisted_draft_row_key_must_match_before_admission_or_lobby_registration() {
         let snapshot = uniform_lobby_snapshot();
         let mut restored = DraftSessionManager::new();
+        let mut lob = LobbyManager::new();
 
-        let rejected_registration =
-            match restore_persisted_draft_session("WRONG1", snapshot.clone(), &mut restored) {
-                Ok((registration, _)) => registration,
-                Err(_) => None,
-            };
-        assert!(rejected_registration.is_none());
+        assert!(restore_persisted_draft_session(
+            "WRONG1",
+            snapshot.clone(),
+            &mut restored,
+            &mut lob
+        )
+        .is_err());
+        assert!(!lob.has_game("WRONG1"));
+        assert!(!lob.has_game(&snapshot.draft_code));
         assert!(restored.sessions.is_empty());
 
-        let (registration, _) =
-            restore_persisted_draft_session(&snapshot.draft_code, snapshot.clone(), &mut restored)
-                .expect("a valid Uniform snapshot restores under its own row key");
-        assert!(registration.is_some());
+        restore_persisted_draft_session(
+            &snapshot.draft_code,
+            snapshot.clone(),
+            &mut restored,
+            &mut lob,
+        )
+        .expect("a valid Uniform snapshot restores under its own row key");
+        assert!(lob.has_game(&snapshot.draft_code));
         assert!(restored.sessions.contains_key(&snapshot.draft_code));
     }
 }
@@ -4595,7 +4626,15 @@ async fn handle_socket(
         player = ?identity.player_id,
         "client disconnected"
     );
-    disconnect_draft_seat_if_current(&draft_state, &connections, &identity, &tx).await;
+    disconnect_draft_seat_if_current(
+        &draft_state,
+        &connections,
+        &lobby,
+        &lobby_subscribers,
+        &identity,
+        &tx,
+    )
+    .await;
 
     disconnect_full_seat_if_current(
         &state,
@@ -5591,27 +5630,128 @@ async fn broadcast_draft_spectator_views(
     }
 }
 
+/// Tears down a pod already removed from the draft manager: its match games,
+/// routing, spectators, listing and persisted row. Never acquires
+/// `draft_sessions`.
+#[allow(clippy::too_many_arguments)]
+async fn teardown_removed_draft(
+    state: &SharedState,
+    connections: &SharedConnections,
+    draft_spectators: &SharedDraftSpectators,
+    game_spectators: &SharedGameSpectators,
+    lobby: &SharedLobby,
+    lobby_subscribers: &SharedLobbySubscribers,
+    game_db: &SharedGameDb,
+    code: &str,
+    session: DraftSession,
+) {
+    // Remove active game sessions spawned by this draft (Pitfall 4 mitigation)
+    let match_codes: Vec<String> = session.active_matches.values().cloned().collect();
+    if !match_codes.is_empty() {
+        let mut sessions = state.lock().await;
+        for game_code in &match_codes {
+            sessions.remove_game(game_code);
+        }
+    }
+    // A destroyed subject leaves no orphaned routing behind: the
+    // abandon teardown clears connections, spectators and the lobby
+    // entry, and a force-delete destroys the same kinds of subject.
+    {
+        let mut conns = connections.lock().await;
+        conns.remove(code);
+        for game_code in &match_codes {
+            conns.remove(game_code);
+        }
+    }
+    draft_spectators.lock().await.remove(code);
+    {
+        let mut specs = game_spectators.lock().await;
+        for game_code in &match_codes {
+            specs.remove(game_code);
+        }
+    }
+    delist_and_announce(lobby, lobby_subscribers, std::iter::once(code)).await;
+    // Delete from persistence
+    let _ = game_db.delete_draft_session(code);
+}
+
+/// The draft seat-expiry sweep: acts on every lapsed seat in one draft critical
+/// section, updates freed pods' listed counts under it, then tears down reaped
+/// pods and fans out and persists the pods it changed.
+#[allow(clippy::too_many_arguments)]
+async fn sweep_draft_seat_expiry(
+    draft_state: &SharedDraftState,
+    state: &SharedState,
+    connections: &SharedConnections,
+    draft_spectators: &SharedDraftSpectators,
+    game_spectators: &SharedGameSpectators,
+    lobby: &SharedLobby,
+    lobby_subscribers: &SharedLobbySubscribers,
+    game_db: &SharedGameDb,
+) {
+    let sweep = {
+        let mut manager = draft_state.lock().await;
+        let sweep = manager.sweep_expired_seats();
+        for code in &sweep.freed {
+            let claimed = manager.sessions.get(code).map_or(0, |session| {
+                session
+                    .player_tokens
+                    .iter()
+                    .filter(|t| !t.is_empty())
+                    .count()
+            });
+            transition_listing(lobby, lobby_subscribers, code, |lob| {
+                lob.set_current_players(code, claimed as u32, &SysEnv)
+            })
+            .await;
+        }
+        sweep
+    };
+    for (code, session) in sweep.reaped {
+        teardown_removed_draft(
+            state,
+            connections,
+            draft_spectators,
+            game_spectators,
+            lobby,
+            lobby_subscribers,
+            game_db,
+            &code,
+            session,
+        )
+        .await;
+    }
+    for draft_code in &sweep.affected {
+        broadcast_draft_views(draft_code, connections, draft_state).await;
+        broadcast_draft_spectator_views(draft_code, draft_state, draft_spectators).await;
+        persist_draft_session_async(game_db, draft_code, draft_state).await;
+    }
+}
+
 /// Fire-and-forget persistence of a draft session to SQLite.
 async fn persist_draft_session_async(
     game_db: &SharedGameDb,
     draft_code: &str,
     draft_state: &SharedDraftState,
 ) {
-    let mgr = draft_state.lock().await;
-    let Some(session) = mgr.sessions.get(draft_code) else {
-        return;
-    };
-    let snapshot = session.to_persisted();
     let db = game_db.clone();
     let code = draft_code.to_string();
-    tokio::task::spawn_blocking(move || match serde_json::to_string(&snapshot) {
-        Ok(json) => {
-            if let Err(e) = db.save_draft_session(&code, &json) {
-                error!(draft = %code, error = %e, "failed to persist draft session");
+    let draft_state = draft_state.clone();
+    // Snapshot and write under the draft guard: a pod removed first is never written back.
+    tokio::task::spawn_blocking(move || {
+        let mgr = draft_state.blocking_lock();
+        let Some(session) = mgr.sessions.get(&code) else {
+            return;
+        };
+        match serde_json::to_string(&session.to_persisted()) {
+            Ok(json) => {
+                if let Err(e) = db.save_draft_session(&code, &json) {
+                    error!(draft = %code, error = %e, "failed to persist draft session");
+                }
             }
-        }
-        Err(e) => {
-            error!(draft = %code, error = %e, "failed to serialize draft session");
+            Err(e) => {
+                error!(draft = %code, error = %e, "failed to serialize draft session");
+            }
         }
     });
 }
@@ -6068,6 +6208,21 @@ fn reap_expired_disconnects(
     }
 }
 
+/// The lapsed listings whose draft pod is live, read in one draft critical
+/// section taken before the registry.
+async fn live_draft_codes(
+    draft_state: &SharedDraftState,
+    expired: &[LobbyRegistration],
+) -> HashSet<String> {
+    let manager = draft_state.lock().await;
+    expired
+        .iter()
+        .map(LobbyRegistration::game_code)
+        .filter(|code| manager.is_live_lobby_pod(code))
+        .map(str::to_string)
+        .collect()
+}
+
 /// The lobby-expiry sweep's registry critical section: act on the codes
 /// `LobbyManager::check_expired` reported, and return the ones this tick
 /// dispositioned alongside the number left for the next tick. Extracted for the
@@ -6085,8 +6240,8 @@ fn reap_expired_disconnects(
 /// no longer erases what it reports, and a lobby entry skipped for contention is
 /// retried rather than stranded holding an unstarted session that never retires.
 ///
-/// An unstarted room whose host seat is connected, or disconnected but inside
-/// reconnect grace, is kept rather than retired: it goes to
+/// An unstarted room or draft pod whose host seat is connected, or disconnected
+/// but inside reconnect grace, is kept rather than retired: it goes to
 /// [`LobbyExpirySweep::live`], neither acted on nor deferred, and its listing's
 /// liveness clock is refreshed by [`consume_lobby_expiry_sweep`]. Abandonment
 /// of such a room is the reconnect-grace sweep's decision
@@ -6095,6 +6250,7 @@ fn handle_expired_lobby_games(
     mgr: &mut SessionManager,
     game_db: &SharedGameDb,
     expired: &[LobbyRegistration],
+    live_drafts: &HashSet<String>,
 ) -> LobbyExpirySweep {
     let mut handled: Vec<LobbyRegistration> = Vec::new();
     let mut live: Vec<LobbyRegistration> = Vec::new();
@@ -6130,6 +6286,10 @@ fn handle_expired_lobby_games(
             Some(_) => {
                 error!(game = %game_code, "refusing to retire a started session from lobby expiry");
                 false
+            }
+            None if live_drafts.contains(game_code) => {
+                live.push(observation.clone());
+                continue;
             }
             None if mgr.contains_game(game_code) => {
                 deferred += 1;
@@ -6558,6 +6718,9 @@ async fn broadcast_draft_timer_sync(
         }
     }
 }
+
+/// The server-hosted draft's pick window.
+const DRAFT_PICK_TIMER_SECONDS: u32 = 75;
 
 /// Spawn a pick timer task. When the timer expires, auto-pick a random card
 /// for any seat that hasn't picked yet. Aborts the previous timer if one exists.
@@ -11634,9 +11797,19 @@ async fn handle_client_message(
                 return;
             }
 
+            let guest_commit = identity
+                .client_hello
+                .as_ref()
+                .map(|h| h.build_commit.clone())
+                .unwrap_or_default();
             let result = {
                 let mut mgr = draft_state.lock().await;
-                mgr.join_draft(&draft_code, display_name.clone(), password.as_deref())
+                // Deciding under the draft guard orders the check with a returning host's re-stamp.
+                let admitted =
+                    build_admission(lobby.lock().await.lobby(), &draft_code, &guest_commit);
+                admitted.and_then(|()| {
+                    mgr.join_draft(&draft_code, display_name.clone(), password.as_deref())
+                })
             };
 
             match result {
@@ -11843,7 +12016,7 @@ async fn handle_client_message(
                             draft_state.clone(),
                             connections.clone(),
                             draft_code.clone(),
-                            75, // default pick timer seconds
+                            DRAFT_PICK_TIMER_SECONDS,
                         );
                     }
 
@@ -11906,6 +12079,8 @@ async fn handle_client_message(
             let result = reconnect_draft_seat(
                 draft_state,
                 connections,
+                lobby,
+                lobby_subscribers,
                 identity,
                 draft_code.clone(),
                 player_token,
@@ -13544,6 +13719,13 @@ mod draft_socket_authority_tests {
         )
     }
 
+    fn lobby_handles() -> (SharedLobby, SharedLobbySubscribers) {
+        (
+            Arc::new(Mutex::new(Broker::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+    }
+
     fn draft_admission_messages(draft_code: &str) -> [ClientMessage; 2] {
         [
             ClientMessage::CreateDraftWithSettings {
@@ -13939,11 +14121,14 @@ mod draft_socket_authority_tests {
     #[tokio::test]
     async fn attached_draft_socket_cannot_create_or_join_without_replacing_its_seat() {
         let (draft_state, connections, draft_code, player_token) = test_draft();
+        let (lobby, subs) = lobby_handles();
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut identity = empty_identity();
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut identity,
             draft_code.clone(),
             player_token,
@@ -13989,12 +14174,15 @@ mod draft_socket_authority_tests {
     #[tokio::test]
     async fn stale_draft_socket_cannot_create_or_join_another_pod() {
         let (draft_state, connections, draft_code, player_token) = test_draft();
+        let (lobby, subs) = lobby_handles();
         let (stale_tx, _stale_rx) = mpsc::unbounded_channel();
         let (current_tx, _current_rx) = mpsc::unbounded_channel();
         let mut stale_identity = empty_identity();
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut stale_identity,
             draft_code.clone(),
             player_token.clone(),
@@ -14006,6 +14194,8 @@ mod draft_socket_authority_tests {
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut current_identity,
             draft_code.clone(),
             player_token,
@@ -14036,12 +14226,15 @@ mod draft_socket_authority_tests {
     #[tokio::test]
     async fn reconnect_replaces_the_draft_seat_sender_before_identity_is_exposed() {
         let (draft_state, connections, draft_code, player_token) = test_draft();
+        let (lobby, subs) = lobby_handles();
         let (a_tx, mut a_rx) = mpsc::unbounded_channel();
         let (b_tx, mut b_rx) = mpsc::unbounded_channel();
         let mut identity_a = empty_identity();
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut identity_a,
             draft_code.clone(),
             player_token.clone(),
@@ -14053,6 +14246,8 @@ mod draft_socket_authority_tests {
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut identity_b,
             draft_code.clone(),
             player_token.clone(),
@@ -14072,6 +14267,8 @@ mod draft_socket_authority_tests {
         let err = reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut identity_a,
             draft_code.clone(),
             player_token,
@@ -14104,12 +14301,15 @@ mod draft_socket_authority_tests {
     #[tokio::test]
     async fn stale_draft_close_cannot_disconnect_the_replacement_seat() {
         let (draft_state, connections, draft_code, player_token) = test_draft();
+        let (lobby, subs) = lobby_handles();
         let (a_tx, _a_rx) = mpsc::unbounded_channel();
         let (b_tx, _b_rx) = mpsc::unbounded_channel();
         let mut identity_a = empty_identity();
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut identity_a,
             draft_code.clone(),
             player_token.clone(),
@@ -14121,6 +14321,8 @@ mod draft_socket_authority_tests {
         reconnect_draft_seat(
             &draft_state,
             &connections,
+            &lobby,
+            &subs,
             &mut identity_b,
             draft_code.clone(),
             player_token,
@@ -14129,7 +14331,15 @@ mod draft_socket_authority_tests {
         .await
         .unwrap();
 
-        disconnect_draft_seat_if_current(&draft_state, &connections, &identity_a, &a_tx).await;
+        disconnect_draft_seat_if_current(
+            &draft_state,
+            &connections,
+            &lobby,
+            &subs,
+            &identity_a,
+            &a_tx,
+        )
+        .await;
 
         assert!(
             draft_state
@@ -14666,6 +14876,18 @@ mod issue_4548_full_create_tests {
         tempfile::TempDir,
         AppState,
     ) {
+        spawn_server(mode, draft_pools::DraftPools::default()).await
+    }
+
+    async fn spawn_server(
+        mode: ServerMode,
+        pools: draft_pools::DraftPools,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        tempfile::TempDir,
+        AppState,
+    ) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let game_db = Arc::new(
             persistence::GameDb::open(
@@ -14677,7 +14899,7 @@ mod issue_4548_full_create_tests {
         let app_state = AppState {
             sessions: Arc::new(Mutex::new(SessionManager::new())),
             draft_sessions: Arc::new(Mutex::new(DraftSessionManager::new())),
-            draft_pools: Arc::new(draft_pools::DraftPools::default()),
+            draft_pools: Arc::new(pools),
             connections: Arc::new(Mutex::new(HashMap::new())),
             db: Arc::new(CardDatabase::default()),
             lobby: Arc::new(Mutex::new(Broker::new())),
@@ -16574,6 +16796,824 @@ mod issue_4548_full_create_tests {
         .await;
         server.abort();
         assert!(result.is_ok(), "timed out");
+    }
+
+    // ── Draft pods under the listing authority ─────────────────────────────
+
+    /// A one-sheet `TST` pool, so a test server can create and start pods.
+    fn tst_draft_pools() -> draft_pools::DraftPools {
+        use draft_core::set_pool::{
+            LimitedSetPool, PackSlot, PackVariant, Rarity, SheetCard, SheetDefinition,
+            WeightedSheetChoice,
+        };
+        let cards: Vec<SheetCard> = (0..40)
+            .map(|i| SheetCard {
+                name: format!("Card {i}"),
+                set_code: "TST".into(),
+                collector_number: i.to_string(),
+                rarity: Rarity::Common,
+                weight: 1,
+                colors: Vec::new(),
+                cmc: 1,
+                type_line: "Creature".into(),
+                draft_effect: None,
+            })
+            .collect();
+        let pool = LimitedSetPool {
+            code: "TST".into(),
+            name: "Test".into(),
+            release_date: None,
+            pack_variants: vec![PackVariant {
+                contents: vec![PackSlot {
+                    slot: "common".into(),
+                    count: 14,
+                    choices: vec![WeightedSheetChoice {
+                        sheet: "c".into(),
+                        weight: 1,
+                    }],
+                }],
+                weight: 1,
+            }],
+            pack_variants_total_weight: 1,
+            sheets: [(
+                "c".to_string(),
+                SheetDefinition {
+                    cards,
+                    total_weight: 40,
+                    allow_duplicates: true,
+                    fixed: false,
+                    foil: false,
+                    balance_colors: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            prints: Vec::new(),
+            basic_lands: Vec::new(),
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("pools.json");
+        let pools: std::collections::BTreeMap<String, LimitedSetPool> =
+            [("TST".to_string(), pool)].into_iter().collect();
+        std::fs::write(&path, serde_json::to_vec(&pools).expect("pools json")).expect("write");
+        draft_pools::DraftPools::from_path(&path).expect("load pools")
+    }
+
+    async fn spawn_draft_server() -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        tempfile::TempDir,
+        AppState,
+    ) {
+        spawn_server(ServerMode::Full, tst_draft_pools()).await
+    }
+
+    /// A draft pod plus a lobby subscriber that saw it created.
+    struct HostedPod {
+        sub: TestWs,
+        host: Option<TestWs>,
+        code: String,
+        token: String,
+    }
+
+    impl HostedPod {
+        fn reconnect(&self) -> ClientMessage {
+            draft_reconnect(&self.code, &self.token)
+        }
+
+        async fn listing(&mut self) -> Vec<&'static str> {
+            listing_of(&frames_until_pong(&mut self.sub).await, &self.code)
+        }
+
+        async fn drop_host(&mut self, app: &AppState) -> Vec<&'static str> {
+            drop(self.host.take().expect("host socket open"));
+            await_draft_seat_departed(app, &self.code, 0).await;
+            self.listing().await
+        }
+    }
+
+    fn pod_frame(pod_size: u8, public: bool) -> ClientMessage {
+        ClientMessage::CreateDraftWithSettings {
+            display_name: "Host".to_string(),
+            source: None,
+            set_codes: Some(vec!["TST".to_string()]),
+            kind: draft_core::types::DraftKind::Premier,
+            public,
+            password: None,
+            timer_seconds: None,
+            tournament_format: draft_core::types::TournamentFormat::Swiss,
+            pod_policy: draft_core::types::PodPolicy::Competitive,
+            pod_size,
+        }
+    }
+
+    async fn host_pod(url: &str, build: &str, pod_size: u8, public: bool) -> HostedPod {
+        let (sub, _) = subscribe(url).await;
+        let mut host = connect_as(url, build).await;
+        send_test_message(&mut host, &pod_frame(pod_size, public), false).await;
+        let (code, token) = loop {
+            match recv_server_message(&mut host).await {
+                ServerMessage::DraftCreated {
+                    draft_code,
+                    player_token,
+                    ..
+                } => break (draft_code, player_token),
+                ServerMessage::DraftActionRejected { reason } => panic!("create refused: {reason}"),
+                _ => {}
+            }
+        };
+        frames_until_pong(&mut host).await;
+        let mut pod = HostedPod {
+            sub,
+            host: Some(host),
+            code,
+            token,
+        };
+        let expected: &[&str] = if public { &["Added"] } else { &[] };
+        assert_eq!(
+            pod.listing().await,
+            expected,
+            "reach guard: listing at creation"
+        );
+        pod
+    }
+
+    /// Returns once `seat`'s departure has run: the departure holds the draft
+    /// guard until its lobby frames are queued.
+    async fn await_draft_seat_departed(app: &AppState, code: &str, seat: usize) {
+        while app
+            .draft_sessions
+            .lock()
+            .await
+            .sessions
+            .get(code)
+            .is_some_and(|pod| pod.connected[seat])
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    fn draft_join(code: &str) -> ClientMessage {
+        ClientMessage::JoinDraftWithPassword {
+            draft_code: code.to_string(),
+            display_name: "Guest".to_string(),
+            password: None,
+        }
+    }
+
+    fn draft_reconnect(code: &str, token: &str) -> ClientMessage {
+        ClientMessage::ReconnectDraft {
+            draft_code: code.to_string(),
+            player_token: token.to_string(),
+        }
+    }
+
+    /// The reply that settles a draft join or reconnect.
+    async fn send_draft(sock: &mut TestWs, frame: &ClientMessage) -> ServerMessage {
+        send_test_message(sock, frame, false).await;
+        loop {
+            let reply = recv_server_message(sock).await;
+            if matches!(
+                reply,
+                ServerMessage::DraftJoined { .. }
+                    | ServerMessage::DraftActionRejected { .. }
+                    | ServerMessage::DraftStateUpdate { .. }
+                    | ServerMessage::PasswordRequired { .. }
+            ) {
+                return reply;
+            }
+        }
+    }
+
+    async fn fresh_draft(url: &str, build: &str, frame: &ClientMessage) -> ServerMessage {
+        let mut sock = connect_as(url, build).await;
+        send_draft(&mut sock, frame).await
+    }
+
+    fn draft_refusal(reply: ServerMessage) -> String {
+        match reply {
+            ServerMessage::DraftActionRejected { reason } => reason,
+            other => panic!("expected DraftActionRejected, got {other:?}"),
+        }
+    }
+
+    fn joined_token(reply: ServerMessage) -> String {
+        match reply {
+            ServerMessage::DraftJoined { player_token, .. } => player_token,
+            other => panic!("expected DraftJoined, got {other:?}"),
+        }
+    }
+
+    /// Writes `code`'s row now, as a flush would.
+    async fn save_pod_row(app: &AppState, code: &str) {
+        let snapshot = app.draft_sessions.lock().await.sessions[code].to_persisted();
+        app.game_db
+            .save_draft_session(code, &serde_json::to_string(&snapshot).expect("json"))
+            .expect("save row");
+    }
+
+    fn pod_rows(app: &AppState) -> Vec<String> {
+        app.game_db
+            .load_all_drafts()
+            .expect("load rows")
+            .into_iter()
+            .map(|(code, _)| code)
+            .collect()
+    }
+
+    async fn sweep_seats(app: &AppState) {
+        sweep_draft_seat_expiry(
+            &app.draft_sessions,
+            &app.sessions,
+            &app.connections,
+            &app.draft_spectators,
+            &app.game_spectators,
+            &app.lobby,
+            &app.lobby_subscribers,
+            &app.game_db,
+        )
+        .await;
+    }
+
+    /// An 8-seat Premier pod started on fixture packs; returns its code and
+    /// seat tokens.
+    fn start_fixture_pod(drafts: &mut DraftSessionManager) -> (String, Vec<String>) {
+        let (code, _, _) = drafts.create_draft(test_draft_config(), "Host".to_string());
+        for seat in 1..8 {
+            drafts
+                .join_draft(&code, format!("Seat {seat}"), None)
+                .expect("join");
+        }
+        let source = draft_core::pack_source::FixturePackSource {
+            set_code: "TST".to_string(),
+            cards_per_pack: 14,
+        };
+        drafts
+            .apply_system_action(
+                &code,
+                draft_core::types::DraftAction::StartDraft,
+                Some(&source),
+            )
+            .expect("start");
+        let tokens = drafts.sessions[&code].player_tokens.clone();
+        (code, tokens)
+    }
+
+    /// A tick past every listing's TTL.
+    struct TtlLapsed;
+    impl BrokerEnv for TtlLapsed {
+        fn now_ms(&self) -> u64 {
+            SysEnv.now_ms() + 600 * 1_000
+        }
+        fn new_token(&self) -> String {
+            SysEnv.new_token()
+        }
+        fn new_game_code(&self) -> String {
+            SysEnv.new_game_code()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_draft_join_is_refused_while_the_host_is_away() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let mut pod = host_pod(&url, "build-a", 4, true).await;
+            let mut seated = connect_as(&url, "build-a").await;
+            let seated_token = joined_token(send_draft(&mut seated, &draft_join(&pod.code)).await);
+            pod.listing().await;
+
+            drop(seated);
+            await_draft_seat_departed(&app, &pod.code, 1).await;
+            assert!(pod.listing().await.is_empty());
+            assert!(matches!(
+                fresh_draft(&url, "build-a", &draft_join(&pod.code)).await,
+                ServerMessage::DraftJoined { seat_index: 2, .. }
+            ));
+            assert_eq!(pod.listing().await, ["Updated"]);
+            let mut seated = connect_as(&url, "build-a").await;
+            assert!(matches!(
+                send_draft(&mut seated, &draft_reconnect(&pod.code, &seated_token)).await,
+                ServerMessage::DraftStateUpdate { .. }
+            ));
+            assert!(pod.listing().await.is_empty());
+            assert!(snapshot_lists(&url, &pod.code).await);
+
+            pod.drop_host(&app).await;
+            drop(seated);
+            await_draft_seat_departed(&app, &pod.code, 1).await;
+            let _seated = {
+                let mut sock = connect_as(&url, "build-a").await;
+                assert!(matches!(
+                    send_draft(&mut sock, &draft_reconnect(&pod.code, &seated_token)).await,
+                    ServerMessage::DraftStateUpdate { .. }
+                ));
+                sock
+            };
+
+            let before = {
+                let drafts = app.draft_sessions.lock().await;
+                let session = &drafts.sessions[&pod.code];
+                (session.player_tokens.clone(), session.connected.clone())
+            };
+            let seated_before = app
+                .lobby
+                .lock()
+                .await
+                .lobby()
+                .seated_player_count(&pod.code);
+            assert_eq!(
+                draft_refusal(fresh_draft(&url, "build-a", &draft_join(&pod.code)).await),
+                server_core::session::HOST_AWAY_REFUSAL
+            );
+            {
+                let drafts = app.draft_sessions.lock().await;
+                let session = &drafts.sessions[&pod.code];
+                assert_eq!(
+                    (session.player_tokens.clone(), session.connected.clone()),
+                    before
+                );
+            }
+            assert_eq!(
+                app.lobby
+                    .lock()
+                    .await
+                    .lobby()
+                    .seated_player_count(&pod.code),
+                seated_before
+            );
+
+            let mut room = host_room(&url, 3, true, None).await;
+            room.drop_host(&app).await;
+            assert_eq!(
+                refusal(fresh_attempt(&url, &password_join(&room.code, None, None)).await),
+                server_core::session::HOST_AWAY_REFUSAL
+            );
+
+            let _host = {
+                let mut sock = connect_as(&url, "build-a").await;
+                assert!(matches!(
+                    send_draft(&mut sock, &pod.reconnect()).await,
+                    ServerMessage::DraftStateUpdate { .. }
+                ));
+                sock
+            };
+            assert!(matches!(
+                fresh_draft(&url, "build-a", &draft_join(&pod.code)).await,
+                ServerMessage::DraftJoined { seat_index: 3, .. }
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_stale_build_draft_join_is_refused_like_a_game_join() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let pod = host_pod(&url, "build-a", 2, true).await;
+            let stale = draft_refusal(fresh_draft(&url, "build-b", &draft_join(&pod.code)).await);
+            assert!(stale.starts_with("Build mismatch"), "{stale}");
+            assert!(
+                app.draft_sessions.lock().await.sessions[&pod.code].player_tokens[1].is_empty()
+            );
+            assert!(matches!(
+                fresh_draft(&url, "build-a", &draft_join(&pod.code)).await,
+                ServerMessage::DraftJoined { seat_index: 1, .. }
+            ));
+
+            let mut room_host = connect_as(&url, "build-a").await;
+            let room =
+                created_code(create_outcome(&mut room_host, &room_frame(2, true, None)).await);
+            let mut stale_guest = connect_as(&url, "build-b").await;
+            let stale =
+                refusal(send_and_reply(&mut stale_guest, &password_join(&room, None, None)).await);
+            assert!(stale.starts_with("Build mismatch"), "{stale}");
+            let mut guest = connect_as(&url, "build-a").await;
+            assert!(matches!(
+                send_and_reply(&mut guest, &password_join(&room, None, None)).await,
+                ServerMessage::GameStarted { .. }
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_draft_host_drop_delists_the_pod() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let mut pod = host_pod(&url, "build-a", 2, true).await;
+            assert_eq!(pod.drop_host(&app).await, ["Removed"]);
+            assert!(!snapshot_lists(&url, &pod.code).await);
+
+            let mut room = host_room(&url, 2, true, None).await;
+            assert_eq!(room.drop_host(&app).await, ["Removed"]);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_returning_draft_host_relists_and_restamps() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let mut pod = host_pod(&url, "build-a", 3, true).await;
+            pod.drop_host(&app).await;
+            let mut host = connect_as(&url, "build-b").await;
+            assert!(matches!(
+                send_draft(&mut host, &pod.reconnect()).await,
+                ServerMessage::DraftStateUpdate { .. }
+            ));
+            let frames = frames_until_pong(&mut pod.sub).await;
+            assert_eq!(listing_of(&frames, &pod.code), ["Added"]);
+            assert!(frames.iter().any(|frame| matches!(
+                frame,
+                ServerMessage::LobbyGameAdded { game }
+                    if game.game_code == pod.code && game.host_build_commit == "build-b"
+            )));
+
+            let stale = draft_refusal(fresh_draft(&url, "build-a", &draft_join(&pod.code)).await);
+            assert!(stale.starts_with("Build mismatch"), "{stale}");
+            assert!(matches!(
+                fresh_draft(&url, "build-b", &draft_join(&pod.code)).await,
+                ServerMessage::DraftJoined { .. }
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_live_draft_pod_outlives_its_listing_ttl() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let present = host_pod(&url, "build-a", 2, true).await;
+            let mut away = host_pod(&url, "build-a", 2, true).await;
+            away.drop_host(&app).await;
+            let room = host_room(&url, 2, true, None).await;
+
+            let expired = app
+                .lobby
+                .lock()
+                .await
+                .lobby()
+                .check_expired(300, &TtlLapsed);
+            for code in [&present.code, &away.code, &room.code] {
+                assert!(
+                    expired.iter().any(|e| e.game_code() == code),
+                    "reach guard: {code} lapsed"
+                );
+            }
+            let live_drafts = live_draft_codes(&app.draft_sessions, &expired).await;
+            let sweep = {
+                let mut mgr = app.sessions.lock().await;
+                handle_expired_lobby_games(&mut mgr, &app.game_db, &expired, &live_drafts)
+            };
+            let reaped = {
+                let mut broker = app.lobby.lock().await;
+                consume_lobby_expiry_sweep(&mut broker, &sweep, &TtlLapsed)
+            };
+            assert!(
+                reaped.lobby_removed.is_empty(),
+                "{:?}",
+                reaped.lobby_removed
+            );
+
+            {
+                let broker = app.lobby.lock().await;
+                let row = broker.lobby().public_game(&present.code).expect("listed");
+                assert_eq!(row.host_build_commit, "build-a");
+                assert!(broker.lobby().has_game(&away.code));
+                assert!(broker.lobby().public_game(&away.code).is_none());
+                assert!(broker.lobby().public_game(&room.code).is_some());
+            }
+            let stale =
+                draft_refusal(fresh_draft(&url, "build-b", &draft_join(&present.code)).await);
+            assert!(stale.starts_with("Build mismatch"), "{stale}");
+
+            let _host = {
+                let mut sock = connect_as(&url, "build-b").await;
+                assert!(matches!(
+                    send_draft(&mut sock, &away.reconnect()).await,
+                    ServerMessage::DraftStateUpdate { .. }
+                ));
+                sock
+            };
+            assert_eq!(away.listing().await, ["Added"]);
+            assert_eq!(
+                app.lobby.lock().await.lobby().host_build_commit(&away.code),
+                Some("build-b")
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_draft_host_reaps_the_pod_through_the_teardown() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let mut pod = host_pod(&url, "build-a", 2, true).await;
+            save_pod_row(&app, &pod.code).await;
+            assert!(pod_rows(&app).contains(&pod.code), "reach guard: row saved");
+            app.draft_sessions.lock().await.reconnect.grace_period = Duration::from_millis(50);
+            assert_eq!(pod.drop_host(&app).await, ["Removed"]);
+            let (drafting, pool_before) = {
+                let mut drafts = app.draft_sessions.lock().await;
+                let (code, _) = start_fixture_pod(&mut drafts);
+                drafts.handle_disconnect(&code, 0);
+                let pool = drafts.sessions[&code].session.pools[0].len();
+                (code, pool)
+            };
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            sweep_seats(&app).await;
+
+            assert!(!app
+                .draft_sessions
+                .lock()
+                .await
+                .sessions
+                .contains_key(&pod.code));
+            assert!(!app.lobby.lock().await.lobby().has_game(&pod.code));
+            assert!(!pod_rows(&app).contains(&pod.code));
+            assert!(pod.listing().await.is_empty());
+            assert_eq!(
+                draft_refusal(fresh_draft(&url, "build-a", &pod.reconnect()).await),
+                "Invalid player token"
+            );
+            {
+                let drafts = app.draft_sessions.lock().await;
+                let session = drafts.sessions.get(&drafting).expect("Drafting pod stays");
+                assert_eq!(session.session.pools[0].len(), pool_before + 1);
+            }
+
+            let mut room = host_room(&url, 2, true, None).await;
+            app.sessions.lock().await.reconnect.grace_period = Duration::ZERO;
+            room.drop_host(&app).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let mut mgr = app.sessions.lock().await;
+            let expired = mgr.reconnect.check_expired();
+            assert_eq!(expired, vec![room.code.clone()]);
+            let reaped =
+                reap_expired_disconnects(&mut mgr, &app.game_db, &expired, &HashMap::new());
+            assert_eq!(reaped.acted, vec![room.code.clone()]);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_restored_lobby_pod_starts_with_its_host_away() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let mut pod = host_pod(&url, "build-a", 2, true).await;
+            let mut abandoned = host_pod(&url, "build-a", 2, true).await;
+            pod.drop_host(&app).await;
+            abandoned.drop_host(&app).await;
+            for code in [&pod.code, &abandoned.code] {
+                save_pod_row(&app, code).await;
+                app.draft_sessions.lock().await.remove_draft(code);
+                app.lobby.lock().await.lobby_mut().unregister_game(code);
+            }
+
+            app.draft_sessions.lock().await.reconnect.grace_period = Duration::from_secs(2);
+            let restored = restore_persisted_drafts(
+                &app.game_db,
+                &app.draft_sessions,
+                &app.lobby,
+                &app.connections,
+                DRAFT_PICK_TIMER_SECONDS,
+            )
+            .await;
+            assert_eq!(restored, 2);
+            assert!(
+                app.lobby.lock().await.lobby().has_game(&pod.code),
+                "reach guard: re-registered"
+            );
+
+            assert!(!snapshot_lists(&url, &pod.code).await);
+            assert_eq!(
+                draft_refusal(fresh_draft(&url, "build-a", &draft_join(&pod.code)).await),
+                server_core::session::HOST_AWAY_REFUSAL
+            );
+            let _host = {
+                let mut sock = connect_as(&url, "build-b").await;
+                assert!(matches!(
+                    send_draft(&mut sock, &pod.reconnect()).await,
+                    ServerMessage::DraftStateUpdate { .. }
+                ));
+                sock
+            };
+            let frames = frames_until_pong(&mut pod.sub).await;
+            assert_eq!(listing_of(&frames, &pod.code), ["Added"]);
+            assert!(frames.iter().any(|frame| matches!(
+                frame,
+                ServerMessage::LobbyGameAdded { game } if game.host_build_commit == "build-b"
+            )));
+            let stale = draft_refusal(fresh_draft(&url, "build-a", &draft_join(&pod.code)).await);
+            assert!(stale.starts_with("Build mismatch"), "{stale}");
+
+            tokio::time::sleep(Duration::from_millis(2100)).await;
+            sweep_seats(&app).await;
+            assert!(!app
+                .draft_sessions
+                .lock()
+                .await
+                .sessions
+                .contains_key(&abandoned.code));
+            assert!(!app.lobby.lock().await.lobby().has_game(&abandoned.code));
+            assert!(!pod_rows(&app).contains(&abandoned.code));
+            assert!(app
+                .draft_sessions
+                .lock()
+                .await
+                .sessions
+                .contains_key(&pod.code));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_restored_drafting_pod_keeps_advancing_past_its_second_window() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let (code, tokens, lobby_code) = {
+                let mut source = DraftSessionManager::new();
+                let (code, tokens) = start_fixture_pod(&mut source);
+                let (lobby_code, _, _) =
+                    source.create_draft(test_draft_config(), "Host".to_string());
+                for pod in [&code, &lobby_code] {
+                    let snapshot = source.sessions[pod].to_persisted();
+                    app.game_db
+                        .save_draft_session(pod, &serde_json::to_string(&snapshot).expect("json"))
+                        .expect("save row");
+                }
+                (code, tokens, lobby_code)
+            };
+            const PICK_SECONDS: u32 = 2;
+            app.draft_sessions.lock().await.reconnect.grace_period = Duration::from_millis(300);
+            let started = std::time::Instant::now();
+            restore_persisted_drafts(
+                &app.game_db,
+                &app.draft_sessions,
+                &app.lobby,
+                &app.connections,
+                PICK_SECONDS,
+            )
+            .await;
+            let armed_by = std::time::Instant::now() + Duration::from_secs(1);
+            while app.draft_sessions.lock().await.sessions[&code]
+                .timer_task
+                .is_none()
+            {
+                assert!(
+                    std::time::Instant::now() < armed_by,
+                    "reach guard: the restored Drafting pod's pick timer is armed"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert!(app.draft_sessions.lock().await.sessions[&lobby_code]
+                .timer_task
+                .is_none());
+
+            let window = |drafts: &DraftSessionManager| {
+                let session = &drafts.sessions[&code].session;
+                (
+                    session.status,
+                    session.current_pack_number,
+                    session.pick_number,
+                )
+            };
+            let pools = |drafts: &DraftSessionManager| -> Vec<usize> {
+                drafts.sessions[&code]
+                    .session
+                    .pools
+                    .iter()
+                    .map(Vec::len)
+                    .collect()
+            };
+            let pick_seat0 = |drafts: &mut DraftSessionManager| {
+                let card = drafts.sessions[&code]
+                    .view_for_seat(0)
+                    .current_pack
+                    .expect("seat 0 holds a pack")[0]
+                    .instance_id
+                    .clone();
+                drafts
+                    .handle_draft_action(
+                        &code,
+                        &tokens[0],
+                        draft_core::types::DraftAction::Pick {
+                            seat: 0,
+                            card_instance_ids: vec![card],
+                        },
+                        None,
+                    )
+                    .expect("seat 0 picks");
+            };
+
+            let _seat0 = {
+                let mut sock = connect_as(&url, "build-a").await;
+                assert!(matches!(
+                    send_draft(&mut sock, &draft_reconnect(&code, &tokens[0])).await,
+                    ServerMessage::DraftStateUpdate { .. }
+                ));
+                sock
+            };
+            pick_seat0(&mut *app.draft_sessions.lock().await);
+            tokio::time::sleep(Duration::from_millis(400).saturating_sub(started.elapsed())).await;
+            sweep_seats(&app).await;
+            {
+                let drafts = app.draft_sessions.lock().await;
+                assert!(started.elapsed() < Duration::from_secs(u64::from(PICK_SECONDS)));
+                assert_eq!(
+                    window(&drafts),
+                    (draft_core::types::DraftStatus::Drafting, 0, 1)
+                );
+                assert_eq!(pools(&drafts), [1; 8]);
+            }
+
+            pick_seat0(&mut *app.draft_sessions.lock().await);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                {
+                    let drafts = app.draft_sessions.lock().await;
+                    if window(&drafts).2 >= 2 {
+                        assert!(pools(&drafts).iter().all(|&n| n >= 2));
+                        break;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the pod stalled at its second window"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_lobby_guest_frees_its_seat() {
+        let (url, server, _temp_dir, app) = spawn_draft_server().await;
+        timed(server, async {
+            let mut lapsed = host_pod(&url, "build-a", 2, true).await;
+            let mut waiting = host_pod(&url, "build-a", 2, true).await;
+            app.draft_sessions.lock().await.reconnect.grace_period = Duration::from_millis(300);
+            let mut lapsed_guest = connect_as(&url, "build-a").await;
+            let lapsed_token =
+                joined_token(send_draft(&mut lapsed_guest, &draft_join(&lapsed.code)).await);
+            let mut waiting_guest = connect_as(&url, "build-a").await;
+            let waiting_token =
+                joined_token(send_draft(&mut waiting_guest, &draft_join(&waiting.code)).await);
+            lapsed.listing().await;
+            waiting.listing().await;
+
+            drop(lapsed_guest);
+            await_draft_seat_departed(&app, &lapsed.code, 1).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            drop(waiting_guest);
+            await_draft_seat_departed(&app, &waiting.code, 1).await;
+            sweep_seats(&app).await;
+
+            {
+                let drafts = app.draft_sessions.lock().await;
+                assert_eq!(drafts.sessions[&lapsed.code].first_open_seat(), Some(1));
+                assert_eq!(drafts.draft_for_token(&lapsed_token), None);
+                assert_eq!(
+                    drafts.sessions[&waiting.code].seat_for_token(&waiting_token),
+                    Some(1)
+                );
+            }
+            let frames = frames_until_pong(&mut lapsed.sub).await;
+            assert_eq!(listing_of(&frames, &lapsed.code), ["Updated"]);
+            assert!(frames.iter().any(|frame| matches!(
+                frame,
+                ServerMessage::LobbyGameUpdated { game }
+                    if game.game_code == lapsed.code && game.current_players == 1
+            )));
+            assert!(waiting.listing().await.is_empty());
+            assert_eq!(
+                draft_refusal(
+                    fresh_draft(
+                        &url,
+                        "build-a",
+                        &draft_reconnect(&lapsed.code, &lapsed_token)
+                    )
+                    .await
+                ),
+                "Invalid player token"
+            );
+            assert!(matches!(
+                fresh_draft(&url, "build-a", &draft_join(&lapsed.code)).await,
+                ServerMessage::DraftJoined { seat_index: 1, .. }
+            ));
+            assert!(matches!(
+                fresh_draft(
+                    &url,
+                    "build-a",
+                    &draft_reconnect(&waiting.code, &waiting_token)
+                )
+                .await,
+                ServerMessage::DraftStateUpdate { .. }
+            ));
+        })
+        .await;
     }
 }
 
@@ -19329,7 +20369,7 @@ mod issue_4548_deadlock_tests {
                 mgr.try_session(&code).is_none(),
                 "reach guard: the game is genuinely contended"
             );
-            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported, &HashSet::new())
         };
         assert!(
             first.sweep.acted.is_empty(),
@@ -19373,7 +20413,7 @@ mod issue_4548_deadlock_tests {
         );
         let second = {
             let mut mgr = state.lock().await;
-            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported, &HashSet::new())
         };
         assert_eq!(
             codes(&second.sweep.acted),
@@ -19431,7 +20471,7 @@ mod issue_4548_deadlock_tests {
                 !mgr.contains_game("GONE01"),
                 "reach guard: the registry must not hold this code"
             );
-            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported, &HashSet::new())
         };
         assert_eq!(
             codes(&handled.sweep.acted),
@@ -19488,7 +20528,7 @@ mod issue_4548_deadlock_tests {
                 mgr.try_session(&code).expect("session").game_started,
                 "reach guard: the fixture must reach the started arm, not the retire arm"
             );
-            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported, &HashSet::new())
         };
         assert_eq!(
             codes(&handled.sweep.acted),
@@ -19548,7 +20588,7 @@ mod issue_4548_deadlock_tests {
 
         let lobby_sweep = {
             let mut mgr = state.lock().await;
-            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported, &HashSet::new())
         };
         assert!(
             lobby_sweep.sweep.acted.is_empty(),
@@ -19618,7 +20658,7 @@ mod issue_4548_deadlock_tests {
 
         let lobby_sweep = {
             let mut mgr = state.lock().await;
-            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported, &HashSet::new())
         };
         assert!(
             lobby_sweep.sweep.acted.is_empty(),
