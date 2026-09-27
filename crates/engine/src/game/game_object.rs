@@ -2106,10 +2106,9 @@ impl GameObject {
                         // there is no layer pass to populate it from base) and
                         // `base_abilities` (so it survives the battlefield
                         // layer reset's `abilities = base_abilities.clone()`).
-                        // No `concretize_granting_object` step: unlike an
-                        // aura/equipment donor, a perpetual self-grant has no
-                        // separate granting object to rebind `GrantingObject`
-                        // self-references to. Dedup by structural equality,
+                        // No granter stamp: unlike an aura/equipment donor, a
+                        // perpetual self-grant has no separate granting object
+                        // for `GrantingObject` to name. Dedup by structural equality,
                         // matching every other perpetual-grant arm's
                         // idempotency (this function runs once per
                         // `ApplyPerpetual` resolution).

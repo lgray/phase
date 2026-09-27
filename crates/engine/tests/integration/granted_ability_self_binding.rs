@@ -20,7 +20,7 @@ use engine::types::ability::{
 };
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
-use engine::types::identifiers::ObjectId;
+use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -30,7 +30,7 @@ fn equipment_types() -> (Vec<String>, Vec<String>) {
 }
 
 /// The `AbilityDefinition` an equipment grants via its "Equipped creature has …"
-/// static (the parse-time, pre-concretization body).
+/// static (the parse-time body).
 fn granted_activated_def(oracle: &str, name: &str) -> AbilityDefinition {
     let (types, subtypes) = equipment_types();
     let parsed = parse_oracle_text(oracle, name, &[], &types, &subtypes);
@@ -58,7 +58,7 @@ fn grant_ability_static(statics: &[StaticDefinition]) -> StaticDefinition {
 
 /// Install `grant_static` on a fresh artifact-equipment attached to `host`, then
 /// run the production layer engine so the granted ability is cloned onto the
-/// host with its granter self-references concretized.
+/// host stamped with its granter.
 fn equip_and_layer(
     scenario: GameScenario,
     equipment: ObjectId,
@@ -105,10 +105,6 @@ fn granted_ability_index(
 /// equipment), not the equipped creature. Full activate/resolve pipeline; asserts
 /// which object left the battlefield.
 ///
-/// Revert-to-red: remove the `layers.rs` GrantingObject→SpecificObject rewrite →
-/// the cost stays `GrantingObject`, the defensive runtime arm resolves it to the
-/// ability source (host) → the CREATURE is sacrificed and the Hammer survives →
-/// both the concretization `assert_eq!` and the zone assertions flip.
 #[test]
 fn deconstruction_hammer_sacrifice_hits_the_equipment_not_the_host() {
     let mut scenario = GameScenario::new();
@@ -158,15 +154,17 @@ fn deconstruction_hammer_sacrifice_hits_the_equipment_not_the_host() {
         a.cost.as_ref().and_then(sacrifice_target).is_some()
     });
 
-    // Concretization proof (the layers.rs seam): the sacrifice cost (inside the
-    // `{3},{T},Sacrifice` Composite) targets the Hammer, not `SelfRef`/`GrantingObject`.
+    // CR 201.5a: the sacrifice cost names the granter, and the grant is stamped with the Hammer.
+    let granted = &runner.state().objects[&host].abilities[idx];
     assert_eq!(
-        runner.state().objects[&host].abilities[idx]
-            .cost
-            .as_ref()
-            .and_then(sacrifice_target),
-        Some(&TargetFilter::SpecificObject { id: hammer }),
-        "CR 201.5a: sacrifice cost must target the granting Hammer, not the host"
+        granted.cost.as_ref().and_then(sacrifice_target),
+        Some(&TargetFilter::GrantingObject)
+    );
+    assert_eq!(
+        granted.granting_object,
+        Some(ObjectIncarnationRef::from_object(
+            &runner.state().objects[&hammer]
+        ))
     );
 
     // DISPLAY half of the same seam (matrix rows 1 and 3). This MUST run before
@@ -225,15 +223,8 @@ fn deconstruction_hammer_sacrifice_hits_the_equipment_not_the_host() {
     );
 }
 
-/// A2 + B1: The Dominion Bracelet. The `{15}, Exile <self>` cost exiles THE
-/// BRACELET (granter-referential → GrantingObject → SpecificObject{bracelet}),
-/// while the `{X} less … this creature's power` reduction stays host-referential
-/// (`QuantityRef::Power{Source}`, an untouched third channel).
-///
-/// Parse-shape supplement proves the two `~`-collapsed referents split; the
-/// `evaluate_layers` assertion proves the production concretization. Full {15}
-/// activation is impractical, but the Exile-cost runtime resolution reuses the
-/// exact `SpecificObject` machinery the Hammer test drives end-to-end.
+/// A2 + B1: The Dominion Bracelet's `Exile <self>` cost names the granter while
+/// its `{X} less … this creature's power` reduction stays host-referential.
 #[test]
 fn the_dominion_bracelet_exile_hits_the_bracelet_reduction_reads_the_host() {
     // Parse-shape: cost = Exile{GrantingObject}; reduction = Power{Source}; no
@@ -261,60 +252,10 @@ fn the_dominion_bracelet_exile_hits_the_bracelet_reduction_reads_the_host() {
         find_effect(&def, |e| matches!(e, Effect::Unimplemented { .. })).is_none(),
         "no residual Unimplemented cost-reduction node should remain"
     );
-
-    // Production concretization: after grant-clone the host's Exile cost is
-    // SpecificObject{bracelet}.
-    let mut scenario = GameScenario::new();
-    scenario.at_phase(Phase::PreCombatMain);
-    let host = scenario.add_creature(P0, "Bearer", 3, 3).id();
-    let bracelet = scenario
-        .add_creature(P0, "The Dominion Bracelet", 0, 0)
-        .id();
-    let (types, subtypes) = equipment_types();
-    let grant_static = grant_ability_static(
-        &parse_oracle_text(
-            THE_DOMINION_BRACELET,
-            "The Dominion Bracelet",
-            &[],
-            &types,
-            &subtypes,
-        )
-        .statics,
-    );
-    let runner = equip_and_layer(scenario, bracelet, host, grant_static);
-    let idx = granted_ability_index(&runner, host, |a| {
-        a.cost.as_ref().and_then(exile_filter).is_some()
-    });
-    assert_eq!(
-        runner.state().objects[&host].abilities[idx]
-            .cost
-            .as_ref()
-            .and_then(exile_filter),
-        Some(&TargetFilter::SpecificObject { id: bracelet }),
-        "CR 201.5a: the concretized Exile cost targets the Bracelet, not the host"
-    );
-    // Host power read is unchanged by concretization.
-    assert_eq!(
-        runner.state().objects[&host].abilities[idx]
-            .cost_reduction
-            .as_ref()
-            .map(|r| &r.count),
-        Some(&QuantityExpr::Ref {
-            qty: QuantityRef::Power {
-                scope: ObjectScope::Source
-            }
-        }),
-        "the power reduction remains host-referential after grant-clone"
-    );
 }
 
 /// A3 (effect-target channel): Trusty Boomerang's "Return <self> to its owner's
-/// hand" bounces THE EQUIPMENT. After grant-clone the Bounce effect target is
-/// `SpecificObject{boomerang}`, proving the effect channel (parse_self_reference)
-/// concretizes just like the cost channel.
-///
-/// Revert-to-red: without the layers.rs rewrite the Bounce target stays
-/// `GrantingObject` (≠ SpecificObject{boomerang}) → assertion fails.
+/// hand" names the granter, and the grant is stamped with the Boomerang.
 #[test]
 fn trusty_boomerang_return_bounces_the_equipment_not_the_host() {
     let mut scenario = GameScenario::new();
@@ -338,10 +279,12 @@ fn trusty_boomerang_return_bounces_the_equipment_not_the_host() {
         _ => None,
     })
     .expect("granted ability must carry a Bounce effect");
+    assert_eq!(bounce_target, TargetFilter::GrantingObject);
     assert_eq!(
-        bounce_target,
-        TargetFilter::SpecificObject { id: boomerang },
-        "CR 201.5a: the granted Return bounces the Boomerang (granter), not the host"
+        runner.state().objects[&host].abilities[idx].granting_object,
+        Some(ObjectIncarnationRef::from_object(
+            &runner.state().objects[&boomerang]
+        ))
     );
 }
 
@@ -562,6 +505,8 @@ const DECONSTRUCTION_HAMMER: &str =
     "Equipped creature gets +1/+1 and has \"{3}, {T}, Sacrifice Deconstruction Hammer: Destroy target artifact or enchantment.\"\nEquip {1} ({1}: Attach to target creature you control. Equip only as a sorcery.)";
 const FISHING_POLE: &str =
     "Equipped creature has \"{1}, {T}, Tap Fishing Pole: Put a bait counter on Fishing Pole.\"\nWhenever equipped creature becomes untapped, remove a bait counter from this Equipment. If you do, create a 1/1 blue Fish creature token.\nEquip {2} ({2}: Attach to target creature you control. Equip only as a sorcery.)";
+const KROVIKAN_PLAGUE: &str =
+    "Enchant non-Wall creature you control\nWhen this Aura enters, draw a card at the beginning of the next turn's upkeep.\nTap enchanted creature: This Aura deals 1 damage to any target. Put a -0/-1 counter on enchanted creature. Activate only if enchanted creature is untapped.";
 const HANKYU: &str =
     "Equipped creature has \"{T}: Put an aim counter on Hankyu\" and \"{T}, Remove all aim counters from Hankyu: This creature deals damage to any target equal to the number of aim counters removed this way.\"\nEquip {4} ({4}: Attach to target creature you control. Equip only as a sorcery.)";
 const MEANDERED_TOWERSHELL: &str =
@@ -1509,8 +1454,8 @@ mod object_scope_reads {
 }
 
 // ---------------------------------------------------------------------------
-// CR 201.5a concretizer seams: every channel through which a granted body names
-// its granter, bound at each attachment seam (Layer-6 grants, token creation).
+// CR 201.5a: every channel through which a granted body names its granter, read
+// through the stamp each attachment seam (Layer-6 grants, token creation) sets.
 // Card fixtures use verbatim Oracle text.
 // ---------------------------------------------------------------------------
 
@@ -1544,8 +1489,9 @@ mod concretizer_seams {
     use engine::types::zones::Zone;
 
     use super::{
-        ARCHERY_TRAINING, DIRE_BLUNDERBUSS, GROTHAMA, GUTTER_GRIME, HANKYU, HELIODS_PUNISHMENT,
-        NETTLEVINE_BLIGHT, SPARE_DAGGER, THE_AETHERSPARK, TRUSTY_BOOMERANG,
+        ARCHERY_TRAINING, DIRE_BLUNDERBUSS, FISHING_POLE, GROTHAMA, GUTTER_GRIME, HANKYU,
+        HELIODS_PUNISHMENT, KROVIKAN_PLAGUE, NETTLEVINE_BLIGHT, SPARE_DAGGER, THE_AETHERSPARK,
+        TRUSTY_BOOMERANG,
     };
 
     fn counter(kind: &str) -> CounterType {
@@ -1798,12 +1744,15 @@ mod concretizer_seams {
             .effect
             .as_ref()
         {
-            Effect::DealDamage { amount, .. } => assert_eq!(
-                *amount,
-                counters_on(bound(runner.state(), trainings[0]), "arrow")
-            ),
+            Effect::DealDamage { amount, .. } => {
+                assert_eq!(*amount, counters_on(ObjectScope::GrantingObject, "arrow"))
+            }
             other => panic!("{other:?}"),
         }
+        assert_eq!(
+            runner.state().objects[&host].abilities[idx[0]].granting_object,
+            Some(incarnation(runner.state(), trainings[0]))
+        );
         assert_ne!(trainings[0], host);
         activate(&mut runner, host, idx[0], Some(raider));
         runner.advance_until_stack_empty();
@@ -1941,6 +1890,48 @@ mod concretizer_seams {
         let token = &runner.state().objects[&tokens[0]];
         assert_eq!((token.power, token.toughness), (Some(3), Some(3)));
         assert_ne!(tokens[0], gg);
+    }
+
+    /// CR 201.5a + CR 707.2: a copy of a Gutter Grime Ooze still names the Gutter Grime that created the original.
+    #[test]
+    fn gutter_grime_ooze_copy_reads_the_original_granter() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let gg = add_gutter_grime(&mut scenario, 2);
+        let populator = scenario.add_creature(P0, "Populator", 1, 1).id();
+        let victim = scenario.add_creature(P0, "Victim", 1, 1).id();
+        let bolt = scenario.add_bolt_to_hand(P0);
+        let mut runner = kill_victim_to_triggers(scenario, victim, bolt);
+        runner.advance_until_stack_empty();
+        let populate = ResolvedAbility::new(Effect::Populate, vec![], populator, P0);
+        resolve_ability_chain(runner.state_mut(), &populate, &mut Vec::new(), 0).unwrap();
+        relayer(runner.state_mut());
+        let tokens = oozes(runner.state());
+        assert_eq!(tokens.len(), 2);
+        let granter = incarnation(runner.state(), gg);
+        for &t in &tokens {
+            let st = runner.state();
+            assert_eq!(
+                (st.objects[&t].power, st.objects[&t].toughness),
+                (Some(3), Some(3))
+            );
+            assert!(st.objects[&t]
+                .static_definitions
+                .as_slice()
+                .iter()
+                .any(|sd| sd.granting_object == Some(granter)));
+        }
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&gg)
+            .unwrap()
+            .counters
+            .insert(counter("slime"), 4);
+        relayer(runner.state_mut());
+        for &t in &tokens {
+            assert_eq!(runner.state().objects[&t].power, Some(4));
+        }
     }
 
     #[test]
@@ -2108,17 +2099,24 @@ mod concretizer_seams {
         let st = runner.state();
         assert_eq!(st.objects[&host].power, Some(3));
         assert_eq!(st.objects[&other_host].power, Some(5));
-        let installed = st.objects[&host]
+        let (installed, stamp) = st.objects[&host]
             .static_definitions
             .as_slice()
             .iter()
-            .flat_map(|s| s.modifications.iter())
-            .find_map(|m| match m {
-                ContinuousModification::SetDynamicPower { value } => Some(value.clone()),
-                _ => None,
+            .find_map(|s| {
+                s.modifications.iter().find_map(|m| match m {
+                    ContinuousModification::SetDynamicPower { value } => {
+                        Some((value.clone(), s.granting_object))
+                    }
+                    _ => None,
+                })
             })
             .expect("the granted static is installed on the host");
-        assert_eq!(installed, counters_on(bound(st, granter), "charge"));
+        assert_eq!(
+            installed,
+            counters_on(ObjectScope::GrantingObject, "charge")
+        );
+        assert_eq!(stamp, Some(incarnation(st, granter)));
     }
 
     fn blunderbuss_grant() -> StaticDefinition {
@@ -2250,7 +2248,7 @@ mod concretizer_seams {
             "Aura",
             grant,
         );
-        let attachment = runner.state().objects[&host]
+        let (attachment, stamp) = runner.state().objects[&host]
             .trigger_definitions
             .as_slice()
             .iter()
@@ -2264,12 +2262,15 @@ mod concretizer_seams {
                     .effect
                     .as_ref()
                 {
-                    Effect::Attach { attachment, .. } => Some(attachment.clone()),
+                    Effect::Attach { attachment, .. } => {
+                        Some((attachment.clone(), t.definition.granting_object))
+                    }
                     _ => None,
                 }
             })
             .expect("the granted trigger is on the host");
-        assert_eq!(attachment, TargetFilter::SpecificObject { id: blight });
+        assert_eq!(attachment, TargetFilter::GrantingObject);
+        assert_eq!(stamp, Some(incarnation(runner.state(), blight)));
         assert_ne!(blight, host);
     }
 
@@ -2446,94 +2447,95 @@ mod concretizer_seams {
         assert_eq!(st.players[1].life, life - 1);
     }
 
+    /// CR 201.5a: every condition shape reads its `GrantingObject` quantity from the stamped granter.
     #[test]
     fn every_condition_and_quantity_arm_binds_the_granter() {
         let g = || counters_on(ObjectScope::GrantingObject, "charge");
-        let check = |lhs, rhs| AbilityCondition::QuantityCheck {
+        let fixed = |value| QuantityExpr::Fixed { value };
+        let at_least = |lhs, rhs| AbilityCondition::QuantityCheck {
             lhs,
             comparator: Comparator::GE,
             rhs,
         };
-        let fixed = || QuantityExpr::Fixed { value: 0 };
-        let condition = AbilityCondition::And {
-            conditions: vec![
-                check(
-                    QuantityExpr::Difference {
-                        left: Box::new(QuantityExpr::Offset {
-                            inner: Box::new(g()),
-                            offset: 1,
-                        }),
-                        right: Box::new(QuantityExpr::Sum { exprs: vec![g()] }),
-                    },
-                    fixed(),
-                ),
-                AbilityCondition::Or {
-                    conditions: vec![
-                        check(fixed(), g()),
-                        AbilityCondition::Not {
-                            condition: Box::new(check(g(), fixed())),
-                        },
-                    ],
+        // Each arm holds iff the charge count it reads is 3.
+        let arms = [
+            at_least(
+                QuantityExpr::Difference {
+                    left: Box::new(QuantityExpr::Offset {
+                        inner: Box::new(g()),
+                        offset: 1,
+                    }),
+                    right: Box::new(QuantityExpr::Sum {
+                        exprs: vec![fixed(1)],
+                    }),
                 },
-                AbilityCondition::ConditionInstead {
-                    inner: Box::new(check(g(), fixed())),
-                },
-                AbilityCondition::PreviousEffectAmount {
+                fixed(3),
+            ),
+            AbilityCondition::And {
+                conditions: vec![at_least(g(), fixed(3))],
+            },
+            AbilityCondition::Or {
+                conditions: vec![AbilityCondition::Not {
+                    condition: Box::new(at_least(fixed(2), g())),
+                }],
+            },
+            AbilityCondition::ConditionInstead {
+                inner: Box::new(at_least(g(), fixed(3))),
+            },
+            AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::PreviousEffectAmount {
                     comparator: Comparator::GE,
                     rhs: g(),
                     channel: Default::default(),
-                },
-            ],
-        };
-        let generic = Effect::GenericEffect {
-            static_abilities: vec![StaticDefinition::continuous()
-                .affected(TargetFilter::GrantingObject)
-                .modifications(vec![ContinuousModification::SetDynamicPower { value: g() }])],
-            duration: None,
-            target: None,
-            end_cost: None,
-        };
-        let mut def = AbilityDefinition::new(
-            AbilityKind::Activated,
-            Effect::GainLife {
-                amount: QuantityExpr::Fixed { value: 1 },
-                player: TargetFilter::Controller,
+                }),
             },
-        )
-        .cost(AbilityCost::Tap)
-        .sub_ability(AbilityDefinition::new(AbilityKind::Spell, generic));
-        def.condition = Some(condition);
-        let grant = StaticDefinition::continuous()
-            .affected(TargetFilter::Typed(
-                TypedFilter::creature().properties(vec![FilterProp::EquippedBy]),
-            ))
-            .modifications(vec![ContinuousModification::GrantAbility {
-                definition: Box::new(def),
-            }]);
-
-        let mut scenario = GameScenario::new();
-        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
-        let granter = scenario.add_creature(P0, "Charger", 0, 0).id();
-        let mut runner = scenario.build();
-        attach(
-            &mut runner,
-            granter,
-            host,
-            CoreType::Artifact,
-            "Equipment",
-            grant,
-        );
-        let st = runner.state();
-        let copy = st.objects[&host]
-            .abilities
-            .last()
-            .expect("the granted ability");
-        let json = serde_json::to_string(copy).unwrap();
-        let scope = serde_json::to_string(&bound(st, granter)).unwrap();
-        let filter = serde_json::to_string(&TargetFilter::SpecificObject { id: granter }).unwrap();
-        assert_eq!(json.matches(&scope).count(), 7, "{json}");
-        assert_eq!(json.matches(&filter).count(), 1, "{json}");
-        assert!(!json.contains("GrantingObject"), "{json}");
+        ];
+        for (index, arm) in arms.into_iter().enumerate() {
+            let mut gained = Vec::new();
+            for (granter_n, host_n) in [(3, 0), (0, 3)] {
+                let mut def = AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::GainLife {
+                        amount: fixed(1),
+                        player: TargetFilter::Controller,
+                    },
+                )
+                .cost(AbilityCost::Tap);
+                def.condition = Some(arm.clone());
+                let grant = StaticDefinition::continuous()
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::creature().properties(vec![FilterProp::EquippedBy]),
+                    ))
+                    .modifications(vec![ContinuousModification::GrantAbility {
+                        definition: Box::new(def),
+                    }]);
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+                let granter = scenario.add_creature(P0, "Charger", 0, 0).id();
+                scenario.with_counter(host, counter("charge"), host_n);
+                scenario.with_counter(granter, counter("charge"), granter_n);
+                let mut runner = scenario.build();
+                attach(
+                    &mut runner,
+                    granter,
+                    host,
+                    CoreType::Artifact,
+                    "Equipment",
+                    grant,
+                );
+                let index_on_host = runner.state().objects[&host].abilities.len() - 1;
+                assert_eq!(
+                    runner.state().objects[&host].abilities[index_on_host].granting_object,
+                    Some(incarnation(runner.state(), granter))
+                );
+                let life = runner.state().players[0].life;
+                activate(&mut runner, host, index_on_host, None);
+                runner.advance_until_stack_empty();
+                gained.push(runner.state().players[0].life - life);
+            }
+            assert_eq!(gained, vec![1, 0], "arm {index}");
+        }
     }
 
     #[test]
@@ -2580,6 +2582,50 @@ mod concretizer_seams {
         let st = runner.state();
         assert!(st.objects[&victim].tapped);
         assert_eq!(st.objects[&boomerang].zone, Zone::Hand);
+        assert_eq!(st.objects[&host].zone, Zone::Battlefield);
+    }
+
+    /// CR 400.7: a Trusty Boomerang blinked in response is a new object, so its granted ability does not return it.
+    #[test]
+    fn trusty_boomerang_blinked_in_response_stays() {
+        let grant = grant_static(
+            TRUSTY_BOOMERANG,
+            "Trusty Boomerang",
+            "Artifact",
+            "Equipment",
+        );
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_mana_pool(
+            P0,
+            vec![ManaUnit::new(
+                ManaType::Colorless,
+                ObjectId(0),
+                false,
+                vec![],
+            )],
+        );
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let boomerang = scenario.add_creature(P0, "Trusty Boomerang", 0, 0).id();
+        let victim = scenario.add_creature(P1, "Victim", 2, 2).id();
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            boomerang,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            grant,
+        );
+        let index = runner.state().objects[&host].abilities.len() - 1;
+        activate(&mut runner, host, index, Some(victim));
+        let st = runner.state_mut();
+        move_to_zone(st, boomerang, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, boomerang, Zone::Battlefield, &mut Vec::new());
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        assert!(st.objects[&victim].tapped);
+        assert_eq!(st.objects[&boomerang].zone, Zone::Battlefield);
         assert_eq!(st.objects[&host].zone, Zone::Battlefield);
     }
 
@@ -2674,6 +2720,92 @@ mod concretizer_seams {
         assert!(st.stack.is_empty());
     }
 
+    /// CR 201.5a + CR 118.3: "Tap Fishing Pole" taps the granter, and can't be paid while it is tapped.
+    #[test]
+    fn fishing_pole_tap_cost_taps_the_granter() {
+        for pole_tapped in [false, true] {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            scenario.with_mana_pool(
+                P0,
+                vec![ManaUnit::new(
+                    ManaType::Colorless,
+                    ObjectId(0),
+                    false,
+                    vec![],
+                )],
+            );
+            let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+            let pole = scenario
+                .add_artifact_from_oracle(P0, "Fishing Pole", FISHING_POLE)
+                .with_subtypes(vec!["Equipment"])
+                .id();
+            let mut runner = scenario.build();
+            attach_to(runner.state_mut(), pole, host);
+            relayer(runner.state_mut());
+            runner.state_mut().objects.get_mut(&pole).unwrap().tapped = pole_tapped;
+            let index = runner.state().objects[&host].abilities.len() - 1;
+            let result = runner.act(GameAction::ActivateAbility {
+                source_id: host,
+                ability_index: index,
+            });
+            if pole_tapped {
+                assert!(result.is_err(), "{:?}", runner.state().waiting_for);
+                assert!(!runner.state().objects[&host].tapped);
+                continue;
+            }
+            result.unwrap();
+            runner.advance_until_stack_empty();
+            let st = runner.state();
+            assert!(st.objects[&pole].tapped);
+            assert!(st.objects[&host].tapped);
+            assert_eq!(st.objects[&pole].counters.get(&counter("bait")), Some(&1));
+            assert_eq!(st.objects[&host].counters.get(&counter("bait")), None);
+        }
+    }
+
+    /// CR 118.3: "Tap enchanted creature" taps the Aura's host, not the Aura.
+    #[test]
+    fn krovikan_plague_tap_cost_taps_the_enchanted_creature() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let plague = scenario
+            .add_enchantment_from_oracle(P0, "Krovikan Plague", KROVIKAN_PLAGUE)
+            .with_subtypes(vec!["Aura"])
+            .id();
+        let mut runner = scenario.build();
+        attach_to(runner.state_mut(), plague, host);
+        relayer(runner.state_mut());
+        let life = runner.state().players[1].life;
+        let index = runner.state().objects[&plague]
+            .abilities
+            .iter()
+            .position(|a| a.kind == AbilityKind::Activated)
+            .unwrap();
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: plague,
+                ability_index: index,
+            })
+            .unwrap();
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ) {
+            runner
+                .act(GameAction::SelectTargets {
+                    targets: vec![TargetRef::Player(P1)],
+                })
+                .unwrap();
+        }
+        runner.advance_until_stack_empty();
+        let st = runner.state();
+        assert!(st.objects[&host].tapped);
+        assert!(!st.objects[&plague].tapped);
+        assert_eq!(st.players[1].life, life - 1);
+    }
+
     #[test]
     fn the_aetherspark_loyalty_lands_on_itself() {
         let mut scenario = GameScenario::new();
@@ -2687,17 +2819,24 @@ mod concretizer_seams {
         let mut runner = scenario.build();
         attach_to(runner.state_mut(), sp, host);
         relayer(runner.state_mut());
-        let targets: Vec<TargetFilter> = runner.state().objects[&sp]
+        let targets: Vec<(TargetFilter, Option<ObjectIncarnationRef>)> = runner.state().objects
+            [&sp]
             .trigger_definitions
             .as_slice()
             .iter()
             .filter_map(|t| t.definition.execute.as_deref())
             .filter_map(|d| match d.effect.as_ref() {
-                Effect::PutCounter { target, .. } => Some(target.clone()),
+                Effect::PutCounter { target, .. } => Some((target.clone(), d.granting_object)),
                 _ => None,
             })
             .collect();
-        assert_eq!(targets, vec![TargetFilter::SpecificObject { id: sp }]);
+        assert_eq!(
+            targets,
+            vec![(
+                TargetFilter::GrantingObject,
+                Some(incarnation(runner.state(), sp))
+            )]
+        );
         let life = runner.state().players[1].life;
         attack_with(&mut runner, host);
         runner.combat_damage();
@@ -3195,6 +3334,65 @@ mod granter_stamp {
         assert!(!matches(&state, fb, &stamped));
         assert!(targets(&state, &stamped).is_empty());
         assert_eq!(read(&state, &counters, &stamped), 3);
+    }
+
+    /// CR 201.5a + CR 115.10a: an effect naming the granter acts on the stamped granter, not the host.
+    #[test]
+    fn effect_naming_the_granter_acts_on_the_granter() {
+        type Check = fn(&Board, ObjectId) -> bool;
+        let zone = |b: &Board, id: ObjectId| b.runner.state().objects[&id].zone;
+        let cases: [(&str, Check); 6] = [
+            ("{T}: Put a +1/+1 counter on Foo Bar.", |b, fb| {
+                p1p1(b, fb) == 4 && p1p1(b, b.host) == 1
+            }),
+            ("{T}: Remove a +1/+1 counter from Foo Bar.", |b, fb| {
+                p1p1(b, fb) == 2 && p1p1(b, b.host) == 1
+            }),
+            ("{T}: Destroy Foo Bar.", |b, fb| {
+                b.runner.state().objects[&fb].zone == Zone::Graveyard
+            }),
+            ("{T}: Return Foo Bar to its owner's hand.", |b, fb| {
+                b.runner.state().objects[&fb].zone == Zone::Hand
+            }),
+            ("{T}: Sacrifice Foo Bar.", |b, fb| {
+                b.runner.state().objects[&fb].zone == Zone::Graveyard
+            }),
+            ("{T}: Exile Foo Bar.", |b, fb| {
+                b.runner.state().objects[&fb].zone == Zone::Exile
+            }),
+        ];
+        for (body, check) in cases {
+            let mut b = board(body, false);
+            let fb = b.granters[0];
+            assert_eq!(
+                b.runner.state().objects[&b.host].abilities[last_ability(&b)].granting_object,
+                Some(ObjectIncarnationRef::from_object(
+                    &b.runner.state().objects[&fb]
+                )),
+                "{body}"
+            );
+            activate_last(&mut b);
+            b.runner.advance_until_stack_empty();
+            assert!(check(&b, fb), "{body}");
+            assert_eq!(zone(&b, b.host), Zone::Battlefield, "{body}");
+        }
+    }
+
+    /// CR 201.5a + CR 603.7c: a delayed return naming the granter returns the stamped granter.
+    #[test]
+    fn delayed_return_naming_the_granter_returns_the_granter() {
+        let mut b = board(
+            "{T}: Return Foo Bar to its owner's hand at the beginning of the next end step.",
+            false,
+        );
+        let fb = b.granters[0];
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(b.runner.state().objects[&fb].zone, Zone::Battlefield);
+        b.runner.advance_to_end_step();
+        b.runner.advance_until_stack_empty();
+        assert_eq!(b.runner.state().objects[&fb].zone, Zone::Hand);
+        assert_eq!(b.runner.state().objects[&b.host].zone, Zone::Battlefield);
     }
 
     fn object_named(b: &Board, name: &str) -> ObjectId {

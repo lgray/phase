@@ -7512,10 +7512,9 @@ pub enum TargetFilter {
     /// "Exile <equipment-name>" / "Return <equipment-name> to its owner's
     /// hand"). Distinct from `SelfRef`, which is the object the ability is ON
     /// (the host creature). Emitted at parse time by the quote masker in
-    /// `normalize_card_name_refs`. Attach-time concretization, by layers and token
-    /// creation, binds the id for the target references the concretizer walks and
-    /// the exact incarnation for quantity references; an unwalked `GrantingObject`
-    /// resolves to the current ability source, or inside a filter to no object.
+    /// `normalize_card_name_refs`. It is read against the granter incarnation
+    /// stamped on the enclosing definition; unstamped, it resolves to the current
+    /// ability source, or inside a filter to no object.
     GrantingObject,
     /// CR 702.95b: Resolves to the source object and the creature it is paired
     /// with. If the source is not paired, this matches no objects.
@@ -21183,6 +21182,9 @@ impl TargetFilter {
                 | TargetFilter::TrackedSetFiltered { .. }
                 // CR 115.10a: a bound object id is affected, never a declared target.
                 | TargetFilter::SpecificObject { .. }
+                // CR 201.5a + CR 115.10a: a granter named by a granted body is affected, never a
+                // declared target.
+                | TargetFilter::GrantingObject
         )
     }
 

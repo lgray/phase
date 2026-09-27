@@ -214,7 +214,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
-        // CR 201.5a: an unwalked GrantingObject matches no object in a filter.
+        // CR 201.5a: the stamped granter is one fixed object.
         | TargetFilter::GrantingObject
         | TargetFilter::AllPlayers => false,
     }
@@ -875,7 +875,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
-        // CR 201.5a: an unwalked GrantingObject matches no object in a filter.
+        // CR 201.5a: the stamped granter is one fixed object.
         | TargetFilter::GrantingObject
         | TargetFilter::AllPlayers => false,
     }
@@ -2416,24 +2416,6 @@ pub(crate) fn retarget_chosen_card_type_to_creature_type(filter: &mut TargetFilt
         *filter = rewritten;
     }
     complete
-}
-
-/// CR 201.5a: apply `f` to every `FilterProp::DistinctFrom` reference reachable
-/// through `filter`, so an "other than <granter>" exclusion binds with its filter.
-pub(crate) fn rewrite_distinct_from_references(
-    filter: &mut TargetFilter,
-    f: &mut dyn FnMut(&mut TargetFilter),
-) {
-    let mut complete = true;
-    rewrite_filter_props(
-        filter,
-        &mut |prop| {
-            if let FilterProp::DistinctFrom { reference } = prop {
-                f(reference);
-            }
-        },
-        &mut complete,
-    );
 }
 
 /// Rewrite every property reachable through `filter`, recording any incomplete
@@ -4493,7 +4475,8 @@ fn filter_inner_for_object(
                             trigger_source,
                             recipient_id,
                             triggering_object,
-                            granting_object);
+                            granting_object,
+                        );
                         match source_defending_player(state, &source_ctx) {
                             Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
@@ -4510,7 +4493,8 @@ fn filter_inner_for_object(
                             trigger_source,
                             recipient_id,
                             triggering_object,
-                            granting_object);
+                            granting_object,
+                        );
                         match source_chosen_player(&source_ctx) {
                             Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
@@ -4582,7 +4566,8 @@ fn filter_inner_for_object(
                 trigger_source,
                 recipient_id,
                 triggering_object,
-                granting_object);
+                granting_object,
+            );
             properties
                 .iter()
                 .all(|p| matches_filter_prop(p, state, obj, object_id, &source_ctx))
@@ -4600,7 +4585,8 @@ fn filter_inner_for_object(
             scoped_iteration_player,
             triggering_object,
             granting_object,
-            controller_lookup),
+            controller_lookup,
+        ),
         TargetFilter::Or { filters } => filters.iter().any(|f| {
             filter_inner_for_object(
                 state,
@@ -4615,7 +4601,8 @@ fn filter_inner_for_object(
                 scoped_iteration_player,
                 triggering_object,
                 granting_object,
-                controller_lookup)
+                controller_lookup,
+            )
         }),
         TargetFilter::And { filters } => filters.iter().all(|f| {
             filter_inner_for_object(
@@ -4631,7 +4618,8 @@ fn filter_inner_for_object(
                 scoped_iteration_player,
                 triggering_object,
                 granting_object,
-                controller_lookup)
+                controller_lookup,
+            )
         }),
         // CR 405.1 + CR 115.9b: stack-target predicates can be composed inside
         // normal object filters, e.g. "spell or ability that targets ...".
@@ -4749,7 +4737,8 @@ fn filter_inner_for_object(
             trigger_source,
             recipient_id,
             triggering_object,
-            granting_object)
+            granting_object,
+        )
         .chosen_attributes
         .iter()
         .any(|attr| {
@@ -4851,7 +4840,8 @@ fn filter_inner_for_object(
                     scoped_iteration_player,
                     triggering_object,
                     granting_object,
-                    controller_lookup)
+                    controller_lookup,
+                )
         }
         // CR 603.10a + CR 607.2a: "cards exiled with [this object]" on a
         // leaves-the-battlefield trigger resolves from the trigger event's
@@ -4865,7 +4855,8 @@ fn filter_inner_for_object(
                 trigger_source,
                 recipient_id,
                 triggering_object,
-                granting_object);
+                granting_object,
+            );
             let linked = if trigger_source.is_some() {
                 source_ctx.linked_exile_snapshot
             } else {
@@ -4977,7 +4968,8 @@ fn filter_inner_for_object(
                 trigger_source,
                 recipient_id,
                 triggering_object,
-                granting_object);
+                granting_object,
+            );
             let chosen_name = source_ctx.chosen_attributes.iter().find_map(|a| match a {
                 ChosenAttribute::CardName(n) => Some(n.as_str()),
                 _ => None,
@@ -5146,7 +5138,8 @@ fn zone_change_filter_inner(
                 trigger_source,
                 None,
                 triggering_object,
-                ctx.granting_object);
+                ctx.granting_object,
+            );
 
             if let Some(ctrl) = controller {
                 match ctrl {
@@ -5244,7 +5237,8 @@ fn zone_change_filter_inner(
                 trigger_source,
                 None,
                 triggering_object,
-                ctx.granting_object);
+                ctx.granting_object,
+            );
             let chosen_name = source_ctx.chosen_attributes.iter().find_map(|a| match a {
                     ChosenAttribute::CardName(n) => Some(n.as_str()),
                     _ => None,
@@ -5278,7 +5272,8 @@ fn zone_change_filter_inner(
                     trigger_source,
                     None,
                     triggering_object,
-                    ctx.granting_object)
+                    ctx.granting_object,
+                )
                 .chosen_attributes
                 .iter()
                 .any(|attr| matches!(attr, ChosenAttribute::Card(pin) if *pin == occurrence))
@@ -5334,7 +5329,7 @@ fn zone_change_filter_inner(
         | TargetFilter::DefendingPlayer
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
-        // CR 201.5a: append-only (concretized before runtime).
+        // CR 201.5a: record matching does not bind the granter, so it fails closed.
         | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,
     }
@@ -5671,7 +5666,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource { .. }
-        // CR 201.5a: append-only (concretized before runtime).
+        // CR 201.5a: record matching does not bind the granter, so it fails closed.
         | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,
     }
@@ -5995,7 +5990,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
-        // CR 201.5a: append-only (concretized before runtime).
+        // CR 201.5a: spell matching does not bind the granter, so it fails closed.
         | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,
     }

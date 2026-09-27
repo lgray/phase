@@ -1487,6 +1487,25 @@ fn pay_ability_cost_inner(
                         );
                     }
                 }
+                // CR 118.3 + CR 701.26a: tapping one determined permanent (the granter, or the
+                // permanent the source is attached to) pays only while it is untapped.
+                Effect::SetTapState {
+                    target,
+                    scope: crate::types::ability::EffectScope::Single,
+                    state: crate::types::ability::TapStateChange::Tap,
+                } if matches!(target, TargetFilter::GrantingObject)
+                    || target.contains_source_attachment_host() =>
+                {
+                    let ctx = FilterContext::from_source(state, source_id)
+                        .with_granting_object(scope.granting_object(state, source_id));
+                    let Some(id) = state.battlefield.iter().copied().find(|&id| {
+                        !state.objects[&id].tapped
+                            && super::filter::matches_target_filter(state, id, target, &ctx)
+                    }) else {
+                        return Ok(payment_failed("no untapped permanent to tap"));
+                    };
+                    super::restrictions::tap_permanent_for_cost(state, id, events)?;
+                }
                 _ => {
                     return Ok(payment_failed(format!(
                         "Effect-as-cost not yet resolvable: {effect:?}"
@@ -1666,7 +1685,7 @@ fn pay_ability_cost_inner(
             }
         }
         // CR 118.3 + CR 122: Remove-counter cost. The `~` form ("Remove N {type}
-        // counters from ~") and the bound-object form are auto-payable — no
+        // counters from ~") and the granter form are auto-payable — no
         // player choice is needed, so they land here rather than in an
         // interactive WaitingFor round-trip.
         // Routes through the single-authority counter resolver so replacement
@@ -1679,15 +1698,12 @@ fn pay_ability_cost_inner(
             count,
             counter_type,
             target:
-                target @ (None
-                | Some(TargetFilter::SpecificObject { .. } | TargetFilter::GrantingObject)),
+                target @ (None | Some(TargetFilter::GrantingObject)),
             ..
         } => {
-            // CR 201.5a + CR 602.2b + CR 601.2h: a fixed- or ALL-count cost naming one
-            // bound object, such as a granter by name, involves no choice, so it is paid
-            // here like `~`.
+            // CR 201.5a + CR 602.2b + CR 601.2h: a fixed- or ALL-count cost naming the
+            // granter involves no choice, so it is paid here like `~`.
             let payer = match target {
-                Some(TargetFilter::SpecificObject { id }) => *id,
                 // CR 201.5a + CR 400.7: the granter stamped on the paying ability, while it is that object.
                 Some(TargetFilter::GrantingObject) => {
                     match scope
@@ -3033,39 +3049,6 @@ mod tests {
         )
         .expect("battlefield self-return cost should be payable");
         assert_eq!(scenario.state.objects[&src].zone, Zone::Hand);
-    }
-
-    /// CR 201.5a + CR 601.2h: a remove-counter cost naming a bound object pays from
-    /// that object, not the source.
-    #[test]
-    fn remove_counter_cost_on_a_bound_object_pays_from_that_object() {
-        let charge = CounterType::Generic("charge".to_string());
-        let mut scenario = GameScenario::new();
-        let src = scenario.add_creature(P0, "Host", 2, 2).id();
-        let other = scenario.add_creature(P0, "Granter", 0, 3).id();
-        scenario.with_counter(src, charge.clone(), 1);
-        scenario.with_counter(other, charge.clone(), 3);
-        let cost = AbilityCost::RemoveCounter {
-            count: 1,
-            counter_type: CounterMatch::OfType(charge.clone()),
-            target: Some(TargetFilter::SpecificObject { id: other }),
-            selection: Default::default(),
-        };
-        let outcome = pay_ability_cost_for_activation(
-            &mut scenario.state,
-            P0,
-            src,
-            &cost,
-            Some(0),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        assert!(matches!(outcome, PaymentOutcome::Paid));
-        assert_eq!(
-            scenario.state.objects[&other].counters.get(&charge),
-            Some(&2)
-        );
-        assert_eq!(scenario.state.objects[&src].counters.get(&charge), Some(&1));
     }
 
     /// CR 201.5a + CR 400.7 + CR 601.2h: a remove-counter cost naming the granter pays

@@ -1445,7 +1445,7 @@ fn scope_of(target: &TargetFilter, chain_root: Option<WriteScope>) -> WriteScope
         | TargetFilter::StackSpell
         // CR 201.5a: a reference to the specific existing object that granted the
         // ability — a write to it lands on an external object, exactly like
-        // `SpecificObject` (its concretized form, ability_utils.rs:4090).
+        // `SpecificObject`.
         | TargetFilter::GrantingObject
         | TargetFilter::SpecificObject { .. }
         | TargetFilter::SpecificPlayer { .. }
@@ -2419,7 +2419,7 @@ fn legacy_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         // CR 201.5a: the granting object is not one of the 12 frozen event-context
-        // tags (mirrors `SpecificObject`, its concretized form).
+        // tags (mirrors `SpecificObject`).
         | TargetFilter::GrantingObject
         | TargetFilter::SpecificObject { .. }
         | TargetFilter::SpecificPlayer { .. }

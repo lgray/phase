@@ -94,7 +94,6 @@ mod shared;
 mod static_helpers;
 mod type_change;
 
-pub(crate) use shared::continuous_modification_dynamic_quantity_mut;
 pub(crate) use shared::parse_commander_subject_filter_prefix;
 pub(crate) use shared::peel_color_quality_prefix;
 

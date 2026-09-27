@@ -1266,6 +1266,8 @@ pub(crate) fn is_pure_event_context_filter(target_filter: &TargetFilter) -> bool
             | TargetFilter::PostReplacementDamageTargetOwner
             // CR 201.5a + CR 115.10a: resolved from its bound id, never chosen.
             | TargetFilter::SpecificObject { .. }
+            // CR 201.5a + CR 115.10a: resolved from the granter stamp, never chosen.
+            | TargetFilter::GrantingObject
     )
 }
 

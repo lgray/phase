@@ -677,7 +677,6 @@ fn build_token_spec(
         let creator = ObjectIncarnationRef::of(ability.source_id, incarnation);
         for static_def in static_abilities.iter_mut() {
             crate::game::layers::stamp_static_granter(static_def, creator);
-            crate::game::ability_utils::concretize_granting_object_in_static(static_def, creator);
         }
     }
 
@@ -9173,13 +9172,16 @@ mod tests {
             .position(|a| a.cost.as_ref().and_then(sacrifice_target).is_some())
             .expect("host must carry Rock's granted sacrifice-cost ability after evaluate_layers");
 
+        let granted = &runner.state().objects[&host].abilities[idx];
         assert_eq!(
-            runner.state().objects[&host].abilities[idx]
-                .cost
-                .as_ref()
-                .and_then(sacrifice_target),
-            Some(&TargetFilter::SpecificObject { id: rock_id }),
-            "CR 201.5a: the sacrifice cost must target Rock (the granting object), not the host"
+            granted.cost.as_ref().and_then(sacrifice_target),
+            Some(&TargetFilter::GrantingObject)
+        );
+        assert_eq!(
+            granted.granting_object,
+            Some(ObjectIncarnationRef::from_object(
+                &runner.state().objects[&rock_id]
+            ))
         );
         assert!(
             !runner.state().objects[&host].abilities[idx]

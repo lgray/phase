@@ -6850,13 +6850,11 @@ fn expand_granted_static_effects(
     }
     // CR 201.5a: the host static's object granted `inner`, so its by-name
     // references bind to that object.
-    let mut concretized = inner.clone();
+    let mut stamped = inner.clone();
     if let Some(host) = state.objects.get(&host_source_id) {
-        let host = ObjectIncarnationRef::from_object(host);
-        stamp_static_granter(&mut concretized, host);
-        super::ability_utils::concretize_granting_object_in_static(&mut concretized, host);
+        stamp_static_granter(&mut stamped, ObjectIncarnationRef::from_object(host));
     }
-    let inner = &concretized;
+    let inner = &stamped;
     let inner_affected = inner.affected.clone().unwrap_or(TargetFilter::Any);
     let ctx = crate::game::filter::FilterContext::from_source(state, host_source_id);
     let mut out = Vec::new();
@@ -9521,16 +9519,7 @@ fn apply_continuous_effect_filtered(
             // apart (CR 113.2c). Structural equality dedup keeps the grant
             // idempotent.
             ContinuousModification::GrantAbility { definition } => {
-                // CR 201.5a + CR 613.1f: concretize any granter by-name
-                // self-reference (`GrantingObject`) in the cloned body to the
-                // granting object before dedup/push, so "Exile/Sacrifice/Return
-                // <granter-name>" acts on the equipment/aura, not on the host it
-                // was granted to. Re-minted each layer pass (CR 613.1f). Dedup on
-                // the concretized value.
                 let mut granted = *definition.clone();
-                if let Some(granter) = granter {
-                    super::ability_utils::concretize_granting_object(&mut granted, granter);
-                }
                 if let Some(granter) = stamp_granter_as {
                     let _ = nodes_mut::visit_ability_def(&mut granted, &mut stamp_granter(granter));
                 }
@@ -9551,17 +9540,7 @@ fn apply_continuous_effect_filtered(
             // CR 604.1: Push granted trigger to trigger_definitions so
             // the trigger's event matching and condition metadata is preserved.
             ContinuousModification::GrantTrigger { trigger } => {
-                // CR 201.5a + CR 613.1f: concretize a granter by-name
-                // self-reference inside the granted trigger's execute chain
-                // (e.g. "you may sacrifice <granter>") to the granting object
-                // before dedup/push. Re-minted each layer pass (CR 613.1f).
                 let mut granted = *trigger.clone();
-                if let Some(granter) = granter {
-                    super::ability_utils::concretize_granting_object_in_trigger(
-                        &mut granted,
-                        granter,
-                    );
-                }
                 if let Some(granter) = stamp_granter_as {
                     let _ = nodes_mut::visit_trigger(&mut granted, &mut stamp_granter(granter));
                 }
@@ -9582,8 +9561,8 @@ fn apply_continuous_effect_filtered(
             // CR 113.3d + CR 604.1 + CR 613.1f: Grant a full static ability to the
             // recipient. The inner static's `affected`/`condition`/`modifications`
             // are independent of the recipient (e.g. "Other commanders you control
-            // get +2/+2 and have lifelink") and are preserved apart from granter
-            // concretization (CR 201.5a), so the granted static operates against
+            // get +2/+2 and have lifelink") and are preserved apart from the granter
+            // stamp (CR 201.5a), so the granted static operates against
             // its own scope under CR 611.2c once it's installed on the recipient's
             // `static_definitions`. Dedup by structural equality so repeated layer
             // passes don't multiply the grant (mirrors the `GrantAbility` /
@@ -9592,12 +9571,6 @@ fn apply_continuous_effect_filtered(
                 let mut granted = *definition.clone();
                 if let Some(granter) = stamp_granter_as {
                     let _ = nodes_mut::visit_static(&mut granted, &mut stamp_granter(granter));
-                }
-                if let Some(granter) = granter {
-                    super::ability_utils::concretize_granting_object_in_static(
-                        &mut granted,
-                        granter,
-                    );
                 }
                 if !obj.static_definitions.iter_all().any(|sd| sd == &granted) {
                     obj.static_definitions.push(granted);

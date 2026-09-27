@@ -2252,7 +2252,7 @@ fn unmask_keyword_action_walker_names(text: String, originals: &[String]) -> Str
 ///
 /// * the TYPED channel — `parse_self_reference` (`oracle_nom/target.rs`) and the
 ///   cost self-ref combinators map it to `TargetFilter::GrantingObject`,
-///   concretized to the granting object at each Layer-6 grant; and
+///   bound to the granting object by each Layer-6 grant's stamp; and
 /// * the DISPLAY channel — [`render_granting_self_reference`], invoked from the
 ///   two production parse entry points `parser::oracle::parse_oracle_text` and
 ///   `game::effects::token::catalog_rules_text_abilities`, which renders the
@@ -2283,7 +2283,7 @@ pub(crate) const GRANTING_SELF_PLACEHOLDER: &str = "\u{E0002}";
 /// `GrantAllActivatedAbilitiesOf` is expanded at continuous-effect collection
 /// time into one synthesized `GrantAbility` per donated ability, each emitted
 /// with `source_id: recipient_id` (`game::layers::expand_granted_activated_abilities`).
-/// Layer 6 concretizes against that `source_id`, so a live name lookup there
+/// Layer 6 stamps against that `source_id`, so a live name lookup there
 /// would stamp the RE-GRANTING object's name rather than the original granter's.
 /// The printed name resolved once, here, travels through the copy correctly.
 ///

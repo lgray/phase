@@ -1002,9 +1002,7 @@ pub(super) fn exile_cost_effective_zone(zone: Option<Zone>, filter: Option<&Targ
     zone.unwrap_or_else(|| match filter {
         // CR 201.5a + CR 113.6: a zone-less cost naming its granter exiles the
         // granter, whose granting ability functions only on the battlefield.
-        Some(TargetFilter::GrantingObject | TargetFilter::SpecificObject { .. }) => {
-            Zone::Battlefield
-        }
+        Some(TargetFilter::GrantingObject) => Zone::Battlefield,
         Some(f) if crate::game::filter::filter_implies_battlefield_permanent(f) => {
             Zone::Battlefield
         }
@@ -1209,15 +1207,10 @@ mod tests {
                 ..Default::default()
             })
         }
-        let rows: [(&str, TargetFilter, Zone); 8] = [
+        let rows: [(&str, TargetFilter, Zone); 7] = [
             (
                 "the granter",
                 TargetFilter::GrantingObject,
-                Zone::Battlefield,
-            ),
-            (
-                "the bound granter",
-                TargetFilter::SpecificObject { id: ObjectId(7) },
                 Zone::Battlefield,
             ),
             (

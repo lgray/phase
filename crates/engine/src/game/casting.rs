@@ -22207,18 +22207,14 @@ pub(super) fn find_targeted_remove_counter_cost(
     CounterCostSelection,
 )> {
     match cost {
-        // CR 601.2h: a bound object with a fixed or ALL count involves no choice;
+        // CR 601.2h: the granter with a fixed or ALL count involves no choice;
         // `pay_ability_cost_inner` pays it.
         AbilityCost::RemoveCounter {
             count,
             counter_type,
             target: Some(target),
             selection,
-        } if !matches!(
-            target,
-            TargetFilter::SpecificObject { .. } | TargetFilter::GrantingObject
-        ) =>
-        {
+        } if !matches!(target, TargetFilter::GrantingObject) => {
             Some((*count, counter_type, target, *selection))
         }
         AbilityCost::Composite { costs } => {
