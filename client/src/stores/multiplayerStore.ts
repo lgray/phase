@@ -1890,6 +1890,7 @@ function disposeActiveP2PHost(): void {
 }
 
 function closeHostWebSocket(): void {
+  serverHostAttempt += 1;
   if (hostReconnectTimer) {
     clearTimeout(hostReconnectTimer);
     hostReconnectTimer = null;
@@ -3191,7 +3192,6 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
 
       cancelHosting: () => {
         p2pHostingAttempt += 1;
-        serverHostAttempt += 1;
         // A closed host socket leaves the room alive for the reconnect grace.
         if (hostWs?.readyState === WebSocket.OPEN) {
           hostWs.send(JSON.stringify({ type: "AbandonGame" }));

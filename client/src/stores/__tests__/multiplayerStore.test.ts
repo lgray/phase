@@ -1413,6 +1413,45 @@ describe("multiplayerStore", () => {
     expect(useMultiplayerStore.getState().hostingStatus).toBe("idle");
   });
 
+  it("drops a host socket that finishes connecting after a P2P host replaces it", async () => {
+    const openDefault = vi.mocked(openPhaseSocket).getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(openPhaseSocket).mockImplementationOnce(async (...args) => {
+      await gate;
+      return openDefault(...args);
+    });
+    useMultiplayerStore.getState().startHosting(
+      hostingSettings(),
+      { main_deck: ["Forest"], sideboard: [], commander: [] },
+      HOST_URL,
+    );
+    const ok = await useMultiplayerStore.getState().startP2PHostingSession(
+      hostingSettings(),
+      { main_deck: ["Forest"], sideboard: [], commander: [] },
+      { brokerUrl: null },
+    );
+    expect(ok).toBe(true);
+    const { hostingStatus, hostGameCode } = useMultiplayerStore.getState();
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const ws = socketMocks.currentWs!;
+    expect(ws).not.toBeNull();
+    emitServerMessage("GameCreated", {
+      game_code: "SRVCD",
+      player_token: "host-token",
+      full_key: { game_code: "SRVCD", generation: 1 },
+    });
+
+    expect(socketMocks.send).not.toHaveBeenCalled();
+    expect(ws.close).toHaveBeenCalled();
+    expect(useMultiplayerStore.getState()).toMatchObject({ hostingStatus, hostGameCode });
+    expect(loadWsSession()?.gameCode).not.toBe("SRVCD");
+  });
+
   it("ignores a host dial that fails after cancel", async () => {
     const lostToasts = () =>
       [...useMultiplayerStore.getState().toasts.values()].filter(
