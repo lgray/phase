@@ -8341,11 +8341,7 @@ async fn join_game_with_password_full(
         return;
     }
 
-    let guest_commit = identity
-        .client_hello
-        .as_ref()
-        .map(|h| h.build_commit.clone())
-        .unwrap_or_default();
+    let guest_commit = identity.hello_build_commit().to_owned();
     // Refuses ahead of deck resolution; `lock_session_for_admission` decides.
     let preflight = lobby_admission(
         lobby.lock().await.lobby(),
@@ -10131,11 +10127,7 @@ async fn handle_client_message(
             let mut reservation_expires_at_ms = None;
             let mut reservation_counted_in_info = false;
 
-            let guest_commit = identity
-                .client_hello
-                .as_ref()
-                .map(|h| h.build_commit.clone())
-                .unwrap_or_default();
+            let guest_commit = identity.hello_build_commit().to_owned();
             let lookup = {
                 let lob_guard = lobby.lock().await;
                 let lob = lob_guard.lobby();
@@ -11853,11 +11845,7 @@ async fn handle_client_message(
                 return;
             }
 
-            let guest_commit = identity
-                .client_hello
-                .as_ref()
-                .map(|h| h.build_commit.clone())
-                .unwrap_or_default();
+            let guest_commit = identity.hello_build_commit().to_owned();
             let result = {
                 let mut mgr = draft_state.lock().await;
                 // Deciding under the draft guard orders the check with a returning host's re-stamp.

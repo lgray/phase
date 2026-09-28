@@ -145,6 +145,15 @@ pub struct ConnState {
     pub joined_tournaments: Vec<String>,
 }
 
+impl ConnState {
+    /// The accepted hello's build, `""` before a hello.
+    fn hello_build_commit(&self) -> &str {
+        self.client_hello
+            .as_ref()
+            .map_or("", |h| h.build_commit.as_str())
+    }
+}
+
 /// A side effect the shell must perform after a broker call. **Order within a
 /// returned `Vec<Outbound>` is significant** and must be preserved.
 #[derive(Debug, Clone, PartialEq)]
@@ -548,10 +557,7 @@ impl Broker {
             LobbyClientMessage::SubscribeLobby => {
                 debug!("lobby subscription");
                 conn.subscribed = true;
-                let viewer = conn
-                    .client_hello
-                    .as_ref()
-                    .map_or("", |h| h.build_commit.as_str());
+                let viewer = conn.hello_build_commit();
                 let games: Vec<LobbyGame> = self
                     .lobby
                     .public_games()
@@ -1065,11 +1071,7 @@ impl Broker {
             return vec![error("You are already hosting this game")];
         }
 
-        let guest_commit = conn
-            .client_hello
-            .as_ref()
-            .map(|h| h.build_commit.as_str())
-            .unwrap_or("");
+        let guest_commit = conn.hello_build_commit();
         let host_commit = self.lobby.host_build_commit(&game_code).unwrap_or("");
         if let BuildCommitCheck::Reject { host, guest } =
             check_build_commit(host_commit, guest_commit)
@@ -1167,11 +1169,7 @@ impl Broker {
         }
 
         // --- build-commit + password gates, then snapshot ---
-        let guest_commit = conn
-            .client_hello
-            .as_ref()
-            .map(|h| h.build_commit.as_str())
-            .unwrap_or("");
+        let guest_commit = conn.hello_build_commit();
         let host_commit = self.lobby.host_build_commit(&game_code).unwrap_or("");
         if let BuildCommitCheck::Reject { host, guest } =
             check_build_commit(host_commit, guest_commit)
