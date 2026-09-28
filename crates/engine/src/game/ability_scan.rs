@@ -287,6 +287,8 @@ fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
         sibling_condition: _,            // SiblingCondition replication marker, no dynamic read
         distribute: _, // announcement unit tag/string, no resolution-time dynamic read
         parent_target_missing_reason: _, // seam flag
+        activation_cost_reduction: _,
+        activation_record: _,
     } = a;
 
     let mut acc = scan_effect(effect, mode);
@@ -850,6 +852,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             enters_attacking: _,
             source: _,
             keep_count_expr,
+            rest_split_top_count,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player, target_ctx, mode));
@@ -859,6 +862,11 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             // detector exactly like `count`. Classify it identically, not `_`.
             if let Some(kce) = keep_count_expr {
                 acc = acc.or(scan_quantity_expr(kce, mode));
+            }
+            // A dynamic remainder-split size is the same class of
+            // projected-resource read as the dynamic keep count.
+            if let Some(split) = rest_split_top_count {
+                acc = acc.or(scan_quantity_expr(split, mode));
             }
             acc = acc.or(scan_target_filter(filter, target_ctx, mode));
             acc

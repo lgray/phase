@@ -2203,17 +2203,113 @@ struct BlockDeclarationConstraints {
     future_requirement_satisfaction: Vec<Vec<bool>>,
 }
 
+/// Flatten and deduplicate `valid_block_targets` into the legal (blocker,
+/// attacker) pair universe `BlockDeclarationConstraints::build` scores, in the
+/// same ascending order it uses.
+fn legal_block_pairs(
+    valid_block_targets: &HashMap<ObjectId, Vec<ObjectId>>,
+) -> Vec<(ObjectId, ObjectId)> {
+    let mut pairs: Vec<(ObjectId, ObjectId)> = valid_block_targets
+        .iter()
+        .flat_map(|(&blocker, attackers)| {
+            attackers.iter().map(move |&attacker| (blocker, attacker))
+        })
+        .collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs
+}
+
+/// CR 509.1c: the attacker-carried `MustBeBlocked` / `MustBeBlockedByAll`
+/// requirements functioning against `player`'s defense, restricted to the pairs
+/// in `pairs` (the legal blocker/attacker universe).
+fn must_be_blocked_requirements(
+    state: &GameState,
+    player: PlayerId,
+    pairs: &[(ObjectId, ObjectId)],
+) -> Vec<BlockDeclarationRequirement> {
+    let mut requirements = Vec::new();
+    let must_be_blocked = collect_must_be_blocked_statics(state);
+    if let Some(combat) = &state.combat {
+        for info in combat
+            .attackers
+            .iter()
+            .filter(|info| info.defending_player == player)
+        {
+            let attacker = info.object_id;
+            for (by, source, anchor) in
+                must_be_blocked_requirements_for_attacker(state, attacker, &must_be_blocked)
+            {
+                if pairs.iter().any(|(blocker, aid)| {
+                    *aid == attacker
+                        && by.is_none_or(|filter| {
+                            matches_target_filter(
+                                state,
+                                *blocker,
+                                filter,
+                                &blocker_filter_context(state, source, anchor),
+                            )
+                        })
+                }) {
+                    requirements.push(BlockDeclarationRequirement::Attacker {
+                        attacker,
+                        by: by.cloned(),
+                        source,
+                        anchor,
+                    });
+                }
+            }
+            for (filter, source, anchor) in
+                must_be_blocked_by_all_requirements_for_attacker(state, attacker, &must_be_blocked)
+            {
+                for &(blocker, aid) in pairs {
+                    if aid == attacker
+                        && filter.is_none_or(|f| {
+                            matches_target_filter(
+                                state,
+                                blocker,
+                                f,
+                                &blocker_filter_context(state, source, anchor),
+                            )
+                        })
+                    {
+                        requirements.push(BlockDeclarationRequirement::Every { blocker, attacker });
+                    }
+                }
+            }
+        }
+    }
+    requirements
+}
+
+/// CR 509.1c: the blocks that obey a requirement carried by the attacker
+/// (`StaticMode::MustBeBlocked` / `MustBeBlockedByAll`), keyed by blocker;
+/// display-only, computed from the requirements the declaration solver scores
+/// (`must_be_blocked_requirements`) and the same `requirement_is_satisfied`
+/// predicate that enforces them.
+pub fn must_be_blocked_targets_for_player(
+    state: &GameState,
+    player: PlayerId,
+    valid_block_targets: &HashMap<ObjectId, Vec<ObjectId>>,
+) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let pairs = legal_block_pairs(valid_block_targets);
+    let requirements = must_be_blocked_requirements(state, player, &pairs);
+    let mut result: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for &(blocker, attacker) in &pairs {
+        let obeys = requirements.iter().any(|requirement| {
+            requirement_is_satisfied(state, requirement, &[(blocker, attacker)])
+        });
+        if obeys {
+            result.entry(blocker).or_default().push(attacker);
+        }
+    }
+    result
+}
+
 impl BlockDeclarationConstraints {
     fn build(state: &GameState, player: PlayerId) -> Self {
         let valid = get_valid_block_targets_for_player(state, player);
-        let mut pairs: Vec<(ObjectId, ObjectId)> = valid
-            .iter()
-            .flat_map(|(&blocker, attackers)| {
-                attackers.iter().map(move |&attacker| (blocker, attacker))
-            })
-            .collect();
-        pairs.sort_unstable();
-        pairs.dedup();
+        let pairs = legal_block_pairs(&valid);
 
         let mut requirements = Vec::new();
         let blocker_restriction = collect_blocker_restriction_statics(state);
@@ -2261,59 +2357,7 @@ impl BlockDeclarationConstraints {
             }
         }
 
-        let must_be_blocked = collect_must_be_blocked_statics(state);
-        if let Some(combat) = &state.combat {
-            for info in combat
-                .attackers
-                .iter()
-                .filter(|info| info.defending_player == player)
-            {
-                let attacker = info.object_id;
-                for (by, source, anchor) in
-                    must_be_blocked_requirements_for_attacker(state, attacker, &must_be_blocked)
-                {
-                    if pairs.iter().any(|(blocker, aid)| {
-                        *aid == attacker
-                            && by.is_none_or(|filter| {
-                                matches_target_filter(
-                                    state,
-                                    *blocker,
-                                    filter,
-                                    &blocker_filter_context(state, source, anchor),
-                                )
-                            })
-                    }) {
-                        requirements.push(BlockDeclarationRequirement::Attacker {
-                            attacker,
-                            by: by.cloned(),
-                            source,
-                            anchor,
-                        });
-                    }
-                }
-                for (filter, source, anchor) in must_be_blocked_by_all_requirements_for_attacker(
-                    state,
-                    attacker,
-                    &must_be_blocked,
-                ) {
-                    for &(blocker, aid) in &pairs {
-                        if aid == attacker
-                            && filter.is_none_or(|f| {
-                                matches_target_filter(
-                                    state,
-                                    blocker,
-                                    f,
-                                    &blocker_filter_context(state, source, anchor),
-                                )
-                            })
-                        {
-                            requirements
-                                .push(BlockDeclarationRequirement::Every { blocker, attacker });
-                        }
-                    }
-                }
-            }
-        }
+        requirements.extend(must_be_blocked_requirements(state, player, &pairs));
         // Keep the entire legal pair universe. A pair that does not directly
         // score a requirement can still be coupled to one that does through a
         // multi-blocker capacity, menace floor, or another CR 509.1b legality
@@ -3034,8 +3078,8 @@ fn validate_blockers_core(
         }
     }
 
-    // CR 509.1a + CR 509.1b: Enforce per-blocker limit on how many attackers it can block.
-    // Default is 1; ExtraBlockers { count: Some(n) } allows 1 + n; count: None = unlimited.
+    // CR 509.1a + CR 101.1: Enforce per-blocker limit on how many attackers it can block
+    // (extra_block_limit / block_capacity own the ExtraBlockers arithmetic).
     {
         for (&blocker_id, &num_blocked) in &attackers_per_blocker {
             if num_blocked <= 1 {
@@ -3045,7 +3089,6 @@ fn validate_blockers_core(
                 .objects
                 .get(&blocker_id)
                 .ok_or_else(|| format!("Blocker {:?} not found during limit check", blocker_id))?;
-            // Find the best ExtraBlockers grant on this creature
             let max_allowed = extra_block_limit(state, blocker);
             if num_blocked > max_allowed {
                 return Err(format!(
@@ -7192,12 +7235,17 @@ pub fn build_declare_blockers_waiting_for(
     let valid_blocker_ids = ordered_valid_blocker_ids(&valid_block_targets);
     let block_requirements = block_requirements_for_player(state, player);
     let blocker_constraints = blocker_constraints_for_player(state, player, &valid_block_targets);
+    let must_be_blocked_targets =
+        must_be_blocked_targets_for_player(state, player, &valid_block_targets);
+    let block_capacities = block_capacities(state, &valid_block_targets);
     crate::types::game_state::WaitingFor::DeclareBlockers {
         player,
         valid_blocker_ids,
         valid_block_targets,
         block_requirements,
         blocker_constraints,
+        must_be_blocked_targets,
+        block_capacities,
     }
 }
 
@@ -7215,27 +7263,11 @@ pub fn refresh_combat_declaration_waiting_for(state: &mut GameState) {
         crate::types::game_state::WaitingFor::DeclareBlockers { player, .. } => {
             // Copy `player` out before the immutable-borrowing queries below.
             let player = *player;
-            // CR 509.1a: Mirror turns.rs:1394-1396 — player-scoped block targets.
-            let valid_block_targets = get_valid_block_targets_for_player(state, player);
-            let valid_blocker_ids = ordered_valid_blocker_ids(&valid_block_targets);
-            let block_requirements = block_requirements_for_player(state, player);
-            // CR 509.1b/c: recompute the display constraints from the same
-            // recomputed `valid_block_targets` (self-heal parity).
-            let blocker_constraints =
-                blocker_constraints_for_player(state, player, &valid_block_targets);
-            if let crate::types::game_state::WaitingFor::DeclareBlockers {
-                valid_blocker_ids: ids,
-                valid_block_targets: targets,
-                block_requirements: reqs,
-                blocker_constraints: constraints,
-                ..
-            } = &mut state.waiting_for
-            {
-                *ids = valid_blocker_ids;
-                *targets = valid_block_targets;
-                *reqs = block_requirements;
-                *constraints = blocker_constraints;
-            }
+            // CR 509.1a-c: rebuild the entire payload from the single
+            // builder so this in-place writer (the one `E0063` cannot flag)
+            // cannot silently leave a field unpopulated.
+            let rebuilt = build_declare_blockers_waiting_for(state, player);
+            state.waiting_for = rebuilt;
         }
         _ => {}
     }
@@ -7509,21 +7541,50 @@ fn ring_bearer_unblockable_by_greater_power(
         && blocker.power.unwrap_or(0) > attacker.power.unwrap_or(0)
 }
 
-/// CR 509.1a + CR 509.1b: Compute the maximum number of attackers a creature can block.
-/// Default is 1. ExtraBlockers { count: Some(n) } adds n (so 1+n). count: None = unlimited (u32::MAX).
-/// Multiple ExtraBlockers stack: the best (highest) limit wins.
-fn extra_block_limit(state: &GameState, blocker: &GameObject) -> u32 {
-    let mut max: u32 = 1;
+/// CR 509.1a + CR 101.1: A creature blocks one attacker unless an effect (a
+/// card's text overriding the CR 509.1a default) lets it block more.
+/// `ExtraBlockers { count: Some(n) }` raises the limit by `n`; `count: None`
+/// lets it block any number, so there is no numeric ceiling. The counts of
+/// every active `ExtraBlockers` static are summed; an unlimited one wins.
+/// Single authority for both `extra_block_limit` (the declaration-validator's
+/// numeric form) and `block_capacities` (the prompt's display projection).
+fn block_capacity(state: &GameState, blocker: &GameObject) -> Option<u32> {
+    let mut total: u32 = 1;
     // CR 702.26b + CR 604.1: `active_static_definitions` owns the gating.
     for sd in super::functioning_abilities::active_static_definitions(state, blocker) {
         if let StaticMode::ExtraBlockers { count } = &sd.mode {
-            match count {
-                None => return u32::MAX, // unlimited
-                Some(n) => max = max.max(1 + n),
-            }
+            let n = (*count)?; // None = any number
+            total = total.saturating_add(n);
         }
     }
-    max
+    Some(total)
+}
+
+/// The numeric form of [`block_capacity`] the declaration checks use:
+/// `u32::MAX` stands in for "any number" so callers can compare without
+/// unwrapping an `Option`.
+fn extra_block_limit(state: &GameState, blocker: &GameObject) -> u32 {
+    block_capacity(state, blocker).unwrap_or(u32::MAX)
+}
+
+/// CR 509.1a + CR 101.1: for each key of `valid_block_targets`, that
+/// creature's block limit — `None` for any number. Display-only: the client
+/// renders it directly as the block-count stepper's ceiling; the declaration
+/// validator's own authority is `extra_block_limit`, computed from the same
+/// [`block_capacity`].
+fn block_capacities(
+    state: &GameState,
+    valid_block_targets: &HashMap<ObjectId, Vec<ObjectId>>,
+) -> HashMap<ObjectId, Option<u32>> {
+    valid_block_targets
+        .keys()
+        .filter_map(|id| {
+            state
+                .objects
+                .get(id)
+                .map(|obj| (*id, block_capacity(state, obj)))
+        })
+        .collect()
 }
 
 /// For each valid blocker, compute which attackers it can legally block.
@@ -17741,6 +17802,98 @@ mod tests {
         .is_ok());
     }
 
+    /// CR 509.1a + CR 101.1: `block_capacity` is the single authority
+    /// `extra_block_limit` and `block_capacities` both read; these rows pin
+    /// its `ExtraBlockers` arithmetic directly, independent of the
+    /// declaration validator.
+    #[test]
+    fn block_capacity_with_no_grant_is_one() {
+        let mut state = setup();
+        let blocker = create_creature(&mut state, PlayerId(1), "Wall", 0, 4);
+        assert_eq!(
+            block_capacity(&state, state.objects.get(&blocker).unwrap()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn block_capacity_with_one_extra_is_two() {
+        use crate::types::ability::StaticDefinition;
+
+        let mut state = setup();
+        let blocker = create_creature(&mut state, PlayerId(1), "Foriysian Brigade", 2, 4);
+        state
+            .objects
+            .get_mut(&blocker)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::ExtraBlockers {
+                count: Some(1),
+            }));
+        assert_eq!(
+            block_capacity(&state, state.objects.get(&blocker).unwrap()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn block_capacity_with_unlimited_grant_is_none() {
+        use crate::types::ability::StaticDefinition;
+
+        let mut state = setup();
+        let blocker = create_creature(&mut state, PlayerId(1), "Palace Guard", 1, 4);
+        state
+            .objects
+            .get_mut(&blocker)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::ExtraBlockers {
+                count: None,
+            }));
+        assert_eq!(
+            block_capacity(&state, state.objects.get(&blocker).unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn block_capacity_stacks_multiple_numeric_grants_cumulatively() {
+        use crate::types::ability::StaticDefinition;
+
+        let mut state = setup();
+        let blocker = create_creature(&mut state, PlayerId(1), "Doubly Blessed Wall", 0, 4);
+        let defs = &mut state.objects.get_mut(&blocker).unwrap().static_definitions;
+        defs.push(StaticDefinition::new(StaticMode::ExtraBlockers {
+            count: Some(1),
+        }));
+        defs.push(StaticDefinition::new(StaticMode::ExtraBlockers {
+            count: Some(2),
+        }));
+        assert_eq!(
+            block_capacity(&state, state.objects.get(&blocker).unwrap()),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn block_capacity_unlimited_grant_wins_over_a_numeric_grant() {
+        use crate::types::ability::StaticDefinition;
+
+        let mut state = setup();
+        let blocker = create_creature(&mut state, PlayerId(1), "Doubly Blessed Wall", 0, 4);
+        let defs = &mut state.objects.get_mut(&blocker).unwrap().static_definitions;
+        defs.push(StaticDefinition::new(StaticMode::ExtraBlockers {
+            count: Some(2),
+        }));
+        defs.push(StaticDefinition::new(StaticMode::ExtraBlockers {
+            count: None,
+        }));
+        assert_eq!(
+            block_capacity(&state, state.objects.get(&blocker).unwrap()),
+            None
+        );
+    }
+
     #[test]
     fn normal_creature_cannot_block_two_attackers() {
         let mut state = setup();
@@ -18104,6 +18257,145 @@ mod tests {
         assert!(validate_blockers(&state, &[(dalek, attacker)]).is_ok());
         // Both blockers assigned (Dalek satisfies it): legal.
         assert!(validate_blockers(&state, &[(dalek, attacker), (non_dalek, attacker)]).is_ok());
+    }
+
+    /// CR 509.1c: `must_be_blocked_targets_for_player` lists only the blocker
+    /// that obeys the FILTERED "must be blocked by a Dalek if able" requirement
+    /// — the reach guard shows the non-Dalek is also legally able to block the
+    /// same attacker, so its absence below is the filter, not illegality.
+    #[test]
+    fn must_be_blocked_targets_for_player_lists_only_the_matching_blocker() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Ace", 3, 3);
+        add_must_be_blocked_by_dalek(&mut state, attacker);
+        let dalek = create_creature(&mut state, PlayerId(1), "Dalek Drone", 2, 2);
+        state
+            .objects
+            .get_mut(&dalek)
+            .unwrap()
+            .card_types
+            .subtypes
+            .push("Dalek".to_string());
+        let non_dalek = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(attacker, PlayerId(1))],
+            ..Default::default()
+        });
+
+        let valid = get_valid_block_targets_for_player(&state, PlayerId(1));
+        assert_eq!(
+            valid.get(&non_dalek),
+            Some(&vec![attacker]),
+            "reach guard: the non-Dalek is legally able to block the attacker"
+        );
+
+        let projected = must_be_blocked_targets_for_player(&state, PlayerId(1), &valid);
+        assert_eq!(
+            projected,
+            HashMap::from([(dalek, vec![attacker])]),
+            "only the Dalek obeys the filtered requirement"
+        );
+    }
+
+    /// CR 509.1c: a blocker-side intrinsic `StaticMode::MustBlock` ("this
+    /// creature blocks if able") names no attacker, so it must not appear in
+    /// `must_be_blocked_targets_for_player`, which projects only requirements
+    /// carried by the ATTACKER. Positive control: `blocker_constraints_for_player`
+    /// (the display projection for blocker-side requirements) shows the
+    /// obligation is real.
+    #[test]
+    fn must_be_blocked_targets_for_player_excludes_a_generic_blocker_side_must_block() {
+        let mut state = setup();
+        let blocker = create_creature(&mut state, PlayerId(1), "Loyal Retainers", 2, 2);
+        state
+            .objects
+            .get_mut(&blocker)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::MustBlock));
+        let attacker = create_creature(&mut state, PlayerId(0), "Bear", 2, 2);
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(attacker, PlayerId(1))],
+            ..Default::default()
+        });
+
+        let valid = get_valid_block_targets_for_player(&state, PlayerId(1));
+        assert!(
+            matches!(
+                blocker_constraints_for_player(&state, PlayerId(1), &valid).get(&blocker),
+                Some(CombatRequirement::MustBlock { .. })
+            ),
+            "positive control: the blocker-side obligation is real and enforced"
+        );
+
+        assert!(
+            must_be_blocked_targets_for_player(&state, PlayerId(1), &valid).is_empty(),
+            "a blocker-side MustBlock names no attacker and must not appear"
+        );
+    }
+
+    /// CR 509.1c: a blocker-side "must block THAT creature if able" requirement
+    /// (`StaticMode::MustBlockAttacker`, e.g. provoke) becomes
+    /// `BlockDeclarationRequirement::Exact` — so it would leak into the
+    /// must-be-blocked projection if that projection read
+    /// `BlockDeclarationConstraints::build`'s full requirement list instead of
+    /// the extracted `must_be_blocked_requirements`.
+    /// Positive control: the same pair is a genuine `blocker_constraints_for_player`
+    /// `MustBlock` entry, so its absence from the new map is the extraction
+    /// boundary at work, not a missing requirement.
+    #[test]
+    fn must_be_blocked_targets_for_player_excludes_a_must_block_attacker_exact_requirement() {
+        let mut state = setup();
+        let provoker = create_creature(&mut state, PlayerId(0), "Krosan Vorine", 3, 3);
+        let forced = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        add_must_block_attacker(&mut state, forced, provoker);
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(provoker, PlayerId(1))],
+            ..Default::default()
+        });
+
+        let valid = get_valid_block_targets_for_player(&state, PlayerId(1));
+        assert_eq!(
+            blocker_constraints_for_player(&state, PlayerId(1), &valid).get(&forced),
+            Some(&CombatRequirement::MustBlock {
+                sources: vec![forced],
+                attackers: vec![provoker],
+            }),
+            "positive control: the Exact requirement is real and enforced as a \
+             blocker obligation"
+        );
+
+        let projected = must_be_blocked_targets_for_player(&state, PlayerId(1), &valid);
+        assert!(
+            !projected
+                .get(&forced)
+                .is_some_and(|attackers| attackers.contains(&provoker)),
+            "an Exact (blocker-side) requirement must not surface as an \
+             attacker-carried must-be-blocked entry"
+        );
+    }
+
+    /// CR 509.1c: with no attacker-carried requirement functioning at all, the
+    /// projection is empty — the reach guard shows this is because none exists,
+    /// not because no blocker is legally able to block.
+    #[test]
+    fn must_be_blocked_targets_for_player_empty_with_no_requirement() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Bear", 2, 2);
+        let blocker = create_creature(&mut state, PlayerId(1), "Elf", 1, 1);
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(attacker, PlayerId(1))],
+            ..Default::default()
+        });
+
+        let valid = get_valid_block_targets_for_player(&state, PlayerId(1));
+        assert_eq!(
+            valid.get(&blocker),
+            Some(&vec![attacker]),
+            "reach guard: the blocker is legally able to block the attacker"
+        );
+        assert!(must_be_blocked_targets_for_player(&state, PlayerId(1), &valid).is_empty());
     }
 
     /// CR 509.1c: a Dalek already blocking another attacker but with spare

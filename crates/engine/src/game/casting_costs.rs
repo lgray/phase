@@ -1798,6 +1798,32 @@ pub(crate) fn begin_deferred_target_selection(
         &mut target_slots,
     );
     if target_slots.is_empty() {
+        // CR 601.2c + CR 601.2f + CR 602.2b: an activation whose lock waited for
+        // targets (another mode could target) settles here, where the chosen
+        // modes and X turn out to declare none. It goes through the same
+        // settlement and payment boundary every targeted deferred-X route uses;
+        // an activation that locked earlier keeps its established continuation.
+        if pending
+            .activation_cost_snapshot
+            .as_deref()
+            .is_some_and(|snapshot| {
+                matches!(
+                    snapshot.lock,
+                    crate::types::casting_costs::ActivationCostLock::Open {
+                        point:
+                            crate::types::casting_costs::ActivationCostLockPoint::TargetSettlement,
+                    }
+                )
+            })
+        {
+            return super::casting::settle_activation_cost(
+                state,
+                player,
+                pending,
+                crate::types::casting_costs::SettledTail::Boundary,
+                events,
+            );
+        }
         return finish_pending_cost_or_cast(state, player, pending, events);
     }
     // CR 115.1 + CR 701.9b: Random-target abilities short-circuit to RNG-driven
@@ -2630,6 +2656,10 @@ fn finish_selected_return_to_hand_after_automatic(
     park_events_after_completion: bool,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    super::casting::require_locked_activation_cost(
+        pending.activation_cost_snapshot.as_deref(),
+        super::casting::ActivationCostGuardSite::ReturnAfterAutomatic,
+    )?;
     if let Some(cost) = automatic_remaining {
         let ability_index = pending.activation_ability_index.ok_or_else(|| {
             EngineError::InvalidAction(
@@ -4190,6 +4220,10 @@ pub(crate) fn handle_return_to_hand_for_cost(
     chosen: &[ObjectId],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    super::casting::require_locked_activation_cost(
+        pending.activation_cost_snapshot.as_deref(),
+        super::casting::ActivationCostGuardSite::ReturnToHand,
+    )?;
     let cost_event_start = events.len();
     if chosen.len() != count {
         return Err(EngineError::InvalidAction(format!(
@@ -4308,6 +4342,10 @@ pub(crate) fn handle_remove_counter_for_cost(
     chosen: &[ObjectId],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    super::casting::require_locked_activation_cost(
+        pending.activation_cost_snapshot.as_deref(),
+        super::casting::ActivationCostGuardSite::RemoveCounter,
+    )?;
     if selection == CounterCostSelection::AmongObjects {
         return Err(EngineError::InvalidAction(
             "Counter distribution is required for from-among counter costs".to_string(),
@@ -4437,6 +4475,10 @@ pub(crate) fn handle_remove_counter_distribution_for_cost(
     distribution: &[CounterCostChoice],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    super::casting::require_locked_activation_cost(
+        pending.activation_cost_snapshot.as_deref(),
+        super::casting::ActivationCostGuardSite::RemoveCounterDistribution,
+    )?;
     if selection != CounterCostSelection::AmongObjects {
         return Err(EngineError::InvalidAction(
             "Counter distribution is only valid for from-among counter costs".to_string(),
@@ -5464,12 +5506,18 @@ pub(crate) fn finish_activated_ability_at_payment_boundary(
 pub(crate) fn finish_target_selected_activated_ability_at_payment_boundary(
     state: &mut GameState,
     player: PlayerId,
-    mut pending: PendingCast,
+    pending: PendingCast,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    pending.activation_target_selection =
-        crate::types::game_state::ActivationTargetSelection::Settled;
-    finish_activated_ability_at_payment_boundary(state, player, pending, events)
+    // CR 601.2c + CR 602.2b: every target-first route funnels through here once
+    // its targets are committed, so the target-settlement cost lock runs here.
+    super::casting::settle_activation_cost(
+        state,
+        player,
+        pending,
+        crate::types::casting_costs::SettledTail::Boundary,
+        events,
+    )
 }
 
 /// Identifies which target-first activation handoff is deciding whether to
@@ -6381,6 +6429,13 @@ pub(super) fn push_activated_ability_to_stack(
     activation_cost_snapshot: Option<&crate::types::casting_costs::ActivationCostSnapshot>,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    super::casting::require_locked_activation_cost(
+        activation_cost_snapshot,
+        super::casting::ActivationCostGuardSite::PushToStack,
+    )?;
+    // CR 602.2 + CR 601.2c: the record captured before payment must be present
+    // before any of this continuation's cost work, or the activation is reversed.
+    super::casting::require_activation_record(&resolved, player)?;
     let carrier = || activation_cost_snapshot.map(|snapshot| Box::new(snapshot.clone()));
     // CR 602.2b + CR 601.2c-h: This is also a defensive entry point for
     // resumed activation roots. If a caller still has both unchosen targets and
@@ -6700,6 +6755,9 @@ pub(super) fn push_ability_entry(
     crime_candidate: bool,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    // CR 602.2 + CR 601.2c: the record captured before payment is required to
+    // place the ability (see `record_activated_ability_placed`).
+    let record = super::casting::take_activation_record(&mut resolved, player)?;
     let entry_id = ObjectId(state.next_object_id);
     state.next_object_id += 1;
 
@@ -6763,6 +6821,7 @@ pub(super) fn push_ability_entry(
         source_id,
         ability_index,
         entry_id,
+        record,
         events,
     );
     if let Some(mut collection) = activation_trigger_collection {
@@ -14514,6 +14573,10 @@ fn finalize_mana_payment_with_resume(
         pending_for_restore = pending.clone();
 
         if let Some(ability_index) = pending.activation_ability_index {
+            super::casting::require_locked_activation_cost(
+                pending.activation_cost_snapshot.as_deref(),
+                super::casting::ActivationCostGuardSite::ManaResume,
+            )?;
             let excluded_sources = pending
                 .activation_cost
                 .as_ref()
@@ -15009,6 +15072,10 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
         pending_for_restore = pending.clone();
 
         if let Some(ability_index) = pending.activation_ability_index {
+            super::casting::require_locked_activation_cost(
+                pending.activation_cost_snapshot.as_deref(),
+                super::casting::ActivationCostGuardSite::PhyrexianResume,
+            )?;
             let excluded_sources = pending
                 .activation_cost
                 .as_ref()
@@ -16518,6 +16585,31 @@ mod tests {
         }
     }
 
+    /// `pending` with the pre-payment journal record its announcement would
+    /// have captured (these fixtures skip the announcement).
+    fn announced(state: &GameState, mut pending: PendingCast) -> PendingCast {
+        crate::game::casting::stamp_announced_activation_record(state, PlayerId(0), &mut pending);
+        pending
+    }
+
+    /// `resolved` with the pre-payment journal record for a direct
+    /// `push_activated_ability_to_stack` call.
+    fn announced_ability(
+        state: &GameState,
+        source: ObjectId,
+        mut resolved: ResolvedAbility,
+    ) -> ResolvedAbility {
+        resolved.activation_record = crate::game::casting::capture_activation_record(
+            state,
+            PlayerId(0),
+            source,
+            0,
+            &resolved,
+        )
+        .map(Box::new);
+        resolved
+    }
+
     fn install_optional_discard_replacement(state: &mut GameState) -> ObjectId {
         let replacement_source = create_object(
             state,
@@ -17190,7 +17282,7 @@ mod tests {
             "Nested Choice Relic".to_string(),
             Zone::Battlefield,
         );
-        let mut pending = make_pending(source);
+        let mut pending = announced(&state, make_pending(source));
         pending.activation_cost = Some(AbilityCost::Composite {
             costs: vec![AbilityCost::Composite {
                 costs: vec![AbilityCost::OneOf {
@@ -19261,6 +19353,7 @@ mod tests {
                     filter.clone(),
                     1,
                 )));
+                let pending = announced(runner.state(), pending);
                 let live = super::super::casting::find_eligible_sacrifice_targets(
                     runner.state(),
                     PlayerId(0),
@@ -19470,6 +19563,7 @@ mod tests {
                     source: SpellCostSource::Other,
                 });
                 let mut runner = scenario.build();
+                let pending = announced(runner.state(), pending);
                 if !eligible {
                     runner.state_mut().battlefield.retain(|id| *id != candidate);
                     runner.state_mut().objects.get_mut(&candidate).unwrap().zone = Zone::Graveyard;
@@ -19656,6 +19750,7 @@ mod tests {
             TypedFilter::creature().into(),
             1,
         )));
+        let pending = announced(&state, pending);
         let legal = vec![creature_a, creature_b];
         let chosen = vec![creature_a];
         let mut events = Vec::new();
@@ -19829,6 +19924,7 @@ mod tests {
             source,
             PlayerId(0),
         ));
+        let pending = announced(&state, pending);
         let legal = vec![squirrel_a, squirrel_b];
         let chosen = vec![squirrel_a, squirrel_b];
         let mut events = Vec::new();
@@ -19910,6 +20006,7 @@ mod tests {
             PlayerId(0),
         ));
         pending.ability.set_chosen_x_recursive(2);
+        let pending = announced(&state, pending);
         let legal = vec![source];
         let chosen = vec![source];
         let mut events = Vec::new();
@@ -20002,11 +20099,12 @@ mod tests {
             Zone::Hand,
         );
         let mut events = Vec::new();
+        let pending = announced(&state, make_pending(source));
 
         let waiting = handle_discard_for_cost(
             &mut state,
             PlayerId(0),
-            make_pending(source),
+            pending,
             2,
             &[first, second],
             &[first, second],
@@ -20411,6 +20509,7 @@ mod tests {
             TypedFilter::new(TypeFilter::Artifact).into(),
             1,
         )));
+        let pending = announced(&state, pending);
         let mut events = Vec::new();
         handle_sacrifice_for_cost(
             &mut state,
@@ -20737,6 +20836,7 @@ mod tests {
             TypedFilter::new(TypeFilter::Artifact).into(),
             1,
         )));
+        let pending = announced(&state, pending);
         let mut events = Vec::new();
         handle_sacrifice_for_cost(
             &mut state,
@@ -21612,7 +21712,7 @@ mod tests {
             Zone::Hand,
         );
         add_subtype(&mut state, hand_dragon, "Dragon");
-        let pending = make_pending(source);
+        let pending = announced(&state, make_pending(source));
         let mut events = Vec::new();
 
         let result = handle_behold_for_cost(
@@ -21657,7 +21757,7 @@ mod tests {
             Zone::Battlefield,
         );
         add_subtype(&mut state, elemental, "Elemental");
-        let pending = make_pending(source);
+        let pending = announced(&state, make_pending(source));
         let mut events = Vec::new();
 
         let result = handle_behold_for_cost(
@@ -26403,6 +26503,7 @@ its replicate cost was paid.)\nDraw a card.";
             TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
             1,
         ));
+        let resolved = announced_ability(&state, source, resolved);
         let mut events = Vec::new();
         let waiting = push_activated_ability_to_stack(
             &mut state,
@@ -26519,6 +26620,7 @@ its replicate cost was paid.)\nDraw a card.";
                     .into(),
                 2,
             ));
+            let resolved = announced_ability(&state, source, resolved);
             let mut events = Vec::new();
             let outcome = push_activated_ability_to_stack(
                 &mut state,
@@ -26795,6 +26897,7 @@ its replicate cost was paid.)\nDraw a card.";
                 PlayerId(0),
             );
             resolved.set_chosen_x_recursive(4);
+            let resolved = announced_ability(&state, source, resolved);
             let mut events = Vec::new();
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 push_activated_ability_to_stack(
@@ -26917,6 +27020,7 @@ its replicate cost was paid.)\nDraw a card.";
                 PlayerId(0),
             );
             resolved.set_chosen_x_recursive(4);
+            let resolved = announced_ability(&state, source, resolved);
             let mut events = Vec::new();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 push_activated_ability_to_stack(
@@ -27014,6 +27118,7 @@ its replicate cost was paid.)\nDraw a card.";
                         .into(),
                     count,
                 ));
+                let resolved = announced_ability(&state, source, resolved);
                 let waiting = push_activated_ability_to_stack(
                     &mut state,
                     PlayerId(0),
@@ -27178,6 +27283,7 @@ its replicate cost was paid.)\nDraw a card.";
         for bulk in [true, false] {
             let (mut state, source, targets, fodder, tapper, cost, resolved) =
                 defensive_x_target_fixture(2, true);
+            let resolved = announced_ability(&state, source, resolved);
             let waiting = push_activated_ability_to_stack(
                 &mut state,
                 PlayerId(0),
@@ -27295,6 +27401,7 @@ its replicate cost was paid.)\nDraw a card.";
                     }
                     Route::Bulk | Route::Slot | Route::Automatic => {}
                 }
+                let resolved = announced_ability(&state, source, resolved);
                 let mut events = Vec::new();
                 let push = || {
                     push_activated_ability_to_stack(
@@ -27447,6 +27554,7 @@ its replicate cost was paid.)\nDraw a card.";
         for residual in [ActivationResidual::None, ActivationResidual::ManaLeg] {
             let (mut state, source, targets, fodder, tapper, cost, resolved) =
                 defensive_x_target_fixture(2, false);
+            let resolved = announced_ability(&state, source, resolved);
             let waiting = push_activated_ability_to_stack(
                 &mut state,
                 PlayerId(0),
@@ -27504,6 +27612,7 @@ its replicate cost was paid.)\nDraw a card.";
             PlayerId(0),
         );
         let cost = AbilityCost::Tap;
+        let resolved = announced_ability(&state, source, resolved);
         let mut events = Vec::new();
 
         let waiting = push_activated_ability_to_stack(

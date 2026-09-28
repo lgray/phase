@@ -4210,6 +4210,8 @@ fn walk_ability(
         sibling_condition: _, // replication marker, no read/write effect
         replacement_applied: _,
         parent_target_missing_reason: _,
+        activation_cost_reduction: _,
+        activation_record: _,
     } = a;
 
     // §4.3.2: a definition's own `player_scope` overrides the inherited scope for
@@ -5170,6 +5172,11 @@ fn rw_effect(
             // them", Stargaze) — a `QuantityExpr` resolved against game state, so it
             // is profiled like `count`. `None` = the fixed-count path (no read).
             keep_count_expr,
+            // CR 401.2 + CR 701.20e: the Telling Time-class remainder split
+            // size is a `QuantityExpr` resolved against game state exactly
+            // like `keep_count_expr`, so it is profiled the same way rather
+            // than ignored. `None` = no split (no read).
+            rest_split_top_count,
             destination: _,
             keep_count: _,
             up_to: _,
@@ -5187,6 +5194,9 @@ fn rw_effect(
             p.merge(rw_quantity_expr(count));
             if let Some(kc) = keep_count_expr {
                 p.merge(rw_quantity_expr(kc));
+            }
+            if let Some(split) = rest_split_top_count {
+                p.merge(rw_quantity_expr(split));
             }
             (p, None)
         }

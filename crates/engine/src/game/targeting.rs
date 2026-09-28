@@ -2119,6 +2119,7 @@ pub(crate) fn extract_target_object_from_event(
         | GameEvent::SpellCast { .. }
         | GameEvent::Mutated { .. }
         | GameEvent::Augmented { .. }
+        | GameEvent::Melded { .. }
         | GameEvent::SpellCopied { .. }
         | GameEvent::XValueChosen { .. }
         | GameEvent::AbilityActivated { .. }
@@ -2204,6 +2205,7 @@ pub(crate) fn extract_target_object_from_event(
         | GameEvent::CityBlessingGained { .. }
         | GameEvent::EnduringStoryGained { .. }
         | GameEvent::DieRolled { .. }
+        | GameEvent::DieRollIgnored { .. }
         | GameEvent::StartingPlayerContest { .. }
         | GameEvent::CoinFlipped { .. }
         | GameEvent::RingTemptsYou { .. }
