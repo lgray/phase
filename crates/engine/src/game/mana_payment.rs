@@ -20,8 +20,7 @@ use crate::types::statics::StaticMode;
 pub type ColorDemand = [u32; 5];
 
 /// Units of each mana type kept in a debug "infinite mana" pool. Large enough to
-/// cover any single resolution's worth of spends, small enough that the pool's
-/// linear spend scan (`ManaPool` is a `Vec<ManaUnit>`) stays cheap.
+/// cover any single resolution's worth of spends.
 const INFINITE_MANA_PER_TYPE: usize = 100;
 
 /// The six mana types an infinite-mana pool is seeded with: the five colors
@@ -286,7 +285,7 @@ pub enum PaymentError {
     InvalidCost,
 }
 
-pub(crate) use crate::types::mana::ExactManaRemovalError;
+use crate::types::mana::ExactManaRemovalError;
 
 /// CR 118.3a: Apply a payment solver's exact selected units in consumption
 /// order. This is deliberately separate from selection: it never chooses a

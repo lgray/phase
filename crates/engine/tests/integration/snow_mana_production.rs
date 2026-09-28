@@ -1,7 +1,7 @@
 //! Regression: a snow permanent's mana ability must PRODUCE snow mana so that
 //! {S} costs (CR 107.4h) become payable.
 //!
-//! The {S} CONSUME path (`spend_snow_unit`, `ManaUnit::is_snow`) was already
+//! The {S} CONSUME path (`spend_snow_unit`, `ManaShape::is_snow`) was already
 //! complete, but the PRODUCE path never stamped `ManaUnit.supertype =
 //! Some(ManaSupertype::Snow)`: mana produced by a Snow-Covered basic was
 //! indistinguishable from ordinary mana, so {S} could never be paid. The fix

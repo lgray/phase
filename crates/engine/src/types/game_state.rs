@@ -27488,13 +27488,13 @@ impl GameState {
         }
         crate::game::mana_payment::remove_exact_mana_units(&mut player.mana_pool, &units).map_err(
             |error| match error {
-                crate::game::mana_payment::ExactManaRemovalError::DuplicatePip(pip) => {
+                crate::types::mana::ExactManaRemovalError::DuplicatePip(pip) => {
                     ResolvedManaReplayInvariantError::DuplicateSpentManaPip(pip)
                 }
-                crate::game::mana_payment::ExactManaRemovalError::MissingPip(pip) => {
+                crate::types::mana::ExactManaRemovalError::MissingPip(pip) => {
                     ResolvedManaReplayInvariantError::MissingExactManaUnit(pip)
                 }
-                crate::game::mana_payment::ExactManaRemovalError::MismatchedUnit(pip) => {
+                crate::types::mana::ExactManaRemovalError::MismatchedUnit(pip) => {
                     ResolvedManaReplayInvariantError::MismatchedExactManaUnit(pip)
                 }
             },
