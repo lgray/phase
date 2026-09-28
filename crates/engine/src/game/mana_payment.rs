@@ -9,8 +9,8 @@ use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{GameState, ShardChoice};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::{
-    ManaCost, ManaCostShard, ManaExpiry, ManaPipId, ManaPool, ManaRestriction, ManaShape,
-    ManaSpellGrant, ManaType, ManaUnit, PaymentContext, PoolSlot,
+    ExactManaRemovalError, ManaCost, ManaCostShard, ManaExpiry, ManaPipId, ManaPool,
+    ManaRestriction, ManaShape, ManaSpellGrant, ManaType, ManaUnit, PaymentContext, PoolSlot,
 };
 use crate::types::player::PlayerId;
 use crate::types::statics::StaticMode;
@@ -284,8 +284,6 @@ pub enum PaymentError {
     #[error("Invalid cost")]
     InvalidCost,
 }
-
-use crate::types::mana::ExactManaRemovalError;
 
 /// CR 118.3a: Apply a payment solver's exact selected units in consumption
 /// order. This is deliberately separate from selection: it never chooses a

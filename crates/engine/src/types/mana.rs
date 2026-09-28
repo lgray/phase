@@ -1805,10 +1805,6 @@ impl ManaUnit {
     /// Construct a convoke payment marker. This is intentionally not mana
     /// production; it exists only so the shared mana-payment algorithm can
     /// consume a tap as satisfying the selected shard.
-    pub fn is_snow(&self) -> bool {
-        matches!(self.supertype, Some(ManaSupertype::Snow))
-    }
-
     pub fn convoke_payment(color: ManaType, source_id: ObjectId) -> Self {
         Self {
             color,
@@ -3772,7 +3768,7 @@ mod tests {
             vec![ManaRestriction::OnlyForSpellType("Creature".to_string())],
         );
         assert_eq!(unit.source_id, ObjectId(42));
-        assert!(unit.is_snow());
+        assert!(unit.supertype == Some(ManaSupertype::Snow));
         assert_eq!(unit.restrictions.len(), 1);
     }
 
@@ -5860,7 +5856,7 @@ mod tests {
         let architect = |pip| unit("Grand Architect", pip);
         let relic = |pip| unit("Relic of Legends", pip);
         assert!(
-            snow(0).is_snow(),
+            shape_of(&snow(0)).is_snow(),
             "reach: Snow-Covered Island's mana is snow"
         );
         assert!(
@@ -6031,7 +6027,7 @@ mod tests {
         assert_eq!(pool.remove_at(reference.0.len()), None);
 
         pool.retain_shapes(|s| !s.is_snow());
-        reference.0.retain(|u| !u.is_snow());
+        reference.0.retain(|u| !shape_of(u).is_snow());
         assert_answers_as(&pool, &reference, "retain_shapes");
         let source = basalt(0).source_id;
         let before = reference.0.len();

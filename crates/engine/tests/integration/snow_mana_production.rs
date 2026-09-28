@@ -18,7 +18,7 @@ use engine::types::actions::GameAction;
 use engine::types::card_type::Supertype;
 use engine::types::game_state::CastPaymentMode;
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaShape};
 use engine::types::phase::Phase;
 
 /// A bare `{S}` cost (one mana from a snow source, CR 107.4h).
@@ -67,7 +67,7 @@ fn snow_source_produces_snow_mana() {
         "reach-guard: the mana ability must have produced mana (found none)",
     );
     assert!(
-        pool.units().any(|u| u.is_snow()),
+        pool.count_where(ManaShape::is_snow) > 0,
         "mana produced by a snow source must be snow mana (CR 107.4h); the \
          produce site must stamp ManaSupertype::Snow",
     );
@@ -143,7 +143,7 @@ fn nonsnow_source_produces_nonsnow_mana_and_cannot_pay_snow() {
         "reach-guard: the mana ability must have produced mana (found none)",
     );
     assert!(
-        pool.units().all(|u| !u.is_snow()),
+        pool.count_where(ManaShape::is_snow) == 0,
         "mana produced by a nonsnow source must NOT be snow mana (CR 205.4g)",
     );
     assert!(
