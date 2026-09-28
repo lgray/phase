@@ -42,10 +42,10 @@ use engine::types::GameLogEntry;
 use http::{HeaderMap, HeaderValue};
 use lobby_broker::lobby::ListingDelta;
 use lobby_broker::{
-    check_build_commit, conn_holds_reservation, validate_announcement, Broker, BrokerEnv,
-    BuildCommitCheck, ConnState, LobbyRegistration, Outbound, RawAnnouncement, ReapOutcome,
-    ServerAnnouncement, ServerInfoDocument, DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN,
-    NOT_OWNED_RESERVATION,
+    check_build_commit, conn_holds_reservation, row_delivery, validate_announcement, Broker,
+    BrokerEnv, BuildCommitCheck, ConnState, LobbyRegistration, Outbound, RawAnnouncement,
+    ReapOutcome, RowDelivery, RowDelta, ServerAnnouncement, ServerInfoDocument, DIRECTORY_VERSION,
+    INFO_PATH, MAX_SERVER_NAME_LEN, NOT_OWNED_RESERVATION,
 };
 use rand::TryRngCore;
 use seat_reducer::types::{DeckChoice, DeckResolver, ReducerCtx};
@@ -113,7 +113,12 @@ type SharedDb = Arc<CardDatabase>;
 /// broker).
 type SharedLobby = Arc<Mutex<Broker>>;
 type LobbyGuard<'a> = tokio::sync::MutexGuard<'a, Broker>;
-type SharedLobbySubscribers = Arc<Mutex<Vec<mpsc::UnboundedSender<ServerMessage>>>>;
+/// A lobby subscriber and the build its accepted hello declared.
+struct LobbySubscriber {
+    tx: mpsc::UnboundedSender<ServerMessage>,
+    build_commit: String,
+}
+type SharedLobbySubscribers = Arc<Mutex<Vec<LobbySubscriber>>>;
 type SharedPlayerCount = Arc<AtomicU32>;
 type SharedGameDb = Arc<persistence::GameDb>;
 type SharedDraftState = Arc<Mutex<DraftSessionManager>>;
@@ -371,16 +376,20 @@ fn finish_restored_full_startup(
 async fn reserve_lobby_subscriber_slot(
     lobby_subscribers: &SharedLobbySubscribers,
     tx: &mpsc::UnboundedSender<ServerMessage>,
+    build_commit: &str,
 ) -> Result<(), String> {
     let mut subs = lobby_subscribers.lock().await;
-    subs.retain(|sender| !sender.is_closed());
+    subs.retain(|sub| !sub.tx.is_closed());
 
-    if subs.iter().any(|sender| sender.same_channel(tx)) {
+    if subs.iter().any(|sub| sub.tx.same_channel(tx)) {
         return Ok(());
     }
 
     guard_lobby_subscriber_capacity(subs.len())?;
-    subs.push(tx.clone());
+    subs.push(LobbySubscriber {
+        tx: tx.clone(),
+        build_commit: build_commit.to_string(),
+    });
     Ok(())
 }
 
@@ -1442,6 +1451,13 @@ impl SocketIdentity {
         self.lobby_reservations = conn.reservations;
         self.lobby_organized_tournaments = conn.organized_tournaments;
         self.lobby_joined_tournaments = conn.joined_tournaments;
+    }
+
+    /// The accepted hello's build, `""` before a hello.
+    fn hello_build_commit(&self) -> &str {
+        self.client_hello
+            .as_ref()
+            .map_or("", |h| h.build_commit.as_str())
     }
 
     /// The Full-game seat claimed by this socket. A complete triple is required
@@ -3252,8 +3268,8 @@ mod lifecycle_tests {
     use super::{
         bootstrap_required, build_state_update_message, delist_removed_sessions, origin_is_allowed,
         prune_game_connections, select_card_data_source, validate_public_url, CardDataSource, Cli,
-        RegisterGameRequest, ServerMessage, SharedConnections, SharedLobby, SharedLobbySubscribers,
-        SysEnv,
+        LobbySubscriber, RegisterGameRequest, ServerMessage, SharedConnections, SharedLobby,
+        SharedLobbySubscribers, SysEnv,
     };
 
     /// CR 118.3 + CR 117.1 — matrix row 21 (actor axis), at a REAL
@@ -3580,7 +3596,10 @@ mod lifecycle_tests {
             }
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(vec![tx]));
+        let subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(vec![LobbySubscriber {
+            tx,
+            build_commit: String::new(),
+        }]));
 
         // Reach guard: all three rooms really are listed, so the assertions
         // below cannot pass against a lobby that was never populated.
@@ -4707,7 +4726,15 @@ async fn handle_socket(
         let mut broker = lobby.lock().await;
         let outbounds = broker.on_disconnect(&mut conn);
         identity.absorb_conn_state(conn);
-        apply_outbounds(&broker, outbounds, &tx, &lobby_subscribers, &player_count).await;
+        apply_outbounds(
+            &broker,
+            outbounds,
+            &tx,
+            &lobby_subscribers,
+            &player_count,
+            identity.hello_build_commit(),
+        )
+        .await;
     }
 
     let count = player_count.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -4718,7 +4745,7 @@ async fn broadcast_player_count(lobby_subscribers: &SharedLobbySubscribers, coun
     let subs = lobby_subscribers.lock().await;
     let msg = ServerMessage::PlayerCount { count };
     for sub in subs.iter() {
-        let _ = sub.send(msg.clone());
+        let _ = sub.tx.send(msg.clone());
     }
 }
 
@@ -4834,9 +4861,24 @@ async fn broadcast_to_lobby_subscribers(
     lobby_subscribers: &SharedLobbySubscribers,
     msg: ServerMessage,
 ) {
+    let row = match &msg {
+        ServerMessage::LobbyGameAdded { game } => Some((RowDelta::Added, game)),
+        ServerMessage::LobbyGameUpdated { game } => Some((RowDelta::Updated, game)),
+        _ => None,
+    };
     let subs = lobby_subscribers.lock().await;
     for sub in subs.iter() {
-        let _ = sub.send(msg.clone());
+        let frame = match row {
+            None => msg.clone(),
+            Some((delta, game)) => match row_delivery(delta, game, &sub.build_commit) {
+                RowDelivery::Deliver => msg.clone(),
+                RowDelivery::Withhold => continue,
+                RowDelivery::Retract => ServerMessage::LobbyGameRemoved {
+                    game_code: game.game_code.clone(),
+                },
+            },
+        };
+        let _ = sub.tx.send(frame);
     }
 }
 
@@ -5237,7 +5279,15 @@ async fn dispatch_broker_msg(
     let mut broker = lobby.lock().await;
     let outbounds = broker.handle(&mut conn, lobby_msg, &SysEnv);
     identity.absorb_conn_state(conn);
-    apply_outbounds(&broker, outbounds, tx, lobby_subscribers, player_count).await;
+    apply_outbounds(
+        &broker,
+        outbounds,
+        tx,
+        lobby_subscribers,
+        player_count,
+        identity.hello_build_commit(),
+    )
+    .await;
 }
 
 /// Interpret an ordered `Vec<Outbound>` from the broker over the shell's
@@ -5251,6 +5301,7 @@ async fn apply_outbounds(
     tx: &mpsc::UnboundedSender<ServerMessage>,
     lobby_subscribers: &SharedLobbySubscribers,
     player_count: &SharedPlayerCount,
+    build_commit: &str,
 ) {
     for ob in outbounds {
         match ob {
@@ -5267,14 +5318,16 @@ async fn apply_outbounds(
                     .await;
             }
             Outbound::AddSubscriber => {
-                if let Err(reason) = reserve_lobby_subscriber_slot(lobby_subscribers, tx).await {
+                if let Err(reason) =
+                    reserve_lobby_subscriber_slot(lobby_subscribers, tx, build_commit).await
+                {
                     let _ = tx.send(ServerMessage::error(reason));
                     continue;
                 }
             }
             Outbound::RemoveSubscriber => {
                 let mut subs = lobby_subscribers.lock().await;
-                subs.retain(|s| !s.same_channel(tx) && !s.is_closed());
+                subs.retain(|s| !s.tx.same_channel(tx) && !s.tx.is_closed());
             }
             Outbound::SendPlayerCountToSelf => {
                 let count = player_count.load(Ordering::Relaxed);
@@ -9492,7 +9545,10 @@ async fn handle_client_message(
         }
 
         ClientMessage::SubscribeLobby => {
-            if let Err(reason) = reserve_lobby_subscriber_slot(lobby_subscribers, tx).await {
+            if let Err(reason) =
+                reserve_lobby_subscriber_slot(lobby_subscribers, tx, identity.hello_build_commit())
+                    .await
+            {
                 let msg = ServerMessage::error(reason);
                 if let Ok(json) = serde_json::to_string(&msg) {
                     let _ = socket.send(Message::text(json)).await;
@@ -14369,13 +14425,16 @@ mod lobby_subscriber_tests {
             let mut subs = subscribers.lock().await;
             for _ in 0..MAX_LOBBY_SUBSCRIBERS {
                 let (tx, rx) = mpsc::unbounded_channel();
-                subs.push(tx);
+                subs.push(LobbySubscriber {
+                    tx,
+                    build_commit: String::new(),
+                });
                 receivers.push(rx);
             }
         }
         let (overflow_tx, _overflow_rx) = mpsc::unbounded_channel();
 
-        let err = reserve_lobby_subscriber_slot(&subscribers, &overflow_tx)
+        let err = reserve_lobby_subscriber_slot(&subscribers, &overflow_tx, "")
             .await
             .unwrap_err();
 
@@ -14392,12 +14451,15 @@ mod lobby_subscriber_tests {
             for _ in 0..MAX_LOBBY_SUBSCRIBERS {
                 let (tx, rx) = mpsc::unbounded_channel();
                 drop(rx);
-                subs.push(tx);
+                subs.push(LobbySubscriber {
+                    tx,
+                    build_commit: String::new(),
+                });
             }
         }
         let (new_tx, _new_rx) = mpsc::unbounded_channel();
 
-        reserve_lobby_subscriber_slot(&subscribers, &new_tx)
+        reserve_lobby_subscriber_slot(&subscribers, &new_tx, "")
             .await
             .expect("closed senders should be pruned before enforcing cap");
 
@@ -14409,10 +14471,10 @@ mod lobby_subscriber_tests {
         let subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(Vec::new()));
         let (tx, _rx) = mpsc::unbounded_channel();
 
-        reserve_lobby_subscriber_slot(&subscribers, &tx)
+        reserve_lobby_subscriber_slot(&subscribers, &tx, "")
             .await
             .unwrap();
-        reserve_lobby_subscriber_slot(&subscribers, &tx)
+        reserve_lobby_subscriber_slot(&subscribers, &tx, "")
             .await
             .unwrap();
 
@@ -14429,9 +14491,18 @@ mod lobby_subscriber_tests {
         drop(closed_rx);
         {
             let mut subs = subscribers.lock().await;
-            subs.push(current_tx.clone());
-            subs.push(live_tx.clone());
-            subs.push(closed_tx);
+            subs.push(LobbySubscriber {
+                tx: current_tx.clone(),
+                build_commit: String::new(),
+            });
+            subs.push(LobbySubscriber {
+                tx: live_tx.clone(),
+                build_commit: String::new(),
+            });
+            subs.push(LobbySubscriber {
+                tx: closed_tx,
+                build_commit: String::new(),
+            });
         }
 
         let lobby: SharedLobby = Arc::new(Mutex::new(Broker::new()));
@@ -14441,12 +14512,13 @@ mod lobby_subscriber_tests {
             &current_tx,
             &subscribers,
             &player_count,
+            "",
         )
         .await;
 
         let subs = subscribers.lock().await;
         assert_eq!(subs.len(), 1);
-        assert!(subs[0].same_channel(&live_tx));
+        assert!(subs[0].tx.same_channel(&live_tx));
     }
 }
 
@@ -15598,7 +15670,15 @@ mod issue_4548_full_create_tests {
 
     /// A subscribed socket and the snapshot it was sent.
     async fn subscribe(url: &str) -> (TestWs, Vec<server_core::protocol::LobbyGame>) {
-        let mut sub = connect_and_hello(url.to_string()).await;
+        subscribe_as(url, build_commit()).await
+    }
+
+    /// [`subscribe`] from a socket whose hello declared `build`.
+    async fn subscribe_as(
+        url: &str,
+        build: &str,
+    ) -> (TestWs, Vec<server_core::protocol::LobbyGame>) {
+        let mut sub = connect_as(url, build).await;
         send_test_message(&mut sub, &ClientMessage::SubscribeLobby, false).await;
         loop {
             if let ServerMessage::LobbyUpdate { games } = recv_server_message(&mut sub).await {
@@ -15607,8 +15687,8 @@ mod issue_4548_full_create_tests {
         }
     }
 
-    async fn snapshot_lists(url: &str, code: &str) -> bool {
-        subscribe(url)
+    async fn snapshot_lists(url: &str, viewer_build: &str, code: &str) -> bool {
+        subscribe_as(url, viewer_build)
             .await
             .1
             .iter()
@@ -15798,7 +15878,7 @@ mod issue_4548_full_create_tests {
                 .iter()
                 .any(|f| matches!(f, ServerMessage::GameAbandoned { .. })));
             assert_eq!(room.listing().await, ["Removed"]);
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
             let join = fresh_attempt(&url, &password_join(&room.code, None, None)).await;
             let expected = format!("Game not found in lobby: {}", room.code);
             assert_eq!(refusal(join), expected);
@@ -15907,11 +15987,11 @@ mod issue_4548_full_create_tests {
         timed(server, async {
             let mut room = host_room(&url, 2, true, None).await;
             assert_eq!(room.drop_host(&app).await, ["Removed"]);
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
 
             let _host = return_as(&url, None, &room.reconnect()).await;
             assert_eq!(room.listing().await, ["Added"]);
-            assert!(snapshot_lists(&url, &room.code).await);
+            assert!(snapshot_lists(&url, build_commit(), &room.code).await);
         })
         .await;
     }
@@ -15930,7 +16010,7 @@ mod issue_4548_full_create_tests {
                 "Reconnect grace period expired"
             );
             assert!(room.listing().await.is_empty());
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
             assert_eq!(
                 refusal(fresh_attempt(&url, &password_join(&room.code, None, None)).await),
                 server_core::session::HOST_AWAY_REFUSAL
@@ -15945,11 +16025,11 @@ mod issue_4548_full_create_tests {
         timed(server, async {
             let mut room = host_room(&url, 2, false, None).await;
             assert!(room.drop_host(&app).await.is_empty());
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
 
             let _host = return_as(&url, None, &room.reconnect()).await;
             assert!(room.listing().await.is_empty());
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
         })
         .await;
     }
@@ -15984,9 +16064,11 @@ mod issue_4548_full_create_tests {
         let (url, server, _temp_dir, app) = spawn_full_mode_server().await;
         timed(server, async {
             let mut room = host_room(&url, 2, true, None).await;
+            let (mut sub_c, _) = subscribe_as(&url, "build-c").await;
             let _second = return_as(&url, Some("build-c"), &room.reconnect()).await;
 
-            let frames = frames_until_pong(&mut room.sub).await;
+            assert_eq!(room.listing().await, ["Removed"]);
+            let frames = frames_until_pong(&mut sub_c).await;
             assert_eq!(listing_of(&frames, &room.code), ["Updated"]);
             assert!(frames.iter().any(|frame| matches!(
                 frame,
@@ -16003,6 +16085,101 @@ mod issue_4548_full_create_tests {
             );
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_relist_from_another_build_reaches_only_that_builds_subscribers() {
+        let (url, server, _temp_dir, app) = spawn_full_mode_server().await;
+        timed(server, async {
+            let mut room = host_room(&url, 2, true, None).await;
+            let (mut sub_b, _) = subscribe_as(&url, "build-b").await;
+            assert_eq!(room.drop_host(&app).await, ["Removed"]);
+            assert_eq!(
+                listing_of(&frames_until_pong(&mut sub_b).await, &room.code),
+                ["Removed"]
+            );
+
+            let _host = return_as(&url, Some("build-b"), &room.reconnect()).await;
+            assert!(room.listing().await.is_empty());
+            assert_eq!(
+                listing_of(&frames_until_pong(&mut sub_b).await, &room.code),
+                ["Added"]
+            );
+        })
+        .await;
+    }
+
+    fn sorted_codes(games: &[server_core::protocol::LobbyGame]) -> Vec<String> {
+        let mut codes: Vec<String> = games.iter().map(|g| g.game_code.clone()).collect();
+        codes.sort();
+        codes
+    }
+
+    #[tokio::test]
+    async fn lobby_rows_reach_only_build_compatible_subscribers() {
+        for mode in [ServerMode::Full, ServerMode::LobbyOnly] {
+            let (url, server, _temp_dir, _app) = spawn_server_with_mode(mode).await;
+            timed(server, async {
+                let peer = matches!(mode, ServerMode::LobbyOnly).then_some("peer-1");
+                let mut hosts = Vec::new();
+                let mut codes = Vec::new();
+                for build in ["build-a", "build-b", ""] {
+                    let mut host = connect_as(&url, build).await;
+                    let frame = create_frame(None, peer, vec![]);
+                    codes.push(created_code(create_outcome(&mut host, &frame).await));
+                    hosts.push(host);
+                }
+                let listed = |picks: &[usize]| {
+                    let mut v: Vec<String> = picks.iter().map(|&i| codes[i].clone()).collect();
+                    v.sort();
+                    v
+                };
+                let (mut sub_a, snap_a) = subscribe_as(&url, "build-a").await;
+                let (mut sub_b, snap_b) = subscribe_as(&url, "build-b").await;
+                let (mut sub_e, snap_e) = subscribe_as(&url, "").await;
+                assert_eq!(sorted_codes(&snap_a), listed(&[0, 2]), "{mode:?}");
+                assert_eq!(sorted_codes(&snap_b), listed(&[1, 2]), "{mode:?}");
+                assert_eq!(sorted_codes(&snap_e), listed(&[0, 1, 2]), "{mode:?}");
+                for sub in [&mut sub_a, &mut sub_b, &mut sub_e] {
+                    frames_until_pong(sub).await;
+                }
+
+                let mut host_b2 = connect_as(&url, "build-b").await;
+                let frame = create_frame(None, peer, vec![]);
+                let b2 = created_code(create_outcome(&mut host_b2, &frame).await);
+                let mut guest = connect_as(&url, "build-b").await;
+                send_and_reply(&mut guest, &reserve_lookup(&b2)).await;
+                drop(host_b2);
+                let mut seen_b = Vec::new();
+                while listing_of(&seen_b, &b2).last() != Some(&"Removed") {
+                    seen_b.push(recv_server_message(&mut sub_b).await);
+                }
+                seen_b.extend(frames_until_pong(&mut sub_b).await);
+                let seen_a = frames_until_pong(&mut sub_a).await;
+                let seen_e = frames_until_pong(&mut sub_e).await;
+
+                assert_eq!(
+                    listing_of(&seen_b, &b2),
+                    ["Added", "Updated", "Removed"],
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    listing_of(&seen_e, &b2),
+                    ["Added", "Updated", "Removed"],
+                    "{mode:?}"
+                );
+                assert_eq!(listing_of(&seen_a, &b2), ["Removed", "Removed"], "{mode:?}");
+                for seen in [&seen_a, &seen_b, &seen_e] {
+                    assert!(
+                        seen.iter()
+                            .any(|f| matches!(f, ServerMessage::PlayerCount { .. })),
+                        "{mode:?}"
+                    );
+                }
+                drop((hosts, guest));
+            })
+            .await;
+        }
     }
 
     /// Returns once `holders` references to the session exist: a task that
@@ -16138,7 +16315,7 @@ mod issue_4548_full_create_tests {
             .await;
             assert!(room.listing().await.is_empty());
 
-            assert!(snapshot_lists(&url, &room.code).await);
+            assert!(snapshot_lists(&url, build_commit(), &room.code).await);
             assert!(matches!(
                 fresh_attempt(&url, &password_join(&room.code, None, None)).await,
                 ServerMessage::GameStarted { .. }
@@ -16180,7 +16357,7 @@ mod issue_4548_full_create_tests {
             )
             .await;
             assert!(room.listing().await.is_empty());
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
             assert_eq!(
                 refusal(fresh_attempt(&url, &password_join(&room.code, None, None)).await),
                 server_core::session::HOST_AWAY_REFUSAL
@@ -16239,7 +16416,7 @@ mod issue_4548_full_create_tests {
                 );
             }
 
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
             assert_eq!(
                 refusal(fresh_attempt(&url, &password_join(&room.code, None, None)).await),
                 server_core::session::HOST_AWAY_REFUSAL
@@ -16279,7 +16456,7 @@ mod issue_4548_full_create_tests {
             ) {}
 
             assert_eq!(room.listing().await, ["Removed"]);
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
             assert!(frames_until_pong(&mut guest)
                 .await
                 .iter()
@@ -16322,7 +16499,7 @@ mod issue_4548_full_create_tests {
                 .expect("session");
             assert!(handle.lock().await.game_started);
             assert_eq!(room.listing().await, ["Removed"]);
-            assert!(!snapshot_lists(&url, &room.code).await);
+            assert!(!snapshot_lists(&url, build_commit(), &room.code).await);
         })
         .await;
     }
@@ -16908,7 +17085,7 @@ mod issue_4548_full_create_tests {
     }
 
     async fn host_pod(url: &str, build: &str, pod_size: u8, public: bool) -> HostedPod {
-        let (sub, _) = subscribe(url).await;
+        let (sub, _) = subscribe_as(url, build).await;
         let mut host = connect_as(url, build).await;
         send_test_message(&mut host, &pod_frame(pod_size, public), false).await;
         let (code, token) = loop {
@@ -17096,7 +17273,7 @@ mod issue_4548_full_create_tests {
                 ServerMessage::DraftStateUpdate { .. }
             ));
             assert!(pod.listing().await.is_empty());
-            assert!(snapshot_lists(&url, &pod.code).await);
+            assert!(snapshot_lists(&url, "build-a", &pod.code).await);
 
             pod.drop_host(&app).await;
             drop(seated);
@@ -17201,8 +17378,12 @@ mod issue_4548_full_create_tests {
         let (url, server, _temp_dir, app) = spawn_draft_server().await;
         timed(server, async {
             let mut pod = host_pod(&url, "build-a", 2, true).await;
+            assert!(
+                snapshot_lists(&url, "build-a", &pod.code).await,
+                "reach guard"
+            );
             assert_eq!(pod.drop_host(&app).await, ["Removed"]);
-            assert!(!snapshot_lists(&url, &pod.code).await);
+            assert!(!snapshot_lists(&url, "build-a", &pod.code).await);
 
             let mut room = host_room(&url, 2, true, None).await;
             assert_eq!(room.drop_host(&app).await, ["Removed"]);
@@ -17214,14 +17395,24 @@ mod issue_4548_full_create_tests {
     async fn a_returning_draft_host_relists_and_restamps() {
         let (url, server, _temp_dir, app) = spawn_draft_server().await;
         timed(server, async {
+            let (mut sub_b, _) = subscribe_as(&url, "build-b").await;
             let mut pod = host_pod(&url, "build-a", 3, true).await;
-            pod.drop_host(&app).await;
+            assert!(listing_of(&frames_until_pong(&mut sub_b).await, &pod.code).is_empty());
+            assert!(!snapshot_lists(&url, "build-b", &pod.code).await);
+            assert!(snapshot_lists(&url, "build-a", &pod.code).await);
+
+            assert_eq!(pod.drop_host(&app).await, ["Removed"]);
+            assert_eq!(
+                listing_of(&frames_until_pong(&mut sub_b).await, &pod.code),
+                ["Removed"]
+            );
             let mut host = connect_as(&url, "build-b").await;
             assert!(matches!(
                 send_draft(&mut host, &pod.reconnect()).await,
                 ServerMessage::DraftStateUpdate { .. }
             ));
-            let frames = frames_until_pong(&mut pod.sub).await;
+            assert!(pod.listing().await.is_empty());
+            let frames = frames_until_pong(&mut sub_b).await;
             assert_eq!(listing_of(&frames, &pod.code), ["Added"]);
             assert!(frames.iter().any(|frame| matches!(
                 frame,
@@ -17287,6 +17478,7 @@ mod issue_4548_full_create_tests {
                 draft_refusal(fresh_draft(&url, "build-b", &draft_join(&present.code)).await);
             assert!(stale.starts_with("Build mismatch"), "{stale}");
 
+            let (mut sub_b, _) = subscribe_as(&url, "build-b").await;
             let _host = {
                 let mut sock = connect_as(&url, "build-b").await;
                 assert!(matches!(
@@ -17295,7 +17487,11 @@ mod issue_4548_full_create_tests {
                 ));
                 sock
             };
-            assert_eq!(away.listing().await, ["Added"]);
+            assert!(away.listing().await.is_empty());
+            assert_eq!(
+                listing_of(&frames_until_pong(&mut sub_b).await, &away.code),
+                ["Added"]
+            );
             assert_eq!(
                 app.lobby.lock().await.lobby().host_build_commit(&away.code),
                 Some("build-b")
@@ -17386,11 +17582,12 @@ mod issue_4548_full_create_tests {
                 "reach guard: re-registered"
             );
 
-            assert!(!snapshot_lists(&url, &pod.code).await);
+            assert!(!snapshot_lists(&url, "build-a", &pod.code).await);
             assert_eq!(
                 draft_refusal(fresh_draft(&url, "build-a", &draft_join(&pod.code)).await),
                 server_core::session::HOST_AWAY_REFUSAL
             );
+            let (mut sub_b, _) = subscribe_as(&url, "build-b").await;
             let _host = {
                 let mut sock = connect_as(&url, "build-b").await;
                 assert!(matches!(
@@ -17399,7 +17596,8 @@ mod issue_4548_full_create_tests {
                 ));
                 sock
             };
-            let frames = frames_until_pong(&mut pod.sub).await;
+            assert!(pod.listing().await.is_empty());
+            let frames = frames_until_pong(&mut sub_b).await;
             assert_eq!(listing_of(&frames, &pod.code), ["Added"]);
             assert!(frames.iter().any(|frame| matches!(
                 frame,
@@ -20106,7 +20304,10 @@ mod issue_4548_deadlock_tests {
             assert!(lob.has_game(&code), "reach guard: the room is registered");
         }
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(vec![tx]));
+        let subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(vec![LobbySubscriber {
+            tx,
+            build_commit: String::new(),
+        }]));
         tokio::time::sleep(Duration::from_millis(2)).await;
 
         let expired = mgr.reconnect.check_expired();
