@@ -1692,7 +1692,7 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // empty, prompts are settled, and mana pools drained at step end per
     // CR 106.4). Truncating here bounds journal growth to one turn until the
     // CR 733 settlement consumer defines the real retention window.
-    state.resolved_rules_journal = Default::default();
+    state.reset_resolved_rules_journal();
     // CR 601.2b: Reset per-turn CastFromHandFree once-per-turn tracking (Zaffai).
     state.hand_cast_free_permissions_used.clear();
     // CR 118.9 + CR 601.2b + CR 400.7: Reset per-turn once-per-turn

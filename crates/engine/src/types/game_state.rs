@@ -27417,6 +27417,9 @@ impl GameState {
 
     /// CR 106.4: Apply one exact, already-resolved mana insertion without
     /// allocating a replacement pip or consulting mana-production state.
+    ///
+    /// `command` must come from this state's own journal: the insert leaves the
+    /// pool's pips verified on the strength of that producer record.
     pub fn apply_resolved_mana_insert(
         &mut self,
         command: &ResolvedManaInsertCommand,
@@ -27436,7 +27439,7 @@ impl GameState {
                 command.unit.pip_id,
             ));
         }
-        player.mana_pool.add(command.unit.clone());
+        player.mana_pool.insert_journaled(command.unit.clone());
         self.advance_pip_high_water(command.unit.pip_id)
     }
 
@@ -27615,6 +27618,18 @@ impl GameState {
             .unwrap_or(ManaPaymentRecipient::Player(fallback_player))
     }
 
+    /// Truncates the resolved-rules journal and marks every mana pool unverified.
+    ///
+    /// CR 106.4 + CR 101.1: a pool empties between steps and phases unless a
+    /// card's text overrides that, so retained mana can outlive its producer
+    /// record.
+    pub(crate) fn reset_resolved_rules_journal(&mut self) {
+        self.resolved_rules_journal = Default::default();
+        for player in &mut self.players {
+            player.mana_pool.mark_unverified();
+        }
+    }
+
     /// CR 118.3a: defensively guarantee every unit in `player`'s mana pool carries
     /// a unique, nonzero `pip_id`, re-stamping the `ManaPipId(0)` sentinel and any
     /// duplicate. Production mana is stamped on entry via [`Self::add_mana_to_pool`],
@@ -27623,11 +27638,14 @@ impl GameState {
     /// every such unit pin/unpin together in manual payment. Run at payment entry
     /// so each unit is individually pinnable regardless of how it was produced.
     /// Safe for loop detection: `pip_id` is excluded from `ManaUnit` equality and
-    /// `next_pip_id` is zeroed by `normalize_for_loop`.
+    /// `next_pip_id` is zeroed by `normalize_for_loop`. A verified pool returns at once.
     pub(crate) fn restamp_pool_pip_ids(&mut self, player: PlayerId) {
         let Some(idx) = self.players.iter().position(|p| p.id == player) else {
             return;
         };
+        if self.players[idx].mana_pool.is_verified() {
+            return;
+        }
         // First pass (immutable): count units needing a fresh id — the sentinel 0
         // or a duplicate of an earlier unit. `pid == 0` short-circuits so the
         // sentinel is never inserted into `seen`; only real ids populate it.

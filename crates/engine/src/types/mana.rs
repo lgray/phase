@@ -2814,6 +2814,12 @@ impl ManaPool {
         self.provenance = PoolProvenance::Unverified;
     }
 
+    /// Pushes a unit whose pip the caller has checked unique and nonzero and
+    /// whose producer is in the owning state's journal.
+    pub(crate) fn insert_journaled(&mut self, unit: ManaUnit) {
+        self.push_merged(unit);
+    }
+
     fn push_merged(&mut self, unit: ManaUnit) -> PoolSlot {
         let slot = PoolSlot(self.next_slot);
         self.next_slot += 1;
@@ -3080,6 +3086,10 @@ impl ManaPool {
 
     pub fn is_verified(&self) -> bool {
         self.provenance == PoolProvenance::Verified
+    }
+
+    pub(crate) fn mark_unverified(&mut self) {
+        self.provenance = PoolProvenance::Unverified;
     }
 
     pub(crate) fn mark_verified(&mut self) {
@@ -5867,6 +5877,9 @@ mod tests {
             assert_answers_as(&pool, &reference, "add");
         }
         assert!(!pool.is_verified(), "a raw push leaves the pool unverified");
+        pool.insert_journaled(relic(15));
+        reference.0.push(relic(15));
+        assert_answers_as(&pool, &reference, "insert_journaled");
 
         let (slot, _) = pool
             .first_where(|s| s.color == ManaType::Blue && !s.is_snow())
@@ -6021,6 +6034,14 @@ mod tests {
         assert!(!pool.is_verified(), "a pool built from units is unverified");
         pool.mark_verified();
         assert!(pool.is_verified(), "reach: the pool is verified");
+        pool.insert_journaled(ManaUnit {
+            pip_id: ManaPipId(5),
+            ..units[0].clone()
+        });
+        assert!(
+            pool.is_verified(),
+            "a journaled insert keeps the pool verified"
+        );
 
         let (slot, _) = pool.slotted_units().nth(1).unwrap();
         pool.set_pip_at(slot, ManaPipId(3));
@@ -6030,7 +6051,7 @@ mod tests {
         );
         assert_eq!(
             pool.units().map(|u| u.pip_id).collect::<Vec<_>>(),
-            [ManaPipId(1), ManaPipId(3), ManaPipId(2)]
+            [ManaPipId(1), ManaPipId(3), ManaPipId(2), ManaPipId(5)]
         );
         assert_eq!(
             pool.unit_by_pip(ManaPipId(3)).map(|u| u.pip_id),
