@@ -57261,7 +57261,13 @@ fn resolve_discard_requirement_fixed_one_empty_hand_is_unpayable_err() {
     // Empty hand: unpayable, so the helper errors rather than auto-paying.
     assert!(state.players[0].hand.is_empty());
     assert!(matches!(
-        resolve_non_self_discard_requirement(&state, PlayerId(0), source, &cost),
+        resolve_non_self_discard_requirement(
+            &state,
+            PlayerId(0),
+            source,
+            &cost,
+            DiscardCostPayer::Definition(None)
+        ),
         Err(EngineError::ActionNotAllowed(_))
     ));
     // CR 601.2h: the payability gate excludes it too.
@@ -57276,7 +57282,13 @@ fn resolve_discard_requirement_fixed_one_empty_hand_is_unpayable_err() {
         "Card".to_string(),
         Zone::Hand,
     );
-    match resolve_non_self_discard_requirement(&state, PlayerId(0), source, &cost) {
+    match resolve_non_self_discard_requirement(
+        &state,
+        PlayerId(0),
+        source,
+        &cost,
+        DiscardCostPayer::Definition(None),
+    ) {
         Ok(Some((count, eligible))) => {
             assert_eq!(count, 1);
             assert_eq!(eligible, vec![card]);
@@ -57322,7 +57334,13 @@ fn resolve_discard_requirement_fixed_two_with_three_eligible_offers_all() {
     );
 
     let cost = from_hand_discard_cost(QuantityExpr::Fixed { value: 2 });
-    match resolve_non_self_discard_requirement(&state, PlayerId(0), source, &cost) {
+    match resolve_non_self_discard_requirement(
+        &state,
+        PlayerId(0),
+        source,
+        &cost,
+        DiscardCostPayer::Definition(None),
+    ) {
         Ok(Some((count, eligible))) => {
             assert_eq!(count, 2);
             assert_eq!(eligible.len(), 3);
@@ -57361,7 +57379,13 @@ fn resolve_discard_requirement_source_card_scope_is_not_auto_paid() {
     // the helper, so it can never reach the zero-count auto-pay branch.
     assert!(find_non_self_discard(&source_card_cost).is_none());
     assert!(matches!(
-        resolve_non_self_discard_requirement(&state, PlayerId(0), source, &source_card_cost),
+        resolve_non_self_discard_requirement(
+            &state,
+            PlayerId(0),
+            source,
+            &source_card_cost,
+            DiscardCostPayer::Definition(None)
+        ),
         Ok(None)
     ));
 

@@ -1807,7 +1807,7 @@ pub(crate) fn quantity_expr_uses_resolution_only_object_scope(expr: &QuantityExp
             // the ability's own carried context during resolution, never as a
             // static CDA read.
             | ObjectScope::ChainRootTarget
-            // Unbound, it is never produced in these characteristic refs; their reads fail closed.
+            // CR 201.5a: never produced in these characteristic refs; a stamped read resolves only with its ability.
             | ObjectScope::GrantingObject
             // CR 120.1: the per-iteration damage source of an
             // `EachSourceDealsDamage` batch is bound per batch member only at

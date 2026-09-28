@@ -1860,8 +1860,9 @@ mod concretizer_seams {
             let _cast = runner.cast(bolt).free_cast().target_object(victim).commit();
         }
         for _ in 0..8 {
-            if matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }) {
-                drive(&mut runner, None);
+            if let WaitingFor::OrderTriggers { triggers, .. } = &runner.state().waiting_for {
+                let order = (0..triggers.len()).collect();
+                runner.act(GameAction::OrderTriggers { order }).unwrap();
             }
             if runner.state().objects[&victim].zone == Zone::Graveyard
                 && !runner.state().stack.is_empty()
@@ -2397,6 +2398,90 @@ mod concretizer_seams {
         }
         runner.advance_to_upkeep();
         runner
+    }
+
+    const CHARGE_ANTHEM: &str = "Creatures you control have \"At the beginning of your upkeep, put a charge counter on each artifact you control. Then put a +1/+1 counter on this creature.\"";
+
+    /// P0's two creatures each carry one artifact granter's upkeep trigger, whose
+    /// second effect becomes `second` (the parsed +1/+1 counter when `None`).
+    fn anthem_runner(second: Option<Effect>) -> GameRunner {
+        let mut grant = grant_static(CHARGE_ANTHEM, "Charger", "Artifact", "Equipment");
+        if let Some(effect) = second {
+            *granted_execute(&mut grant)
+                .sub_ability
+                .as_mut()
+                .unwrap()
+                .effect = effect;
+        }
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::Untap);
+        scenario.add_creature(P0, "Bearer", 2, 2);
+        scenario.add_creature(P0, "Bearer", 2, 2);
+        let charger = scenario.add_creature(P0, "Charger", 0, 0).id();
+        let mut runner = scenario.build();
+        let st = runner.state_mut();
+        make_artifact(st, charger);
+        let obj = st.objects.get_mut(&charger).unwrap();
+        obj.static_definitions.push(grant.clone());
+        Arc::make_mut(&mut obj.base_static_definitions).push(grant);
+        relayer(st);
+        runner.advance_to_upkeep();
+        runner
+    }
+
+    fn granter_charge() -> PtValue {
+        PtValue::Quantity(counters_on(ObjectScope::GrantingObject, "charge"))
+    }
+
+    /// CR 603.3b: `second` reads the granter's charge counters, which each sibling's
+    /// first effect raises, so the two triggers' order is observable.
+    fn assert_shared_granter_reads_need_ordering(second: Effect) {
+        let runner = anthem_runner(Some(second));
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::OrderTriggers { .. }
+        ));
+    }
+
+    #[test]
+    fn granted_counter_placement_reading_the_shared_granter_needs_ordering() {
+        assert_shared_granter_reads_need_ordering(Effect::PutCounter {
+            counter_type: CounterType::Plus1Plus1,
+            count: counters_on(ObjectScope::GrantingObject, "charge"),
+            target: TargetFilter::SelfRef,
+        });
+    }
+
+    #[test]
+    fn granted_pump_by_the_shared_granters_counters_needs_ordering() {
+        assert_shared_granter_reads_need_ordering(Effect::Pump {
+            power: granter_charge(),
+            toughness: PtValue::Fixed(0),
+            target: TargetFilter::SelfRef,
+        });
+    }
+
+    #[test]
+    fn granted_animate_to_the_shared_granters_counters_needs_ordering() {
+        assert_shared_granter_reads_need_ordering(Effect::Animate {
+            power: Some(granter_charge()),
+            toughness: Some(granter_charge()),
+            types: vec![],
+            remove_types: vec![],
+            target: TargetFilter::SelfRef,
+            keywords: vec![],
+        });
+    }
+
+    /// CR 603.3b: with no granter read the two triggers commute and are auto-ordered.
+    #[test]
+    fn granted_triggers_not_reading_the_shared_granter_are_auto_ordered() {
+        let runner = anthem_runner(None);
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::Priority { .. }
+        ));
+        assert_eq!(runner.state().stack.len(), 2);
     }
 
     #[test]
@@ -4143,5 +4228,55 @@ mod granter_stamp {
             .unwrap();
         assert_eq!(runner.state().objects[&mine].zone, Zone::Exile);
         assert_eq!(runner.state().objects[&theirs].zone, Zone::Battlefield);
+    }
+
+    /// CR 201.5a + CR 605.1a: a granted mana ability whose cost names its granter
+    /// pays that cost with the granter.
+    fn granted_mana_cost_pays_with_the_granter(verb: &str, zone: Zone) {
+        use engine::game::mana_abilities::can_activate_mana_ability_now;
+        use engine::types::mana::ManaType;
+        let mut b = board_with(&format!("{{T}}, {verb} Foo Bar: Add {{C}}."), &[0], false);
+        let granter = b.granters[0];
+        let index = last_ability(&b);
+        let def = b.runner.state().objects[&b.host].abilities[index].clone();
+        assert!(can_activate_mana_ability_now(
+            b.runner.state(),
+            P0,
+            b.host,
+            index,
+            &def
+        ));
+        b.runner
+            .act(GameAction::ActivateAbility {
+                source_id: b.host,
+                ability_index: index,
+            })
+            .unwrap();
+        let WaitingFor::PayCost { choices, .. } = &b.runner.state().waiting_for else {
+            panic!(
+                "expected the cost choice, got {:?}",
+                b.runner.state().waiting_for
+            );
+        };
+        assert_eq!(choices, &vec![granter]);
+        b.runner
+            .act(GameAction::SelectCards {
+                cards: vec![granter],
+            })
+            .unwrap();
+        let st = b.runner.state();
+        assert_eq!(st.objects[&granter].zone, zone);
+        assert_eq!(st.objects[&b.host].zone, Zone::Battlefield);
+        assert_eq!(st.players[0].mana_pool.count_color(ManaType::Colorless), 1);
+    }
+
+    #[test]
+    fn granted_mana_ability_sacrifice_cost_sacrifices_the_granter() {
+        granted_mana_cost_pays_with_the_granter("Sacrifice", Zone::Graveyard);
+    }
+
+    #[test]
+    fn granted_mana_ability_exile_cost_exiles_the_granter() {
+        granted_mana_cost_pays_with_the_granter("Exile", Zone::Exile);
     }
 }

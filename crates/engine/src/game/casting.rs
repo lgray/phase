@@ -21995,16 +21995,7 @@ pub(crate) fn resolve_non_self_discard_requirement(
     player: PlayerId,
     source_id: ObjectId,
     cost: &AbilityCost,
-) -> Result<Option<(usize, Vec<ObjectId>)>, EngineError> {
-    resolve_non_self_discard_requirement_with_ability(state, player, source_id, cost, None)
-}
-
-pub(crate) fn resolve_non_self_discard_requirement_with_ability(
-    state: &GameState,
-    player: PlayerId,
-    source_id: ObjectId,
-    cost: &AbilityCost,
-    ability: Option<&ResolvedAbility>,
+    payer: DiscardCostPayer<'_>,
 ) -> Result<Option<(usize, Vec<ObjectId>)>, EngineError> {
     // The activation/casting path handles ANY `FromHand` discard selection mode; the
     // mana-ability path (see `mana_abilities::discard_cost_choice`) is the only caller
@@ -22018,18 +22009,27 @@ pub(crate) fn resolve_non_self_discard_requirement_with_ability(
     if count == 0 {
         return Ok(None);
     }
-    let eligible = ability.map_or_else(
-        || find_eligible_discard_targets(state, player, source_id, None, filter),
-        |ability| {
+    let eligible = match payer {
+        DiscardCostPayer::Ability(ability) => {
             find_eligible_discard_targets_for_ability(state, player, source_id, filter, ability)
-        },
-    );
+        }
+        DiscardCostPayer::Definition(granter) => {
+            find_eligible_discard_targets(state, player, source_id, granter, filter)
+        }
+    };
     if eligible.len() < count {
         return Err(EngineError::ActionNotAllowed(
             "Not enough cards in hand to discard".into(),
         ));
     }
     Ok(Some((count, eligible)))
+}
+
+/// Whose context a discard cost's filter reads: an announced ability's, or a mana
+/// ability's definition, which carries only its CR 201.5a granter stamp.
+pub(crate) enum DiscardCostPayer<'a> {
+    Ability(&'a ResolvedAbility),
+    Definition(Option<ObjectIncarnationRef>),
 }
 
 fn has_self_ref_discard_cost(cost: &AbilityCost) -> bool {
@@ -24787,12 +24787,12 @@ fn activate_with_cost_carrier(
             // Courier's "Discard your hand" on an empty hand) is paid by doing nothing — the
             // helper returns `Ok(None)` so we FALL THROUGH to the following cost detection
             // rather than surfacing a dead `PayCost { count: 0 }`.
-            if let Some((count, eligible)) = resolve_non_self_discard_requirement_with_ability(
+            if let Some((count, eligible)) = resolve_non_self_discard_requirement(
                 state,
                 player,
                 source_id,
                 cost,
-                Some(&resolved),
+                DiscardCostPayer::Ability(&resolved),
             )? {
                 let mut pending_discard = PendingCast::for_activation(
                     source_id,

@@ -329,6 +329,8 @@ impl AbilityCost {
         source: ObjectId,
         ability_index: usize,
     ) -> bool {
+        let granter =
+            super::casting::activated_ability_granting_object(state, source, Some(ability_index));
         match self {
             AbilityCost::Discard {
                 count,
@@ -347,7 +349,12 @@ impl AbilityCost {
                             .map(|cost| (pending.object_id, cost.count))
                     });
                 if reserved.is_none() {
-                    return self.is_payable(state, player, source);
+                    return self.is_payable_for_activation(
+                        state,
+                        player,
+                        source,
+                        Some(ability_index),
+                    );
                 }
                 let (pending_spell, reserved_count) = reserved.expect("checked reservation");
                 let Some(p) = state.players.get(player.0 as usize) else {
@@ -364,7 +371,7 @@ impl AbilityCost {
                 let resolved =
                     super::quantity::resolve_quantity(state, count, player, source).max(0) as usize;
                 let effective_filter = cost_filter_before_x_announcement(filter.as_ref());
-                let ctx = FilterContext::from_source(state, source);
+                let ctx = FilterContext::from_source(state, source).with_granting_object(granter);
                 p.hand
                     .iter()
                     .filter(|&&id| {
@@ -400,11 +407,7 @@ impl AbilityCost {
                         state,
                         player,
                         source,
-                        super::casting::activated_ability_granting_object(
-                            state,
-                            source,
-                            Some(ability_index),
-                        ),
+                        granter,
                         requirement,
                         filter,
                         true,
@@ -416,7 +419,7 @@ impl AbilityCost {
             }
             // Every other kind has no mana-pool component — defer to the
             // generic 601.2b gate, which already handles it correctly.
-            other => other.is_payable(state, player, source),
+            other => other.is_payable_for_activation(state, player, source, Some(ability_index)),
         }
     }
 
