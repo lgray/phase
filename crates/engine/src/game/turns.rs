@@ -1036,8 +1036,8 @@ pub(super) fn drain_pending_phase_transition_progress(
         // decision here would empty the very mana the card promises to keep.
         // Only `None`-expiry units flow into the pipeline as Drop-disposition
         // decisions. The `enumerate` runs over the full pool so `pool_index`
-        // stays aligned with the retained expiry units that remain in
-        // `mana_pool.mana`.
+        // stays aligned with the retained expiry units that remain in pool
+        // order (`ManaPool::units`).
         // CR 500.5: unspent mana empties as a step/phase ends. The ONLY exemption is the developer
         // `DebugAction::SetInfiniteMana` toggle (a documented debug departure). A loop-backed ∞-mana
         // axis is NOT exempt — it drains here and is de-realized in the queue-empty pass below. Gate
@@ -1051,8 +1051,7 @@ pub(super) fn drain_pending_phase_transition_progress(
             .find(|p| p.id == player_id)
             .map(|p| {
                 p.mana_pool
-                    .mana
-                    .iter()
+                    .units()
                     .enumerate()
                     .filter(|(_, u)| u.expiry.is_none())
                     .map(|(idx, u)| crate::types::mana::UnitDecision {
@@ -5344,7 +5343,7 @@ card into your hand at the beginning of your next end step.";
         // ordinary cleanup-exit boundary then empties the now-unretained mana.
         execute_cleanup(&mut state, &mut Vec::new());
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 1);
-        assert_eq!(state.players[0].mana_pool.mana[0].expiry, None);
+        assert_eq!(state.players[0].mana_pool.unit_at(0).unwrap().expiry, None);
         advance_phase(&mut state, &mut Vec::new());
         assert_eq!(state.phase, Phase::Untap);
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 0);
@@ -6006,8 +6005,7 @@ card into your hand at the beginning of your next end step.";
             // the other), the unit's final color is the survivor.
             state.players[0]
                 .mana_pool
-                .mana
-                .first()
+                .unit_at(0)
                 .map(|u| u.color)
                 .expect("unit survived")
         }

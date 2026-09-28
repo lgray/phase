@@ -2364,7 +2364,7 @@ fn an_ordinary_permanent_copying_a_room_gains_its_door_gated_form() {
     )
     .unwrap();
     assert_eq!(
-        state.players[0].mana_pool.mana.len(),
+        state.players[0].mana_pool.total(),
         0,
         "CR 709.5e: the copied left half's {{1}} unlock cost must consume the mana"
     );
@@ -3201,8 +3201,7 @@ fn unlock_door_restricted_mana_pays_room_unlock_cost() {
         .find(|p| p.id == PlayerId(0))
         .unwrap()
         .mana_pool
-        .mana
-        .len();
+        .total();
     assert_eq!(
         pool_left, 0,
         "the restricted mana must be spent on the unlock"
@@ -6277,8 +6276,7 @@ fn tapped_lands_produce_distinct_pip_ids() {
 
     let ids: Vec<u64> = state.players[0]
         .mana_pool
-        .mana
-        .iter()
+        .units()
         .map(|u| u.pip_id.0)
         .collect();
     assert_eq!(ids.len(), 3, "three taps must float three pool units");

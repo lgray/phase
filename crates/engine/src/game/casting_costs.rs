@@ -3407,14 +3407,12 @@ fn settle_delve_markers(
     };
     let unspent: Vec<ObjectId> = pool
         .mana_pool
-        .mana
-        .iter()
-        .filter(|unit| unit.is_convoke_payment() && selected.contains(&unit.source_id))
-        .map(|unit| unit.source_id)
+        .shapes()
+        .filter(|(shape, _)| shape.is_convoke_payment() && selected.contains(&shape.source_id))
+        .map(|(shape, _)| shape.source_id)
         .collect();
     pool.mana_pool
-        .mana
-        .retain(|unit| !(unit.is_convoke_payment() && unspent.contains(&unit.source_id)));
+        .retain_shapes(|shape| !(shape.is_convoke_payment() && unspent.contains(&shape.source_id)));
     pending.delved_cards = selected
         .into_iter()
         .filter(|id| !unspent.contains(id))

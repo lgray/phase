@@ -18790,14 +18790,14 @@ pub(super) fn handle_untap_land_for_mana(
     // above ends so the immutable pool read and the `pending_cast` mutation don't
     // overlap a live `&mut`.
     if state.pending_cast.is_some() {
-        let surviving: std::collections::HashSet<crate::types::mana::ManaPipId> = state
+        let surviving = state
             .players
             .iter()
             .find(|p| p.id == player)
-            .map(|p| p.mana_pool.mana.iter().map(|u| u.pip_id).collect())
-            .unwrap_or_default();
+            .map(|p| &p.mana_pool);
         if let Some(pc) = state.pending_cast.as_mut() {
-            pc.pinned_pool_units.retain(|id| surviving.contains(id));
+            pc.pinned_pool_units
+                .retain(|id| surviving.is_some_and(|pool| pool.contains_pip(*id)));
         }
     }
 
@@ -18838,7 +18838,7 @@ pub(super) fn handle_spend_pool_mana(
         .players
         .iter()
         .find(|p| p.id == player)
-        .and_then(|p| p.mana_pool.mana.iter().find(|u| u.pip_id == pip_id))
+        .and_then(|p| p.mana_pool.shape_of_pip(pip_id))
         .cloned()
         .ok_or_else(|| {
             EngineError::ActionNotAllowed("No such mana unit in pool to pin".to_string())
@@ -18909,7 +18909,7 @@ pub(super) fn handle_unspend_pool_mana(
 /// permission. Combines restriction gating (`ManaRestriction::allows`) with
 /// shard color/attribute matching (`shard_to_mana_type`).
 fn mana_unit_eligible_for_cost(
-    unit: &crate::types::mana::ManaUnit,
+    unit: &crate::types::mana::ManaShape,
     cost: &crate::types::mana::ManaCost,
     ctx: Option<&crate::types::mana::PaymentContext<'_>>,
     mana_spend_permission: Option<crate::types::ability::ManaSpendPermission>,

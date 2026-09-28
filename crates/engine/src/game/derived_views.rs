@@ -1239,12 +1239,12 @@ fn pending_payment_remaining(state: &GameState, viewer: PlayerId) -> Option<Mana
 
     // Scratch pool of ONLY the pinned units = the player's current selection.
     let player_obj = state.players.iter().find(|p| p.id == viewer)?;
-    let mut selected = ManaPool::default();
-    for unit in &player_obj.mana_pool.mana {
-        if pending.pinned_pool_units.contains(&unit.pip_id) {
-            selected.add(unit.clone());
-        }
-    }
+    let selected = ManaPool::from_units(
+        player_obj
+            .mana_pool
+            .units()
+            .filter(|unit| pending.pinned_pool_units.contains(&unit.pip_id)),
+    );
 
     // CR 106.6: reduce under the SAME spend-restriction context the finalize
     // spend uses, so restricted mana the spell can't accept stays in the residual.
@@ -5085,8 +5085,7 @@ mod tests {
         }
         let pip_ids: Vec<_> = state.players[0]
             .mana_pool
-            .mana
-            .iter()
+            .units()
             .map(|u| u.pip_id)
             .collect();
 

@@ -204,7 +204,7 @@ impl Board {
     }
 
     fn pool(&self) -> usize {
-        self.state().players[0].mana_pool.mana.len()
+        self.state().players[0].mana_pool.total()
     }
 
     fn activate(&mut self) -> Result<ActionResult, engine::game::engine::EngineError> {
@@ -505,7 +505,7 @@ fn a_bare_loyalty_cost_is_untouched_by_reductions() {
         })
         .expect("the loyalty ability must activate");
     assert_eq!(
-        runner.state().players[0].mana_pool.mana.len(),
+        runner.state().players[0].mana_pool.total(),
         5,
         "no mana paid"
     );

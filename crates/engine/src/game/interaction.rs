@@ -2150,7 +2150,7 @@ fn mana_payment_direct_actions(
     let total_upper_bound = actions
         .len()
         .checked_add(tapped_for_mana.len())
-        .and_then(|count| count.checked_add(pool.mana_pool.mana.len()))
+        .and_then(|count| count.checked_add(pool.mana_pool.total()))
         .and_then(|count| count.checked_add(convoke_upper_bound))
         .and_then(|count| count.checked_add(delve_upper_bound))
         .and_then(|count| count.checked_add(2))
@@ -2170,8 +2170,7 @@ fn mana_payment_direct_actions(
     );
     actions.extend(
         pool.mana_pool
-            .mana
-            .iter()
+            .units()
             .filter(|unit| unit.pip_id.0 != 0)
             .map(|unit| {
                 if pinned.contains(&unit.pip_id) {

@@ -27431,12 +27431,7 @@ impl GameState {
             .ok_or(ResolvedManaReplayInvariantError::UnknownPlayer(
                 command.player,
             ))?;
-        if player
-            .mana_pool
-            .mana
-            .iter()
-            .any(|unit| unit.pip_id == command.unit.pip_id)
-        {
+        if player.mana_pool.contains_pip(command.unit.pip_id) {
             return Err(ResolvedManaReplayInvariantError::DuplicateManaPip(
                 command.unit.pip_id,
             ));
@@ -27639,21 +27634,20 @@ impl GameState {
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let needed = self.players[idx]
             .mana_pool
-            .mana
-            .iter()
+            .units()
             .filter(|u| u.pip_id.0 == 0 || !seen.insert(u.pip_id.0))
             .count();
         if needed > 0 {
             // Mint the fresh ids before borrowing the pool mutably (`next_pip_id` needs
-            // `&mut self`), so the assignment pass can use `iter_mut` — idiomatic and
-            // compatible with both `Vec` and `im::Vector` without relying on `IndexMut`.
+            // `&mut self`).
             let mut fresh = Vec::with_capacity(needed);
             for _ in 0..needed {
                 fresh.push(self.next_pip_id());
             }
             let mut fresh = fresh.into_iter();
             let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
-            for unit in self.players[idx].mana_pool.mana.iter_mut() {
+            let slotted: Vec<_> = self.players[idx].mana_pool.slotted_units().collect();
+            for (slot, unit) in slotted {
                 if unit.pip_id.0 != 0 && seen.insert(unit.pip_id.0) {
                     continue; // already unique and stamped — leave it
                 }
@@ -27661,10 +27655,10 @@ impl GameState {
                     .next()
                     .expect("minted exactly one fresh id per unit needing one");
                 seen.insert(id.0);
-                unit.pip_id = id;
+                self.players[idx].mana_pool.set_pip_at(slot, id);
             }
         }
-        let pool_units: Vec<ManaUnit> = self.players[idx].mana_pool.mana.to_vec();
+        let pool_units: Vec<ManaUnit> = self.players[idx].mana_pool.units().collect();
         for unit in pool_units {
             if !self.resolved_rules_journal.has_produced_pip(unit.pip_id) {
                 let producer = self
@@ -27676,6 +27670,7 @@ impl GameState {
                     .expect("restamped pool mana must have one unique journal producer");
             }
         }
+        self.players[idx].mana_pool.mark_verified();
     }
 
     /// CR 702.26b: Returns battlefield object ids filtered to only phased-in
@@ -40213,9 +40208,12 @@ mod tests {
         // fresh monotonic id on the same logical unit). Pool length and every
         // other field are identical.
         let mut b = a.clone();
-        let pip_a = b.players[0].mana_pool.mana[0].pip_id;
-        b.players[0].mana_pool.mana[0].pip_id = ManaPipId(pip_a.0 + 1);
-        let pip_b = b.players[0].mana_pool.mana[0].pip_id;
+        let (slot, first) = b.players[0].mana_pool.slotted_units().next().unwrap();
+        let pip_a = first.pip_id;
+        b.players[0]
+            .mana_pool
+            .set_pip_at(slot, ManaPipId(pip_a.0 + 1));
+        let pip_b = b.players[0].mana_pool.unit_at(0).unwrap().pip_id;
         assert_ne!(
             pip_a, pip_b,
             "the two pool units must differ only in pip_id"
@@ -40309,11 +40307,7 @@ mod tests {
             ));
         }
         assert!(
-            state.players[0]
-                .mana_pool
-                .mana
-                .iter()
-                .all(|u| u.pip_id.0 == 0),
+            state.players[0].mana_pool.units().all(|u| u.pip_id.0 == 0),
             "precondition: all three units are unstamped (pip_id 0)"
         );
 
@@ -40321,8 +40315,7 @@ mod tests {
 
         let ids: Vec<u64> = state.players[0]
             .mana_pool
-            .mana
-            .iter()
+            .units()
             .map(|u| u.pip_id.0)
             .collect();
         assert!(
@@ -40346,27 +40339,19 @@ mod tests {
     fn restamp_pool_pip_ids_heals_duplicate_nonzero_ids() {
         let mut state = GameState::new_two_player(7);
         let player = state.players[0].id;
-        for _ in 0..3 {
-            state.players[0].mana_pool.add(ManaUnit::new(
-                ManaType::Blue,
-                ObjectId(0),
-                false,
-                vec![],
-            ));
-        }
-        // Inject a duplicate nonzero id: [100, 100, 200]. Ids are chosen well above
+        // A duplicate nonzero id: [100, 100, 200]. Ids are chosen well above
         // a fresh game's `next_pip_id` so the minted replacement cannot collide.
-        let mana = &mut state.players[0].mana_pool.mana;
-        mana[0].pip_id = ManaPipId(100);
-        mana[1].pip_id = ManaPipId(100);
-        mana[2].pip_id = ManaPipId(200);
+        state.players[0].mana_pool =
+            crate::types::mana::ManaPool::from_units([100, 100, 200].map(|pip| ManaUnit {
+                pip_id: ManaPipId(pip),
+                ..ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![])
+            }));
 
         state.restamp_pool_pip_ids(player);
 
         let ids: Vec<u64> = state.players[0]
             .mana_pool
-            .mana
-            .iter()
+            .units()
             .map(|u| u.pip_id.0)
             .collect();
         assert!(

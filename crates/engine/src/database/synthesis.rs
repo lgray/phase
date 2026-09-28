@@ -24775,7 +24775,7 @@ mod sunburst_runtime_tests {
             .map(|c| ManaUnit::new(ManaType::from(*c), ObjectId(0), false, Vec::new()))
             .collect();
         if let Some(p) = state.players.iter_mut().find(|p| p.id == P0) {
-            p.mana_pool.mana = mana;
+            p.mana_pool = crate::types::mana::ManaPool::from_units(mana);
         }
 
         (GameRunner::from_state(state), spell)

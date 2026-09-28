@@ -308,7 +308,7 @@ impl GameScenario {
     /// Replace a player's mana pool for deterministic payment tests.
     ///
     /// CR 118.3a: routes each unit through `add_mana_to_pool` so every seeded
-    /// unit receives a distinct `ManaPipId` (a direct `mana_pool.mana = mana`
+    /// unit receives a distinct `ManaPipId` (a pool built directly from `mana`
     /// would leave all units at the `ManaPipId(0)` sentinel, so pins would
     /// collide). All callers seed a fresh pool exactly once per player, so
     /// appending is equivalent to replacing.
@@ -4815,7 +4815,7 @@ mod tests {
             .expect("pay reduced cost");
         assert_eq!(runner.state().objects[&creature].zone, Zone::Battlefield);
         assert_eq!(runner.state().objects[&decoy].zone, Zone::Hand);
-        assert!(runner.state().players[0].mana_pool.mana.is_empty());
+        assert!(runner.state().players[0].mana_pool.is_empty());
     }
 
     #[test]

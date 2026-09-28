@@ -39597,7 +39597,7 @@ mod tests {
         assert_eq!(state.players[0].life, 22);
         assert_eq!(state.players[1].life, 19);
         assert_eq!(state.players[2].life, 19);
-        assert_eq!(state.players[0].mana_pool.mana.len(), 0);
+        assert_eq!(state.players[0].mana_pool.total(), 0);
     }
 
     /// Accept extort with no {W/B} available — drain must not run (CR 702.101a).
@@ -39619,7 +39619,7 @@ mod tests {
         let mut state = GameState::new(FormatConfig::standard(), 3, 42);
         let source_id = ObjectId(100);
         assert!(
-            state.players[0].mana_pool.mana.is_empty(),
+            state.players[0].mana_pool.is_empty(),
             "controller must have no mana to pay W/B"
         );
         let resolved = build_resolved_from_def(execute, source_id, PlayerId(0));
@@ -39727,7 +39727,7 @@ mod tests {
         .unwrap();
 
         assert!(!state.cost_payment_failed_flag);
-        assert_eq!(state.players[0].mana_pool.mana.len(), 0);
+        assert_eq!(state.players[0].mana_pool.total(), 0);
         assert_eq!(state.players[0].life, 19);
         assert_eq!(state.players[0].hand.len(), 1);
         assert_eq!(state.players[0].library.len(), 0);
@@ -39808,7 +39808,7 @@ mod tests {
         .unwrap();
 
         assert!(!state.cost_payment_failed_flag);
-        assert_eq!(state.players[0].mana_pool.mana.len(), 0);
+        assert_eq!(state.players[0].mana_pool.total(), 0);
         assert!(
             events.iter().any(
                 |event| matches!(event, GameEvent::TokenCreated { name, .. } if name == "Myr")

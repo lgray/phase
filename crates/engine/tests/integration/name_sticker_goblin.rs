@@ -29,8 +29,7 @@ fn red_mana(count: usize) -> Vec<ManaUnit> {
 fn mana_red_count(state: &engine::types::game_state::GameState) -> usize {
     state.players[P0.0 as usize]
         .mana_pool
-        .mana
-        .iter()
+        .units()
         .filter(|unit| unit.color == ManaType::Red)
         .count()
 }

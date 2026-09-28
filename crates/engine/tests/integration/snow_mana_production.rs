@@ -67,7 +67,7 @@ fn snow_source_produces_snow_mana() {
         "reach-guard: the mana ability must have produced mana (found none)",
     );
     assert!(
-        pool.mana.iter().any(|u| u.is_snow()),
+        pool.units().any(|u| u.is_snow()),
         "mana produced by a snow source must be snow mana (CR 107.4h); the \
          produce site must stamp ManaSupertype::Snow",
     );
@@ -143,7 +143,7 @@ fn nonsnow_source_produces_nonsnow_mana_and_cannot_pay_snow() {
         "reach-guard: the mana ability must have produced mana (found none)",
     );
     assert!(
-        pool.mana.iter().all(|u| !u.is_snow()),
+        pool.units().all(|u| !u.is_snow()),
         "mana produced by a nonsnow source must NOT be snow mana (CR 205.4g)",
     );
     assert!(

@@ -781,8 +781,7 @@ fn real_4p_basalt_power_artifact_refills_colorless_only() {
     let count_of = |color: ManaType| {
         state.players[p0_idx]
             .mana_pool
-            .mana
-            .iter()
+            .units()
             .filter(|u| u.color == color)
             .count()
     };
