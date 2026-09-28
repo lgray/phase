@@ -2755,12 +2755,34 @@ impl From<ManaPool> for ManaPoolWire {
 /// [`Self::first_pinned_where`] or [`Self::unit_by_pip`], each of which answers
 /// at the minimum matching slot. Every other reader (counts, `any`/`all`, pip
 /// membership) reads [`Self::shapes`] or an operation built on it.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
+#[cfg_attr(not(feature = "test-support"), derive(Clone))]
 #[serde(from = "ManaPoolWire", into = "ManaPoolWire")]
 pub struct ManaPool {
     entries: Vec<PoolEntry>,
     next_slot: u64,
     provenance: PoolProvenance,
+}
+
+// Counts the slots a copy does not share with its original.
+#[cfg(feature = "test-support")]
+impl Clone for ManaPool {
+    fn clone(&self) -> Self {
+        use crate::game::perf_counters::Unshared;
+        let copy = Self {
+            entries: self.entries.clone(),
+            next_slot: self.next_slot,
+            provenance: self.provenance,
+        };
+        crate::game::perf_counters::record_pool_entries_walked(
+            self.entries
+                .iter()
+                .zip(&copy.entries)
+                .map(|(entry, copied)| entry.slots.unshared(&copied.slots))
+                .sum(),
+        );
+        copy
+    }
 }
 
 impl std::fmt::Debug for ManaPool {
@@ -2846,7 +2868,10 @@ impl ManaPool {
 
     /// The pool's single shape walk.
     fn walk(&self) -> impl Iterator<Item = &PoolEntry> + '_ {
-        self.entries.iter()
+        self.entries.iter().inspect(|_| {
+            #[cfg(feature = "test-support")]
+            crate::game::perf_counters::record_pool_entries_walked(1);
+        })
     }
 
     /// Every (slot, entry index, pip) in slot order.
@@ -2863,6 +2888,8 @@ impl ManaPool {
             })
             .collect();
         ordered.sort_unstable_by_key(|(slot, _, _)| *slot);
+        #[cfg(feature = "test-support")]
+        crate::game::perf_counters::record_pool_entries_walked(ordered.len() as u64);
         ordered
     }
 

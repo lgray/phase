@@ -172,8 +172,9 @@ pub struct AttackDeclarationSolverCounters {
 
 /// Test-only counters for the work a replay take does on the turn's growing history: history
 /// records deep-copied, map-backed history entries a state copy does not share, state copies,
-/// keyed journal reads and the records they examine, and the replay drive's whole-state
-/// snapshots. Kept out of [`PerfCounterSnapshot`] for the same reason as the counter sets above.
+/// keyed journal reads and the records they examine, the replay drive's whole-state
+/// snapshots, and the mana-pool entries and units walked. Kept out of [`PerfCounterSnapshot`]
+/// for the same reason as the counter sets above.
 #[cfg(feature = "test-support")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TakeCostCounters {
@@ -183,6 +184,7 @@ pub struct TakeCostCounters {
     pub journal_keyed_reads: u64,
     pub journal_records_examined: u64,
     pub drive_snapshots: u64,
+    pub pool_entries_walked: u64,
 }
 
 #[cfg(feature = "test-support")]
@@ -198,6 +200,7 @@ impl TakeCostCounters {
             journal_records_examined: self.journal_records_examined
                 - earlier.journal_records_examined,
             drive_snapshots: self.drive_snapshots - earlier.drive_snapshots,
+            pool_entries_walked: self.pool_entries_walked - earlier.pool_entries_walked,
         }
     }
 }
@@ -226,6 +229,21 @@ where
     K: std::hash::Hash + Eq + Clone,
     V: Clone,
     S: std::hash::BuildHasher,
+{
+    fn unshared(&self, copy: &Self) -> u64 {
+        if self.ptr_eq(copy) {
+            0
+        } else {
+            self.len() as u64
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl<K, V> Unshared for im::OrdMap<K, V>
+where
+    K: Ord + Clone,
+    V: Clone,
 {
     fn unshared(&self, copy: &Self) -> u64 {
         if self.ptr_eq(copy) {
@@ -360,6 +378,7 @@ thread_local! {
             journal_keyed_reads: 0,
             journal_records_examined: 0,
             drive_snapshots: 0,
+            pool_entries_walked: 0,
         })
     };
     #[cfg(feature = "test-support")]
@@ -865,6 +884,11 @@ pub fn record_journal_record_examined() {
 #[cfg(feature = "test-support")]
 pub fn record_drive_snapshot() {
     with_take_cost(|c| c.drive_snapshots += 1);
+}
+
+#[cfg(feature = "test-support")]
+pub fn record_pool_entries_walked(entries: u64) {
+    with_take_cost(|c| c.pool_entries_walked += entries);
 }
 
 #[cfg(feature = "test-support")]

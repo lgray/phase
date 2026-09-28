@@ -1387,3 +1387,128 @@ fn latest_producer_names_the_second_basalt_activation() {
         );
     }
 }
+
+/// After `k` Basalt periods, the pool entries walked by a {1} payment pinned to the pool's last
+/// unit, and after Forest's {G} by an unpinned {1}{G} payment; each window is one direct payment
+/// call, so no action-boundary serialization is counted.
+fn payment_walks_after_periods(k: usize, db: &CardDatabase) -> (u64, u64) {
+    use engine::game::mana_payment::pay_cost_with_demand_and_choices;
+    use engine::game::perf_counters::take_cost_snapshot;
+    use engine::types::mana::{LifePaymentColors, ManaCost, ManaCostShard};
+
+    let mut rig = setup(true, LoopDetectionMode::Off, db);
+    let forest = place_on_battlefield(rig.runner.state_mut(), P0, "Forest", db);
+    let bears = place_in_hand(rig.runner.state_mut(), P0, "Grizzly Bears", db);
+    let mana_idx =
+        mana_ability_index(rig.runner.state(), rig.basalt).expect("Basalt taps for mana");
+    let untap_idx = untap_ability_index(rig.runner.state(), rig.basalt).expect("Basalt untaps");
+    for _ in 0..k {
+        drive_one_period(&mut rig, mana_idx, untap_idx);
+    }
+
+    let mut pool = rig.runner.state().players[0].mana_pool.clone();
+    let last = pool.units().last().expect("Basalt's mana floats").pip_id;
+    let before = take_cost_snapshot();
+    let (paid, _) = pay_cost_with_demand_and_choices(
+        &mut pool,
+        &ManaCost::generic(1),
+        None,
+        None,
+        None,
+        None,
+        LifePaymentColors::EMPTY,
+        &[last],
+    )
+    .expect("the pinned {1} is payable");
+    let pinned_walk = take_cost_snapshot().since(before).pool_entries_walked;
+    assert_eq!(
+        paid.iter().map(|unit| unit.pip_id).collect::<Vec<_>>(),
+        [last],
+        "the pinned unit pays"
+    );
+
+    let forest_idx = mana_ability_index(rig.runner.state(), forest).expect("Forest taps for mana");
+    activate_and_settle(&mut rig.runner, forest, forest_idx);
+    let pool = &rig.runner.state().players[0].mana_pool;
+    let colorless_before = pool.count_color(ManaType::Colorless);
+    assert_eq!(
+        (pool.count_color(ManaType::Green), colorless_before),
+        (1, 2 * k),
+        "reach: Forest's {{G}} floats after Basalt's colorless"
+    );
+    assert_eq!(
+        pool.units().last().map(|unit| unit.color),
+        Some(ManaType::Green),
+        "reach: the {{G}} sits behind every {{C}} in pool order"
+    );
+
+    let mut unpinned_pool = pool.clone();
+    let before = take_cost_snapshot();
+    let (paid, _) = pay_cost_with_demand_and_choices(
+        &mut unpinned_pool,
+        &ManaCost::Cost {
+            shards: vec![ManaCostShard::Green],
+            generic: 1,
+        },
+        None,
+        None,
+        None,
+        None,
+        LifePaymentColors::EMPTY,
+        &[],
+    )
+    .expect("the unpinned {1}{G} is payable");
+    let unpinned_walk = take_cost_snapshot().since(before).pool_entries_walked;
+    let mut paid_colors: Vec<ManaType> = paid.iter().map(|unit| unit.color).collect();
+    paid_colors.sort_by_key(|color| *color == ManaType::Colorless);
+    assert_eq!(
+        paid_colors,
+        [ManaType::Green, ManaType::Colorless],
+        "the {{G}} and one {{C}} pay the unpinned {{1}}{{G}}"
+    );
+
+    let card_id = rig.runner.state().objects[&bears].card_id;
+    rig.runner
+        .act(GameAction::CastSpell {
+            object_id: bears,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("Grizzly Bears is castable from the pool");
+    for _ in 0..60 {
+        if rig.runner.state().stack.is_empty() {
+            break;
+        }
+        rig.runner
+            .act(GameAction::PassPriority)
+            .expect("priority passes");
+    }
+    let state = rig.runner.state();
+    assert!(state.battlefield.contains(&bears), "Grizzly Bears resolves");
+    assert_eq!(
+        (
+            state.players[0].mana_pool.count_color(ManaType::Green),
+            state.players[0].mana_pool.count_color(ManaType::Colorless),
+        ),
+        (0, colorless_before - 1),
+        "the {{G}} and one {{C}} pay for Grizzly Bears"
+    );
+    (pinned_walk, unpinned_walk)
+}
+
+#[test]
+fn an_ineligible_shape_ahead_costs_a_payment_no_walk_per_unit() {
+    let db = shared_card_db().expect("the integration card fixture loads");
+    let (small_pinned, small_unpinned) = payment_walks_after_periods(3, db);
+    let (large_pinned, large_unpinned) = payment_walks_after_periods(40, db);
+    assert!(
+        small_pinned > 0 && small_unpinned > 0,
+        "reach: both payments walk the pool"
+    );
+    assert_eq!(
+        (large_unpinned, large_pinned),
+        (small_unpinned, small_pinned),
+        "(unpinned, pinned) payment walks grow with the colorless ahead of the {{G}}"
+    );
+}

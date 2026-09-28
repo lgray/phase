@@ -9727,6 +9727,39 @@ pub(crate) fn assert_take_history_work_is_flat(
     );
 }
 
+/// Drives `take` on a fresh board at a small count and at `large`, and checks that the mana-pool
+/// entries walked per cycle are the same at both counts.
+pub(crate) fn assert_take_pool_walk_is_flat(large: u32, mut take: impl FnMut(u32) -> GameState) {
+    const SMALL: u32 = 3;
+    take(SMALL);
+    let small = only_take(SMALL);
+    take(large);
+    let large_take = only_take(large);
+
+    for (record, n) in [(&small, SMALL), (&large_take, large)] {
+        assert_eq!(
+            (record.count, record.delivered, record.cycles.len()),
+            (n, n, n as usize),
+            "reach: the take at {n} delivers every cycle"
+        );
+    }
+    let most = |record: &TakeCostRecord| {
+        record
+            .cycles
+            .iter()
+            .map(|cycle| cycle.pool_entries_walked)
+            .max()
+            .unwrap_or(0)
+    };
+    let (small_most, large_most) = (most(&small), most(&large_take));
+    assert!(small_most > 0, "reach: the small take walks the pool");
+    assert_eq!(
+        large_most, small_most,
+        "pool entries walked per cycle grow with the count: {large_most} at {large} against \
+         {small_most} at {SMALL}"
+    );
+}
+
 /// The Sprout Swarm collapse's per-cycle history work does not grow with its count.
 #[test]
 fn sprout_take_history_work_is_flat_per_cycle() {

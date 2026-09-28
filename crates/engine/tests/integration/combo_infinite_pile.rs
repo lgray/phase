@@ -3636,6 +3636,11 @@ fn low3_board_etb_life_trigger() -> TriggerDefinition {
 /// runner. Shared so both arms inherit the same non-vacuity reach-guards (3-step period, surfaced
 /// offer) — the only difference between them is `etb`.
 fn low3_life_engine_accepted(etb: Low3BoardEtbTrigger) -> GameRunner {
+    low3_life_engine_accepted_n(etb, 1)
+}
+
+/// [`low3_life_engine_accepted`] with the table accepting `Fixed(n)`, which bounds the collapse.
+fn low3_life_engine_accepted_n(etb: Low3BoardEtbTrigger, n: u32) -> GameRunner {
     use engine::game::mana_abilities::is_mana_ability;
     use engine::types::ability::TapStateChange;
 
@@ -3755,7 +3760,7 @@ fn low3_life_engine_accepted(etb: Low3BoardEtbTrigger) -> GameRunner {
     // Accept through the REAL APNAP pipeline → materialize_object_growth_shortcut routing.
     runner
         .act(GameAction::DeclareShortcut {
-            count: IterationCount::Fixed(1),
+            count: IterationCount::Fixed(n),
             template: None,
         })
         .expect("P0 declares the shortcut");
@@ -4139,6 +4144,32 @@ fn low3_mixed_axis_boundary_preserves_debug_infinite_mana() {
         "CR 732.2c: the collapse the boundary just applied delivered the life growth, so it ends \
          that mark. This half fails any 'preserve everything' bug. Got {after:?}"
     );
+}
+
+/// The debug infinite-mana collapse's per-cycle pool walk does not grow with its count.
+#[test]
+fn debug_infinite_mana_take_pool_walk_is_flat_per_cycle() {
+    use engine::types::actions::DebugAction;
+
+    crate::loop_shortcut::assert_take_pool_walk_is_flat(32, |n| {
+        let mut runner = low3_life_engine_accepted_n(Low3BoardEtbTrigger::CastPresent, n);
+        runner.state_mut().debug_mode = true;
+        runner
+            .act(GameAction::Debug(DebugAction::SetInfiniteMana {
+                player_id: P0,
+                enabled: true,
+            }))
+            .expect("the debug infinite-mana toggle is submittable");
+        drive_priority_to_next_boundary(runner.state_mut());
+        engine::game::perf_counters::reset();
+        apply(
+            runner.state_mut(),
+            P0,
+            GameAction::SubmitPayAmount { amount: n },
+        )
+        .expect("P0 submits the collapse count at the CR 500.5 boundary");
+        runner.state().clone()
+    });
 }
 
 /// **The CONSUMING AUTHORITY re-filters any stash it is handed, whatever that stash names.** The
