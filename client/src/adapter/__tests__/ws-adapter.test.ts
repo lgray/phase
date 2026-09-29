@@ -2234,3 +2234,29 @@ it.each(["resolve", "reject"] as const)("disposes during a pending LAN probe bef
     lanGate.probe.mockReset().mockResolvedValue(false);
   }
 });
+
+describe("WebSocketAdapter dispose during the handshake", () => {
+  it.each(["before ServerHello", "after ServerHello settles"] as const)(
+    "sends nothing after dispose and closes the socket (%s)",
+    async (order) => {
+      MockWebSocket.last = null;
+      const adapter = new WebSocketAdapter("wss://localhost:9374/ws", "join", { main_deck: [], sideboard: [] }, "GAME01");
+      void adapter.initialize().catch(() => {});
+      await Promise.resolve();
+      const socket = MockWebSocket.last!;
+      let sentAtDispose: number;
+      if (order === "before ServerHello") {
+        sentAtDispose = socket.send.mock.calls.length;
+        adapter.dispose();
+        socket.dispatchSynthetic("message", SERVER_HELLO);
+      } else {
+        socket.dispatchSynthetic("message", SERVER_HELLO);
+        sentAtDispose = socket.send.mock.calls.length;
+        adapter.dispose();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(socket.send.mock.calls.slice(sentAtDispose)).toEqual([]);
+      expect(socket.close).toHaveBeenCalledOnce();
+    },
+  );
+});
