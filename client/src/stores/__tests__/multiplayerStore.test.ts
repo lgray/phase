@@ -76,6 +76,8 @@ import {
   clearWsSession,
   loadWsSession,
   saveWsSession,
+  WS_SESSION_STORAGE_KEY,
+  WS_SESSION_TTL_MS,
 } from "../../services/multiplayerSession";
 import { HandshakeError, openPhaseSocket, withReconnect } from "../../services/openPhaseSocket";
 import { NativeEngineSocket } from "../../services/nativeEngineSocket";
@@ -265,8 +267,8 @@ function hostingSettings(
   };
 }
 
-function emitServerMessage(type: string, data?: unknown): void {
-  socketMocks.currentWs?.onmessage?.({
+function emitServerMessage(type: string, data?: unknown, ws = socketMocks.currentWs): void {
+  ws?.onmessage?.({
     data: JSON.stringify({ type, data }),
   } as MessageEvent);
 }
@@ -1332,6 +1334,267 @@ describe("multiplayerStore", () => {
       serverUrl: "ws://localhost:8787",
     });
     expect(loadWsSession()?.hostSession).toBeUndefined();
+  });
+
+  describe("the lobby host's started-game session", () => {
+    const deck = { main_deck: ["Forest"], sideboard: [], commander: ["Goreclaw, Terror of Qal Sisma"] };
+    const startedGame = { gameCode: "ABCDE", playerToken: "host-token" };
+    const failSessionKey = (method: "getItem" | "setItem", name: string) => {
+      const real = localStorage[method] as (...args: string[]) => string | null | void;
+      return vi.spyOn(localStorage, method).mockImplementation(((key: string, value?: string) => {
+        if (key === WS_SESSION_STORAGE_KEY) throw new DOMException(name, name);
+        return real(key, value as string);
+      }) as never);
+    };
+    async function hostUntilCreated(): Promise<void> {
+      useMultiplayerStore.getState().startHosting(hostingSettings(), deck, HOST_URL);
+      await waitFor(() => expect(socketMocks.send).toHaveBeenCalled());
+      emitServerMessage("GameCreated", {
+        game_code: "ABCDE",
+        player_token: "host-token",
+        full_key: { game_code: "ABCDE", generation: 1 },
+      });
+    }
+    function storedHostSession(gameCode: string, timestamp = Date.now()) {
+      return {
+        gameCode,
+        playerToken: "resumed-token",
+        fullKey: { game_code: gameCode, generation: 1 },
+        serverUrl: HOST_URL,
+        timestamp,
+        hostIsPublic: true,
+        hostSession: { formatConfig: FORMAT_DEFAULTS.Commander, timerSeconds: null, matchType: "Bo1" as const },
+      };
+    }
+
+    it("stays reachable when the store refuses the session write", async () => {
+      const refuse = failSessionKey("setItem", "QuotaExceededError");
+      try {
+        await hostUntilCreated();
+        emitServerMessage("GameStarted", {});
+        expect(refuse.mock.calls.some(([key]) => key === WS_SESSION_STORAGE_KEY)).toBe(true);
+        expect(useMultiplayerStore.getState().pendingGameRoute).toMatch(/^\/game\/[^?]+\?mode=host$/);
+        expect(loadWsSession()).toMatchObject(startedGame);
+      } finally {
+        refuse.mockRestore();
+      }
+    });
+
+    it("stays reachable when the store blocks reads and writes", async () => {
+      const blockedGet = failSessionKey("getItem", "SecurityError");
+      const blockedSet = failSessionKey("setItem", "SecurityError");
+      try {
+        await hostUntilCreated();
+        emitServerMessage("GameStarted", {});
+        const session = loadWsSession();
+        expect(blockedGet.mock.calls.some(([key]) => key === WS_SESSION_STORAGE_KEY)).toBe(true);
+        expect(session).toMatchObject(startedGame);
+      } finally {
+        blockedGet.mockRestore();
+        blockedSet.mockRestore();
+      }
+    });
+
+    it("stays reachable when the pregame session outlived the TTL", async () => {
+      const t0 = Date.now();
+      const now = vi.spyOn(Date, "now").mockReturnValue(t0);
+      try {
+        await hostUntilCreated();
+        expect(loadWsSession()?.gameCode).toBe("ABCDE");
+        now.mockReturnValue(t0 + WS_SESSION_TTL_MS + 1000);
+        emitServerMessage("GameStarted", {});
+        expect(useMultiplayerStore.getState().pendingGameRoute).toMatch(/^\/game\/[^?]+\?mode=host$/);
+        expect(loadWsSession()).toMatchObject(startedGame);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it("stays reachable when the stored pregame copy expired and the re-stamp is refused", async () => {
+      const t0 = Date.now();
+      const now = vi.spyOn(Date, "now").mockReturnValue(t0);
+      let refuse: ReturnType<typeof failSessionKey> | undefined;
+      try {
+        await hostUntilCreated();
+        expect(loadWsSession()?.gameCode).toBe("ABCDE");
+        now.mockReturnValue(t0 + WS_SESSION_TTL_MS + 1000);
+        refuse = failSessionKey("setItem", "QuotaExceededError");
+        emitServerMessage("GameStarted", {});
+        expect(loadWsSession()).toMatchObject(startedGame);
+        expect(refuse.mock.calls.some(([key]) => key === WS_SESSION_STORAGE_KEY)).toBe(true);
+      } finally {
+        refuse?.mockRestore();
+        now.mockRestore();
+      }
+    });
+
+    it("re-stamps a resumed host session without its pregame metadata", async () => {
+      const before = Date.now() - 1000;
+      saveWsSession(storedHostSession("ABCDE", before));
+      expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(true);
+      await waitFor(() => expect(socketMocks.send).toHaveBeenCalled());
+      emitServerMessage("GameStarted", {});
+      const session = loadWsSession();
+      expect(session).toMatchObject({ gameCode: "ABCDE", playerToken: "resumed-token" });
+      expect(session?.hostSession).toBeUndefined();
+      expect(session!.timestamp).toBeGreaterThan(before);
+    });
+
+    function expectRestamped(gameCode: string, writtenAt: number): void {
+      const session = loadWsSession();
+      expect(session?.gameCode).toBe(gameCode);
+      expect(session?.hostSession).toBeUndefined();
+      expect(session!.timestamp).toBeGreaterThan(writtenAt);
+    }
+    function dialedFrame(): { type: string; data?: { game_code?: string } } {
+      return JSON.parse(socketMocks.send.mock.lastCall![0] as string);
+    }
+
+    it("re-stamps the resumed game, not an earlier hosting's held session", async () => {
+      await hostUntilCreated();
+      expect(loadWsSession()?.gameCode).toBe("ABCDE");
+      useMultiplayerStore.getState().cancelHosting();
+      const before = Date.now() - 1000;
+      saveWsSession(storedHostSession("FGHIJ", before));
+      socketMocks.send.mockClear();
+      expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(true);
+      await waitFor(() => expect(socketMocks.send).toHaveBeenCalled());
+      expect(dialedFrame()).toMatchObject({ type: "Reconnect", data: { game_code: "FGHIJ" } });
+      emitServerMessage("GameStarted", {});
+      expectRestamped("FGHIJ", before);
+    });
+
+    it("re-stamps the game a dropped host socket's reconnect dialed", async () => {
+      await hostUntilCreated();
+      vi.useFakeTimers();
+      try {
+        const before = Date.now() - 1000;
+        const { hostSession: _h, hostIsPublic: _p, ...otherPagesGame } = storedHostSession("FGHIJ", before);
+        localStorage.setItem(WS_SESSION_STORAGE_KEY, JSON.stringify(otherPagesGame));
+        socketMocks.send.mockClear();
+        socketMocks.currentWs!.onclose!();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(dialedFrame()).toMatchObject({ type: "Reconnect", data: { game_code: "FGHIJ" } });
+        emitServerMessage("GameStarted", {});
+        expectRestamped("FGHIJ", before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("re-stamps the game a failed create's reconnect dialed", async () => {
+      await hostUntilCreated();
+      useMultiplayerStore.setState({ hostingStatus: "idle", hostGameCode: null });
+      vi.useFakeTimers();
+      try {
+        vi.mocked(openPhaseSocket).mockRejectedValueOnce(new Error("dial failed"));
+        socketMocks.send.mockClear();
+        useMultiplayerStore.getState().startHosting(hostingSettings(), deck, HOST_URL);
+        const before = Date.now() - 1000;
+        localStorage.setItem(WS_SESSION_STORAGE_KEY, JSON.stringify(storedHostSession("FGHIJ", before)));
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(dialedFrame()).toMatchObject({ type: "Reconnect", data: { game_code: "FGHIJ" } });
+        emitServerMessage("GameStarted", {});
+        expectRestamped("FGHIJ", before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("re-stamps nothing when a new hosting's GameCreated carries no full key", async () => {
+      await hostUntilCreated();
+      expect(loadWsSession()?.gameCode).toBe("ABCDE");
+      socketMocks.send.mockClear();
+      useMultiplayerStore.getState().startHosting(hostingSettings(), deck, HOST_URL);
+      await waitFor(() => expect(socketMocks.send).toHaveBeenCalled());
+      emitServerMessage("GameCreated", { game_code: "KLMNO", player_token: "lobby-token" });
+      expect(useMultiplayerStore.getState().hostGameCode).toBe("KLMNO");
+      emitServerMessage("GameStarted", {});
+      expect(useMultiplayerStore.getState().pendingGameRoute).toMatch(/^\/game\/[^?]+\?mode=host$/);
+      expect(loadWsSession()).toBeNull();
+    });
+
+    it.each(["before", "after"] as const)(
+      "re-stamps the delivering socket's game while another host socket is live (%s that socket's GameCreated)",
+      async (window) => {
+        await hostUntilCreated();
+        vi.useFakeTimers();
+        try {
+          const A = socketMocks.currentWs!;
+          A.onclose!();
+          const before = Date.now() - 1000;
+          localStorage.setItem(WS_SESSION_STORAGE_KEY, JSON.stringify(storedHostSession("FGHIJ", before)));
+          useMultiplayerStore.setState({ hostingStatus: "idle", hostGameCode: null });
+          socketMocks.send.mockClear();
+          expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(true);
+          await vi.advanceTimersByTimeAsync(0);
+          const B = socketMocks.currentWs!;
+          expect(B).not.toBe(A);
+          expect(dialedFrame()).toMatchObject({ type: "Reconnect", data: { game_code: "FGHIJ" } });
+          emitServerMessage("GameCreated", {
+            game_code: "FGHIJ",
+            player_token: "resumed-token",
+            full_key: { game_code: "FGHIJ", generation: 1 },
+          }, B);
+          await vi.advanceTimersByTimeAsync(1000);
+          const C = socketMocks.currentWs!;
+          expect(C).not.toBe(B);
+          expect(dialedFrame()).toMatchObject({ type: "Reconnect", data: { game_code: "ABCDE" } });
+          expect(B.close).not.toHaveBeenCalled();
+          if (window === "after") {
+            emitServerMessage("GameCreated", {
+              game_code: "ABCDE",
+              player_token: "host-token",
+              full_key: { game_code: "ABCDE", generation: 1 },
+            }, C);
+          }
+          expect(loadWsSession()?.gameCode).toBe(window === "after" ? "ABCDE" : "FGHIJ");
+          emitServerMessage("GameStarted", {}, B);
+          expect(useMultiplayerStore.getState().pendingGameRoute).toMatch(/^\/game\/[^?]+\?mode=host$/);
+          expectRestamped("FGHIJ", before);
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it("does not answer from memory once another page removed the stored session", async () => {
+      await hostUntilCreated();
+      emitServerMessage("GameStarted", {});
+      expect(loadWsSession()).toMatchObject(startedGame);
+      localStorage.removeItem(WS_SESSION_STORAGE_KEY);
+      expect(loadWsSession()).toBeNull();
+    });
+
+    it("does not resume a cancelled hosting whose session the store refused", async () => {
+      const refuse = failSessionKey("setItem", "QuotaExceededError");
+      try {
+        await hostUntilCreated();
+        expect(refuse.mock.calls.some(([key]) => key === WS_SESSION_STORAGE_KEY)).toBe(true);
+        expect(loadWsSession()?.gameCode).toBe("ABCDE");
+        useMultiplayerStore.getState().cancelHosting();
+        expect(loadWsSession()).toBeNull();
+        expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(false);
+      } finally {
+        refuse.mockRestore();
+      }
+    });
+
+    it("answers the landed re-stamp, not the refused pregame copy", async () => {
+      const refuse = failSessionKey("setItem", "QuotaExceededError");
+      try {
+        await hostUntilCreated();
+        expect(refuse.mock.calls.some(([key]) => key === WS_SESSION_STORAGE_KEY)).toBe(true);
+      } finally {
+        refuse.mockRestore();
+      }
+      emitServerMessage("GameStarted", {});
+      const session = loadWsSession();
+      expect(session).toMatchObject(startedGame);
+      expect(session?.hostSession).toBeUndefined();
+      localStorage.removeItem(WS_SESSION_STORAGE_KEY);
+      expect(loadWsSession()).toBeNull();
+    });
   });
 
   // ── U15: the chosen host server ─────────────────────────────────────────

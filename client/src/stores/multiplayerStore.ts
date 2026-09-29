@@ -39,6 +39,7 @@ import {
   clearWsSession,
   loadWsSession,
   saveWsSession,
+  type WsSessionData,
 } from "../services/multiplayerSession";
 import {
   BrokerRequestError,
@@ -2617,11 +2618,12 @@ function savePregameHostSession(
   get: MultiplayerGet,
   data: { game_code: string; player_token: string; full_key?: { game_code: string; generation: number } },
   serverUrl: string,
+  held: { session: WsSessionData | null },
 ): void {
   if (!data.full_key || data.full_key.game_code !== data.game_code) return;
   const existing = loadWsSession();
   const hostSession = get().hostSession ?? existing?.hostSession;
-  saveWsSession({
+  held.session = {
     gameCode: data.game_code,
     playerToken: data.player_token,
     fullKey: data.full_key,
@@ -2629,11 +2631,12 @@ function savePregameHostSession(
     timestamp: Date.now(),
     ...(hostSession ? { hostSession } : {}),
     ...(hostSession ? { hostIsPublic: get().hostIsPublic } : {}),
-  });
+  };
+  saveWsSession(held.session);
 }
 
-function clearPregameHostMetadataFromWsSession(): void {
-  const session = loadWsSession();
+function clearPregameHostMetadataFromWsSession(held: { session: WsSessionData | null }): void {
+  const session = held.session;
   if (!session) return;
   saveWsSession({
     gameCode: session.gameCode,
@@ -2650,6 +2653,7 @@ function handleServerHostMessage(
   ws: PhaseSocketTransport,
   msg: { type: string; data?: unknown },
   serverUrl: string,
+  held: { session: WsSessionData | null },
   requestedCode?: string,
 ): void {
   if (msg.type === "GameCreated") {
@@ -2665,13 +2669,13 @@ function handleServerHostMessage(
       get().cancelHosting();
       return;
     }
-    savePregameHostSession(get, data, serverUrl);
+    savePregameHostSession(get, data, serverUrl, held);
     // Reset reconnect counter on successful (re)connection.
     hostReconnectAttempt = 0;
     set({ hostGameCode: data.game_code, hostingStatus: "waiting" });
   } else if (msg.type === "GameStarted") {
     gameStartedFired = true;
-    clearPregameHostMetadataFromWsSession();
+    clearPregameHostMetadataFromWsSession(held);
     ws.close();
     hostWs = null;
     // This arm performs the handoff itself and never routes through
@@ -2727,6 +2731,7 @@ async function openServerHostSocket(
   setupFrame: () => unknown,
   onReopen: () => void,
   serverUrl: string,
+  dialed: WsSessionData | null,
   requestedCode?: string,
 ): Promise<void> {
   // The dialed URL arrives as an argument rather than being read from store
@@ -2772,12 +2777,15 @@ async function openServerHostSocket(
   const stopPing = startSocketKeepalive(socket.ws);
   hostPingStop = stopPing;
 
+  // Each host socket carries the session it dialed, so `GameStarted`
+  // re-stamps this socket's game even if the stored copy expired or was refused.
+  const held = { session: dialed };
   socket.ws.onmessage = (event) => {
     const msg = JSON.parse(event.data as string) as {
       type: string;
       data?: unknown;
     };
-    handleServerHostMessage(set, get, socket.ws, msg, url, requestedCode);
+    handleServerHostMessage(set, get, socket.ws, msg, url, held, requestedCode);
   };
   socket.ws.onerror = () => {
     if (!gameStartedFired) {
@@ -2829,6 +2837,7 @@ function attemptServerHostReconnect(
       // mid-game host-socket drop, and it must return to the server the game
       // is actually on even if the browsing anchor has since moved.
       session.serverUrl,
+      session,
     );
   }, delay);
 }
@@ -3153,6 +3162,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           }),
           () => attemptServerHostReconnect(set, get),
           serverUrl,
+          null,
           settings.requestedCode,
         );
       },
@@ -3195,6 +3205,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           }),
           () => attemptServerHostReconnect(set, get),
           session.serverUrl,
+          session,
         );
 
         return true;
