@@ -1347,6 +1347,8 @@
     },
     "config": {
       "startingLife": "Vida Inicial",
+      "experimentalDungeons": "Masmorras experimentais",
+      "experimentalDungeonsHelp": "Oferecer Baldur's Gate Wilderness nas opções de masmorra e ao tomar a iniciativa. Experimental e não oficial.",
       "players": "Jogadores",
       "whoGoesFirst": "Quem Começa",
       "firstPlayer": {
@@ -1958,6 +1960,8 @@
     "additionalExile": "+ Exile uma carta",
     "additionalSacrifice": "+ Sacrifique um permanente",
     "additionalPayLife": "+ Pague vida",
+    "additionalPayLifeAmount": "+ Pague {{amount}} de vida",
+    "additionalCollectEvidence": "+ Coletar evidências {{amount}}",
     "additionalDiscard": "+ Descarte uma carta",
     "additionalTapCreatures": "+ Vire criaturas",
     "additionalGeneric": "+ {{type}}"
@@ -2085,6 +2089,7 @@
     "variantForetell": "Conjurar de Prever",
     "variantOverload": "Conjurar com Sobrecarregar",
     "variantBestow": "Conjurar com Conceder",
+    "variantBlitz": "Conjurar com Blitz",
     "variantFreerunning": "Conjurar com Freerunning",
     "variantFuse": "Conjurar com Fusão",
     "variantMutate": "Conjurar com Mutate",
@@ -2094,7 +2099,14 @@
     "variantMoreThanMeetsTheEye": "Cast Converted",
     "variantPrototype": "Conjurar com Protótipo",
     "variantFaceDown": "Conjurar Virada para Baixo",
-    "variantFallback": "Conjurar com {{type}}"
+    "variantFallback": "Conjurar com {{type}}",
+    "viaSource": "via {{name}}",
+    "extraCostAdditional": "+ {{cost}}",
+    "extraCostAlternative": "em vez de seu custo de mana: {{cost}}",
+    "entersWithCounter": "entra com um marcador de {{counter}}",
+    "slotPerType": "usa o espaço de {{type}}",
+    "slotChooseType": "escolha um tipo de permanente",
+    "slotOncePerTurn": "uma vez neste turno"
   },
   "categoryChoice": {
     "title": "Escolher Permanentes para Manter",
@@ -2261,6 +2273,12 @@
     "no": "Não",
     "dontAskAgain": "Não perguntar novamente neste jogo",
     "dontAskAgainForSameCard": "Usar esta escolha para cada cópia desta carta neste jogo"
+  },
+  "keywordDetail": {
+    "selfManaCost": "seu custo de mana",
+    "selfManaValue": "seu valor de mana",
+    "manaCostReduced": "seu custo de mana reduzido em {{reduction}}",
+    "spliceOnto": "em {{subtype}} {{cost}}"
   },
   "resolutionOptionalPayment": {
     "title": "Escolha um pagamento opcional",

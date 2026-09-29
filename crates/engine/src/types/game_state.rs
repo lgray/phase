@@ -19,7 +19,7 @@ use super::ability::{
     CopyTargetPurpose, CostPaidObjectSnapshot, CounterCostSelection, DelayedTriggerCondition,
     DigRestOrder, DigRestSplitScope, Duration, EffectKind, FaceDownProfile, GameRestriction,
     KeywordAction, KickerVariant, LibraryPosition, ModalChoice, PermanentEntryMode, PileSource,
-    QuantityExpr, ResolvedAbility, SearchDestinationSplit, SearchOrderingHint,
+    QuantityExpr, ResolvedAbility, ReturnResultId, SearchDestinationSplit, SearchOrderingHint,
     SearchSelectionConstraint, StackAbilityKind, StaticCondition, TapCreaturesSelectionMode,
     TargetFilter, TargetRef, ThisWayCause, TriggerBaseSetInstanceRef, TriggerCondition,
     TriggerDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerEntry,
@@ -2583,9 +2583,23 @@ pub(crate) struct PendingPlayerScopeLinkedExile {
     pub batch: Vec<ObjectIncarnationRef>,
 }
 
+/// One execution of a resolving root, distinct for originals and spell copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ReturnResultOccurrenceId(pub u64);
+
+fn default_next_return_result_occurrence_id() -> u64 {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingContinuation {
     pub chain: Box<ResolvedAbility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_result_occurrence: Option<ReturnResultOccurrenceId>,
+    /// The exact paused instruction whose settled zone-change result must be
+    /// published before this continuation can read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_return_result_producer: Option<(ReturnResultOccurrenceId, ReturnResultId)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_kind: Option<EffectKind>,
     /// CR 303.4f: Attach host captured before SearchChoice overwrites parent targets.
@@ -2652,6 +2666,8 @@ impl PendingContinuation {
     pub fn new(chain: Box<ResolvedAbility>, state: &GameState) -> Self {
         Self {
             chain,
+            return_result_occurrence: state.active_return_result_occurrence,
+            pending_return_result_producer: None,
             parent_kind: None,
             search_attach_host: None,
             trigger_context: ResolvingTriggerContext::capture(state),
@@ -2674,6 +2690,8 @@ impl PendingContinuation {
     ) -> Self {
         Self {
             chain,
+            return_result_occurrence: state.active_return_result_occurrence,
+            pending_return_result_producer: None,
             parent_kind: Some(parent_kind),
             search_attach_host: None,
             trigger_context: ResolvingTriggerContext::capture(state),
@@ -4026,6 +4044,10 @@ impl PendingZoneChangeDelivery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingChangeZoneIteration {
     pub logical_zone_change_group: LogicalZoneChangeGroup,
+    /// Ownership transferred from a paused instruction-result producer when
+    /// the selected zone move itself needs another player choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_return_result_producer: Option<(ReturnResultOccurrenceId, ReturnResultId)>,
     /// The chosen member that is currently completing outside the ordinary
     /// `remaining` loop. Required even when the tail is empty.
     pub paused_current: Option<PendingZoneChangeDelivery>,
@@ -6061,12 +6083,21 @@ pub enum DigDeliveryStage {
 /// exact settled destination arrivals. Only the zone pipeline owns a complete
 /// logical group, so this is the single seam where a selected pile becomes an
 /// actual delivery outcome.
-pub(crate) fn settle_dig_delivery_outcome(
+pub(crate) fn settle_batch_delivery_outcome(
     completion: &mut BatchCompletion,
     state: &GameState,
     group: &LogicalZoneChangeGroup,
 ) {
     match completion {
+        BatchCompletion::RecordInstructionZoneResult {
+            settled_records, ..
+        } => {
+            assert!(
+                settled_records.is_none(),
+                "instruction result settled twice"
+            );
+            *settled_records = Some(settled_logical_zone_change_records(group));
+        }
         BatchCompletion::RevealRestPile {
             delivery_stage: DigDeliveryStage::Kept,
             kept_delivery,
@@ -6079,6 +6110,33 @@ pub(crate) fn settle_dig_delivery_outcome(
         } => rest_delivery.settle_from_logical_group(state, group),
         _ => {}
     }
+}
+
+/// CR 614.1 + CR 616.1: The final, exact event records of members that moved
+/// after replacement effects in a completed logical
+/// zone-change group. Both batch and interactive instruction results use this
+/// authority, so a redirect cannot be mistaken for an arrival in the printed
+/// destination.
+pub(crate) fn settled_logical_zone_change_records(
+    group: &LogicalZoneChangeGroup,
+) -> Vec<ZoneChangeRecord> {
+    group
+        .terminal_outcomes
+        .iter()
+        .filter_map(|outcome| {
+            let LogicalZoneChangeTerminalOutcome::Moved { occurrence_ordinal } = outcome else {
+                return None;
+            };
+            let occurrence = group
+                .all_origin_occurrences
+                .get(*occurrence_ordinal)
+                .expect("settled member names an existing occurrence");
+            let GameEvent::ZoneChanged { record, .. } = &occurrence.event else {
+                panic!("settled member names a zone-change event");
+            };
+            Some((**record).clone())
+        })
+        .collect()
 }
 
 impl BatchCompletion {
@@ -6095,6 +6153,13 @@ impl BatchCompletion {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatchCompletion {
+    /// CR 608.2c + CR 614.6 + CR 616.1: Publish one instruction's exact
+    /// replacement-settled zone-change results, including the empty result.
+    RecordInstructionZoneResult {
+        occurrence_id: ReturnResultOccurrenceId,
+        result_id: ReturnResultId,
+        settled_records: Option<Vec<ZoneChangeRecord>>,
+    },
     /// CR 303.4g + CR 614.1 + CR 616.1: A return-as-Aura host had no legal
     /// object to enchant, and its proposed Battlefield→Graveyard move settled.
     /// The completion event waits for any replacement choice without carrying
@@ -9644,6 +9709,80 @@ pub struct CastingVariantChoiceOption {
     /// serde default: old paused menus cannot safely select a face by index.
     pub face: CastingVariantFace,
     pub mana_cost: ManaCost,
+    /// CR 601.2f-h: the non-mana part of an alternative cost this option pays
+    /// ("Discard a card" for a Blitz option), shown beside its mana cost.
+    /// `None` when the option pays mana only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_cost: Option<crate::types::ability::AbilityCost>,
+    /// CR 601.2a + CR 601.2b: the graveyard permission this option casts
+    /// under, announced with the option. `Some` for every cast from the
+    /// graveyard authorized by a graveyard-cast permission (printed cost,
+    /// Blitz, Bestow); `None` for every other option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<CastAuthorityChoice>,
+}
+
+/// CR 601.2a: which graveyard-cast permission grant authorizes a cast: the
+/// permission's source plus the grant on it, so two grants from one source are
+/// two permissions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GraveyardPermissionId {
+    pub source: ObjectId,
+    pub grant: PermissionGrant,
+}
+
+/// Where a graveyard-cast permission grant lives on its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PermissionGrant {
+    /// The definition's position in the source object's `static_definitions`.
+    Static { index: u32 },
+    /// The `GrantStaticAbility` at `modification` in the transient continuous
+    /// effect `effect_id` (a resolution-created grant: Yawgmoth's Will).
+    Transient { effect_id: u64, modification: u32 },
+}
+
+/// An opaque digest of a grant's full definition, compared only for equality,
+/// so a menu answer bound to a grant whose definition changed is refused.
+/// Serialized as a hex string so JavaScript peers keep all 64 bits.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GrantDigest(pub String);
+
+/// CR 601.2a + CR 601.2b: what the player announced for a graveyard-permission
+/// cast: the grant, its digest, and the per-type slot (CR 110.4, Muldrotha)
+/// when one has been chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnouncedGraveyardPermission {
+    pub permission: GraveyardPermissionId,
+    pub grant_digest: GrantDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_type: Option<super::card_type::CoreType>,
+}
+
+/// CR 601.2f + CR 601.2h + CR 614.1c: a graveyard permission's terms as they
+/// were when the cast was announced. The cast pays and applies these even if
+/// the permission's source leaves or loses the ability during casting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraveyardPermissionLatch {
+    pub permission: GraveyardPermissionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_cost: Option<crate::types::statics::CastExtraCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enters_with_counter: Option<crate::types::counter::CounterType>,
+}
+
+/// The engine-authored authority of a graveyard casting option: the
+/// announcement it commits to plus the permission's terms, for display.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CastAuthorityChoice {
+    pub announcement: AnnouncedGraveyardPermission,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_cost: Option<crate::types::statics::CastExtraCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enters_with_counter: Option<crate::types::counter::CounterType>,
+    pub frequency: crate::types::statics::CastFrequency,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graveyard_destination_replacement: Option<Zone>,
 }
 
 /// CR 118.3 + CR 601.2b + CR 605.3b: Identifies the specific action to take
@@ -10991,6 +11130,295 @@ pub(crate) fn normalize_resolution_cast_offer_allocator(
         }
     }
     state.next_resolution_cast_offer_id = next;
+    Ok(())
+}
+
+/// CR 608.2c + CR 616.1: Checks that serialized instruction-result owners
+/// still name live resolving roots across replacement choices.
+/// A parked batch is necessarily unsettled; its completion is published only
+/// after the whole replacement-aware zone-change group has finished.
+pub(crate) fn has_return_result_metadata(ability: &ResolvedAbility) -> bool {
+    ability.declares_return_result.is_some()
+        || ability.reads_return_result.is_some()
+        || ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(has_return_result_metadata)
+        || ability
+            .else_ability
+            .as_deref()
+            .is_some_and(has_return_result_metadata)
+}
+
+pub(crate) fn reads_return_result_id(ability: &ResolvedAbility, result_id: ReturnResultId) -> bool {
+    ability
+        .reads_return_result
+        .as_ref()
+        .is_some_and(|(id, _)| *id == result_id)
+        || ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(|sub| reads_return_result_id(sub, result_id))
+        || ability
+            .else_ability
+            .as_deref()
+            .is_some_and(|branch| reads_return_result_id(branch, result_id))
+}
+
+pub(crate) fn live_return_result_occurrences(
+    state: &GameState,
+) -> HashSet<ReturnResultOccurrenceId> {
+    let mut live = HashSet::new();
+    live.extend(state.active_return_result_occurrence);
+    for frame in state.resolution_stack.iter() {
+        match frame {
+            ResolutionFrame::OptionalEffect(optional) => {
+                live.extend(optional.return_result_occurrence);
+            }
+            ResolutionFrame::AbilityContinuation(frame) => {
+                live.extend(frame.pending.return_result_occurrence);
+                live.extend(
+                    frame
+                        .pending
+                        .pending_return_result_producer
+                        .map(|(id, _)| id),
+                );
+            }
+            ResolutionFrame::ChangeZone(frame) => {
+                live.extend(
+                    frame.pending.as_ref().and_then(|pending| {
+                        pending.pending_return_result_producer.map(|(id, _)| id)
+                    }),
+                );
+            }
+            ResolutionFrame::BatchDelivery(batch) => {
+                if let Some(BatchCompletion::RecordInstructionZoneResult {
+                    occurrence_id, ..
+                }) = &batch.completion
+                {
+                    live.insert(*occurrence_id);
+                }
+            }
+            ResolutionFrame::RepeatFor(_)
+            | ResolutionFrame::RepeatUntil(_)
+            | ResolutionFrame::RepeatedOptionalPayment(_)
+            | ResolutionFrame::CounterMoves(_)
+            | ResolutionFrame::CounterRemovals(_)
+            | ResolutionFrame::CounterAdditions(_)
+            | ResolutionFrame::CopyToken(_)
+            | ResolutionFrame::DebugCardEntries(_)
+            | ResolutionFrame::EachPlayerCopyChosen(_)
+            | ResolutionFrame::ChooseOneOf(_)
+            | ResolutionFrame::VoteBallot(_)
+            | ResolutionFrame::PerPlayerZoneChoice(_)
+            | ResolutionFrame::PerCategoryZoneChoice(_)
+            | ResolutionFrame::CoinFlip(_)
+            | ResolutionFrame::DieRoll(_)
+            | ResolutionFrame::Proliferate(_)
+            | ResolutionFrame::MultiDraw(_)
+            | ResolutionFrame::Discard(_)
+            | ResolutionFrame::ConniveReentry(_)
+            | ResolutionFrame::LifeTotalAssignment(_)
+            | ResolutionFrame::SpellResolution(_)
+            | ResolutionFrame::MutateMerge(_)
+            | ResolutionFrame::CipherEncode(_)
+            | ResolutionFrame::PostReplacement(_) => {}
+        }
+    }
+    if let Some(PendingCostMoveResume::SacrificeForCost {
+        completion: PendingSacrificeCostCompletion::ResolutionOptionalPayment { frame, .. },
+        ..
+    }) = &state.pending_cost_move_resume
+    {
+        live.extend(frame.return_result_occurrence);
+    }
+    live
+}
+
+pub(crate) fn validate_return_result_occurrence_coherence(state: &GameState) -> Result<(), String> {
+    if state.next_return_result_occurrence_id == 0 {
+        return Err("return-result occurrence allocator is zero".to_string());
+    }
+
+    let frame_exists = |id: ReturnResultOccurrenceId| {
+        id.0 != 0
+            && id.0 < state.next_return_result_occurrence_id
+            && state.return_result_frames.contains_key(&id)
+    };
+    for id in state.return_result_frames.keys() {
+        if !frame_exists(*id) {
+            return Err(format!(
+                "return-result occurrence frame {:?} is outside the allocator",
+                id
+            ));
+        }
+    }
+    if state
+        .active_return_result_occurrence
+        .is_some_and(|id| !frame_exists(id))
+    {
+        return Err("active return-result occurrence has no live frame".to_string());
+    }
+
+    let validate_optional_frame = |frame: &OptionalEffectFrame| match frame.return_result_occurrence
+    {
+        Some(id) if !frame_exists(id) => Err(format!(
+            "return-result optional effect names missing occurrence {:?}",
+            id
+        )),
+        None if has_return_result_metadata(&frame.ability) => {
+            Err("return-result optional effect has no occurrence stamp".to_string())
+        }
+        _ => Ok(()),
+    };
+
+    let mut parked_publishers = HashSet::new();
+    let mut validate_parked_publisher =
+        |key: (ReturnResultOccurrenceId, ReturnResultId), owner: &str| -> Result<(), String> {
+            let (occurrence_id, result_id) = key;
+            if !frame_exists(occurrence_id) {
+                return Err(format!(
+                    "return-result {owner} names missing occurrence {:?}",
+                    occurrence_id
+                ));
+            }
+            if state.return_result_frames[&occurrence_id].contains_key(&result_id) {
+                return Err(format!(
+                    "return-result {:?} was already published before its parked {owner} settled",
+                    result_id
+                ));
+            }
+            if !parked_publishers.insert(key) {
+                return Err(format!(
+                    "return-result {:?} has duplicate parked publishers",
+                    result_id
+                ));
+            }
+            Ok(())
+        };
+    for frame in state.resolution_stack.iter() {
+        match frame {
+            ResolutionFrame::OptionalEffect(optional) => validate_optional_frame(optional)?,
+            ResolutionFrame::AbilityContinuation(frame) => {
+                let pending = &frame.pending;
+                match pending.return_result_occurrence {
+                    Some(id) if !frame_exists(id) => {
+                        return Err(format!(
+                            "return-result continuation names missing occurrence {:?}",
+                            id
+                        ));
+                    }
+                    None if has_return_result_metadata(&pending.chain) => {
+                        return Err(
+                            "return-result continuation has no occurrence stamp".to_string()
+                        );
+                    }
+                    _ => {}
+                }
+                if let Some(key) = pending.pending_return_result_producer {
+                    if pending.return_result_occurrence != Some(key.0) {
+                        return Err(format!(
+                            "return-result continuation publisher {:?} disagrees with its occurrence",
+                            key.1
+                        ));
+                    }
+                    if !reads_return_result_id(&pending.chain, key.1) {
+                        return Err(format!(
+                            "return-result continuation publisher {:?} has no matching reader",
+                            key.1
+                        ));
+                    }
+                    validate_parked_publisher(key, "continuation")?;
+                }
+            }
+            ResolutionFrame::ChangeZone(frame) => {
+                if let Some(key) = frame
+                    .pending
+                    .as_ref()
+                    .and_then(|pending| pending.pending_return_result_producer)
+                {
+                    if !state
+                        .resolution_stack
+                        .ability_continuations()
+                        .any(|pending| {
+                            pending.return_result_occurrence == Some(key.0)
+                                && reads_return_result_id(&pending.chain, key.1)
+                        })
+                    {
+                        return Err(format!(
+                            "return-result zone iteration publisher {:?} disagrees with its continuation occurrence or reader",
+                            key.1
+                        ));
+                    }
+                    validate_parked_publisher(key, "zone iteration")?;
+                }
+            }
+            ResolutionFrame::BatchDelivery(batch) => {
+                if let Some(BatchCompletion::RecordInstructionZoneResult {
+                    occurrence_id,
+                    result_id,
+                    settled_records,
+                }) = &batch.completion
+                {
+                    validate_parked_publisher((*occurrence_id, *result_id), "batch")?;
+                    if settled_records.is_some() {
+                        return Err(format!(
+                            "return-result {:?} is prematurely settled in a parked batch",
+                            result_id
+                        ));
+                    }
+                }
+            }
+            ResolutionFrame::RepeatFor(_)
+            | ResolutionFrame::RepeatUntil(_)
+            | ResolutionFrame::RepeatedOptionalPayment(_)
+            | ResolutionFrame::CounterMoves(_)
+            | ResolutionFrame::CounterRemovals(_)
+            | ResolutionFrame::CounterAdditions(_)
+            | ResolutionFrame::CopyToken(_)
+            | ResolutionFrame::DebugCardEntries(_)
+            | ResolutionFrame::EachPlayerCopyChosen(_)
+            | ResolutionFrame::ChooseOneOf(_)
+            | ResolutionFrame::VoteBallot(_)
+            | ResolutionFrame::PerPlayerZoneChoice(_)
+            | ResolutionFrame::PerCategoryZoneChoice(_)
+            | ResolutionFrame::CoinFlip(_)
+            | ResolutionFrame::DieRoll(_)
+            | ResolutionFrame::Proliferate(_)
+            | ResolutionFrame::MultiDraw(_)
+            | ResolutionFrame::Discard(_)
+            | ResolutionFrame::ConniveReentry(_)
+            | ResolutionFrame::LifeTotalAssignment(_)
+            | ResolutionFrame::SpellResolution(_)
+            | ResolutionFrame::MutateMerge(_)
+            | ResolutionFrame::CipherEncode(_)
+            | ResolutionFrame::PostReplacement(_) => {}
+        }
+    }
+    if let Some(PendingCostMoveResume::SacrificeForCost {
+        completion: PendingSacrificeCostCompletion::ResolutionOptionalPayment { frame, .. },
+        ..
+    }) = &state.pending_cost_move_resume
+    {
+        validate_optional_frame(frame)?;
+    }
+    let live = live_return_result_occurrences(state);
+    for id in state.return_result_frames.keys() {
+        if !live.contains(id) {
+            return Err(format!(
+                "return-result occurrence frame {:?} has no live owner",
+                id
+            ));
+        }
+    }
+    for id in live {
+        if !frame_exists(id) {
+            return Err(format!(
+                "return-result owner names missing occurrence {:?}",
+                id
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -14561,6 +14989,11 @@ pub enum WaitingFor {
         #[serde(default)]
         payment_mode: CastPaymentMode,
         available_slots: Vec<super::card_type::CoreType>,
+        /// CR 601.2a: the graveyard permission grant the player announced for
+        /// this printed-cost cast, carried so the slot answer re-prepares that
+        /// exact grant. `None` only for a land play (CR 305.1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission: Option<AnnouncedGraveyardPermission>,
     },
     /// CR 601.2c: Player chooses any number of legal targets from a set.
     /// Used for "exile any number of" and similar variable-count targeting.
@@ -17548,6 +17981,22 @@ impl StackEntry {
     }
 }
 
+/// CR 608.2h + CR 707.2: A spell's stack entry and object as they last existed
+/// on the stack, captured at a non-resolving departure (bounced, countered,
+/// exiled) before any off-stack face revert (CR 712.8a). `GameObject` has no
+/// `PartialEq` (see `object_content_eq`), so this carries a manual impl below.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepartedStackSpell {
+    pub entry: StackEntry,
+    pub object: Box<GameObject>,
+}
+
+impl PartialEq for DepartedStackSpell {
+    fn eq(&self, other: &Self) -> bool {
+        self.entry == other.entry && object_content_eq(&self.object, &other.object)
+    }
+}
+
 /// CR 702.94a + CR 603.11: A pending miracle reveal offer queued during the
 /// resolution of an action that caused `player` to draw `object_id` as their
 /// first card of the turn. `cost` is the miracle mana cost taken from the
@@ -17888,6 +18337,58 @@ pub enum CastingVariant {
 impl CastingVariant {
     pub fn is_normal(&self) -> bool {
         *self == CastingVariant::Normal
+    }
+
+    /// CR 118.9b: the keyword that names this casting method, matched against
+    /// a permission that requires one ("You may cast this card from your
+    /// graveyard using its blitz ability."). `None` when no keyword names the
+    /// method: the printed cost and the permission routes, and the keyword
+    /// methods `KeywordKind` has no discriminant for. A permission that requires
+    /// a method admits a cast only when this is `Some` of that keyword.
+    pub fn cast_keyword(self) -> Option<crate::types::keywords::KeywordKind> {
+        use crate::types::keywords::KeywordKind;
+        match self {
+            CastingVariant::Warp => Some(KeywordKind::Warp),
+            CastingVariant::Escape => Some(KeywordKind::Escape),
+            CastingVariant::Retrace => Some(KeywordKind::Retrace),
+            CastingVariant::Harmonize => Some(KeywordKind::Harmonize),
+            CastingVariant::Mayhem => Some(KeywordKind::Mayhem),
+            CastingVariant::Flashback => Some(KeywordKind::Flashback),
+            CastingVariant::Aftermath => Some(KeywordKind::Aftermath),
+            CastingVariant::Disturb => Some(KeywordKind::Disturb),
+            CastingVariant::Sneak { .. } => Some(KeywordKind::Sneak),
+            CastingVariant::Miracle => Some(KeywordKind::Miracle),
+            CastingVariant::Madness => Some(KeywordKind::Madness),
+            CastingVariant::Dash => Some(KeywordKind::Dash),
+            CastingVariant::Blitz => Some(KeywordKind::Blitz),
+            CastingVariant::Suspend => Some(KeywordKind::Suspend),
+            CastingVariant::Plot => Some(KeywordKind::Plot),
+            CastingVariant::Foretell => Some(KeywordKind::Foretell),
+            CastingVariant::Bestow => Some(KeywordKind::Bestow),
+            CastingVariant::Awaken => Some(KeywordKind::Awaken),
+            CastingVariant::Cleave => Some(KeywordKind::Cleave),
+            CastingVariant::MoreThanMeetsTheEye => Some(KeywordKind::MoreThanMeetsTheEye),
+            CastingVariant::Mutate => Some(KeywordKind::Mutate),
+            CastingVariant::Freerunning => Some(KeywordKind::Freerunning),
+            CastingVariant::JumpStart => Some(KeywordKind::JumpStart),
+            CastingVariant::Fuse => Some(KeywordKind::Fuse),
+            CastingVariant::Normal
+            | CastingVariant::Adventure
+            | CastingVariant::Omen
+            | CastingVariant::GraveyardPermission { .. }
+            | CastingVariant::HandPermission { .. }
+            | CastingVariant::ExilePermission { .. }
+            | CastingVariant::WebSlinging { .. }
+            | CastingVariant::Evoke
+            | CastingVariant::Emerge
+            | CastingVariant::Spectacle
+            | CastingVariant::Overload
+            | CastingVariant::Impending
+            | CastingVariant::Prototype
+            | CastingVariant::Prowl
+            | CastingVariant::Surge
+            | CastingVariant::FaceDown => None,
+        }
     }
 
     /// CR 601.2a: The `ObjectId` of the `StaticMode::ExileCastPermission` source
@@ -19667,6 +20168,16 @@ declare_game_state! {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_tracked_set_id: Option<TrackedSetId>,
 
+    /// CR 608.2c: Isolated instruction-result records for every live resolving root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub return_result_frames:
+        BTreeMap<ReturnResultOccurrenceId, BTreeMap<ReturnResultId, Vec<ZoneChangeRecord>>>,
+    /// The synchronous execution context; parked continuations carry their own stamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_return_result_occurrence: Option<ReturnResultOccurrenceId>,
+    #[serde(default = "default_next_return_result_occurrence_id")]
+    pub next_return_result_occurrence_id: u64,
+
     /// CR 700.2 + CR 608.2c: The `modal_instruction_ordinal` of the modal
     /// instruction currently resolving. It EDGE-TRIGGERS the mode boundary in
     /// `resolve_ability_chain`; `None` outside a modal resolution.
@@ -21360,6 +21871,16 @@ declare_game_state! {
     #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map_of_im_hash_map")]
     pub lki_by_incarnation: im::HashMap<ObjectId, im::HashMap<u64, LKISnapshot>>,
 
+    /// CR 608.2h + CR 707.2: A spell's stack entry and object as they last
+    /// existed on the stack (`stack::record_departed_stack_spell`) — keyed by storage id,
+    /// then the incarnation the spell had on the stack. Consulted by
+    /// `targeting::triggering_spell` / `copy_spell::copy_source_entry` once a
+    /// spell-cast trigger's spell has left the stack. Cleared with
+    /// `lki_by_incarnation` at step transitions.
+    #[serde(default, skip_serializing_if = "im::HashMap::is_empty")]
+    #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map_of_im_hash_map")]
+    pub departed_stack_spells: im::HashMap<ObjectId, im::HashMap<u64, DepartedStackSpell>>,
+
     /// CR 607.2b + CR 603.10e: Last-known "cards exiled with [source]" linkage,
     /// captured when a source with `TrackedBySource` exile links leaves the
     /// battlefield. The live `exile_links` are pruned on battlefield exit
@@ -21907,6 +22428,7 @@ impl GameStateDecode {
         // See the pairing comment there for why one site is not enough.
         reject_viewer_projection_as_authority(&state)?;
         validate_trigger_firing_coherence(&state)?;
+        validate_return_result_occurrence_coherence(&state)?;
         reject_zero_bound_shortcut_offer(&state)?;
         #[cfg(debug_assertions)]
         debug_assert_runtime_resolution_invariants(&state);
@@ -21944,6 +22466,9 @@ impl GameStateDecode {
         // (`decode_persisted_resolution_state`), which is what a saved game restores
         // through and where installing a projection as authority is the actual defect.
         validate_trigger_firing_coherence(&state)?;
+        if state.viewer_projection.is_none() {
+            validate_return_result_occurrence_coherence(&state)?;
+        }
         // The CR 732.2a bound check IS hosted on both decode entry points, because they
         // are genuinely two ingresses: `decode_persisted_resolution_state` above
         // deserializes `ResolutionStateWire` itself and never routes through `decode`.
@@ -22100,7 +22625,7 @@ pub struct TransientContinuousEffect {
     /// serialization boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_permission: Option<EndEffectPermission>,
-    /// Snapshot of the originating object's name, captured at construction.
+    /// Snapshot of the originating object's or dungeon's name, captured at construction.
     /// The originating spell/ability typically moves to a new zone (graveyard,
     /// stack→exile, etc.) with a new ObjectId per CR 400.7 after resolution,
     /// so live `state.objects[source_id]` lookup may not return the original
@@ -26520,6 +27045,9 @@ impl GameState {
             tracked_object_sets: HashMap::new(),
             next_tracked_set_id: 1,
             chain_tracked_set_id: None,
+            return_result_frames: BTreeMap::new(),
+            active_return_result_occurrence: None,
+            next_return_result_occurrence_id: default_next_return_result_occurrence_id(),
             resolving_modal_instruction: None,
             tracked_set_member_causes: HashMap::new(),
             tracked_set_participants: HashMap::new(),
@@ -26708,6 +27236,7 @@ impl GameState {
             lki_cache: im::HashMap::new(),
             lki_copiable_values: HashMap::new(),
             lki_by_incarnation: im::HashMap::new(),
+            departed_stack_spells: im::HashMap::new(),
             linked_exile_lki: HashMap::new(),
             cost_payment_failed_flag: false,
             pending_taps_for_mana_overrides: std::collections::HashMap::new(),
@@ -27368,12 +27897,27 @@ impl GameState {
         // pre-zone-change ObjectId — `lki_cache` is the canonical snapshot of
         // the source's characteristics at the moment it left. Falling back to
         // LKI mirrors the same name-resolution pattern used in `filter.rs`,
-        // `quantity.rs`, and `log.rs`.
+        // `quantity.rs`, and `log.rs`. Dungeon room triggers use a synthetic
+        // source id, so capture the active dungeon here as well; its grant can
+        // remain after the venture marker leaves or enters another dungeon.
         let source_name = self
             .objects
             .get(&source_id)
             .map(|o| o.name.clone())
             .or_else(|| self.lki_cache.get(&source_id).map(|lki| lki.name.clone()))
+            .or_else(|| {
+                if source_id != crate::game::dungeon::dungeon_sentinel_id(controller) {
+                    return None;
+                }
+                self.dungeon_progress
+                    .get(&controller)
+                    .and_then(|progress| progress.current_dungeon)
+                    .map(|dungeon| {
+                        crate::game::dungeon::get_definition(dungeon)
+                            .name
+                            .to_string()
+                    })
+            })
             .unwrap_or_default();
         // CR 611.2a + CR 400.7: an event deadline is matched against its source
         // as it was when the effect began, so the context is captured here and
@@ -27657,6 +28201,11 @@ impl GameState {
         clone.next_delayed_trigger_token = 0;
         clone.next_delayed_trigger_instance = 0;
         clone.next_resolution_cast_offer_id = 0;
+        // CR 104.4b + CR 732.2a: The instruction-result occurrence allocator
+        // identifies past resolutions, not a difference in the game position.
+        // Live frames and their references remain compared below; only this
+        // monotone source of fresh IDs is normalized for recurrence checks.
+        clone.next_return_result_occurrence_id = 0;
         clone.active_paid_resolution_offer_tail = None;
         // CR 104.4b: pip-id counter is a volatile monotonic field; zero it (like
         // next_object_id) so two otherwise-identical loop states compare equal.
@@ -27770,6 +28319,38 @@ impl GameState {
                 occurrence.turn_journal_index = 0;
             }
         }
+        // CR 104.4b + CR 608.2h: which `departed_stack_spells` records a live
+        // spell-cast trigger can still name — read BEFORE the stack-carrier loop
+        // below clears each trigger's pin (`clear_trigger_identity_recursive`),
+        // because that clear is what this capture must read past. Mirrors
+        // `targeting::triggering_spell`'s on-stack/pin/no-pin-highest-key answer
+        // so the retained set agrees with what a live trigger could still read.
+        let mut retained_departed_spells: HashSet<ObjectIncarnationRef> = HashSet::new();
+        for entry in clone.stack.iter().chain(clone.resolving_stack_entry.iter()) {
+            if let StackEntryKind::TriggeredAbility {
+                ability,
+                trigger_event: Some(GameEvent::SpellCast { object_id, .. }),
+                ..
+            } = &entry.kind
+            {
+                match ability.context.triggering_spell {
+                    Some(pin) if pin.object_id == *object_id => {
+                        retained_departed_spells.insert(pin);
+                    }
+                    _ => {
+                        if let Some(key) = clone
+                            .departed_stack_spells
+                            .get(object_id)
+                            .and_then(|records| records.keys().max())
+                        {
+                            retained_departed_spells
+                                .insert(ObjectIncarnationRef::of(*object_id, *key));
+                        }
+                    }
+                }
+            }
+        }
+
         // CR 104.4b + CR 400.7: the all-zone incarnation bump advances a source's
         // epoch on every zone change, so a mandatory loop that cycles its source's
         // zones would otherwise carry a growing `TriggerSourceContext` into loop
@@ -27952,6 +28533,19 @@ impl GameState {
             .filter_map(|(object_id, mut history)| {
                 history.retain(|incarnation, _| {
                     referenced_lki.contains(&ObjectIncarnationRef::of(object_id, *incarnation))
+                });
+                (!history.is_empty()).then_some((object_id, history))
+            })
+            .collect();
+        // CR 104.4b + CR 608.2h: records no live spell-cast trigger can reach are
+        // history, not position — prune the same way as `lki_by_incarnation`,
+        // against the set captured above before it was cleared.
+        clone.departed_stack_spells = std::mem::take(&mut clone.departed_stack_spells)
+            .into_iter()
+            .filter_map(|(object_id, mut history)| {
+                history.retain(|incarnation, _| {
+                    retained_departed_spells
+                        .contains(&ObjectIncarnationRef::of(object_id, *incarnation))
                 });
                 (!history.is_empty()).then_some((object_id, history))
             })
@@ -28830,6 +29424,9 @@ fn _gamestate_partition_is_total(s: &GameState) {
         tracked_object_sets: _,
         next_tracked_set_id: _,
         chain_tracked_set_id: _,
+        return_result_frames: _,
+        active_return_result_occurrence: _,
+        next_return_result_occurrence_id: _,
         // CR 700.2: mode-boundary edge latch, cleared in the same depth-0 prelude
         // block as `chain_tracked_set_id` above and meaningful only inside one
         // resolution — the same reason that field is projected out here.
@@ -29022,6 +29619,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         lki_cache: _,
         lki_copiable_values: _,
         lki_by_incarnation: _,
+        departed_stack_spells: _,
         linked_exile_lki: _,
         cost_payment_failed_flag: _,
         pending_taps_for_mana_overrides: _,
@@ -29188,6 +29786,9 @@ impl PartialEq for GameState {
             && self.tracked_object_sets == other.tracked_object_sets
             && self.next_tracked_set_id == other.next_tracked_set_id
             && self.chain_tracked_set_id == other.chain_tracked_set_id
+            && self.return_result_frames == other.return_result_frames
+            && self.active_return_result_occurrence == other.active_return_result_occurrence
+            && self.next_return_result_occurrence_id == other.next_return_result_occurrence_id
             && self.resolving_modal_instruction == other.resolving_modal_instruction
             && self.tracked_set_member_causes == other.tracked_set_member_causes
             && self.tracked_set_participants == other.tracked_set_participants
@@ -29353,6 +29954,7 @@ impl PartialEq for GameState {
             && self.lki_cache == other.lki_cache
             && self.lki_copiable_values == other.lki_copiable_values
             && self.lki_by_incarnation == other.lki_by_incarnation
+            && self.departed_stack_spells == other.departed_stack_spells
             && self.city_blessing == other.city_blessing
             && self.enduring_story == other.enduring_story
             && self.planar_deck == other.planar_deck
@@ -30518,9 +31120,10 @@ mod tests {
     use crate::game::triggers::{PendingTrigger, PendingTriggerContext};
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, Effect, EffectScope, PostReplacementContinuation,
-        QuantityExpr, ResolvedAbility, TapStateChange, TargetFilter, TriggerBaseSetInstanceRef,
-        TriggerDefinitionOccurrenceRef, TriggerEntry, TriggerGrantInstanceRef,
+        AbilityDefinition, AbilityKind, CopyRetargetPermission, Effect, EffectScope,
+        PostReplacementContinuation, QuantityExpr, ResolvedAbility, TapStateChange, TargetFilter,
+        TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef, TriggerEntry,
+        TriggerGrantInstanceRef,
     };
     use crate::types::deterministic_serde::test_support::ReverseBuildHasher;
     use crate::types::identifiers::{
@@ -31647,6 +32250,7 @@ mod tests {
         paused.face_down_in_exile = crate::types::ability::ExileConcealment::FaceDown;
         let logical_zone_change_group = state.allocate_logical_zone_change_group(&[object]);
         state.push_change_zone_iteration(PendingChangeZoneIteration {
+            pending_return_result_producer: None,
             logical_zone_change_group,
             paused_current: Some(paused),
             remaining: Vec::new(),
@@ -36244,6 +36848,264 @@ mod tests {
         );
     }
 
+    /// CR 104.4b (issue #6877): two states differing only in the
+    /// pinned spell's incarnation must compare equal after
+    /// `normalize_for_loop` — the pin carries an advancing all-zone
+    /// incarnation (CR 400.7), so a mandatory loop that recasts the pinned
+    /// spell would otherwise never confirm a draw.
+    #[test]
+    fn normalize_for_loop_ignores_triggering_spell_pin_incarnation() {
+        use crate::types::ability::Effect;
+
+        fn krark_trigger_state(pin_incarnation: u64) -> GameState {
+            let spell_id = ObjectId(30);
+            let krark_id = ObjectId(31);
+            let mut ability = ResolvedAbility::new(
+                Effect::CopySpell {
+                    target: TargetFilter::TriggeringSource,
+                    retarget: CopyRetargetPermission::MayChooseNewTargets,
+                    copier: None,
+                    additional_modifications: Vec::new(),
+                    starting_loyalty_from_casualty_sacrifice: false,
+                },
+                vec![],
+                krark_id,
+                PlayerId(0),
+            );
+            ability.context.triggering_spell =
+                Some(ObjectIncarnationRef::of(spell_id, pin_incarnation));
+            let mut state = GameState::new_two_player(7);
+            state.stack.push_back(StackEntry {
+                id: ObjectId(40),
+                source_id: krark_id,
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: krark_id,
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: Some(GameEvent::SpellCast {
+                        controller: PlayerId(0),
+                        object_id: spell_id,
+                        card_id: CardId(1),
+                        cast_mana_value: None,
+                    }),
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+            state
+        }
+
+        let a = krark_trigger_state(1);
+        let b = krark_trigger_state(3);
+        assert_ne!(a, b, "fixture differs by pin incarnation alone");
+        assert!(
+            loop_states_equal(&a.normalize_for_loop(), &b.normalize_for_loop()),
+            "two states differing only in the pinned spell's incarnation must confirm a loop"
+        );
+    }
+
+    /// CR 104.4b + CR 608.2h (issue #6877): a `departed_stack_spells`
+    /// record no live spell-cast trigger can reach is history, not position —
+    /// pruned like `lki_by_incarnation`. A reachable record (the pinned
+    /// incarnation, or with no pin the highest key) remains, and a change to
+    /// it remains loop-meaningful.
+    #[test]
+    fn normalize_for_loop_prunes_unreachable_departed_spells_but_keeps_reachable_record() {
+        use crate::types::ability::Effect;
+
+        fn record(power: i32) -> DepartedStackSpell {
+            let mut object = GameObject::new(
+                ObjectId(30),
+                CardId(1),
+                PlayerId(0),
+                "Departed Spell".to_string(),
+                Zone::Hand,
+            );
+            // `power` distinguishes otherwise-identical records so a
+            // replacement at the same key is a genuine content change
+            // (`object_content_eq` compares it) — load-bearing for the
+            // "changed reachable record" assertion below.
+            object.power = Some(power);
+            DepartedStackSpell {
+                entry: StackEntry {
+                    id: ObjectId(41),
+                    source_id: ObjectId(30),
+                    controller: PlayerId(0),
+                    kind: StackEntryKind::ActivatedAbility {
+                        source_id: ObjectId(30),
+                        ability: Box::new(ResolvedAbility::new(
+                            Effect::NoOp,
+                            vec![],
+                            ObjectId(30),
+                            PlayerId(0),
+                        )),
+                    },
+                },
+                object: Box::new(object),
+            }
+        }
+
+        fn krark_trigger_state(pin: Option<u64>) -> GameState {
+            let spell_id = ObjectId(30);
+            let krark_id = ObjectId(31);
+            let mut ability = ResolvedAbility::new(
+                Effect::CopySpell {
+                    target: TargetFilter::TriggeringSource,
+                    retarget: CopyRetargetPermission::MayChooseNewTargets,
+                    copier: None,
+                    additional_modifications: Vec::new(),
+                    starting_loyalty_from_casualty_sacrifice: false,
+                },
+                vec![],
+                krark_id,
+                PlayerId(0),
+            );
+            ability.context.triggering_spell =
+                pin.map(|incarnation| ObjectIncarnationRef::of(spell_id, incarnation));
+            let mut state = GameState::new_two_player(7);
+            state.stack.push_back(StackEntry {
+                id: ObjectId(40),
+                source_id: krark_id,
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: krark_id,
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: Some(GameEvent::SpellCast {
+                        controller: PlayerId(0),
+                        object_id: spell_id,
+                        card_id: CardId(1),
+                        cast_mana_value: None,
+                    }),
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+            state.departed_stack_spells.insert(
+                spell_id,
+                im::HashMap::from_iter([(3, record(3)), (4, record(4))]),
+            );
+            state
+        }
+
+        // Pinned to incarnation 3: adding an unreachable record 5 must not
+        // block loop confirmation, and only key 3 survives normalization.
+        let a = krark_trigger_state(Some(3));
+        let mut b = a.clone();
+        b.departed_stack_spells
+            .get_mut(&ObjectId(30))
+            .unwrap()
+            .insert(5, record(5));
+        assert_ne!(a, b, "fixture differs by an unreachable departed record");
+        let normalized_a = a.normalize_for_loop();
+        assert!(
+            loop_states_equal(&normalized_a, &b.normalize_for_loop()),
+            "an unreachable departed record must not block loop recurrence"
+        );
+        assert_eq!(
+            normalized_a.departed_stack_spells[&ObjectId(30)]
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![3],
+            "only the pinned incarnation's record remains"
+        );
+
+        // A change to the still-reachable (pinned) record remains meaningful.
+        let mut changed_reachable = a.clone();
+        changed_reachable
+            .departed_stack_spells
+            .get_mut(&ObjectId(30))
+            .unwrap()
+            .insert(3, record(9));
+        assert!(
+            !loop_states_equal(&normalized_a, &changed_reachable.normalize_for_loop()),
+            "a change to the reachable (pinned) record remains loop-meaningful"
+        );
+
+        // No pin: the highest key (4) is the reachable one.
+        let unpinned = krark_trigger_state(None);
+        assert_eq!(
+            unpinned.normalize_for_loop().departed_stack_spells[&ObjectId(30)]
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![4],
+            "with no pin, only the highest-key record remains"
+        );
+    }
+
+    /// CR 608.2h (issue #6877): a `GameState` holding
+    /// `departed_stack_spells` records round-trips through serde, and a
+    /// payload without the key deserializes to an empty map.
+    #[test]
+    fn departed_stack_spells_round_trip_and_absent_key_is_empty() {
+        use crate::types::ability::Effect;
+
+        let mut state = GameState::new_two_player(7);
+        state.departed_stack_spells.insert(
+            ObjectId(30),
+            im::HashMap::from_iter([(
+                1,
+                DepartedStackSpell {
+                    entry: StackEntry {
+                        id: ObjectId(41),
+                        source_id: ObjectId(30),
+                        controller: PlayerId(0),
+                        kind: StackEntryKind::ActivatedAbility {
+                            source_id: ObjectId(30),
+                            ability: Box::new(ResolvedAbility::new(
+                                Effect::NoOp,
+                                vec![],
+                                ObjectId(30),
+                                PlayerId(0),
+                            )),
+                        },
+                    },
+                    object: Box::new(GameObject::new(
+                        ObjectId(30),
+                        CardId(1),
+                        PlayerId(0),
+                        "Departed Spell".to_string(),
+                        Zone::Hand,
+                    )),
+                },
+            )]),
+        );
+
+        let json = serde_json::to_value(&state).expect("state must serialize");
+        assert!(
+            json.get("departed_stack_spells").is_some(),
+            "a populated map must serialize its key"
+        );
+        let restored: GameState = serde_json::from_value(json).expect("state must round-trip");
+        assert_eq!(
+            restored.departed_stack_spells[&ObjectId(30)][&1],
+            state.departed_stack_spells[&ObjectId(30)][&1],
+            "the record must survive the round trip"
+        );
+
+        let empty_state = GameState::new_two_player(7);
+        let empty_json = serde_json::to_value(&empty_state).expect("state must serialize");
+        assert!(
+            empty_json.get("departed_stack_spells").is_none(),
+            "an empty map must be omitted (skip_serializing_if)"
+        );
+        let restored_empty: GameState =
+            serde_json::from_value(empty_json).expect("payload without the key must deserialize");
+        assert!(
+            restored_empty.departed_stack_spells.is_empty(),
+            "a payload without the key must yield an empty map"
+        );
+    }
+
     /// The Devour snapshot is rules-bearing while a prompt is live, but remains
     /// intentionally outside the state-equality key just as it was before the
     /// ChangeZone frame migration. Replacing `game_state_eq` with derived stack
@@ -37330,6 +38192,7 @@ mod tests {
         later.state_revision = 99;
         later.next_timestamp = 42;
         later.next_object_id = base.next_object_id + 5;
+        later.next_return_result_occurrence_id = base.next_return_result_occurrence_id + 5;
 
         assert!(
             loop_states_equal(&base.normalize_for_loop(), &later.normalize_for_loop()),
@@ -39499,6 +40362,7 @@ mod tests {
             .latch_immediately_before(Vec::new(), Vec::new())
             .expect("empty immediately-before authority is still explicitly latched");
         let original = PendingChangeZoneIteration {
+            pending_return_result_producer: None,
             logical_zone_change_group,
             paused_current: None,
             remaining: vec![],

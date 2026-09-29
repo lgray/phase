@@ -1347,6 +1347,8 @@
     },
     "config": {
       "startingLife": "Punti vita iniziali",
+      "experimentalDungeons": "Dungeon sperimentali",
+      "experimentalDungeonsHelp": "Offri Baldur's Gate Wilderness nelle opzioni del dungeon e quando prendi l'iniziativa. Sperimentale e non ufficiale.",
       "players": "Giocatori",
       "whoGoesFirst": "Chi inizia",
       "firstPlayer": {
@@ -1958,6 +1960,8 @@
     "additionalExile": "+ Esilia una carta",
     "additionalSacrifice": "+ Sacrifica un permanente",
     "additionalPayLife": "+ Paga punti vita",
+    "additionalPayLifeAmount": "+ Paga {{amount}} punti vita",
+    "additionalCollectEvidence": "+ Raccogli prove {{amount}}",
     "additionalDiscard": "+ Scarta una carta",
     "additionalTapCreatures": "+ TAPpa creature",
     "additionalGeneric": "+ {{type}}"
@@ -2085,6 +2089,7 @@
     "variantForetell": "Lancia da Predire",
     "variantOverload": "Lancia con Sovraccarico",
     "variantBestow": "Lancia con Conferire",
+    "variantBlitz": "Lancia con Blitz",
     "variantFreerunning": "Lancia con Freerunning",
     "variantFuse": "Lancia con Fusione",
     "variantMutate": "Lancia con Mutate",
@@ -2094,7 +2099,14 @@
     "variantMoreThanMeetsTheEye": "Cast Converted",
     "variantPrototype": "Lancia con Prototipo",
     "variantFaceDown": "Lancia a faccia in giù",
-    "variantFallback": "Lancia con {{type}}"
+    "variantFallback": "Lancia con {{type}}",
+    "viaSource": "tramite {{name}}",
+    "extraCostAdditional": "+ {{cost}}",
+    "extraCostAlternative": "invece del suo costo di mana: {{cost}}",
+    "entersWithCounter": "entra con un segnalino {{counter}}",
+    "slotPerType": "usa il suo spazio {{type}}",
+    "slotChooseType": "scegli un tipo di permanente",
+    "slotOncePerTurn": "una volta in questo turno"
   },
   "categoryChoice": {
     "title": "Scegli i permanenti da tenere",
@@ -2261,6 +2273,12 @@
     "no": "No",
     "dontAskAgain": "Non chiedere di nuovo in questa partita",
     "dontAskAgainForSameCard": "Usa questa scelta per ogni copia di questa carta in questa partita"
+  },
+  "keywordDetail": {
+    "selfManaCost": "il suo costo di mana",
+    "selfManaValue": "il suo valore di mana",
+    "manaCostReduced": "il suo costo di mana ridotto di {{reduction}}",
+    "spliceOnto": "su {{subtype}} {{cost}}"
   },
   "resolutionOptionalPayment": {
     "title": "Scegli un pagamento opzionale",

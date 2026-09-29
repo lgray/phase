@@ -387,10 +387,10 @@ pub(crate) fn parse_target_with_disjunctive_restriction(text: &str) -> (TargetFi
     (filter, &rest[consumed..])
 }
 
-/// CR 205.2a + CR 601.2h: Fold a DETERMINER-led right conjunct onto an
+/// CR 205.2a + CR 701.21a: Fold a DETERMINER-led right conjunct onto an
 /// already-parsed left conjunct — "another creature or an artifact"
-/// (Mold Folk's `{1}, Sacrifice another creature or an artifact:`) and the
-/// mirror-image "an artifact or another creature" (Malevolent Noble).
+/// (Mold Folk's sacrifice cost and Gut's resolution-time sacrifice effect) and
+/// the mirror-image "an artifact or another creature" (Malevolent Noble).
 ///
 /// Takes `base` and `rest` rather than parsing the phrase itself, and that split
 /// is LOAD-BEARING, not a style choice. In this surface "another" scopes only the
@@ -400,7 +400,7 @@ pub(crate) fn parse_target_with_disjunctive_restriction(text: &str) -> (TargetFi
 /// sacrifice it to pay the cost of its activated ability"; Gut, True Soul Zealot
 /// (2022-06-10): "If Gut somehow becomes an artifact, you may sacrifice it to its
 /// own ability." Stamping `FilterProp::Another` onto the right leg would make an
-/// artifact-ified source unable to pay with itself: the sacrifice-cost path runs
+/// artifact-ified source unable to sacrifice itself: the sacrifice-choice path runs
 /// `find_eligible_sacrifice_targets` -> `matches_target_filter` ->
 /// `matches_filter_prop`, whose `Another` arm reduces to
 /// `!source_is_current_object(state, source, object_id)` here, because
@@ -443,10 +443,12 @@ pub(crate) fn parse_target_with_disjunctive_restriction(text: &str) -> (TargetFi
 /// The real reason is BLAST RADIUS. `parse_type_phrase_folding_with_ctx` is the shared
 /// entry point for target phrases, cost filters, trigger filters, keyword costs
 /// and condition subjects; widening it changes every one of those at once, and
-/// the pinning test above exists precisely to stop that happening casually. A
-/// COST, by contrast, has no verb to elide — the entire phrase is the filter — so
-/// its consumer can opt into the union reading on its own, and the measured
-/// effect stays the eight cost-position cards this change actually intends.
+/// the pinning test above exists precisely to stop that happening casually.
+/// A sacrifice cost or effect, by contrast, owns its noun phrase and can opt
+/// into this reading without guessing whether a subsequent verb was elided.
+/// This grammar is shared
+/// by the cost-position cards and resolution-time sacrifice effects without
+/// changing general-purpose target and condition parsing.
 /// The disambiguator is the consumer's intent, which is what a wrapper expresses
 /// and a widened branch cannot.
 /// Mirrors [`parse_target_with_disjunctive_restriction`] directly above: parse
@@ -468,9 +470,11 @@ pub(crate) fn fold_article_led_type_union(base: TargetFilter, rest: &str) -> (Ta
     // A right conjunct that carries no TYPE content is not treated as a union leg.
     // Deliberately stricter than `target_filter_has_meaningful_content`: a bare
     // "or a token" parses to `Typed{[], [Token]}`, which matches only tokens
-    // rather than every object, but it is a property-only leg the cost grammar
-    // has no corpus instance of, so this bails to today's behaviour rather than
-    // guessing. Widening to accept property-only legs needs its own measurement.
+    // rather than every object. Old Man Willow is a real property-only RHS
+    // instance, but this opt-in helper deliberately supports type-bearing RHS
+    // only. The sacrifice imperative must keep an unsupported token RHS red
+    // instead of discarding it. Accepting property-only legs needs its own
+    // measurement.
     let TargetFilter::Typed(ref right_typed) = right else {
         return (base, rest);
     };
@@ -2398,6 +2402,25 @@ fn parse_named_filter_locative_zone_terminator(
     Ok((&input[consumed..], ()))
 }
 
+/// CR 201.2: byte length of the literal card name at the start of `name_text`
+/// (the text right after "named "). The name runs to the earliest *clause*
+/// boundary (`parse_named_filter_terminator`), tried at each space/comma so
+/// comma- and "and"-bearing names survive ("Ebondeath, Dracolich"; "Gisa and
+/// Geralf"); with no clause boundary it ends at the first `.`, `:` or `;`, else
+/// at end of input. Single authority for both the positive "named X" branch of
+/// `parse_type_phrase_folding_with_ctx` and the negated
+/// `oracle_nom::filter::parse_not_named_suffix`.
+pub(crate) fn named_filter_name_end(name_text: &str) -> usize {
+    name_text
+        .char_indices()
+        .filter(|&(_, c)| c == ' ' || c == ',')
+        .find(|&(idx, _)| parse_named_filter_terminator(&name_text[idx..]).is_ok())
+        .map_or_else(
+            || name_text.find(['.', ':', ';']).unwrap_or(name_text.len()),
+            |(idx, _)| idx,
+        )
+}
+
 fn parse_named_filter_terminator(input: &str) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
     alt((
         // Controller-scope suffixes (CR 109.4). Longest-match-first.
@@ -4096,14 +4119,7 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
         // terminator (see `parse_named_filter_terminator`), which preserves
         // comma/and-bearing names while ending the name at the controller
         // suffix, relative pronoun, predicate verb, or referential comma clause.
-        let name_end = name_text
-            .char_indices()
-            .filter(|&(_, c)| c == ' ' || c == ',')
-            .find(|&(idx, _)| parse_named_filter_terminator(&name_text[idx..]).is_ok())
-            .map_or_else(
-                || name_text.find(['.', ':', ';']).unwrap_or(name_text.len()),
-                |(idx, _)| idx,
-            );
+        let name_end = named_filter_name_end(name_text);
         let raw_name = name_text[..name_end].trim();
         if !raw_name.is_empty() {
             // Reconstruct original-case name from the same position in `text`
@@ -10505,6 +10521,38 @@ mod tests {
             TargetFilter::And { filters } => filters.iter().find_map(typed_leg),
             _ => None,
         }
+    }
+
+    /// CR 201.2: regression pin for extracting `named_filter_name_end`. The
+    /// positive "named X" branch keeps a comma-bearing name whole and still ends
+    /// the name at a controller suffix or a predicate verb (issue #2016).
+    #[test]
+    fn named_filter_name_end_keeps_comma_names_and_stops_at_clauses() {
+        assert_eq!(
+            named_filter_name_end("bruna, the fading light you control"),
+            "bruna, the fading light".len()
+        );
+        assert_eq!(
+            named_filter_name_end("bonder's ornament draws a card"),
+            "bonder's ornament".len()
+        );
+        assert_eq!(
+            named_filter_name_end("ebondeath, dracolich"),
+            "ebondeath, dracolich".len()
+        );
+        assert_eq!(named_filter_name_end("foo with flying"), "foo".len());
+
+        let (filter, rest) =
+            parse_type_phrase_folding("permanent named bonder's ornament draws a card");
+        let tf = typed_leg(&filter).expect("typed filter");
+        assert!(
+            tf.properties.contains(&FilterProp::Named {
+                name: "bonder's ornament".to_string()
+            }),
+            "{:?}",
+            tf.properties
+        );
+        assert_eq!(rest.trim(), "draws a card");
     }
 
     /// Extract the `AggregateFunction` a superlative-property suffix encodes,

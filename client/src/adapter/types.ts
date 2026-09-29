@@ -406,6 +406,14 @@ export interface FormatConfig {
    */
   allow_debug_actions: boolean;
   /**
+   * Experimental-dungeons capability flag: when true the engine offers
+   * Baldur's Gate Wilderness alongside the AFR trio on a normal venture,
+   * and as an alternative to Undercity when taking the initiative. Off by
+   * default. Orthogonal to format — applies on top of any `GameFormat`.
+   * Immutable for the life of a session.
+   */
+  allow_experimental_dungeons: boolean;
+  /**
    * Present exactly when `format` is a `Custom:<id>` string, and then
    * `custom_rules.id` must equal that id — the engine's
    * `validate_custom_rules_consistency` enforces the biconditional in both
@@ -1040,7 +1048,8 @@ export type ManaCost =
   | { type: "NoCost" }
   | { type: "Cost"; shards: ManaCostShard[]; generic: number }
   | { type: "SelfManaCost" }
-  | { type: "SelfManaValue" };
+  | { type: "SelfManaValue" }
+  | { type: "SelfManaCostReduced"; reduction: number };
 
 /**
  * CR 107.4: one mana-cost component, serialized as its Rust enum variant name
@@ -1094,6 +1103,7 @@ export type CastingVariant =
   | { type: "Foretell" }
   | { type: "Overload" }
   | { type: "Bestow" }
+  | { type: "Blitz" }
   | { type: "Mutate" }
   | { type: "Awaken" }
   | { type: "Cleave" }
@@ -1110,6 +1120,44 @@ export interface CastingVariantChoiceOption {
   variant: CastingVariant;
   face: CastingVariantFace;
   mana_cost: ManaCost;
+  /** CR 601.2f-h: the non-mana part of the alternative cost this option pays. */
+  additional_cost?: SerializedAbilityCost | null;
+  /**
+   * CR 601.2a + CR 601.2b: the graveyard permission this option is announced
+   * under. Present for every cast through a graveyard-cast permission.
+   */
+  authority?: CastAuthorityChoice | null;
+}
+
+/** CR 601.2a: one graveyard-cast permission grant: its source and the grant on it. */
+export interface GraveyardPermissionId {
+  source: ObjectId;
+  grant:
+    | { type: "Static"; index: number }
+    | { type: "Transient"; effect_id: number; modification: number };
+}
+
+/** CR 601.2a + CR 601.2b: what the player announces for a graveyard-permission cast. */
+export interface AnnouncedGraveyardPermission {
+  permission: GraveyardPermissionId;
+  /** Opaque; compared only for equality by the engine. */
+  grant_digest: string;
+  slot_type?: CoreType | null;
+}
+
+/** CR 601.2f: a graveyard permission's extra cost and whether it replaces the mana cost. */
+export interface CastExtraCost {
+  cost: SerializedAbilityCost;
+  mode: "Alternative" | "Additional";
+}
+
+/** The engine-authored terms of a casting option's graveyard permission, for display. */
+export interface CastAuthorityChoice {
+  announcement: AnnouncedGraveyardPermission;
+  extra_cost?: CastExtraCost | null;
+  enters_with_counter?: CounterType | null;
+  frequency: CastFrequency;
+  graveyard_destination_replacement?: Zone | null;
 }
 
 export type CastPaymentMode =
@@ -2515,7 +2563,7 @@ export type WaitingFor =
   // on a creature they control (or decline, sending it to the graveyard).
   | { type: "CipherEncodeChoice"; data: { player: PlayerId; card_id: ObjectId; creatures: ObjectId[] } }
   | { type: "CastingVariantChoice"; data: { player: PlayerId; object_id: ObjectId; card_id: CardId; payment_mode?: CastPaymentMode; options: CastingVariantChoiceOption[] } }
-  | { type: "ChoosePermanentTypeSlot"; data: { player: PlayerId; object_id: ObjectId; card_id: CardId; source: ObjectId; payment_mode?: CastPaymentMode; available_slots: CoreType[] } }
+  | { type: "ChoosePermanentTypeSlot"; data: { player: PlayerId; object_id: ObjectId; card_id: CardId; source: ObjectId; payment_mode?: CastPaymentMode; available_slots: CoreType[]; permission?: AnnouncedGraveyardPermission | null } }
   | { type: "MultiTargetSelection"; data: { player: PlayerId; legal_targets: ObjectId[]; min_targets: number; max_targets: number; pending_ability: unknown } }
   | { type: "MiracleReveal"; data: { player: PlayerId; object_id: ObjectId; cost: ManaCost } }
   // CR 118.3 + CR 601.2b + CR 605.3b: unified cost-payment selection. Replaces
@@ -5124,8 +5172,18 @@ export type BracketShape = "Swiss" | "SingleElimination";
  * `Bye` and `Forfeit` are server-assigned outcomes with nothing to report;
  * `Open` includes an already-`Reported` pairing, because re-reporting is how a
  * mistyped tally is corrected.
+ *
+ * `Hosted` marks a pairing played on a server-authoritative table (lobby
+ * protocol v14): its result is reported by the server on game-over, and a
+ * client `ReportMatchResult` is refused, so the UI hides the manual report
+ * affordance for it exactly as it does for `Bye`/`Forfeit`.
  */
-export type ReportGate = "Open" | "TournamentNotRunning" | "Bye" | "Forfeit";
+export type ReportGate =
+  | "Open"
+  | "TournamentNotRunning"
+  | "Bye"
+  | "Forfeit"
+  | "Hosted";
 
 /**
  * One tournament-scoped gated action, as an axis rather than sibling

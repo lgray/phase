@@ -25722,6 +25722,22 @@ impl TargetChoiceTiming {
 // Definition types -- fully typed, zero HashMap
 // ---------------------------------------------------------------------------
 
+/// Identity of one announced target group within an ability definition chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChosenGroupId(pub u32);
+
+/// Identity of one return instruction in a parsed ability chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ReturnResultId(pub u32);
+
+/// The prior-object predicate and final destination read by a delayed effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReturnResultReadSpec {
+    pub noun: TargetFilter,
+    pub destination: Zone,
+    pub recipient: ControllerRef,
+}
+
 /// Parsed ability definition with typed effect. Zero remaining_params.
 ///
 /// `Serialize` is hand-written (see `impl Serialize for AbilityDefinition`) so
@@ -25736,6 +25752,12 @@ impl TargetChoiceTiming {
 pub struct AbilityDefinition {
     pub kind: AbilityKind,
     pub effect: Box<Effect>,
+    /// Group announced by this clause, including its mutually exclusive cost branch.
+    pub declares_chosen_group: Option<ChosenGroupId>,
+    /// Exact announced group consumed by this clause.
+    pub reads_chosen_group: Option<ChosenGroupId>,
+    pub declares_return_result: Option<ReturnResultId>,
+    pub reads_return_result: Option<(ReturnResultId, ReturnResultReadSpec)>,
     pub cost: Option<AbilityCost>,
     pub sub_ability: Option<Box<AbilityDefinition>>,
     /// CR 608.2c: Alternative branch executed when the condition on this ability is NOT met.
@@ -25908,6 +25930,14 @@ struct AbilityDefinitionRepr<'a> {
     // would silently drop a `null` key the existing JSON / snapshots expect.
     kind: &'a AbilityKind,
     effect: &'a Effect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declares_chosen_group: &'a Option<ChosenGroupId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reads_chosen_group: &'a Option<ChosenGroupId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declares_return_result: &'a Option<ReturnResultId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reads_return_result: &'a Option<(ReturnResultId, ReturnResultReadSpec)>,
     cost: &'a Option<AbilityCost>,
     sub_ability: &'a Option<Box<AbilityDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -25989,6 +26019,10 @@ impl Serialize for AbilityDefinition {
         let AbilityDefinition {
             kind,
             effect,
+            declares_chosen_group,
+            reads_chosen_group,
+            declares_return_result,
+            reads_return_result,
             cost,
             sub_ability,
             else_ability,
@@ -26034,6 +26068,10 @@ impl Serialize for AbilityDefinition {
             kind,
             // `effect` is `&Box<Effect>` from the destructure; deref to `&Effect`.
             effect,
+            declares_chosen_group,
+            reads_chosen_group,
+            declares_return_result,
+            reads_return_result,
             cost,
             sub_ability,
             else_ability,
@@ -26110,6 +26148,14 @@ impl Serialize for AbilityDefinition {
 struct AbilityDefinitionDe {
     kind: AbilityKind,
     effect: Box<Effect>,
+    #[serde(default)]
+    declares_chosen_group: Option<ChosenGroupId>,
+    #[serde(default)]
+    reads_chosen_group: Option<ChosenGroupId>,
+    #[serde(default)]
+    declares_return_result: Option<ReturnResultId>,
+    #[serde(default)]
+    reads_return_result: Option<(ReturnResultId, ReturnResultReadSpec)>,
     #[serde(default)]
     cost: Option<AbilityCost>,
     #[serde(default)]
@@ -26209,6 +26255,10 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
         Ok(AbilityDefinition {
             kind: de.kind,
             effect: de.effect,
+            declares_chosen_group: de.declares_chosen_group,
+            reads_chosen_group: de.reads_chosen_group,
+            declares_return_result: de.declares_return_result,
+            reads_return_result: de.reads_return_result,
             cost: de.cost,
             sub_ability: de.sub_ability,
             else_ability: de.else_ability,
@@ -26470,6 +26520,10 @@ impl AbilityDefinition {
         Self {
             kind,
             effect: Box::new(effect),
+            declares_chosen_group: None,
+            reads_chosen_group: None,
+            declares_return_result: None,
+            reads_return_result: None,
             cost: None,
             sub_ability: None,
             else_ability: None,
@@ -27862,6 +27916,13 @@ impl ForwardedResultContext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingForwardedZoneResult {
+    pub producer: ObjectId,
+    pub selected: Option<Vec<ObjectIncarnationRef>>,
+    pub group: Option<crate::types::identifiers::LogicalZoneChangeGroupId>,
+}
+
 /// Casting-time facts that flow with a spell from casting through resolution.
 /// Conditions in the sub_ability chain are evaluated against this context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -27880,6 +27941,8 @@ pub struct SpellContext {
     /// inherited-target fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwarded_result_context: Option<Box<ForwardedResultContext>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_forwarded_zone_result: Option<PendingForwardedZoneResult>,
     /// CR 610.3b: specified duration events observed after a triggered ability
     /// triggered but before this initial zone-change effect occurred.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -27930,6 +27993,22 @@ pub struct SpellContext {
     /// `Unlimited` grants (nothing to consume).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_cost_grant_source: Option<ObjectId>,
+    /// CR 601.2a + CR 601.2b: For a card cast from the graveyard under a
+    /// graveyard-cast permission (printed cost, Blitz, Bestow), the
+    /// `GraveyardPermission` the player announced, carrying the per-type slot
+    /// when one applies. Stamped as costs begin from the prepared cast. Read by
+    /// the extra-cost lookup and by `finalize_cast`, so the permission whose
+    /// rider was charged is the one spent even if the board changes during
+    /// payment (a permission source sacrificed for mana). `None` for every other
+    /// cast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graveyard_permission_authority: Option<crate::types::game_state::CastingVariant>,
+    /// CR 601.2f + CR 601.2h + CR 614.1c: the announced graveyard permission's
+    /// terms (its extra cost and "enters with a counter" rider) as they were
+    /// when the cast was announced, applied even if the permission's source
+    /// leaves or loses the ability during casting. `None` for every other cast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graveyard_permission_latch: Option<crate::types::game_state::GraveyardPermissionLatch>,
     /// CR 601.2b/f/h: Number of non-kicker additional-cost payments declared
     /// while casting this spell. Used by keyword abilities such as Squad
     /// (CR 702.157a), whose repeatable payment count is not a kicker count.
@@ -28034,6 +28113,16 @@ pub struct SpellContext {
     /// `apply_parent_chain_context` so it never reaches a grandchild.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_damage_source: Option<TargetDamageSourceBinding>,
+    /// CR 601.2i + CR 400.7: For a triggered ability whose trigger event is a
+    /// spell being cast ("that spell" / a self-cast "this spell"), that
+    /// spell's object and incarnation as they stood when this ability was put
+    /// on the stack. Bound at the single triggered-stack-entry constructor
+    /// (`triggers.rs::push_pending_trigger_to_stack_with_firing_and_duration_events`)
+    /// and re-bound when a pending entry's ability is assigned
+    /// (`triggers.rs::assign_pending_trigger_entry_ability`); read by
+    /// `targeting::triggering_spell`. `None` for a non-spell-cast trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggering_spell: Option<ObjectIncarnationRef>,
 }
 
 impl SpellContext {
@@ -32534,6 +32623,14 @@ impl AttachTargetBindings {
 pub struct ResolvedAbility {
     pub effect: Effect,
     pub targets: Vec<TargetRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declares_chosen_group: Option<ChosenGroupId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads_chosen_group: Option<ChosenGroupId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declares_return_result: Option<ReturnResultId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads_return_result: Option<(ReturnResultId, ReturnResultReadSpec)>,
     /// Attribution only. Triggered abilities additionally carry the exact
     /// context below; callers must never use this raw id to rebind a departed
     /// source to a newer incarnation.
@@ -32971,6 +33068,10 @@ impl PartialEq for ResolvedAbility {
         let Self {
             effect: a_effect,
             targets: a_targets,
+            declares_chosen_group: a_declares_chosen_group,
+            reads_chosen_group: a_reads_chosen_group,
+            declares_return_result: a_declares_return_result,
+            reads_return_result: a_reads_return_result,
             source_id: a_source_id,
             cast_occurrence: a_cast_occurrence,
             source_incarnation: a_source_incarnation,
@@ -33035,6 +33136,10 @@ impl PartialEq for ResolvedAbility {
         let Self {
             effect: b_effect,
             targets: b_targets,
+            declares_chosen_group: b_declares_chosen_group,
+            reads_chosen_group: b_reads_chosen_group,
+            declares_return_result: b_declares_return_result,
+            reads_return_result: b_reads_return_result,
             source_id: b_source_id,
             cast_occurrence: b_cast_occurrence,
             source_incarnation: b_source_incarnation,
@@ -33099,6 +33204,10 @@ impl PartialEq for ResolvedAbility {
 
         a_effect == b_effect
             && a_targets == b_targets
+            && a_declares_chosen_group == b_declares_chosen_group
+            && a_reads_chosen_group == b_reads_chosen_group
+            && a_declares_return_result == b_declares_return_result
+            && a_reads_return_result == b_reads_return_result
             && a_source_id == b_source_id
             && a_cast_occurrence == b_cast_occurrence
             && a_source_incarnation == b_source_incarnation
@@ -33208,6 +33317,10 @@ impl ResolvedAbility {
         Self {
             effect,
             targets,
+            declares_chosen_group: None,
+            reads_chosen_group: None,
+            declares_return_result: None,
+            reads_return_result: None,
             source_id,
             cast_occurrence: None,
             controller,
@@ -33492,6 +33605,10 @@ impl ResolvedAbility {
         self.trigger_source = None;
         self.trigger_definition_ref = None;
         self.force_block_attacker = None;
+        // CR 104.4b: the pin names an advancing incarnation of the triggering
+        // spell (CR 400.7), so it is cleared alongside the other per-instance
+        // identity fields above for the same loop-equality reason.
+        self.context.triggering_spell = None;
         // CR 104.4b + CR 400.7: `normalize_for_loop` compares canonicalized
         // clones for repeated-position equality, and the all-zone incarnation
         // bump advances a pinned referent's epoch on every zone change. A
