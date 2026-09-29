@@ -210,6 +210,10 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 92 — CR 201.5a granter binding: ObjectScope gains GrantingObject and
+ *      SpecificObject, and ability, trigger, static, replacement, spell and
+ *      trigger-source contexts gain the `granting_object` stamp. A v91 peer
+ *      cannot deserialize the new state. P2P moves in lockstep to wire 74.
  * 91 — PendingManaAbility.chosen_counter_count is retyped to the required
  *      chosen_counter_counts array (#9207). A v90 peer cannot deserialize
  *      the new state. P2P moves in lockstep to wire 73.
@@ -613,7 +617,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 91;
+export const PROTOCOL_VERSION = 92;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

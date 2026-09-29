@@ -3318,6 +3318,9 @@ mod tests {
         }
     }
 
+    /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
+    /// `ObjectScope::SpecificObject` and the `granting_object` stamp; v91 state
+    /// cannot decode as v92 state, so it must be refused before state delivery.
     /// `PendingManaAbility` now carries required `chosen_counter_counts`
     /// instead of `chosen_counter_count` (#9207); v90 state cannot decode as
     /// v91 state, so it must be refused before state delivery.
@@ -3339,8 +3342,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_91_for_composite_counter_costs() {
-        assert_eq!(PROTOCOL_VERSION, 91);
+    fn protocol_version_is_92_for_granter_binding() {
+        assert_eq!(PROTOCOL_VERSION, 92);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3351,7 +3354,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_91_for_composite_counter_costs` stays
+    /// `protocol_version_is_92_for_granter_binding` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
