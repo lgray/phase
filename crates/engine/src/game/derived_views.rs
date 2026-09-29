@@ -4204,6 +4204,7 @@ mod tests {
                         &state.objects[&target],
                     ),
                 ),
+                granting_object: None,
             },
         );
 

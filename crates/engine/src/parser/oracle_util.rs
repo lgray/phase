@@ -2315,7 +2315,7 @@ pub(crate) fn render_granting_self_reference(text: &str, card_name: &str) -> Str
 /// (`TargetFilter::GrantingObject`, `ObjectScope::GrantingObject` or
 /// `FilterProp::DistinctFrom`), except where the parser drops the consuming
 /// clause (as in some `other than ` and `attach ` bodies) and the placeholder is
-/// dropped with it; either way it never leaks.
+/// dropped with it.
 const GRANTER_SELF_REF_VERB_PREFIXES: &[&str] = &[
     "sacrifice ",     // Sacrifice cost
     "exile ",         // Exile cost

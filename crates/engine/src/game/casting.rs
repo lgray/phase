@@ -30074,7 +30074,8 @@ fn collect_static_activated_ability_cost_modifiers(
             let ctx = super::filter::FilterContext::from_source_with_controller(
                 tce.source_id,
                 tce.controller,
-            );
+            )
+            .with_granting_object(tce.granting_object);
             if let Some(applied) = resolve_one_reduce_ability_cost(
                 state,
                 &scope,

@@ -3401,6 +3401,7 @@ mod tests {
             TransientContinuousEffectBindings {
                 affected_recipient: Some(affected_ref),
                 duration_subject: Some(subject),
+                granting_object: None,
             },
         )
     }

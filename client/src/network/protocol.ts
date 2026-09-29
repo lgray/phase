@@ -109,7 +109,7 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *  74 — GameState carries the CR 201.5a granter binding (ObjectScope
  *       GrantingObject / SpecificObject and the granting_object stamps).
  *       Bumped with full-game protocol 92 so first contact rejects the skew.
- *  73 —GameState retypes PendingManaAbility.chosen_counter_count to the
+ *  73 — GameState retypes PendingManaAbility.chosen_counter_count to the
  *       required chosen_counter_counts array (#9207). Bumped with full-game
  *       protocol 91 so first contact rejects the incompatible state shape.
  *  72 — game_setup and state_update carry GameState, whose FormatConfig gains

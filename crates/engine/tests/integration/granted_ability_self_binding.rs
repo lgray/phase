@@ -1132,15 +1132,15 @@ fn heliods_punishment_parse_reads_the_granter() {
 
 /// Assert the masker leaves a refused position unmasked while the name still
 /// normalizes to `~`.
-fn assert_masker_noop(oracle: &str, name: &str) {
+fn assert_masker_noop(oracle: &str, name: &str, reach: &str) {
     let normalized = normalize_card_name_refs(oracle, name);
     assert!(
         !normalized.contains(PLACEHOLDER),
         "{name}: a refused self-name position must NOT be masked"
     );
     assert!(
-        normalized.contains('~'),
-        "{name}: the self-name/self-ref must still normalize to ~ (reach-guard); got {normalized}"
+        normalized.contains(reach),
+        "{name}: the refused position must still normalize to ~ (reach-guard); got {normalized}"
     );
 }
 
@@ -1229,7 +1229,7 @@ that would be dealt to this creature by Torrent of Lava this turn.\"";
 /// re-widen the masker → `by <placeholder>` in the normalized string → red.
 #[test]
 fn torrent_of_lava_damage_source_channel_not_masked() {
-    assert_masker_noop(TORRENT_OF_LAVA, "Torrent of Lava");
+    assert_masker_noop(TORRENT_OF_LAVA, "Torrent of Lava", "by ~ this turn");
 }
 
 /// CR 201.5a + CR 400.7 + CR 608.2h: `ObjectScope::SpecificObject` reads one exact
@@ -2113,9 +2113,15 @@ mod concretizer_seams {
                 })
             })
             .expect("the granted static is installed on the host");
+        // CR 201.5a: the installed carrier names the granter's current incarnation.
         assert_eq!(
             installed,
-            counters_on(ObjectScope::GrantingObject, "charge")
+            counters_on(
+                ObjectScope::SpecificObject {
+                    object: incarnation(st, granter)
+                },
+                "charge"
+            )
         );
         assert_eq!(stamp, Some(incarnation(st, granter)));
     }
@@ -3919,13 +3925,21 @@ mod granter_stamp {
 
     /// Adds to each Foo Bar a grant of `replacement` to its equipped creature.
     fn grant_replacement(b: &mut Board, replacement: ReplacementDefinition) {
+        grant_modification(
+            b,
+            ContinuousModification::GrantReplacement {
+                replacement: Box::new(replacement),
+            },
+        );
+    }
+
+    /// Adds to each Foo Bar a grant `modification` to its equipped creature.
+    fn grant_modification(b: &mut Board, modification: ContinuousModification) {
         let st = b.runner.state_mut();
         for fb in &b.granters {
             let fb = st.objects.get_mut(fb).unwrap();
             let mut grant = super::grant_ability_static(&fb.base_static_definitions);
-            grant.modifications = vec![ContinuousModification::GrantReplacement {
-                replacement: Box::new(replacement.clone()),
-            }];
+            grant.modifications = vec![modification.clone()];
             fb.static_definitions.push(grant.clone());
             Arc::make_mut(&mut fb.base_static_definitions).push(grant);
         }
@@ -4325,5 +4339,443 @@ mod granter_stamp {
     #[test]
     fn granted_mana_ability_exile_cost_exiles_the_granter() {
         granted_mana_cost_pays_with_the_granter("Exile", Zone::Exile);
+    }
+
+    // CR 201.5a + CR 400.7 + CR 613.1f: a carrier rebuilt each layer pass names its
+    // granter's current incarnation in its own filters, conditions and quantities.
+
+    use engine::game::combat::can_block_pair;
+    use engine::types::ability::{
+        ControllerRef, FilterProp, ReplacementCondition, StaticDefinition, TypeFilter, TypedFilter,
+    };
+    use engine::types::keywords::Keyword;
+    use engine::types::mana::{ManaColor, ManaUnit};
+
+    const TWO_OTHERS: &str = "As long as you control two or more artifacts other than Foo Bar, ";
+
+    /// `board_built` with `others` extra artifacts beside the one Foo Bar.
+    fn board_others(body: &str, others: usize) -> Board {
+        board_built(body, &[3], None, "", |s| {
+            for i in 0..others {
+                s.add_artifact_from_oracle(P0, &format!("Other{i}"), "");
+            }
+        })
+    }
+
+    #[test]
+    fn granted_static_condition_excludes_the_granter() {
+        for (others, host_power) in [(1, 3), (2, 5)] {
+            let b = board_others(&format!("{TWO_OTHERS}this creature gets +2/+2."), others);
+            assert_eq!(power(&b), host_power, "others={others}");
+        }
+    }
+
+    fn grant_static_def(b: &mut Board, definition: StaticDefinition) {
+        grant_modification(
+            b,
+            ContinuousModification::GrantStaticAbility {
+                definition: Box::new(definition),
+            },
+        );
+    }
+
+    #[test]
+    fn granted_static_affected_filter_excludes_the_granter() {
+        let mut b = board_others("{T}: Draw a card.", 1);
+        grant_static_def(
+            &mut b,
+            StaticDefinition::continuous()
+                .affected(artifacts_other_than_granter())
+                .modifications(vec![ContinuousModification::AddKeyword {
+                    keyword: Keyword::Hexproof,
+                }]),
+        );
+        let st = b.runner.state();
+        assert!(!st.objects[&b.granters[0]].has_keyword(&Keyword::Hexproof));
+        assert!(st.objects[&object_named(&b, "Other0")].has_keyword(&Keyword::Hexproof));
+    }
+
+    #[test]
+    fn granted_restriction_condition_excludes_the_granter() {
+        for (others, can_block) in [(1, true), (2, false)] {
+            let b = board_others(&format!("{TWO_OTHERS}this creature can't block."), others);
+            let victim = object_named(&b, "Victim");
+            assert_eq!(
+                can_block_pair(b.runner.state(), b.host, victim),
+                can_block,
+                "others={others}"
+            );
+        }
+    }
+
+    /// Reaches `zones.rs`'s entry restriction through the granted static's own condition.
+    #[test]
+    fn granted_entry_restriction_condition_excludes_the_granter() {
+        for (others, enters) in [(1, true), (2, false)] {
+            let mut corpse = None;
+            let mut b = board_built(
+                &format!("{TWO_OTHERS}creature cards in graveyards can't enter the battlefield."),
+                &[3],
+                None,
+                "",
+                |s| {
+                    for i in 0..others {
+                        s.add_artifact_from_oracle(P0, &format!("Other{i}"), "");
+                    }
+                    corpse = Some(s.add_creature_to_graveyard(P0, "Corpse", 1, 1).id());
+                },
+            );
+            let corpse = corpse.unwrap();
+            move_to_zone(
+                b.runner.state_mut(),
+                corpse,
+                Zone::Battlefield,
+                &mut Vec::new(),
+            );
+            assert_eq!(
+                b.runner.state().objects[&corpse].zone == Zone::Battlefield,
+                enters,
+                "others={others}"
+            );
+        }
+    }
+
+    fn artifacts_other_than_granter() -> TargetFilter {
+        TargetFilter::Typed(
+            TypedFilter::new(TypeFilter::Artifact)
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::DistinctFrom {
+                    reference: Box::new(TargetFilter::GrantingObject),
+                }]),
+        )
+    }
+
+    fn untap_unless_two_others() -> ReplacementDefinition {
+        ReplacementDefinition::new(ReplacementEvent::Untap)
+            .valid_card(TargetFilter::SelfRef)
+            .condition(ReplacementCondition::UnlessControlsCountMatching {
+                minimum: 2,
+                filter: artifacts_other_than_granter(),
+            })
+    }
+
+    #[test]
+    fn granted_replacement_condition_excludes_the_granter() {
+        for (others, untaps) in [(1, false), (2, true)] {
+            let mut b = board_others("{T}: Draw a card.", others);
+            grant_replacement(&mut b, untap_unless_two_others());
+            let host = b.host;
+            assert_eq!(untap(&mut b, host), untaps, "others={others}");
+        }
+    }
+
+    /// A Foo Bar that grants `body` to each creature P0 controls, beside one Other artifact.
+    fn anthem_board(body: &str) -> Board {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let fb = scenario
+            .add_artifact_from_oracle(
+                P0,
+                "Foo Bar",
+                &format!("Creatures you control have \"{body}\""),
+            )
+            .id();
+        let other = scenario.add_artifact_from_oracle(P0, "Other", "").id();
+        let mut runner = scenario.build();
+        relayer(runner.state_mut());
+        Board {
+            runner,
+            host,
+            granters: vec![fb],
+            other: Some(other),
+        }
+    }
+
+    /// CR 400.7: returns Foo Bar as a new object.
+    fn blink(b: &mut Board, id: ObjectId) -> ObjectIncarnationRef {
+        let st = b.runner.state_mut();
+        move_to_zone(st, id, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, id, Zone::Battlefield, &mut Vec::new());
+        relayer(st);
+        ObjectIncarnationRef::from_object(&b.runner.state().objects[&id])
+    }
+
+    #[test]
+    fn blinked_granter_rebinds_the_granted_static() {
+        let mut b = anthem_board(&format!("{TWO_OTHERS}this creature gets +2/+2."));
+        let fb = b.granters[0];
+        let before = stamp_of(&b, fb);
+        let after = blink(&mut b, fb);
+        assert_ne!(before, after);
+        assert_eq!(installed_stamps(&b), vec![Some(after)]);
+        assert_eq!(b.runner.state().objects[&b.host].power, Some(2));
+    }
+
+    #[test]
+    fn blinked_granter_rebinds_the_granted_replacement() {
+        let mut b = anthem_board("{T}: Draw a card.");
+        let fb = b.granters[0];
+        {
+            let st = b.runner.state_mut();
+            let o = st.objects.get_mut(&fb).unwrap();
+            let mut grant = o.base_static_definitions[0].clone();
+            grant.modifications = vec![ContinuousModification::GrantReplacement {
+                replacement: Box::new(untap_unless_two_others()),
+            }];
+            o.static_definitions.push(grant.clone());
+            Arc::make_mut(&mut o.base_static_definitions).push(grant);
+            relayer(st);
+        }
+        let after = blink(&mut b, fb);
+        assert!(installed_replacement_stamps(&b).contains(&Some(after)));
+        let host = b.host;
+        assert!(!untap(&mut b, host));
+    }
+
+    const CANT_BE_BLOCKED: &str =
+        "{T}: This creature can't be blocked this turn except by artifact creatures other than Foo Bar.";
+
+    /// P1's artifact creatures Foo Bar and Other; Foo Bar grants P0's host `CANT_BE_BLOCKED`,
+    /// which the host activates.
+    fn evasion_board() -> (GameRunner, ObjectId, ObjectId, ObjectId) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let fb = scenario
+            .add_creature_from_oracle(
+                P1,
+                "Foo Bar",
+                2,
+                2,
+                &format!("Creatures your opponents control have \"{CANT_BE_BLOCKED}\""),
+            )
+            .as_artifact()
+            .as_creature()
+            .id();
+        let other = scenario
+            .add_creature(P1, "Other", 2, 2)
+            .as_artifact()
+            .as_creature()
+            .id();
+        let mut runner = scenario.build();
+        relayer(runner.state_mut());
+        let index = runner.state().objects[&host].abilities.len() - 1;
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: host,
+                ability_index: index,
+            })
+            .unwrap();
+        runner.advance_until_stack_empty();
+        (runner, host, fb, other)
+    }
+
+    #[test]
+    fn transient_evasion_excludes_the_granter() {
+        let (runner, host, fb, other) = evasion_board();
+        assert!(!can_block_pair(runner.state(), fb, host));
+        assert!(can_block_pair(runner.state(), other, host));
+    }
+
+    /// CR 400.7: a latched stamp whose granter changed zones names no object.
+    #[test]
+    fn transient_evasion_does_not_honor_a_blinked_granter() {
+        let (mut runner, host, fb, _) = evasion_board();
+        let st = runner.state_mut();
+        move_to_zone(st, fb, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, fb, Zone::Battlefield, &mut Vec::new());
+        relayer(st);
+        assert!(can_block_pair(runner.state(), fb, host));
+    }
+
+    #[test]
+    fn transient_cost_reduction_excludes_the_granter() {
+        for (payer, left) in [("Foo Bar", 0), ("Other", 1)] {
+            let mut b = board_built(
+                "{T}: Until end of turn, activated abilities of artifacts other than Foo Bar cost {1} less to activate.",
+                &[3],
+                Some("{2}: You gain 1 life."),
+                "{2}: You gain 1 life.\n",
+                |s| {
+                    s.with_mana_pool(
+                        P0,
+                        (0..2)
+                            .map(|_| ManaUnit::new(ManaColor::White.into(), ObjectId(0), false, Vec::new()))
+                            .collect(),
+                    );
+                },
+            );
+            activate_last(&mut b);
+            b.runner.advance_until_stack_empty();
+            let source = object_named(&b, payer);
+            let index = b.runner.state().objects[&source]
+                .abilities
+                .iter()
+                .position(|a| matches!(*a.effect, Effect::GainLife { .. }))
+                .unwrap();
+            b.runner.activate(source, index).resolve();
+            let pool = b.runner.state().players[0].mana_pool.total();
+            assert_eq!(pool, left, "payer={payer}");
+        }
+    }
+
+    /// CR 122.1 + CR 201.5a: counters named on the granter are read from the granter.
+    fn charge_board(body: &str, granter: u32, host: u32) -> Board {
+        let mut b = board_others(body, 0);
+        let st = b.runner.state_mut();
+        st.objects
+            .get_mut(&b.granters[0])
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), granter);
+        st.objects
+            .get_mut(&b.host)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), host);
+        relayer(st);
+        b
+    }
+
+    #[test]
+    fn granted_static_counter_condition_reads_the_granter() {
+        let body = "As long as there are three or more charge counters on Foo Bar, this creature gets +2/+2.";
+        for (granter, host, host_power) in [(3, 1, 5), (1, 3, 3)] {
+            let b = charge_board(body, granter, host);
+            assert_eq!(power(&b), host_power, "granter={granter} host={host}");
+        }
+    }
+
+    #[test]
+    fn granted_trigger_counter_condition_reads_the_granter() {
+        let body = "Whenever this creature attacks, if there are three or more charge counters on Foo Bar, draw a card.";
+        for (granter, host, triggered) in [(3, 1, true), (1, 3, false)] {
+            let mut b = charge_board(body, granter, host);
+            assert_eq!(
+                declare_attack(&mut b),
+                triggered,
+                "granter={granter} host={host}"
+            );
+        }
+    }
+
+    #[test]
+    fn granted_state_trigger_fires_on_the_granters_counters() {
+        let body = "When there are no charge counters on Foo Bar, draw a card.";
+        for (granter, host, fires) in [(0, 1, true), (1, 0, false)] {
+            let mut b = charge_board(body, granter, host);
+            b.runner.act(GameAction::PassPriority).unwrap();
+            let host_id = b.host;
+            assert_eq!(
+                b.runner
+                    .state()
+                    .stack
+                    .iter()
+                    .any(|entry| entry.source_id == host_id),
+                fires,
+                "granter={granter} host={host}"
+            );
+        }
+    }
+
+    const CHARGE_DURATION: &str =
+        "{T}: This creature gets +2/+0 for as long as there are three or more charge counters on Foo Bar.";
+
+    #[test]
+    fn granted_duration_reads_the_granters_counters() {
+        for (granter, host, host_power) in [(3, 1, 5), (1, 3, 3)] {
+            let mut b = charge_board(CHARGE_DURATION, granter, host);
+            activate_last(&mut b);
+            b.runner.advance_until_stack_empty();
+            assert_eq!(power(&b), host_power, "granter={granter} host={host}");
+        }
+    }
+
+    /// CR 400.7 + CR 611.2b: the duration names the incarnation that was the granter.
+    #[test]
+    fn granted_duration_does_not_follow_a_blinked_granter() {
+        let mut b = charge_board(CHARGE_DURATION, 3, 3);
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        assert_eq!(power(&b), 5);
+        let fb = b.granters[0];
+        blink(&mut b, fb);
+        let st = b.runner.state_mut();
+        st.objects
+            .get_mut(&fb)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 3);
+        relayer(st);
+        assert_eq!(power(&b), 3);
+    }
+
+    /// CR 611.2b: an effect-owned duration reads the granter too.
+    #[test]
+    fn granted_copy_duration_reads_the_granters_counters() {
+        let body = "{T}: This creature becomes a copy of target creature for as long as there are three or more charge counters on Foo Bar.";
+        for (granter, host, name) in [(3, 1, "Victim"), (1, 3, "Bearer")] {
+            let mut b = charge_board(body, granter, host);
+            let victim = object_named(&b, "Victim");
+            let (source, index) = (b.host, last_ability(&b));
+            b.runner
+                .activate(source, index)
+                .target_object(victim)
+                .resolve();
+            relayer(b.runner.state_mut());
+            assert_eq!(
+                b.runner.state().objects[&b.host].name,
+                name,
+                "granter={granter} host={host}"
+            );
+        }
+    }
+
+    /// CR 611.2b: a play permission's duration names the granter's incarnation.
+    #[test]
+    fn granted_play_permission_duration_names_the_granter() {
+        let body = "{T}: Exile the top card of your library. You may play that card for as long as there are three or more charge counters on Foo Bar.";
+        let mut b = charge_board(body, 3, 1);
+        let card = b.runner.state().players[0].library[0];
+        let (source, index) = (b.host, last_ability(&b));
+        b.runner.activate(source, index).resolve();
+        let granter = serde_json::to_string(&ObjectScope::SpecificObject {
+            object: stamp_of(&b, b.granters[0]),
+        })
+        .unwrap();
+        let permissions =
+            serde_json::to_string(&b.runner.state().objects[&card].casting_permissions).unwrap();
+        assert!(permissions.contains("ForAsLongAs"), "{permissions}");
+        assert!(
+            permissions.contains(&granter) && !permissions.contains("GrantingObject"),
+            "{permissions}"
+        );
+    }
+
+    #[test]
+    fn granted_state_trigger_counter_condition_reads_the_granter() {
+        let parsed = engine::parser::oracle::parse_oracle_text(
+            "Equipped creature has \"When there are no charge counters on Foo Bar, draw a card.\"\nEquip {1}",
+            "Foo Bar",
+            &[],
+            &["Artifact".to_string()],
+            &["Equipment".to_string()],
+        );
+        let json = serde_json::to_string(&parsed).unwrap();
+        assert!(!json.contains(super::PLACEHOLDER), "{json}");
+        let trigger = parsed
+            .statics
+            .iter()
+            .flat_map(|s| s.modifications.iter())
+            .find_map(|m| match m {
+                ContinuousModification::GrantTrigger { trigger } => Some(trigger),
+                _ => None,
+            })
+            .expect("the granted state trigger");
+        assert_eq!(trigger.mode, TriggerMode::StateCondition);
+        assert!(serde_json::to_string(&trigger.condition)
+            .unwrap()
+            .contains("GrantingObject"));
     }
 }
