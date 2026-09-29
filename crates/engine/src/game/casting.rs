@@ -27431,25 +27431,29 @@ pub fn handle_cancel_cast(
             obj.tapped = false;
         }
     }
-    // CR 733.1 + CR 404.2: undo delve exiles newest-first, each back at the
-    // graveyard position it left, so the graveyard ends in its pre-cast order.
-    let delved: Vec<_> = pending
-        .delved_cards
-        .iter()
-        .rev()
-        .filter(|delved| {
-            state
-                .objects
-                .get(&delved.card)
-                .is_some_and(|obj| obj.zone == Zone::Exile)
-        })
-        .collect();
-    for delved in &delved {
-        super::zones::restore_after_rollback(state, delved.card, Zone::Graveyard, _events);
-        let owner = state.objects[&delved.card].owner;
+    // CR 733.1 + CR 404.2: undo delve payments newest-first, each card back at
+    // the graveyard position it held, wherever its cost move delivered it.
+    for delved in pending.delved_cards.iter().rev() {
+        let Some(obj) = state.objects.get(&delved.card) else {
+            continue;
+        };
+        let owner = obj.owner;
+        if obj.zone != Zone::Graveyard {
+            // CR 733.1: an undone action triggers no abilities, so the rollback events are dropped.
+            super::zones::restore_after_rollback(
+                state,
+                delved.card,
+                Zone::Graveyard,
+                &mut Vec::new(),
+            );
+        }
         super::zones::reorder_within_graveyard(state, owner, delved.card, delved.graveyard_index);
     }
-    let delved_cards: Vec<ObjectId> = delved.iter().map(|delved| delved.card).collect();
+    let delved_cards: Vec<ObjectId> = pending
+        .delved_cards
+        .iter()
+        .map(|delved| delved.card)
+        .collect();
     if !delved_cards.is_empty() {
         state.exile_links.retain(|link| {
             !(link.source_id == pending.object_id && delved_cards.contains(&link.exiled_id))

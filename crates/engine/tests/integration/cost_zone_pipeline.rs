@@ -10477,6 +10477,275 @@ fn delve_mana_payment_honors_moved_redirect_without_linking_redirected_fuel() {
     assert_eq!(runner.state().objects[&spell].zone, Zone::Stack);
 }
 
+struct DelveCancelWitness {
+    runner: GameRunner,
+    spell: ObjectId,
+    fuel: [ObjectId; 3],
+    redirects: [ObjectId; 2],
+}
+
+/// Delve spell mid-cast with graveyard `[A, F, C]`; A is already delved to
+/// exile before any redirect exists. `F` optionally carries a dies trigger.
+fn delve_cancel_witness(fuel_dies_trigger: bool) -> DelveCancelWitness {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand(P0, "Delve Cancel Witness", true)
+        .with_mana_cost(ManaCost::generic(3))
+        .with_keyword(Keyword::Delve)
+        .id();
+    let a = scenario
+        .add_spell_to_graveyard(P0, "Delve Fuel A", true)
+        .id();
+    let f = if fuel_dies_trigger {
+        scenario
+            .add_creature_to_graveyard(P0, "Delve Fuel F", 1, 1)
+            .with_trigger_definition(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .valid_card(TargetFilter::SelfRef)
+                    .origin(Zone::Battlefield)
+                    .destination(Zone::Graveyard)
+                    .trigger_zones(vec![Zone::Battlefield])
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::GainLife {
+                            amount: QuantityExpr::Fixed { value: 1 },
+                            player: TargetFilter::Controller,
+                        },
+                    )),
+            )
+            .id()
+    } else {
+        scenario
+            .add_spell_to_graveyard(P0, "Delve Fuel F", true)
+            .id()
+    };
+    let c = scenario
+        .add_spell_to_graveyard(P0, "Delve Fuel C", true)
+        .id();
+    let redirects = ["First Delve Exile Redirect", "Second Delve Exile Redirect"]
+        .map(|name| scenario.add_creature(P0, name, 0, 0).as_enchantment().id());
+
+    let mut runner = scenario.build();
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Manual,
+        })
+        .expect("delve spell reaches its mana-payment window");
+    let mut witness = DelveCancelWitness {
+        runner,
+        spell,
+        fuel: [a, f, c],
+        redirects,
+    };
+    witness.delve(a);
+    witness
+}
+
+impl DelveCancelWitness {
+    fn delve(&mut self, fuel: ObjectId) -> WaitingFor {
+        self.runner
+            .act(GameAction::TapForConvoke {
+                object_id: fuel,
+                mana_type: engine::types::mana::ManaType::Colorless,
+            })
+            .expect("delve fuel is payable")
+            .waiting_for
+    }
+
+    fn set_exile_redirect(&mut self, redirected_to: Option<Zone>) {
+        for id in self.redirects {
+            let object = self.runner.state_mut().objects.get_mut(&id).unwrap();
+            let definitions: Vec<_> = redirected_to
+                .map(|zone| redirect_moved_to(Zone::Exile, zone))
+                .into_iter()
+                .collect();
+            object.replacement_definitions = definitions.clone().into();
+            object.base_replacement_definitions = Arc::new(definitions);
+        }
+    }
+
+    /// Delves F under the installed redirects and resolves the competing-Moved
+    /// choice; returns after the mana-payment window is restored.
+    fn delve_fuel_f_through_replacement_choice(&mut self) {
+        assert!(matches!(
+            self.delve(self.fuel[1]),
+            WaitingFor::ReplacementChoice { .. }
+        ));
+        self.runner
+            .act(GameAction::ChooseReplacement { index: 0 })
+            .expect("competing Moved redirects resolve");
+    }
+
+    fn graveyard(&self) -> Vec<ObjectId> {
+        self.runner.state().players[0]
+            .graveyard
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    fn hand(&self) -> Vec<ObjectId> {
+        self.runner.state().players[0]
+            .hand
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    fn markers(&self) -> Vec<ObjectId> {
+        self.runner.state().players[0]
+            .mana_pool
+            .mana
+            .iter()
+            .filter(|unit| unit.is_convoke_payment())
+            .map(|unit| unit.source_id)
+            .collect()
+    }
+
+    fn zone_change_records_for(&self, object: ObjectId) -> usize {
+        self.runner
+            .state()
+            .zone_changes_this_turn
+            .iter()
+            .filter(|record| record.object_id == object)
+            .count()
+    }
+
+    fn assert_mana_payment_open(&self) {
+        assert!(matches!(
+            self.runner.state().waiting_for,
+            WaitingFor::ManaPayment {
+                player: P0,
+                convoke_mode: Some(engine::types::game_state::ConvokeMode::Delve),
+            }
+        ));
+    }
+
+    fn assert_cancel_leaves_no_delve_residue(&self) {
+        let [a, f, c] = self.fuel;
+        assert_eq!(self.graveyard(), [a, f, c]);
+        assert_eq!(self.hand(), [self.spell]);
+        assert!(self.markers().is_empty());
+        let state = self.runner.state();
+        assert!(!state
+            .exile_links
+            .iter()
+            .any(|link| link.source_id == self.spell));
+        assert!(!state
+            .cards_exiled_with_source_this_turn
+            .contains_key(&self.spell));
+        assert!(state.stack.is_empty());
+    }
+}
+
+/// CR 733.1 + CR 404.2: a delve payment whose exile move a Moved replacement
+/// redirected elsewhere is still reversed on cancel, back to its graveyard slot.
+#[test]
+fn cancel_after_redirected_delve_payment_restores_fuel_order_hand_and_markers() {
+    for redirected_to in [Zone::Hand, Zone::Library] {
+        let mut witness = delve_cancel_witness(false);
+        let [_, f, c] = witness.fuel;
+        witness.set_exile_redirect(Some(redirected_to));
+        witness.delve_fuel_f_through_replacement_choice();
+
+        assert_eq!(witness.runner.state().objects[&f].zone, redirected_to);
+        assert!(witness.markers().contains(&f));
+        witness.assert_mana_payment_open();
+
+        witness.set_exile_redirect(None);
+        witness.delve(c);
+        assert_eq!(witness.runner.state().objects[&c].zone, Zone::Exile);
+        witness
+            .runner
+            .act(GameAction::CancelCast)
+            .expect("cancel a delve cast");
+
+        witness.assert_cancel_leaves_no_delve_residue();
+        assert!(!witness.runner.state().players[0].library.contains(&f));
+    }
+}
+
+/// CR 733.1: fuel whose exile move was prevented never left the graveyard, so
+/// the rollback moves nothing but still drops its payment marker.
+#[test]
+fn cancel_after_prevented_delve_payment_moves_nothing_and_clears_marker() {
+    let mut witness = delve_cancel_witness(false);
+    let [_, f, _] = witness.fuel;
+    witness.set_exile_redirect(Some(Zone::Hand));
+    assert!(matches!(
+        witness.delve(f),
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    stage_prevented_cost_move(witness.runner.state_mut(), witness.redirects[0]);
+    witness
+        .runner
+        .act(GameAction::ChooseReplacement { index: 0 })
+        .expect("prevented delve fuel restores the mana-payment root");
+
+    assert!(witness.runner.state().pending_cost_move_resume.is_none());
+    assert_eq!(witness.runner.state().objects[&f].zone, Zone::Graveyard);
+    assert!(witness.markers().contains(&f));
+    witness.assert_mana_payment_open();
+    let moves_before_cancel = witness.zone_change_records_for(f);
+
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    assert_eq!(witness.zone_change_records_for(f), moves_before_cancel);
+    witness.assert_cancel_leaves_no_delve_residue();
+}
+
+/// CR 404.2 + CR 733.1: fuel redirected back into the graveyard is re-appended
+/// by the payment and must return to its recorded slot on cancel.
+#[test]
+fn cancel_after_same_zone_redirected_delve_payment_restores_order() {
+    let mut witness = delve_cancel_witness(false);
+    let [_, f, c] = witness.fuel;
+    witness.set_exile_redirect(Some(Zone::Graveyard));
+    witness.delve_fuel_f_through_replacement_choice();
+
+    assert_eq!(witness.graveyard(), [c, f]);
+    assert!(witness.markers().contains(&f));
+    witness.assert_mana_payment_open();
+
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    witness.assert_cancel_leaves_no_delve_residue();
+}
+
+/// CR 733.1: "No abilities trigger ... as a result of an undone action" -- fuel
+/// a redirect sent to the battlefield returns to the graveyard without firing
+/// its dies trigger.
+#[test]
+fn cancel_after_battlefield_redirected_delve_payment_triggers_nothing() {
+    let mut witness = delve_cancel_witness(true);
+    let [_, f, _] = witness.fuel;
+    witness.set_exile_redirect(Some(Zone::Battlefield));
+    witness.delve_fuel_f_through_replacement_choice();
+
+    assert_eq!(witness.runner.state().objects[&f].zone, Zone::Battlefield);
+    assert!(witness.markers().contains(&f));
+    witness.assert_mana_payment_open();
+
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    witness.assert_cancel_leaves_no_delve_residue();
+    assert_eq!(witness.runner.state().players[0].life, 20);
+}
+
 #[test]
 fn delve_murktide_link_tracks_only_fuel_delivered_to_exile() {
     let mut scenario = GameScenario::new();

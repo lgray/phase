@@ -7231,7 +7231,7 @@ pub struct DeferredSacrificeSelection {
 #[serde(transparent)]
 pub struct CastingPermissionIndex(pub usize);
 
-/// CR 702.66a + CR 733.1: A graveyard card exiled to pay for delve, with the
+/// CR 702.66a + CR 733.1: A graveyard card chosen to pay for delve, with the
 /// position it held so a cancelled cast can put it back exactly (CR 404.2).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DelvedCard {
@@ -7398,8 +7398,8 @@ pub struct PendingCast {
     /// quantities can resolve later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convoked_creatures: Vec<ObjectId>,
-    /// CR 702.66a: Graveyard cards exiled to pay this cast's delve, in payment
-    /// order.
+    /// CR 702.66a: Graveyard cards chosen to pay this cast's delve, in payment
+    /// order, recorded before the replacement-aware cost move.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delved_cards: Vec<DelvedCard>,
     /// CR 601.2g + CR 601.2h: Non-mana spell additional-cost permanents selected
