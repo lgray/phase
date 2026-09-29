@@ -7399,7 +7399,7 @@ pub struct PendingCast {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convoked_creatures: Vec<ObjectId>,
     /// CR 702.66a: Graveyard cards exiled to pay this cast's delve, in payment
-    /// order; consumed only by `handle_cancel_cast`.
+    /// order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delved_cards: Vec<DelvedCard>,
     /// CR 601.2g + CR 601.2h: Non-mana spell additional-cost permanents selected
