@@ -1595,6 +1595,22 @@ describe("multiplayerStore", () => {
       localStorage.removeItem(WS_SESSION_STORAGE_KEY);
       expect(loadWsSession()).toBeNull();
     });
+
+    it("does not answer a refused session once it outlives the TTL", async () => {
+      const t0 = Date.now();
+      const now = vi.spyOn(Date, "now").mockReturnValue(t0);
+      const refuse = failSessionKey("setItem", "QuotaExceededError");
+      try {
+        await hostUntilCreated();
+        expect(refuse.mock.calls.some(([key]) => key === WS_SESSION_STORAGE_KEY)).toBe(true);
+        expect(loadWsSession()?.gameCode).toBe("ABCDE");
+        now.mockReturnValue(t0 + WS_SESSION_TTL_MS + 1000);
+        expect(loadWsSession()).toBeNull();
+      } finally {
+        refuse.mockRestore();
+        now.mockRestore();
+      }
+    });
   });
 
   // ── U15: the chosen host server ─────────────────────────────────────────
