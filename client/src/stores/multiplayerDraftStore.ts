@@ -532,11 +532,20 @@ let commanderLaunchInFlight: { adapter: P2PHostAdapter | null; abort: AbortContr
  * window a double-press sails through.
  */
 let commanderJoinInFlight: { abort: AbortController } | null = null;
-/** The `startMatch` bring-up in flight; claimed before its first await so `leave`/`reset` can abort it. */
-let matchStartInFlight: { abort: AbortController } | null = null;
+/** The `startMatch` bring-up in flight; claimed before its first await so `abandonMatchStart` can abort it. */
+let matchStartInFlight: { matchId: string; abort: AbortController } | null = null;
 
 function abandonMatchStart(): void {
   matchStartInFlight?.abort.abort();
+}
+
+/** Settles as `pending` does, or rejects once `signal` aborts: a wait on another party's reply that the abort alone would never end. */
+function settleOnAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) reject(signal.reason);
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    pending.then(resolve, reject);
+  });
 }
 
 /**
@@ -566,8 +575,8 @@ function abandonMatchStart(): void {
  *     degrades to a dispose, so it is correct on both sides of that line.
  *
  * Returns the host teardown so a caller that can await it does; the aborts
- * themselves are synchronous, so a synchronous caller (`reset`) still gets the
- * whole unparking effect without awaiting.
+ * themselves are synchronous, so a synchronous caller still gets the whole
+ * unparking effect without awaiting.
  */
 function abandonCommanderBringUp(): Promise<void> {
   commanderJoinInFlight?.abort.abort();
@@ -1080,6 +1089,9 @@ interface DetachedDraftAdapters {
 }
 
 function detachDraftAdapters(): DetachedDraftAdapters {
+  // The pod session ends here, so its in-flight bring-ups end with it.
+  abandonMatchStart();
+  void abandonCommanderBringUp();
   const detached = {
     host: activeHostAdapter,
     guest: activeGuestAdapter,
@@ -1359,9 +1371,8 @@ export const DRAFT_BOT_AI_SEAT: AISeatBinding = { playerId: 1, difficulty: "Medi
 
 /**
  * Returns the `GameLoopController` it just created, so a caller whose OWN
- * `throwIfAborted()` fires right after this resolves — `launchCommanderGame`,
- * `joinCommanderGame` — can dispose exactly that controller by identity from
- * its own catch.
+ * `throwIfAborted()` fires right after this resolves can dispose exactly that
+ * controller by identity from its own catch.
  */
 async function installMatchRuntime(
   gameId: string,
@@ -2657,7 +2668,7 @@ export const useMultiplayerDraftStore = create<
       });
 
       await matchAdapter.initialize();
-      const initResult = await matchAdapter.initializeGame();
+      const initResult = await settleOnAbort(matchAdapter.initializeGame(), abort.signal);
       // The SHARED game id: every seat installs its runtime under the id the
       // host opened. Awaiting the whole bring-up BEFORE navigating is REQUIRED,
       // not stylistic — `GameProvider`'s `draft-match` branch is passive, it
@@ -2721,8 +2732,8 @@ export const useMultiplayerDraftStore = create<
     if (!handle) return;
 
     // Unparks the launch and tears its room down — see
-    // `abandonCommanderBringUp`, which `leave` and `reset` share so there is
-    // exactly one implementation of "abandon a bring-up" rather than three.
+    // `abandonCommanderBringUp`, the one implementation of "abandon a bring-up",
+    // shared with every path that ends the pod session.
     // Its `await roomFull` rejects, its catch reads `signal.aborted` and
     // returns silently, and its own identity-guarded `finally` releases the
     // module handle.
@@ -2780,10 +2791,12 @@ export const useMultiplayerDraftStore = create<
     if (!matchPairing) return null;
     const gameId = `draft-match-${matchPairing.matchId}`;
     if (matchAdapter) return gameId;
-    if (matchStartInFlight) return null;
+    if (matchStartInFlight?.matchId === matchPairing.matchId) return null;
+    // A start still parked for an earlier pairing would otherwise hold the slot until its pod session ends.
+    abandonMatchStart();
 
     const abort = new AbortController();
-    const handle = { abort };
+    const handle = { matchId: matchPairing.matchId, abort };
     matchStartInFlight = handle;
     // What this attempt built, released by the catch: the bare room or peer until an adapter owns it.
     let unowned: { destroy: () => void } | undefined;
@@ -2954,7 +2967,11 @@ export const useMultiplayerDraftStore = create<
         });
 
         await matchAdapter.initialize();
-        runtime = { adapter: matchAdapter, initResult: await matchAdapter.initializeGame(), mode: "online" };
+        runtime = {
+          adapter: matchAdapter,
+          initResult: await settleOnAbort(matchAdapter.initializeGame(), abort.signal),
+          mode: "online",
+        };
       } else {
         const { WasmAdapter } = await import("../adapter/wasm-adapter");
         const matchAdapter = new WasmAdapter();
