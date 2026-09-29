@@ -2507,6 +2507,53 @@ mod concretizer_seams {
         assert_eq!(control.state().stack.len(), 2);
     }
 
+    /// Two "Grower"s with one and two charge counters, each with its own unstamped
+    /// upkeep trigger putting `count` charge counters on each creature P0 controls.
+    fn own_upkeep_charge_runner(count: QuantityExpr) -> GameRunner {
+        let mut trigger = parse_oracle_text(
+            "At the beginning of your upkeep, put a charge counter on each creature you control.",
+            "Grower",
+            &[],
+            &["Creature".to_string()],
+            &[],
+        )
+        .triggers
+        .remove(0);
+        match trigger.execute.as_mut().map(|e| e.effect.as_mut()) {
+            Some(Effect::PutCounterAll { count: c, .. }) => *c = count,
+            other => panic!("expected PutCounterAll, got {other:?}"),
+        }
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::Untap);
+        for n in 1..=2 {
+            let id = scenario
+                .add_creature(P0, "Grower", 1, 1)
+                .with_trigger_definition(trigger.clone())
+                .id();
+            scenario.with_counter(id, counter("charge"), n);
+        }
+        let mut runner = scenario.build();
+        runner.advance_to_upkeep();
+        runner
+    }
+
+    /// CR 603.3b: unstamped, each trigger counts its own source's charge counters,
+    /// which the other trigger raises, so the order is observable.
+    #[test]
+    fn unstamped_granter_reads_on_distinct_sources_need_ordering() {
+        let runner = own_upkeep_charge_runner(counters_on(ObjectScope::GrantingObject, "charge"));
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::OrderTriggers { .. }
+        ));
+        let control = own_upkeep_charge_runner(QuantityExpr::Fixed { value: 1 });
+        assert!(matches!(
+            control.state().waiting_for,
+            WaitingFor::Priority { .. }
+        ));
+        assert_eq!(control.state().stack.len(), 2);
+    }
+
     #[test]
     fn spare_dagger_sacrifices_the_dagger_and_deals_damage() {
         let grant = grant_static(SPARE_DAGGER, "Spare Dagger", "Artifact", "Equipment");

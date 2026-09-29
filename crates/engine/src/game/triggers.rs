@@ -24541,7 +24541,7 @@ pub mod tests {
         );
     }
 
-    /// CR 201.5a + CR 603.4: unbound, `GrantingObject` counters read exactly `Source`'s, so
+    /// CR 201.5 + CR 603.4: unbound, `GrantingObject` counters read exactly `Source`'s, so
     /// they must hoist to fire time the same way.
     #[test]
     fn granting_object_counters_bind_at_fire_time_like_source() {

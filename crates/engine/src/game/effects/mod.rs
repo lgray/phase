@@ -592,14 +592,8 @@ pub(crate) fn matches_player_scope(
                                     value,
                                     controller,
                                     crate::game::quantity::QuantityContext {
-                                        entering: None,
-                                        source: source_id,
-                                        trigger_source: None,
-                                        recipient: None,
                                         scoped_player: Some(p.id),
-                                        damage_source: None,
-                                        event_amount: None,
-                                        granting_object: None,
+                                        ..crate::game::quantity::QuantityContext::new(source_id)
                                     },
                                 );
                                 candidate_player_scalar_with_state(state, p, controller, attr)

@@ -2643,9 +2643,8 @@ fn member_bound_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::StackAbility { .. }
-        // CR 201.5a (PR-6.75 c5, R3 axis): two normalized-identical granted bodies
-        // whose granters DIFFER each read their OWN granter ⇒ per-member-divergent
-        // (TrackedSet/ExiledBySource shape).
+        // CR 201.5: an unstamped `GrantingObject` resolves to each member's own
+        // source, so it is per-member-divergent (TrackedSet/ExiledBySource shape).
         // Classified fail-closed (maximal-conservative) on the member-bound axis: an
         // elided member-bound read is fail-OPEN (a false auto-order, CR 603.3b), so
         // a symbolic referent takes `true`, never `false`.
@@ -4061,13 +4060,19 @@ fn read_object_scope(scope: &ObjectScope, kind: StateKind) -> RwProfile {
     match scope {
         ObjectScope::Source => reads_src_of(kind),
         ObjectScope::Recipient => RwProfile::empty(),
-        // CR 201.5a + CR 400.7: the stamped granter and a bound incarnation each
-        // name one fixed object shared by every member of the group.
+        // CR 400.7: a bound incarnation's identity is in the scope value itself.
         ObjectScope::Target
         | ObjectScope::Anaphoric
         | ObjectScope::Demonstrative
-        | ObjectScope::GrantingObject
         | ObjectScope::SpecificObject { .. } => reads_board_of(kind),
+        // CR 201.5 + CR 603.3b: the profile does not read the stamp, and an unstamped
+        // granter read can fall back to each member's own source, so it is
+        // member-bound like `TargetFilter::GrantingObject`.
+        ObjectScope::GrantingObject => {
+            let mut p = reads_board_of(kind);
+            p.reads_member_bound = true;
+            p
+        }
         ObjectScope::AmassedArmy => member_bound_read(),
         // CR 607.2a: a source-persistent exile-pile member read across resolutions
         // (not a per-resolution reveal-local like `OtherRevealedCard`). It must be
@@ -8722,8 +8727,8 @@ mod tests {
         );
     }
 
-    /// CR 603.10a + CR 603.3b: a P/T or count field carrying a frozen event-context
-    /// tag must keep the batch-ordering prompt.
+    /// CR 603.10a + CR 603.3b: a P/T field carrying a frozen event-context tag must
+    /// keep the batch-ordering prompt.
     #[test]
     fn legacy_visitor_reads_pump_pt_values() {
         let pump = |power| Effect::Pump {
@@ -8736,6 +8741,8 @@ mod tests {
         assert!(!ability_rw_profile(&ra(pump(PtValue::Fixed(1)))).legacy_batch_prompt());
     }
 
+    /// CR 603.10a + CR 603.3b: a planar-deck count carrying a frozen event-context
+    /// tag must keep the batch-ordering prompt.
     #[test]
     fn legacy_visitor_reads_planar_deck_counts() {
         let arrange = |keep_on_top| Effect::ArrangePlanarDeckTop {
@@ -8747,11 +8754,10 @@ mod tests {
         assert!(!ability_rw_profile(&ra(arrange(qfix(1)))).legacy_batch_prompt());
     }
 
-    /// CR 201.5a: the stamped granter is one fixed board object, so its counter and
-    /// P/T reads classify like a bound incarnation's, not the source's.
+    /// CR 201.5 + CR 201.5a: a granter read is a board read, and member-bound because
+    /// an unstamped one can name each member's own source.
     #[test]
-    fn granting_object_reads_classify_like_a_bound_object() {
-        let dbg = |p: RwProfile| format!("{p:?}");
+    fn granting_object_reads_are_member_bound_board_reads() {
         let bound = ObjectScope::SpecificObject {
             object: crate::types::identifiers::ObjectIncarnationRef {
                 object_id: ObjectId(7),
@@ -8766,9 +8772,12 @@ mod tests {
             |scope| QuantityRef::Power { scope },
         ];
         for read in reads {
-            let granter = dbg(rw_quantity_ref(&read(ObjectScope::GrantingObject)));
-            assert_eq!(granter, dbg(rw_quantity_ref(&read(bound))));
-            assert_ne!(granter, dbg(rw_quantity_ref(&read(ObjectScope::Source))));
+            let mut expected = rw_quantity_ref(&read(bound));
+            expected.reads_member_bound = true;
+            assert_eq!(
+                rw_quantity_ref(&read(ObjectScope::GrantingObject)),
+                expected
+            );
         }
     }
 
