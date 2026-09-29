@@ -2298,6 +2298,24 @@ pub(crate) fn random_top_slot_index(
     rng.random_range(0..upper)
 }
 
+/// CR 404.2 + CR 733.1: Put a graveyard card back at `index` (clamped) in its
+/// owner's graveyard, undoing the position change of a reversed cost.
+pub(crate) fn reorder_within_graveyard(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    index: usize,
+) {
+    let player_state = state
+        .players
+        .iter_mut()
+        .find(|candidate| candidate.id == player)
+        .expect("player exists");
+    player_state.graveyard.retain(|id| *id != object_id);
+    let insert_index = index.min(player_state.graveyard.len());
+    player_state.graveyard.insert(insert_index, object_id);
+}
+
 /// Move an object to a specific index in its owner's library.
 /// `index = Some(0)` = top, `index = None` = bottom, `index = Some(n)` = nth position.
 /// Handles full cross-zone cleanup (LKI, transform revert, layer pruning, restrictions)
@@ -3932,6 +3950,40 @@ mod tests {
         assert_eq!(
             state.players[0].library.iter().copied().collect::<Vec<_>>(),
             [second, third, first]
+        );
+    }
+
+    #[test]
+    fn reorder_within_graveyard_repositions_and_clamps_index() {
+        let mut state = setup();
+        let [a, b, c] = [1, 2, 3].map(|n| {
+            create_object(
+                &mut state,
+                CardId(n),
+                PlayerId(0),
+                format!("Card {n}"),
+                Zone::Graveyard,
+            )
+        });
+
+        reorder_within_graveyard(&mut state, PlayerId(0), c, 0);
+        assert_eq!(
+            state.players[0]
+                .graveyard
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [c, a, b]
+        );
+
+        reorder_within_graveyard(&mut state, PlayerId(0), c, 99);
+        assert_eq!(
+            state.players[0]
+                .graveyard
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [a, b, c]
         );
     }
 

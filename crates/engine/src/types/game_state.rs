@@ -7231,6 +7231,14 @@ pub struct DeferredSacrificeSelection {
 #[serde(transparent)]
 pub struct CastingPermissionIndex(pub usize);
 
+/// CR 702.66a + CR 733.1: A graveyard card exiled to pay for delve, with the
+/// position it held so a cancelled cast can put it back exactly (CR 404.2).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelvedCard {
+    pub card: ObjectId,
+    pub graveyard_index: usize,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingCast {
     pub object_id: ObjectId,
@@ -7390,6 +7398,10 @@ pub struct PendingCast {
     /// quantities can resolve later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convoked_creatures: Vec<ObjectId>,
+    /// CR 702.66a: Graveyard cards exiled to pay this cast's delve, in payment
+    /// order; consumed only by `handle_cancel_cast`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delved_cards: Vec<DelvedCard>,
     /// CR 601.2g + CR 601.2h: Non-mana spell additional-cost permanents selected
     /// for sacrifice, but whose actual zone move is deferred until the final
     /// payment commit so mana abilities can be activated first.
@@ -8027,6 +8039,7 @@ impl PendingCast {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -39481,6 +39494,7 @@ mod tests {
                 declared_kickers_to_pay: Vec::new(),
                 declined_kickers: Vec::new(),
                 convoked_creatures: Vec::new(),
+                delved_cards: Vec::new(),
                 deferred_sacrificed_permanents: Vec::new(),
                 pinned_pool_units: Vec::new(),
                 cancel_restore_prepared_source: None,
@@ -39938,6 +39952,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,

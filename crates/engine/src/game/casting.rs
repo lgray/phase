@@ -27431,35 +27431,25 @@ pub fn handle_cancel_cast(
             obj.tapped = false;
         }
     }
-    let caster = pending.ability.controller;
-    let delved_cards: Vec<ObjectId> = state
-        .players
-        .get(caster.0 as usize)
-        .map(|player| {
-            player
-                .mana_pool
-                .mana
-                .iter()
-                .filter(|unit| unit.is_convoke_payment())
-                .map(|unit| unit.source_id)
-                .filter(|&id| {
-                    state
-                        .objects
-                        .get(&id)
-                        .is_some_and(|obj| obj.zone == Zone::Exile)
-                })
-                .collect()
+    // CR 733.1 + CR 404.2: undo delve exiles newest-first, each back at the
+    // graveyard position it left, so the graveyard ends in its pre-cast order.
+    let delved: Vec<_> = pending
+        .delved_cards
+        .iter()
+        .rev()
+        .filter(|delved| {
+            state
+                .objects
+                .get(&delved.card)
+                .is_some_and(|obj| obj.zone == Zone::Exile)
         })
-        .unwrap_or_default();
-    for object_id in &delved_cards {
-        if state
-            .objects
-            .get(object_id)
-            .is_some_and(|obj| obj.zone == Zone::Exile)
-        {
-            super::zones::restore_after_rollback(state, *object_id, Zone::Graveyard, _events);
-        }
+        .collect();
+    for delved in &delved {
+        super::zones::restore_after_rollback(state, delved.card, Zone::Graveyard, _events);
+        let owner = state.objects[&delved.card].owner;
+        super::zones::reorder_within_graveyard(state, owner, delved.card, delved.graveyard_index);
     }
+    let delved_cards: Vec<ObjectId> = delved.iter().map(|delved| delved.card).collect();
     if !delved_cards.is_empty() {
         state.exile_links.retain(|link| {
             !(link.source_id == pending.object_id && delved_cards.contains(&link.exiled_id))
