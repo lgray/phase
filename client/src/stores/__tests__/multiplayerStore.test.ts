@@ -1558,6 +1558,85 @@ describe("multiplayerStore", () => {
       },
     );
 
+    // GamePage's `lobbyProgress` arm makes this write while a server hosting session is live.
+    async function resumeWhileAReconnects() {
+      const A = socketMocks.currentWs!;
+      A.onclose!();
+      localStorage.setItem(WS_SESSION_STORAGE_KEY, JSON.stringify(storedHostSession("FGHIJ", Date.now() - 1000)));
+      useMultiplayerStore.setState({ hostingStatus: "idle", hostGameCode: null });
+      socketMocks.send.mockClear();
+      expect(useMultiplayerStore.getState().resumeServerHosting()).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      const B = socketMocks.currentWs!;
+      expect(dialedFrame()).toMatchObject({ type: "Reconnect", data: { game_code: "FGHIJ" } });
+      emitServerMessage("GameCreated", {
+        game_code: "FGHIJ",
+        player_token: "resumed-token",
+        full_key: { game_code: "FGHIJ", generation: 1 },
+      }, B);
+      return B;
+    }
+    const createdFor = (code: string, token: string) => ({
+      game_code: code,
+      player_token: token,
+      full_key: { game_code: code, generation: 1 },
+    });
+
+    it.each([
+      { route: "live", handsOff: "resumed" },
+      { route: "live", handsOff: "reconnected" },
+      { route: "dial", handsOff: "resumed" },
+    ] as const)(
+      "keeps the started game when a superseded host bring-up delivers GameCreated after the handoff ($route, $handsOff socket hands off)",
+      async ({ route, handsOff }) => {
+        await hostUntilCreated();
+        vi.useFakeTimers();
+        try {
+          const B = await resumeWhileAReconnects();
+          let release = () => {};
+          if (route === "dial") {
+            const openDefault = vi.mocked(openPhaseSocket).getMockImplementation()!;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            vi.mocked(openPhaseSocket).mockImplementationOnce(async (...args) => {
+              await gate;
+              return openDefault(...args);
+            });
+          }
+          const dialsBefore = vi.mocked(openPhaseSocket).mock.calls.length;
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(vi.mocked(openPhaseSocket).mock.calls.length - dialsBefore).toBe(1);
+          const C = route === "live" ? socketMocks.currentWs! : null;
+          if (C) expect(C).not.toBe(B);
+          const [handoff, stale] = handsOff === "resumed" ? [B, C] : [C!, B];
+          const [startedCode, staleCode] = handsOff === "resumed" ? ["FGHIJ", "ABCDE"] : ["ABCDE", "FGHIJ"];
+          emitServerMessage("GameStarted", {}, handoff);
+          const routed = useMultiplayerStore.getState().pendingGameRoute;
+          expect(routed).toMatch(/^\/game\/[^?]+\?mode=host$/);
+          expect(loadWsSession()?.gameCode).toBe(startedCode);
+          socketMocks.send.mockClear();
+          const closedAtHandoff = C?.close.mock.calls.length ?? 0;
+          release();
+          await vi.advanceTimersByTimeAsync(0);
+          const late = stale ?? socketMocks.currentWs!;
+          expect(late).not.toBe(handoff);
+          const framesAfterHandoff = socketMocks.send.mock.calls.length;
+          const closedBeforeItsFrame = late.close.mock.calls.length;
+          emitServerMessage("GameCreated", createdFor(staleCode, "stale-token"), late);
+          expect(loadWsSession()?.gameCode).toBe(startedCode);
+          expect(useMultiplayerStore.getState()).toMatchObject({ hostingStatus: "idle", hostGameCode: null, pendingGameRoute: routed });
+          expect(late.close).toHaveBeenCalled();
+          if (route === "dial") {
+            expect(framesAfterHandoff).toBe(0);
+            expect(closedBeforeItsFrame).toBe(1);
+          } else if (stale === C) {
+            expect(closedAtHandoff).toBe(1);
+          }
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
     it("does not answer from memory once another page removed the stored session", async () => {
       await hostUntilCreated();
       emitServerMessage("GameStarted", {});
@@ -2118,6 +2197,80 @@ describe("multiplayerStore", () => {
         gameCode: result!.gameCode,
       });
     });
+
+    function fakeBroker(gameCode: string, registerHost = vi.fn(async () => ({ gameCode, playerToken: "t" }))) {
+      return {
+        serverInfo: { mode: "LobbyOnly", protocolVersion: 14 },
+        registerHost,
+        updateMetadata: vi.fn(),
+        unregister: vi.fn(async () => undefined),
+        close: vi.fn(),
+      };
+    }
+
+    it("keeps the newer of two overlapping openBroker calls and closes the older", async () => {
+      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
+      const older = fakeBroker("OLDER");
+      const newer = fakeBroker("NEWER");
+      let releaseOlder!: (broker: unknown) => void;
+      brokerMocks.openBrokerClient
+        .mockImplementationOnce(() => new Promise((resolve) => { releaseOlder = resolve; }))
+        .mockResolvedValueOnce(newer);
+      const first = useMultiplayerStore.getState().openBroker(openBrokerRequest());
+      expect(await useMultiplayerStore.getState().openBroker(openBrokerRequest())).not.toBeNull();
+      releaseOlder(older);
+      expect(await first).toBeNull();
+      expect(useMultiplayerStore.getState().getBroker()?.gameCode).toBe("NEWER");
+      expect(newer.close).not.toHaveBeenCalled();
+      expect(older.close).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the newer broker when the older call is parked in registerHost", async () => {
+      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
+      let releaseRegister!: () => void;
+      const older = fakeBroker("OLDER", vi.fn(() => new Promise<{ gameCode: string; playerToken: string }>((resolve) => {
+        releaseRegister = () => resolve({ gameCode: "OLDER", playerToken: "t" });
+      })));
+      const newer = fakeBroker("NEWER");
+      brokerMocks.openBrokerClient.mockResolvedValueOnce(older).mockResolvedValueOnce(newer);
+      const first = useMultiplayerStore.getState().openBroker(openBrokerRequest());
+      await waitFor(() => expect(older.registerHost).toHaveBeenCalled());
+      expect(await useMultiplayerStore.getState().openBroker(openBrokerRequest())).not.toBeNull();
+      releaseRegister();
+      expect(await first).toBeNull();
+      expect(useMultiplayerStore.getState().getBroker()?.gameCode).toBe("NEWER");
+      expect(older.close).toHaveBeenCalledOnce();
+    });
+
+    it("closes the broker and registers nothing when openBroker's signal aborts while the socket opens", async () => {
+      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
+      const broker = fakeBroker("ROOM1");
+      let release!: (broker: unknown) => void;
+      brokerMocks.openBrokerClient.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const abort = new AbortController();
+      const open = useMultiplayerStore.getState().openBroker(openBrokerRequest(), abort.signal);
+      expect(brokerMocks.openBrokerClient).toHaveBeenCalledOnce();
+      abort.abort();
+      release(broker);
+      expect(await open).toBeNull();
+      expect(broker.registerHost).not.toHaveBeenCalled();
+      expect(broker.close).toHaveBeenCalledOnce();
+      expect(useMultiplayerStore.getState().getBroker()).toBeNull();
+    });
+
+    it("closeBroker of a replaced broker leaves the active one open", async () => {
+      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
+      const first = fakeBroker("B1");
+      const second = fakeBroker("B2");
+      brokerMocks.openBrokerClient.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+      await useMultiplayerStore.getState().openBroker(openBrokerRequest());
+      await useMultiplayerStore.getState().openBroker(openBrokerRequest());
+      const closesBefore = first.close.mock.calls.length;
+      useMultiplayerStore.getState().closeBroker(first as never);
+      expect(first.close).toHaveBeenCalledTimes(closesBefore + 1);
+      expect(useMultiplayerStore.getState().getBroker()?.gameCode).toBe("B2");
+      expect(second.close).not.toHaveBeenCalled();
+    });
   });
 
   it("removes open P2P seats in order before starting with current players", async () => {
@@ -2197,80 +2350,6 @@ describe("multiplayerStore", () => {
     p2pMocks.startPregameGame.mockRejectedValueOnce(new Error("start failed"));
 
     await expect(useMultiplayerStore.getState().startLobbyWithCurrentPlayers()).rejects.toThrow(
-
-    function fakeBroker(gameCode: string, registerHost = vi.fn(async () => ({ gameCode, playerToken: "t" }))) {
-      return {
-        serverInfo: { mode: "LobbyOnly", protocolVersion: 14 },
-        registerHost,
-        updateMetadata: vi.fn(),
-        unregister: vi.fn(async () => undefined),
-        close: vi.fn(),
-      };
-    }
-
-    it("keeps the newer of two overlapping openBroker calls and closes the older", async () => {
-      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
-      const older = fakeBroker("OLDER");
-      const newer = fakeBroker("NEWER");
-      let releaseOlder!: (broker: unknown) => void;
-      brokerMocks.openBrokerClient
-        .mockImplementationOnce(() => new Promise((resolve) => { releaseOlder = resolve; }))
-        .mockResolvedValueOnce(newer);
-      const first = useMultiplayerStore.getState().openBroker(openBrokerRequest());
-      expect(await useMultiplayerStore.getState().openBroker(openBrokerRequest())).not.toBeNull();
-      releaseOlder(older);
-      expect(await first).toBeNull();
-      expect(useMultiplayerStore.getState().getBroker()?.gameCode).toBe("NEWER");
-      expect(newer.close).not.toHaveBeenCalled();
-      expect(older.close).toHaveBeenCalledOnce();
-    });
-
-    it("keeps the newer broker when the older call is parked in registerHost", async () => {
-      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
-      let releaseRegister!: () => void;
-      const older = fakeBroker("OLDER", vi.fn(() => new Promise<{ gameCode: string; playerToken: string }>((resolve) => {
-        releaseRegister = () => resolve({ gameCode: "OLDER", playerToken: "t" });
-      })));
-      const newer = fakeBroker("NEWER");
-      brokerMocks.openBrokerClient.mockResolvedValueOnce(older).mockResolvedValueOnce(newer);
-      const first = useMultiplayerStore.getState().openBroker(openBrokerRequest());
-      await waitFor(() => expect(older.registerHost).toHaveBeenCalled());
-      expect(await useMultiplayerStore.getState().openBroker(openBrokerRequest())).not.toBeNull();
-      releaseRegister();
-      expect(await first).toBeNull();
-      expect(useMultiplayerStore.getState().getBroker()?.gameCode).toBe("NEWER");
-      expect(older.close).toHaveBeenCalledOnce();
-    });
-
-    it("closes the broker and registers nothing when openBroker's signal aborts while the socket opens", async () => {
-      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
-      const broker = fakeBroker("ROOM1");
-      let release!: (broker: unknown) => void;
-      brokerMocks.openBrokerClient.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
-      const abort = new AbortController();
-      const open = useMultiplayerStore.getState().openBroker(openBrokerRequest(), abort.signal);
-      expect(brokerMocks.openBrokerClient).toHaveBeenCalledOnce();
-      abort.abort();
-      release(broker);
-      expect(await open).toBeNull();
-      expect(broker.registerHost).not.toHaveBeenCalled();
-      expect(broker.close).toHaveBeenCalledOnce();
-      expect(useMultiplayerStore.getState().getBroker()).toBeNull();
-    });
-
-    it("closeBroker of a replaced broker leaves the active one open", async () => {
-      useMultiplayerStore.getState().setHostingServer("wss://broker.example/ws");
-      const first = fakeBroker("B1");
-      const second = fakeBroker("B2");
-      brokerMocks.openBrokerClient.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
-      await useMultiplayerStore.getState().openBroker(openBrokerRequest());
-      await useMultiplayerStore.getState().openBroker(openBrokerRequest());
-      const closesBefore = first.close.mock.calls.length;
-      useMultiplayerStore.getState().closeBroker(first as never);
-      expect(first.close).toHaveBeenCalledTimes(closesBefore + 1);
-      expect(useMultiplayerStore.getState().getBroker()?.gameCode).toBe("B2");
-      expect(second.close).not.toHaveBeenCalled();
-    });
       "start failed",
     );
 

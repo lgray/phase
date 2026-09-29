@@ -167,6 +167,8 @@ let activeP2PHostGameId: string | null = null;
 let p2pHostingAttempt = 0;
 // A server-host dial acts after its socket opens only while it is the latest.
 let serverHostAttempt = 0;
+// A host socket acts only while no `GameStarted` has handed the page off since it was dialed.
+let hostHandoffs = 0;
 
 function asDeckPayload(deck: HostingDeck): {
   main_deck: string[];
@@ -2681,8 +2683,10 @@ function handleServerHostMessage(
     set({ hostGameCode: data.game_code, hostingStatus: "waiting" });
   } else if (msg.type === "GameStarted") {
     gameStartedFired = true;
+    hostHandoffs += 1;
     clearPregameHostMetadataFromWsSession(held);
     ws.close();
+    if (hostWs && hostWs !== ws) hostWs.close();
     hostWs = null;
     // This arm performs the handoff itself and never routes through
     // `closeHostWebSocket`, so the keepalive has to be stopped here.
@@ -2754,6 +2758,7 @@ async function openServerHostSocket(
   }
 
   const attempt = ++serverHostAttempt;
+  const handoffs = hostHandoffs;
   let socket;
   try {
     socket = await openPhaseSocket(url);
@@ -2773,7 +2778,7 @@ async function openServerHostSocket(
     }
     return;
   }
-  if (attempt !== serverHostAttempt) {
+  if (attempt !== serverHostAttempt || handoffs !== hostHandoffs) {
     socket.ws.close();
     return;
   }
@@ -2787,6 +2792,10 @@ async function openServerHostSocket(
   // re-stamps this socket's game even if the stored copy expired or was refused.
   const held = { session: dialed };
   socket.ws.onmessage = (event) => {
+    if (handoffs !== hostHandoffs) {
+      socket.ws.close();
+      return;
+    }
     const msg = JSON.parse(event.data as string) as {
       type: string;
       data?: unknown;
@@ -3265,7 +3274,15 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         let broker: BrokerClient | null = null;
         try {
           broker = await openBrokerClient(url);
+          if (isStale()) {
+            broker.close();
+            return null;
+          }
           const registered = await broker.registerHost(req);
+          if (isStale()) {
+            broker.close();
+            return null;
+          }
           activeBroker = broker;
           activeBrokerGameCode = registered.gameCode;
           return { broker, gameCode: registered.gameCode };
@@ -3274,15 +3291,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           // socket; activeBroker is only assigned once both succeed, so
           // closing here is what closeBroker() would otherwise never reach.
           broker?.close();
-          if (isStale()) {
-            broker.close();
-            return null;
-          }
           console.error("[openBroker] failed:", err);
-          if (isStale()) {
-            broker.close();
-            return null;
-          }
           toastLobbyCapabilityRefusal(get, err);
           return null;
         }
