@@ -10644,30 +10644,64 @@ impl DelveCancelWitness {
 }
 
 /// CR 733.1 + CR 404.2: a delve payment whose exile move a Moved replacement
-/// redirected elsewhere is still reversed on cancel, back to its graveyard slot.
+/// redirected to hand is still reversed on cancel, back to its graveyard slot.
 #[test]
 fn cancel_after_redirected_delve_payment_restores_fuel_order_hand_and_markers() {
-    for redirected_to in [Zone::Hand, Zone::Library] {
-        let mut witness = delve_cancel_witness(false);
-        let [_, f, c] = witness.fuel;
-        witness.set_exile_redirect(Some(redirected_to));
-        witness.delve_fuel_f_through_replacement_choice();
+    let mut witness = delve_cancel_witness(false);
+    let [_, f, c] = witness.fuel;
+    witness.set_exile_redirect(Some(Zone::Hand));
+    witness.delve_fuel_f_through_replacement_choice();
 
-        assert_eq!(witness.runner.state().objects[&f].zone, redirected_to);
-        assert!(witness.markers().contains(&f));
-        witness.assert_mana_payment_open();
+    assert_eq!(witness.runner.state().objects[&f].zone, Zone::Hand);
+    assert!(witness.markers().contains(&f));
+    witness.assert_mana_payment_open();
 
-        witness.set_exile_redirect(None);
-        witness.delve(c);
-        assert_eq!(witness.runner.state().objects[&c].zone, Zone::Exile);
-        witness
-            .runner
-            .act(GameAction::CancelCast)
-            .expect("cancel a delve cast");
+    witness.set_exile_redirect(None);
+    witness.delve(c);
+    assert_eq!(witness.runner.state().objects[&c].zone, Zone::Exile);
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
 
-        witness.assert_cancel_leaves_no_delve_residue();
-        assert!(!witness.runner.state().players[0].library.contains(&f));
-    }
+    witness.assert_cancel_leaves_no_delve_residue();
+}
+
+/// CR 733.1: an action that moved a card to a library is not reversed, so
+/// redirected fuel stays in its library while the cast's other payments unwind.
+#[test]
+fn cancel_after_library_redirected_delve_payment_leaves_fuel_in_library() {
+    let mut witness = delve_cancel_witness(false);
+    let [a, f, c] = witness.fuel;
+    witness.set_exile_redirect(Some(Zone::Library));
+    witness.delve_fuel_f_through_replacement_choice();
+
+    assert_eq!(witness.runner.state().objects[&f].zone, Zone::Library);
+    assert!(witness.markers().contains(&f));
+    witness.assert_mana_payment_open();
+
+    witness.set_exile_redirect(None);
+    witness.delve(c);
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    let state = witness.runner.state();
+    assert_eq!(state.objects[&f].zone, Zone::Library);
+    assert!(state.players[0].library.contains(&f));
+    assert_eq!(witness.graveyard(), [a, c]);
+    assert!(!witness.graveyard().contains(&f));
+    assert_eq!(witness.hand(), [witness.spell]);
+    assert!(witness.markers().is_empty());
+    assert!(!state
+        .exile_links
+        .iter()
+        .any(|link| link.source_id == witness.spell));
+    assert!(!state
+        .cards_exiled_with_source_this_turn
+        .contains_key(&witness.spell));
+    assert!(state.stack.is_empty());
 }
 
 /// CR 733.1: fuel whose exile move was prevented never left the graveyard, so

@@ -27432,22 +27432,38 @@ pub fn handle_cancel_cast(
         }
     }
     // CR 733.1 + CR 404.2: undo delve payments newest-first, each card back at
-    // the graveyard position it held, wherever its cost move delivered it.
+    // the graveyard position it held, wherever its cost move delivered it
+    // (a library excepted).
     for delved in pending.delved_cards.iter().rev() {
         let Some(obj) = state.objects.get(&delved.card) else {
             continue;
         };
         let owner = obj.owner;
-        if obj.zone != Zone::Graveyard {
-            // CR 733.1: an undone action triggers no abilities, so the rollback events are dropped.
-            super::zones::restore_after_rollback(
+        match obj.zone {
+            // CR 733.1: actions that moved cards to a library are not reversed.
+            Zone::Library => {}
+            Zone::Graveyard => super::zones::reorder_within_graveyard(
                 state,
+                owner,
                 delved.card,
-                Zone::Graveyard,
-                &mut Vec::new(),
-            );
+                delved.graveyard_index,
+            ),
+            _ => {
+                // CR 733.1: an undone action triggers no abilities, so the rollback events are dropped.
+                super::zones::restore_after_rollback(
+                    state,
+                    delved.card,
+                    Zone::Graveyard,
+                    &mut Vec::new(),
+                );
+                super::zones::reorder_within_graveyard(
+                    state,
+                    owner,
+                    delved.card,
+                    delved.graveyard_index,
+                );
+            }
         }
-        super::zones::reorder_within_graveyard(state, owner, delved.card, delved.graveyard_index);
     }
     let delved_cards: Vec<ObjectId> = pending
         .delved_cards
