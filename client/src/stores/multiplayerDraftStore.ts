@@ -532,6 +532,12 @@ let commanderLaunchInFlight: { adapter: P2PHostAdapter | null; abort: AbortContr
  * window a double-press sails through.
  */
 let commanderJoinInFlight: { abort: AbortController } | null = null;
+/** The `startMatch` bring-up in flight; claimed before its first await so `leave`/`reset` can abort it. */
+let matchStartInFlight: { abort: AbortController } | null = null;
+
+function abandonMatchStart(): void {
+  matchStartInFlight?.abort.abort();
+}
 
 /**
  * THE single authority for abandoning a Commander bring-up still in flight.
@@ -1355,10 +1361,7 @@ export const DRAFT_BOT_AI_SEAT: AISeatBinding = { playerId: 1, difficulty: "Medi
  * Returns the `GameLoopController` it just created, so a caller whose OWN
  * `throwIfAborted()` fires right after this resolves — `launchCommanderGame`,
  * `joinCommanderGame` — can dispose exactly that controller by identity from
- * its own catch. Every other caller (`startMatch`) awaits and drops the
- * result; nothing after its own `installMatchRuntime` call can fail before
- * the runtime is handed to `leave`/`reset`'s usual path, so it needs no
- * catch-side disposal of its own.
+ * its own catch.
  */
 async function installMatchRuntime(
   gameId: string,
@@ -2777,8 +2780,17 @@ export const useMultiplayerDraftStore = create<
     if (!matchPairing) return null;
     const gameId = `draft-match-${matchPairing.matchId}`;
     if (matchAdapter) return gameId;
+    if (matchStartInFlight) return null;
 
+    const abort = new AbortController();
+    const handle = { abort };
+    matchStartInFlight = handle;
+    // What this attempt built, released by the catch: the bare room or peer until an adapter owns it.
+    let unowned: { destroy: () => void } | undefined;
+    let built: unknown;
+    let controller: GameLoopController | undefined;
     try {
+      let runtime: { adapter: EngineAdapter; initResult: SubmitResult; mode: "ai" | "online" };
       if (matchPairing.type === "HumanHost") {
         // Lower seat# hosts the match (D-09).
         const [{ hostRoom }, { P2PHostAdapter }] = await Promise.all([
@@ -2786,9 +2798,11 @@ export const useMultiplayerDraftStore = create<
           import("../adapter/p2p-adapter"),
         ]);
 
-        const host = await hostRoom(undefined, {
+        const host = await hostRoom(abort.signal, {
           preferredRoomCode: matchPairing.matchRoomCode,
         });
+        unowned = host;
+        abort.signal.throwIfAborted();
 
         const matchAdapter = new P2PHostAdapter(
           matchPairing.deckPayload,
@@ -2807,11 +2821,15 @@ export const useMultiplayerDraftStore = create<
             onConcede: (concedingGamePlayer) => get().reportActiveMatchConcession(concedingGamePlayer),
           },
         );
+        built = matchAdapter;
+        unowned = undefined;
 
         let resolveRoomFull!: () => void;
-        const roomFull = new Promise<void>((resolve) => {
+        const roomFull = new Promise<void>((resolve, reject) => {
           resolveRoomFull = resolve;
+          abort.signal.addEventListener("abort", () => reject(abort.signal.reason), { once: true });
         });
+        void roomFull.catch(() => {});
         matchAdapter.onEvent((event) => {
           if (event.type === "roomFull") {
             resolveRoomFull();
@@ -2878,10 +2896,7 @@ export const useMultiplayerDraftStore = create<
 
         await matchAdapter.initialize();
         await roomFull;
-        const initResult = await matchAdapter.startPregameGame();
-        await installMatchRuntime(gameId, matchAdapter, initResult, "online");
-        set({ matchAdapter, phase: "matchInProgress" });
-        return gameId;
+        runtime = { adapter: matchAdapter, initResult: await matchAdapter.startPregameGame(), mode: "online" };
       } else if (matchPairing.type === "HumanGuest") {
         // Higher seat# joins as guest.
         const [{ joinRoom }, { P2PGuestAdapter }] = await Promise.all([
@@ -2889,7 +2904,9 @@ export const useMultiplayerDraftStore = create<
           import("../adapter/p2p-adapter"),
         ]);
 
-        const { conn, peer } = await joinRoom(matchPairing.matchRoomCode);
+        const { conn, peer, destroyPeer } = await joinRoom(matchPairing.matchRoomCode, abort.signal);
+        unowned = { destroy: destroyPeer };
+        abort.signal.throwIfAborted();
 
         const matchAdapter = new P2PGuestAdapter(
           {
@@ -2905,6 +2922,8 @@ export const useMultiplayerDraftStore = create<
           undefined,
           true,
         );
+        built = matchAdapter;
+        unowned = undefined;
 
         matchAdapter.onEvent((event) => {
           if (event.type === "stateChanged") {
@@ -2935,13 +2954,11 @@ export const useMultiplayerDraftStore = create<
         });
 
         await matchAdapter.initialize();
-        const initResult = await matchAdapter.initializeGame();
-        await installMatchRuntime(gameId, matchAdapter, initResult, "online");
-        set({ matchAdapter, phase: "matchInProgress" });
-        return gameId;
+        runtime = { adapter: matchAdapter, initResult: await matchAdapter.initializeGame(), mode: "online" };
       } else {
         const { WasmAdapter } = await import("../adapter/wasm-adapter");
         const matchAdapter = new WasmAdapter();
+        built = matchAdapter;
         // #7920: a bot match installs no transport-side whole-match concede,
         // so the menu's Concede was refused as unbound. Bind the capability
         // to a plain game-level Concede for the local seat (game player 0 —
@@ -2964,14 +2981,22 @@ export const useMultiplayerDraftStore = create<
           2,
           matchPairing.matchConfig,
         );
-        await installMatchRuntime(gameId, matchAdapter, initResult, "ai");
-        set({ matchAdapter, phase: "matchInProgress" });
-        return gameId;
+        runtime = { adapter: matchAdapter, initResult, mode: "ai" };
       }
+      abort.signal.throwIfAborted();
+      controller = await installMatchRuntime(gameId, runtime.adapter, runtime.initResult, runtime.mode);
+      abort.signal.throwIfAborted();
+      set({ matchAdapter: runtime.adapter, phase: "matchInProgress" });
+      return gameId;
     } catch (err) {
+      unowned?.destroy();
+      disposeCapturedMatchRuntime(built, controller ?? null);
+      if (abort.signal.aborted) return null;
       console.error("[multiplayerDraftStore] startMatch failed:", err);
       set({ error: err instanceof Error ? err.message : String(err) });
       return null;
+    } finally {
+      if (matchStartInFlight === handle) matchStartInFlight = null;
     }
   },
 
@@ -3184,6 +3209,7 @@ export const useMultiplayerDraftStore = create<
     // launch in this tab is silently refused. Aborting before the pod adapters
     // are disposed also stops the launch reaching `sendCommanderLaunches` on a
     // session that is about to be torn down.
+    abandonMatchStart();
     await abandonCommanderBringUp();
     if (epoch !== draftAdapterEpoch) {
       disposeCapturedMatchRuntime(ownedMatchAdapter, ownedMatchController);
@@ -3228,6 +3254,7 @@ export const useMultiplayerDraftStore = create<
     // synchronous `reset` still unparks both bring-ups. Only the host's
     // `terminateGame()` flush is left to settle on its own — `void`, because
     // `reset` cannot await and a dropped rejection here would be unhandled.
+    abandonMatchStart();
     void abandonCommanderBringUp();
     beginDraftLifecycle();
     disposeMatchAdapter(set);

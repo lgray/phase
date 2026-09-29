@@ -160,6 +160,8 @@ let hostPingStop: (() => void) | null = null;
 // navigations so the lobby entry stays alive while the tile is showing.
 let activeBroker: BrokerClient | null = null;
 let activeBrokerGameCode: string | null = null;
+// Only the latest `openBroker` call may publish its broker.
+let brokerOpenAttempt = 0;
 let activeP2PHostAdapter: P2PHostAdapter | null = null;
 let activeP2PHostGameId: string | null = null;
 let p2pHostingAttempt = 0;
@@ -1719,8 +1721,12 @@ interface MultiplayerActions {
   cancelHosting: () => void;
   clearPendingGameRoute: () => void;
   setServerInfo: (info: ServerInfo | null) => void;
-  openBroker: (req: RegisterHostRequest) => Promise<{ broker: BrokerClient; gameCode: string } | null>;
-  closeBroker: () => void;
+  openBroker: (
+    req: RegisterHostRequest,
+    signal?: AbortSignal,
+  ) => Promise<{ broker: BrokerClient; gameCode: string } | null>;
+  /** Closes `broker`, and clears the active slot only if it holds that broker. */
+  closeBroker: (broker: BrokerClient) => void;
   getBroker: () => { broker: BrokerClient; gameCode: string } | null;
   startP2PHostingSession: (
     settings: HostingSettings,
@@ -3243,7 +3249,9 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
 
       clearPendingGameRoute: () => set({ pendingGameRoute: null }),
 
-      openBroker: async (req) => {
+      openBroker: async (req, signal) => {
+        const attempt = ++brokerOpenAttempt;
+        const isStale = () => attempt !== brokerOpenAttempt || signal?.aborted === true;
         if (activeBroker) {
           activeBroker.close();
           activeBroker = null;
@@ -3266,16 +3274,26 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           // socket; activeBroker is only assigned once both succeed, so
           // closing here is what closeBroker() would otherwise never reach.
           broker?.close();
+          if (isStale()) {
+            broker.close();
+            return null;
+          }
           console.error("[openBroker] failed:", err);
+          if (isStale()) {
+            broker.close();
+            return null;
+          }
           toastLobbyCapabilityRefusal(get, err);
           return null;
         }
       },
 
-      closeBroker: () => {
-        activeBroker?.close();
-        activeBroker = null;
-        activeBrokerGameCode = null;
+      closeBroker: (broker) => {
+        broker.close();
+        if (activeBroker === broker) {
+          activeBroker = null;
+          activeBrokerGameCode = null;
+        }
       },
 
       getBroker: () => {

@@ -3002,6 +3002,32 @@ describe("multiplayerDraftStore", () => {
       wasmMatchAdapterMock.adapter.sendMatchConcede?.();
       expect(dispatch).toHaveBeenCalledWith({ type: "Concede", data: { player_id: 0 } });
     });
+
+    it("bot arm: leave() while initializeGame is parked disposes the adapter and publishes nothing", async () => {
+      useGameStore.setState({ dispatch: vi.fn(async () => []) });
+      useMultiplayerDraftStore.setState({
+        matchPairing: {
+          type: "Bot", matchId: "bot-match-1", round: 1, localSeat: 0, botSeat: 4, botName: "Chandra",
+          deckPayload: { player: { main_deck: [], sideboard: [], commander: [] }, opponent: { main_deck: [], sideboard: [], commander: [] }, ai_decks: [] },
+          matchConfig: { match_type: "Bo1" },
+          binding: {
+            podId: "draft-1", matchId: "bot-match-1", round: 1,
+            sessionKey: "session-1", lease: "lease-1", nonce: "nonce-1",
+            revision: 0, matchAuthoritySeat: 0,
+          },
+        },
+      });
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => { open = resolve; });
+      wasmMatchAdapterMock.adapter.initializeGame.mockImplementationOnce(async () => { await gate; return { log_entries: [] }; });
+      const start = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(wasmMatchAdapterMock.adapter.initializeGame).toHaveBeenCalledOnce());
+      await useMultiplayerDraftStore.getState().leave();
+      open();
+      expect(await start).toBeNull();
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(wasmMatchAdapterMock.adapter.dispose).toHaveBeenCalledOnce();
+    });
   });
 
   describe("leave", () => {

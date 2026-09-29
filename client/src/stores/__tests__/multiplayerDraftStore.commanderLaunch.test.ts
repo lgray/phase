@@ -1852,6 +1852,198 @@ describe("multiplayerDraftStore Commander launch", () => {
     expect(matchLoopMock.controller.dispose).toHaveBeenCalledTimes(1);
   });
 
+  describe("startMatch bring-up", () => {
+    const launch = {
+      type: "HumanHost" as const,
+      matchId: "m1",
+      matchRoomCode: "MATCH-m1",
+      round: 1,
+      localSeat: 0,
+      opponentSeat: 1,
+      opponentName: "Guest",
+      matchHostPeerId: "peer-0",
+      deckPayload: { player: deckFor(0), opponent: deckFor(1), ai_decks: [] },
+      matchConfig: { match_type: "Bo1" as const },
+      binding: {
+        podId: "pod-1", matchId: "m1", round: 1, sessionKey: "s", lease: "l", nonce: "n",
+        revision: 1, matchAuthoritySeat: 0,
+      },
+    };
+    const settle = (p: Promise<string | null>) =>
+      Promise.race([p.then((v) => `resolved:${v}`), new Promise((r) => setTimeout(() => r("pending"), 50))]);
+
+    async function podInMatch() {
+      await installCompletedPod(commanderView(2));
+      useMultiplayerDraftStore.setState({ matchPairing: launch, phase: "matchInProgress" });
+    }
+
+    it("leave() while hostRoom is parked aborts it and publishes nothing", async () => {
+      await podInMatch();
+      let open!: () => void;
+      transport.control.hostRoomGate = new Promise<void>((r) => { open = r; });
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.hostRoomSignals).toHaveLength(1));
+      await useMultiplayerDraftStore.getState().leave();
+      open();
+      const settled = await settle(started);
+      const s = useMultiplayerDraftStore.getState();
+      expect((transport.hostRoomSignals[0] as AbortSignal | undefined)?.aborted).toBe(true);
+      expect(settled).toBe("resolved:null");
+      expect(transport.hostDestroy).toHaveBeenCalledOnce();
+      expect(s.matchAdapter).toBeNull();
+      expect(s.phase).toBe("idle");
+      expect(s.error).toBeNull();
+    });
+
+    it("leave() while parked on roomFull disposes the adapter", async () => {
+      await podInMatch();
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
+      await useMultiplayerDraftStore.getState().leave();
+      const settled = await settle(started);
+      const disposedBeforeGuest = transport.dispose.mock.calls.length;
+      transport.instances[0].finish();
+      await new Promise((r) => setTimeout(r, 0));
+      const s = useMultiplayerDraftStore.getState();
+      expect(settled).toBe("resolved:null");
+      expect(disposedBeforeGuest).toBe(1);
+      expect(transport.hostDestroy).not.toHaveBeenCalled();
+      expect(s.matchAdapter).toBeNull();
+      expect(s.phase).toBe("idle");
+    });
+
+    it("leave() while the host adapter initializes disposes it with no unhandled rejection", async () => {
+      await podInMatch();
+      const unhandled: unknown[] = [];
+      const prior = process.listeners("unhandledRejection");
+      process.removeAllListeners("unhandledRejection");
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => { open = resolve; });
+      const make = vi.mocked(P2PHostAdapter).getMockImplementation()!;
+      vi.mocked(P2PHostAdapter).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+        const adapter = (make as (...a: unknown[]) => { initialize: () => Promise<void> }).apply(this, args);
+        adapter.initialize = vi.fn(() => gate);
+        return adapter as never;
+      });
+      try {
+        const started = useMultiplayerDraftStore.getState().startMatch();
+        await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
+        await useMultiplayerDraftStore.getState().leave();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        open();
+        expect(await settle(started)).toBe("resolved:null");
+        expect(transport.dispose).toHaveBeenCalledOnce();
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        for (const listener of prior) process.on("unhandledRejection", listener as never);
+      }
+    });
+
+    it("guest arm: leave() while joinRoom is parked destroys the peer", async () => {
+      await podInMatch();
+      useMultiplayerDraftStore.setState({
+        matchPairing: {
+          type: "HumanGuest", matchId: "m1", matchRoomCode: "MATCH-m1", round: 1, localSeat: 1,
+          opponentSeat: 0, opponentName: "Host", matchHostPeerId: "peer-0", localDeck: deckFor(1),
+          matchConfig: { match_type: "Bo1" }, binding: launch.binding,
+        },
+      });
+      let open!: () => void;
+      transport.control.joinRoomGate = new Promise<void>((r) => { open = r; });
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.joinRoomCalls).toHaveLength(1));
+      await useMultiplayerDraftStore.getState().leave();
+      open();
+      const settled = await settle(started);
+      expect((transport.joinRoomCalls[0].signal as AbortSignal | undefined)?.aborted).toBe(true);
+      expect(settled).toBe("resolved:null");
+      expect(transport.joinDestroyPeer).toHaveBeenCalledOnce();
+      expect(transport.guestInstances).toHaveLength(0);
+    });
+
+    it("a failed bring-up releases what it built and keeps its error", async () => {
+      await podInMatch();
+      transport.startPregameGame.mockRejectedValueOnce(new Error("pregame refused"));
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
+      transport.instances[0].finish();
+      expect(await started).toBeNull();
+      expect(transport.dispose).toHaveBeenCalledOnce();
+      expect(useMultiplayerDraftStore.getState().error).toBe("pregame refused");
+    });
+
+    it("a second press while a start is in flight opens no second room", async () => {
+      await podInMatch();
+      const first = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
+      expect(await settle(useMultiplayerDraftStore.getState().startMatch())).toBe("resolved:null");
+      expect(transport.hostRoomSignals).toHaveLength(1);
+      transport.instances[0].finish();
+      expect(await first).toBe("draft-match-m1");
+    });
+
+    it("guest arm: leave() while the snapshot install is parked publishes nothing", async () => {
+      await podInMatch();
+      useMultiplayerDraftStore.setState({
+        matchPairing: {
+          type: "HumanGuest", matchId: "m1", matchRoomCode: "MATCH-m1", round: 1, localSeat: 1,
+          opponentSeat: 0, opponentName: "Host", matchHostPeerId: "peer-0", localDeck: deckFor(1),
+          matchConfig: { match_type: "Bo1" }, binding: launch.binding,
+        },
+      });
+      let open!: () => void;
+      transport.control.guestSnapshotGate = new Promise<void>((resolve) => { open = resolve; });
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.guestInstances).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await useMultiplayerDraftStore.getState().leave();
+      const createsBefore = matchLoopMock.create.mock.calls.length;
+      open();
+      expect(await settle(started)).toBe("resolved:null");
+      const s = useMultiplayerDraftStore.getState();
+      expect(transport.guestDispose).toHaveBeenCalledOnce();
+      expect(transport.joinDestroyPeer).not.toHaveBeenCalled();
+      expect(matchLoopMock.create.mock.calls.length).toBe(createsBefore + 1);
+      expect(Math.max(...matchLoopMock.controller.dispose.mock.invocationCallOrder)).toBeGreaterThan(
+        Math.max(...matchLoopMock.create.mock.invocationCallOrder),
+      );
+      expect(s.matchAdapter).toBeNull();
+      expect(s.phase).toBe("idle");
+    });
+
+    it("host arm: leave() while startPregameGame is parked installs no game", async () => {
+      await podInMatch();
+      useGameStore.setState({ gameMode: null });
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => { open = resolve; });
+      transport.startPregameGame.mockImplementationOnce(async () => { await gate; return { log_entries: [] }; });
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
+      transport.instances[0].finish();
+      await vi.waitFor(() => expect(transport.startPregameGame).toHaveBeenCalled());
+      await useMultiplayerDraftStore.getState().leave();
+      open();
+      expect(await settle(started)).toBe("resolved:null");
+      expect(useGameStore.getState().gameMode).toBeNull();
+    });
+
+    it("reset() while hostRoom is parked aborts it", async () => {
+      await podInMatch();
+      let open!: () => void;
+      transport.control.hostRoomGate = new Promise<void>((resolve) => { open = resolve; });
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await vi.waitFor(() => expect(transport.hostRoomSignals).toHaveLength(1));
+      useMultiplayerDraftStore.getState().reset();
+      open();
+      expect((transport.hostRoomSignals[0] as AbortSignal | undefined)?.aborted).toBe(true);
+      expect(await settle(started)).toBe("resolved:null");
+      expect(transport.instances).toHaveLength(0);
+    });
+  });
+
   /**
    * The freshest-view contract, which `P2PDraftHost.commanderSeatDecks` states
    * in its own doc and makes the CALLER's responsibility: `handleGuestDisconnect`
