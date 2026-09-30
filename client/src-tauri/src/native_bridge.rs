@@ -29,6 +29,10 @@ use crate::native_engine_contract::{BridgeEvent, NativeEngineBridgeError};
 /// that dials it reads as a contract rather than an incidental URL suffix.
 const SERVER_WEBSOCKET_PATH: &str = "/ws";
 
+/// How long a graceful close may spend delivering queued frames and its Close
+/// frame before the forwarder is aborted.
+const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl NativeEngineBridgeError {
     fn internal(detail: impl Into<String>) -> Self {
         Self::Internal {
@@ -49,6 +53,17 @@ impl BridgeHandle {
 
     pub(crate) fn abort(&self) {
         self.abort.abort();
+    }
+
+    /// Drops the queue's last long-lived sender, so the forwarder sends what is
+    /// already queued and then a Close frame; the watchdog bounds that drain.
+    pub(crate) fn close(self) {
+        let Self { abort, outbound } = self;
+        drop(outbound);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(CLOSE_DRAIN_TIMEOUT).await;
+            abort.abort();
+        });
     }
 
     pub(crate) fn outbound(&self) -> UnboundedSender<Message> {
@@ -198,7 +213,17 @@ async fn run_bridge(
                         break;
                     }
                 }
-                None => break,
+                None => {
+                    if let Err(close_error) = write.close().await {
+                        error = Some(close_error.to_string());
+                        break;
+                    }
+                    close = Some((1000, String::new()));
+                    // tungstenite: a client drops the connection only after the
+                    // server closes it, which it does once it has read the Close.
+                    while let Some(Ok(_)) = read.next().await {}
+                    break;
+                }
             },
             incoming = read.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
@@ -588,7 +613,7 @@ impl LanBridges {
     fn close(&mut self, id: u64, client: &LanClient) -> Result<(), NativeEngineBridgeError> {
         self.owned_bridge(id, client)?;
         if let Some(bridge) = self.bridges.remove(&id) {
-            bridge.handle.abort();
+            bridge.handle.close();
         }
         Ok(())
     }
@@ -772,7 +797,93 @@ mod tests {
         );
         state.close(1, &test_client()).unwrap();
         assert!(state.bridges.is_empty());
-        assert!(abort.is_aborted());
+        assert!(!abort.is_aborted());
+        assert_eq!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn a_graceful_close_is_aborted_once_it_outlasts_the_watchdog() {
+        let (outbound, _receiver) = mpsc::unbounded_channel();
+        let (abort, registration) = AbortHandle::new_pair();
+        BridgeHandle::new(abort, outbound).close();
+        let drain = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(
+                CLOSE_DRAIN_TIMEOUT * 2,
+                Abortable::new(std::future::pending::<()>(), registration),
+            )
+            .await
+        });
+        assert!(matches!(drain, Ok(Err(_))));
+    }
+
+    #[test]
+    fn closing_a_bridge_delivers_queued_frames_then_a_close_frame() {
+        tauri::async_runtime::block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            // Like phase-server, the peer stops reading at the Close and ends the connection later.
+            let peer = tauri::async_runtime::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let mut received = Vec::new();
+                while let Some(Ok(message)) = socket.next().await {
+                    let close = message.is_close();
+                    received.push(message);
+                    if close {
+                        break;
+                    }
+                }
+                (received, socket)
+            });
+            let (socket, _) = connect_async(format!("ws://127.0.0.1:{port}/"))
+                .await
+                .unwrap();
+            let (outbound, receiver) = mpsc::unbounded_channel();
+            let (abort, registration) = AbortHandle::new_pair();
+            let mut state = LanBridges::default();
+            state.bridges.insert(
+                1,
+                LanBridge {
+                    client: test_client(),
+                    handle: BridgeHandle::new(abort, outbound),
+                },
+            );
+            state.send(1, &test_client(), "frame".into()).unwrap();
+            state.close(1, &test_client()).unwrap();
+
+            let (events_sender, mut events) = mpsc::unbounded_channel();
+            let on_event = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
+                let _ = events_sender.send(body.deserialize::<serde_json::Value>().unwrap());
+                Ok(())
+            });
+            let forwarder = tauri::async_runtime::spawn(forward_bridge(
+                1,
+                socket,
+                receiver,
+                registration,
+                on_event,
+                |_| {},
+            ));
+            let (received, peer_socket) = peer.await.unwrap();
+            assert_eq!(
+                received,
+                [Message::Text("frame".into()), Message::Close(None)]
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(events.try_recv().is_err());
+            drop(peer_socket);
+            tokio::time::timeout(Duration::from_secs(4), forwarder)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                events.try_recv().unwrap(),
+                serde_json::json!({ "type": "closed", "code": 1000, "reason": "" })
+            );
+        });
     }
 
     #[test]
@@ -826,7 +937,7 @@ mod tests {
                 id,
                 LanBridge {
                     client: test_client(),
-                    handle: BridgeHandle::new(abort, outbound),
+                    handle: BridgeHandle::new(abort.clone(), outbound),
                 },
             );
             id
@@ -841,11 +952,8 @@ mod tests {
             receiver.try_recv().unwrap(),
             Message::Text("still open".into())
         );
-        lan_bridges()
-            .lock()
-            .unwrap()
-            .close(id, &test_client())
-            .unwrap();
+        abort_lan_bridges();
+        assert!(abort.is_aborted());
         assert!(lan_bridges()
             .lock()
             .unwrap()
