@@ -1,3 +1,10 @@
 HEAD 67cd221ea26fd73a3fa26328ef14cf8f688243d4 dirty=0
 FMT-OK
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 14m 40s
+────────────
+     Summary [1918.497s] 31302 tests run: 31302 passed (13 slow), 12 skipped
+Gate G PASS (router/grant architecture: strict router vs permissive grant boundary intact)
+Gate A: scanned 111 file(s) under crates/engine/src/parser (working tree vs d6d28370c09242182488cac72e16e5a84941885f).
+Gate A PASS head=67cd221ea26fd73a3fa26328ef14cf8f688243d4 base=d6d28370c09242182488cac72e16e5a84941885f
+GEN=0
+dirty-after-gen: 

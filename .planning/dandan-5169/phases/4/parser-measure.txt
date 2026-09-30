@@ -1,0 +1,25 @@
+cards base 35864 cand 35864
+card-data entries differing: 4 ['lapse of certainty', 'memory lapse', 'remand', 'spell crumple']
+coverage rows differing: 17
+  ('Ancestral Recall', True, True)
+  ('Bind', True, True)
+  ('Brainstorm', True, True)
+  ('Brisela, Voice of Nightmares', True, True)
+  ('Demonic Tutor', True, True)
+  ('Exsanguinate', True, True)
+  ('Jump', True, True)
+  ('Lapse of Certainty', False, True)
+  ('Lightning Bolt', True, True)
+  ('Memory Lapse', False, True)
+  ('Regrowth', True, True)
+  ('Remand', False, True)
+  ('Sign in Blood', True, True)
+  ('Spell Crumple', False, True)
+  ('Stream of Life', True, True)
+  ('Swords to Plowshares', True, True)
+  ('Wheel of Fortune', True, True)
+Memory Lapse False -> True
+Lapse of Certainty False -> True
+Remand False -> True
+Spell Crumple False -> True
+Hinder False -> False
