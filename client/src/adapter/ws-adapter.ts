@@ -615,6 +615,10 @@ export class NativeEngineVersionMismatchError extends Error {
  *      into a MulliganDecisionPhase::BottomCards sub-phase on
  *      WaitingFor::MulliganDecision.
  *
+ * 93 — GameFormat gains `Dandan`. It serializes as its Display string and
+ *      deserializes through FromStr, so a v92 peer cannot parse a GameState or
+ *      a lobby FormatConfig that names it. Wire 75 and lobby 15 move with it;
+ *      see PROTOCOL_VERSION in crates/lobby-broker/src/protocol.rs.
  * 79 — CR 601.2f + CR 602.2b activated-ability cost-reduction election:
  *      ReductionProvenance gains AbilityCostRider and TransientEffect, which a
  *      v78 peer cannot parse. The new CostReductionEntry.minimum_mana,
@@ -623,7 +627,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 92;
+export const PROTOCOL_VERSION = 93;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
@@ -654,6 +658,9 @@ export const LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL = PROTOCOL_VERSION - 1;
  * PROTOCOL_VERSION moved twice for GameState-only changes and the derived lobby
  * window went disjoint from the deployed broker's.
  *
+ * 15 — GameFormat gains `Dandan` (see PROTOCOL_VERSION 93). A Rust broker below
+ *      15 rejects a lobby frame naming it; MIN_LOBBY_PROTOCOL_FOR_DANDAN below
+ *      is this client's frozen floor for that pairing.
  * 14 — PairingView.report_gate gains a `Hosted` arm (the Rust ReportGate enum's
  *      new variant), the "a field's type changed" trigger. No broker emits it
  *      until server-authoritative hosting is wired behind
@@ -785,7 +792,7 @@ export const LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL = PROTOCOL_VERSION - 1;
  * 1 — Initial lobby-owned version, covering the lobby variant set unchanged
  *     since #1880.
  */
-export const LOBBY_PROTOCOL_VERSION = 14;
+export const LOBBY_PROTOCOL_VERSION = 15;
 
 /**
  * Lowest broker LOBBY_PROTOCOL_VERSION this client accepts.
@@ -915,6 +922,17 @@ export const MIN_LOBBY_PROTOCOL_FOR_RECOVERABLE_ROTATION = 9;
 export const MIN_LOBBY_PROTOCOL_FOR_FREEFORM_FORMATS = 11;
 
 /**
+ * Lowest broker `LOBBY_PROTOCOL_VERSION` whose `GameFormat` deserializer knows
+ * `Dandan`; below it a lobby frame naming it is rejected as malformed.
+ *
+ * Frozen at 15 and written as a bare literal, never derived from
+ * LOBBY_PROTOCOL_VERSION, so a later bump cannot drag it forward and start
+ * refusing v15 brokers. `scripts/check-protocol-version.mjs` refuses a derived
+ * right-hand side for it.
+ */
+export const MIN_LOBBY_PROTOCOL_FOR_DANDAN = 15;
+
+/**
  * The lowest broker `LOBBY_PROTOCOL_VERSION` that parses `format` in a lobby
  * frame, or `null` when every broker this client connects to parses it (see
  * MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL). Consult it before sending any lobby
@@ -928,6 +946,8 @@ export function lobbyProtocolRequiredForFormat(format: GameFormat): number | nul
     case "Freeform":
     case "FreeformCommander":
       return MIN_LOBBY_PROTOCOL_FOR_FREEFORM_FORMATS;
+    case "Dandan":
+      return MIN_LOBBY_PROTOCOL_FOR_DANDAN;
     case "Standard":
     case "Commander":
     case "Pioneer":

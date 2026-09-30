@@ -1146,7 +1146,8 @@ pub fn is_card_commander_eligible_for_format(name: &str, format: JsValue) -> boo
             | GameFormat::FreeForAll
             | GameFormat::TwoHeadedGiant
             | GameFormat::Limited
-            | GameFormat::Freeform => false,
+            | GameFormat::Freeform
+            | GameFormat::Dandan => false,
             // Phase 1d wired a real custom-format deck-legality evaluator
             // (`evaluate_custom_format`), but it is scoped to non-command-zone
             // (constructed-shaped) custom formats — a command-zone custom

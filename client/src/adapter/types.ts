@@ -168,7 +168,8 @@ export type BuiltInGameFormat =
   | "Momir"
   | "CommanderDraft"
   | "Freeform"
-  | "FreeformCommander";
+  | "FreeformCommander"
+  | "Dandan";
 
 /**
  * Wire form of `GameFormat::Custom(CustomFormatId)`.

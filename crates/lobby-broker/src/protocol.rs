@@ -60,6 +60,7 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
+/// 93 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v92 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 75); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 15.
 /// 92 — `ResolvedAbility.parent_target_missing_reason` is now serialized
 ///      (`#[serde(default, skip_serializing_if = "Option::is_none")]`, it was
 ///      `#[serde(skip)]`) and `ParentTargetMissingReason` gains `RevealUntil`
@@ -767,7 +768,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 92;
+pub const PROTOCOL_VERSION: u32 = 93;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -794,6 +795,7 @@ pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
 /// broker's window went disjoint from the shipped client's. This constant is
 /// the fix — it moves only for reasons the lobby can actually observe.
 ///
+/// 15 — `GameFormat` gains `Dandan` (see `PROTOCOL_VERSION` 93). Every lobby frame that carries a `GameFormat` (entry 11 names the carriers) can now name it, and a Rust broker below 15 rejects that frame because `GameFormat::deserialize` fails on the unknown name; the client-side floor for that pairing is `MIN_LOBBY_PROTOCOL_FOR_DANDAN` in `client/src/adapter/ws-adapter.ts`, frozen at 15. [`MIN_SUPPORTED_LOBBY_PROTOCOL`] does not move, for the reasons entry 11 gives, and [`PROTOCOL_VERSION`] moves for its own reason, `GameState` carrying the name (93).
 /// 14 — `PairingView.report_gate` (broker → client, on `TournamentUpdate` and
 ///      the `GetTournament` reply) gains a `ReportGate::Hosted` arm — the "a
 ///      field's type changed" trigger, a serialized enum's value space growing.
@@ -1058,7 +1060,7 @@ pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
 ///     that direction can reject — into one legible handshake refusal.
 /// 1 — Initial lobby-owned version, covering the `LobbyClientMessage` /
 ///     `LobbyServerMessage` variant sets, unchanged since #1880.
-pub const LOBBY_PROTOCOL_VERSION: u32 = 14;
+pub const LOBBY_PROTOCOL_VERSION: u32 = 15;
 
 /// Lowest [`LOBBY_PROTOCOL_VERSION`] a broker accepts from a client.
 ///
@@ -1969,7 +1971,7 @@ mod tests {
     /// rather than silently re-coupling the lobby to full-game churn.
     #[test]
     fn lobby_protocol_version_is_independent_of_the_full_game_one() {
-        assert_eq!(LOBBY_PROTOCOL_VERSION, 14);
+        assert_eq!(LOBBY_PROTOCOL_VERSION, 15);
         // Deliberately still 2, not 12: every lobby version past 2 keeps this
         // floor's guarantee — that a version-2 client can still parse every
         // frame it already understands. Individually: 3 is additive in both
@@ -1987,8 +1989,9 @@ mod tests {
         // broker → client field that a consumer which does not name it
         // ignores; 13 adds an optional, defaulted `FormatConfig` field on
         // the same three carriers as 2, ignored the same way; 14 adds a hosted
-        // report gate that has no production emitter yet. See the constant's
-        // own changelog.
+        // report gate that has no production emitter yet; 15 adds a built-in
+        // format name, guarded by a client floor. See the constant's own
+        // changelog.
         assert_eq!(MIN_SUPPORTED_LOBBY_PROTOCOL, 2);
         assert_ne!(
             LOBBY_PROTOCOL_VERSION, PROTOCOL_VERSION,
@@ -2008,12 +2011,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 92);
+        assert_eq!(PROTOCOL_VERSION, 93);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 91);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 92);
     }
 
     #[test]
@@ -2175,9 +2178,10 @@ mod tests {
     /// step: no field, no variant, moved ahead of new `GameFormat` variants;
     /// see that constant's own `/// 11` entry. Version 12 extends the chain by
     /// the same rule, as does version 13 (`FormatConfig` gains the optional
-    /// `allow_experimental_dungeons` flag) and version 14 (`Hosted` report gate).
+    /// `allow_experimental_dungeons` flag), version 14 (`Hosted` report gate) and
+    /// version 15 (`GameFormat` gains `Dandan`).
     #[test]
-    fn the_tournament_chain_spans_lobby_versions_four_through_fourteen() {
+    fn the_tournament_chain_spans_lobby_versions_four_through_fifteen() {
         const PRE_TOURNAMENT_LOBBY_VERSION: u32 = 3;
         const TOURNAMENT_SET_LOBBY_VERSION: u32 = PRE_TOURNAMENT_LOBBY_VERSION + 1;
         const CORRELATED_SETTLEMENT_LOBBY_VERSION: u32 = TOURNAMENT_SET_LOBBY_VERSION + 1;
@@ -2199,7 +2203,9 @@ mod tests {
         // Adds a `Hosted` arm to `PairingView.report_gate` (a serialized enum's
         // value space grows) — the "a field's type changed" trigger.
         const HOSTED_MATCH_LOBBY_VERSION: u32 = EXPERIMENTAL_DUNGEONS_LOBBY_VERSION + 1;
-        assert_eq!(LOBBY_PROTOCOL_VERSION, HOSTED_MATCH_LOBBY_VERSION);
+        // Adds the `Dandan` built-in format name, guarded by a client floor.
+        const DANDAN_FORMAT_LOBBY_VERSION: u32 = HOSTED_MATCH_LOBBY_VERSION + 1;
+        assert_eq!(LOBBY_PROTOCOL_VERSION, DANDAN_FORMAT_LOBBY_VERSION);
     }
 
     /// The guard for [`is_known_lobby_tag`], which is a string `matches!` and
