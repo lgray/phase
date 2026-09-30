@@ -19,3 +19,8 @@
 - Cloud clone /home/user/phase. feat/dandan-format fast-forwarded 7238b9c183 -> upstream/main b9ba9360 (1 commit) and pushed. BASE_SHA = b9ba9360. worker-env.md rewritten for the cloud paths (4 cores, 15 GB, no Tilt).
 - BLOCKED before the charter review: the environment network policy refuses magic.wizards.com (proxy CONNECT 403), media.wizards.com, mtgjson.com, api.scryfall.com and api.github.com. So docs/MagicCompRules.txt cannot be fetched (CR grep mandate), AtomicCards/card-data cannot be generated (real-card tests, fixture re-slice, coverage gate), and no Oracle text source exists. Integration fixture holds only 2/23 Dandan names (Island, Brainstorm). No worker dispatched; charter loop still at round 0.
 - Resume needs: an environment allowing those hosts (Custom network policy), OR the owner commits MagicCompRules.txt + AtomicCards.json.gz to a reachable ref for local use only.
+
+## J3 network re-test (2026-09-30)
+- After the policy change: magic.wizards.com, mtgjson.com and api.scryfall.com answer 200. CR fetched (MagicCompRules 20260925, 9372 lines). gen-card-data.sh started (cold build).
+- Lead relay test: `curl https://api.github.com/repos/phase-rs/phase/issues/5169` -> 403; `gh auth status` -> gh: command not found; `gh pr list --repo phase-rs/phase` -> gh: command not found. PR route stays closed: the lead opens the PR from the saved body.
+- Charter review round 1 dispatched (Sonnet) against BASE_SHA b9ba9360.

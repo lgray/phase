@@ -1,0 +1,245 @@
+# Phase charter — Dandan format (issue #5169), run dandan-5169
+
+Source: `.planning/dandan-5169/brief/issue-5169.md`, pinned `d95cc66019`. Run base (`BASE_SHA`) = HEAD `7238b9c183`. `git diff --stat d95cc66019 HEAD` touches only `casting.rs`/`casting_costs.rs`/`oracle_casting.rs`/`oracle_cost.rs`/skill docs — none of the brief's anchor files — so the brief's code-shape claims carry to `BASE_SHA` unchanged; each phase still buys its own claims per the charter contract below.
+
+**Deliverable:** one PR to `phase-rs/phase` main closing #5169, all 11 phases below as sequential checkpoint commits. Total estimate ~9,600 LOC added (range 6,800–13,300; basis and per-phase figures in the planner report), well under the ~30,000-line single-PR ceiling — no split by size is warranted.
+
+**Format group:** `Multiplayer`, registry position after Momir, before Custom. **Skills used across phases:** `add-engine-effect`, `add-static-ability`, `add-engine-variant` (gate, Phase 1 and Phase 2), `add-interactive-effect` (Phase 8), `oracle-parser`, `card-test`.
+
+## Phase list
+
+1. S1 — Format registration, axes, protocol, AI force-keep re-gate
+2. PREREQ-0 + CR 612 text-changing primitive (Magical Hack, Crystal Spray)
+3. S2a — Canonical-seat storage authority
+4. S2b-1 — Read sweep: core game/effects files
+5. S2b-2 — Read sweep: analysis/ai_support/types + cross-crate (phase-ai, engine-wasm, phase-llm)
+6. S2c — Filter owner-axis collapse + count dedup
+7. S3 — Hand-entry ownership rebind
+8. S4 — Mulligan declare round, FreeReveal, pregame dealer
+9. S4b + PREREQ-3 + S6 — In-game simultaneous-draw dealer, Day's Undoing wheel split, deck-out verification
+10. S7 — Frontend shared-pile display
+11. S8 — AI consumer rerouting
+
+Each phase's recursive T1∧T2 check is stated inline; none trips the conjunction (shown per phase).
+
+---
+
+### Phase 1 — S1: Format registration, axes, protocol, AI force-keep re-gate
+
+**Goal.** Register `GameFormat::Dandan` as a complete axis-driven format: constructor, the 18 compiler-forced exhaustive arms, the 5 new typed predicate axis methods (shared zones, deal order, free-reveal mulligan, hand-entry rebind, opening-hands-equivalent), registry entry, protocol/lobby-version bump with a frozen `MIN_LOBBY_PROTOCOL_FOR_DANDAN` floor, and the AI force-keep re-gate so a Dandan hand is evaluated on its own axis rather than inheriting Momir's `supplies_fixed_deck` ForceKeep. No shared-zone runtime behavior lands here — the axis methods return typed values consumers read in later phases.
+
+**Scope rule.** `crates/engine/src/types/format.rs`; `crates/engine/src/game/deck_validation.rs` (`quick_dandan_check`, `evaluate_dandan`, mirroring `quick_momir_check`/`evaluate_momir`); `crates/engine/src/types/custom_format.rs` (`CommanderEligibilityRule::from_source_format`); `crates/engine-wasm/src/lib.rs` (`is_card_commander_eligible_for_format` arm only — the boot-guard edit in the same file belongs to Phase 3); `crates/engine/tests/integration/custom_format_schema.rs`; `client/src/types.ts`, `client/src/data/formatRegistry.ts`, `client/src/adapter/ws-adapter.ts` (`lobbyProtocolRequiredForFormat` + new `MIN_LOBBY_PROTOCOL_FOR_DANDAN`, precedent `MIN_LOBBY_PROTOCOL_FOR_FREEFORM_FORMATS`), `client/src/network/protocol.ts` (`WIRE_PROTOCOL_VERSION`); whichever test file holds `FORMAT_SHAPES` for `deckUrlImport` (grep `FORMAT_SHAPES` at scope-freeze); `crates/lobby-broker/src/protocol.rs` (`PROTOCOL_VERSION`); `scripts/check-protocol-version.mjs`; `crates/phase-ai/src/policies/mulligan/fixed_deck_keepables.rs`.
+
+**Claims to establish.**
+- `GameFormat::FreeformCommander` precedes `Custom(CustomFormatId)` in declaration order and `GameFormat::iter()` walks that order — buy by `grep -n "FreeformCommander\|Custom(CustomFormatId)" crates/engine/src/types/format.rs` (measured at Phase-charter time: lines 145/152, confirmed present in that order at `BASE_SHA`; re-confirm unchanged at phase start).
+- `FixedDeckKeepMulligan::score` gates `ForceKeep` on `state.format_config.supplies_fixed_deck` alone, with no format-identity check — buy by reading `crates/phase-ai/src/policies/mulligan/fixed_deck_keepables.rs` at phase start; a Dandan-config unit test asserting non-ForceKeep is the closing measurement, not a prior grep.
+- The 18 exhaustive-arm sites are compiler-forced, not enumerable in advance beyond the brief's list — buy by adding the variant and reading the compiler's own missing-arm errors; do not hand-verify the count.
+
+**Verification plan.** Unit tests: `FromStr`/`Display` round-trip, `FormatConfig::dandan()` field values (20 life, 2 players, `DeckSizeRule::Exactly(80)`, `supplies_fixed_deck: true`, `command_zone: false`), `has_unrepresentable_auxiliary_deck_component() == true` (revert-failing: flip to `false` and show `CustomFormatDef::from_lobby_config` would accept a Dandan lobby as Custom), each new axis method's Dandan-vs-other-format arms, `MIN_LOBBY_PROTOCOL_FOR_DANDAN` wired into `lobbyProtocolRequiredForFormat`, `FixedDeckKeepMulligan` non-ForceKeep on Dandan config with a sibling assertion that Momir is still ForceKeep (paired positive/negative). A full booted-Dandan-game test is `DEFERRED(phase 3)` — deck loading doesn't exist yet.
+
+**Deferral list.** Shared-zone runtime resolution (→ Phase 3–6), ownership rebind (→ Phase 7), mulligan declare round consuming the free-reveal axis (→ Phase 8), pile-holder exposure to frontend (→ Phase 10), AI accessor rerouting beyond force-keep (→ Phase 11).
+
+**Seam notes.** `crates/engine-wasm/src/lib.rs` is also touched by Phase 3 (boot guard) at a different function — sequential, no overlap risk.
+
+**T1∧T2 check.** 1 unit (one `add-engine-variant` pass). T1 fails (needs ≥2) regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 2 — PREREQ-0 + CR 612 text-changing primitive (Magical Hack, Crystal Spray)
+
+**Goal.** Two independent, unrelated-to-shared-zones fixes bundled for phase-count economy: (a) accept `Effect::Counter { countered_spell_zone: Some(_), .. }` as a replacement carrier in the swallow check, fixing Memory Lapse's false-positive `unsupported` status; (b) build the general CR 612 word-substitution primitive — a `Layer::Text` `ContinuousModification` over a typed word domain (`BasicLandType`, `ColorWord`) — and cover both known instances of the class: Magical Hack (domain `{BasicLandType}`, indefinite duration) and Crystal Spray (domain `{ColorWord, BasicLandType}`, player chooses which, until-end-of-turn duration). This is "build for the class" applied at the phase boundary: one primitive, two cards, one phase, so no half-built primitive persists across a phase boundary.
+
+**Scope rule.** `crates/engine/src/parser/swallow_check.rs` (PREREQ-0); `crates/engine/src/types/ability.rs` (new `Layer::Text` variant, beside `SetTextName`/`SetChosenName`); the CR 612 parser addition (file TBD by planner — trace `Cleave` in `crates/engine/src/database/synthesis.rs` and `Overload` in `crates/engine/src/game/effects/overload.rs` first, per the brief, to find the right parser/resolver seam; neither traced file is itself edited unless the trace shows a genuine shared seam); the resolver/effect-handler file the parser dispatches to.
+
+**Claims to establish.**
+- `effect_is_replacement_carrier` in `swallow_check.rs` does not currently accept `Effect::Counter { countered_spell_zone: Some(_), .. }` — buy by grepping the function body at phase start; the coverage regeneration command in the brief is the closing measurement (Memory Lapse flips to `supported:true`... or the applicable non-`Unimplemented` status).
+- No CR 612 text-substitution primitive exists in the engine today — buy by grepping `data/engine-inventory.json` (regenerate via `cargo engine-inventory` first) for `SetTextName`/`SetChosenName` siblings; absence of a substitution variant is the claim.
+
+**Verification plan.** PREREQ-0: one unit test per the brief's own sizing ("about 5 lines... one test"), revert-failing (remove the accepted arm, Memory Lapse reports `unsupported` again). CR 612 primitive: cast-pipeline tests (per `/card-test`) for both Magical Hack (permanent domain, indefinite duration, e.g. "swampwalk"→"islandwalk"-style land-type substitution on a target permanent) and Crystal Spray (until-end-of-turn duration, player choice of domain), plus a hostile fixture — a word that is NOT a land-type/color word in context (CR 612.2's "used in the correct way" carve-out) must not be substituted. Not deferred — fully independent of shared-zone work.
+
+**Deferral list.** None — this phase closes both PREREQ-0 and the full CR 612 primitive (both known instances) in one pass.
+
+**Seam notes.** None with other phases; this primitive's files are untouched by any other phase in this run.
+
+**T1∧T2 check.** 2 units (PREREQ-0's swallow-check fix; the CR 612 primitive covering both cards is one unit per the class-pass anchor). Estimated scope paths: swallow_check.rs, its test, ability.rs, the parser file, the resolver file, 2 card-level test files ≈ 7. T1 fires, T2 (7 < 13) does not — conjunction cannot fire.
+
+---
+
+### Phase 3 — S2a: Canonical-seat storage authority
+
+**Goal.** Introduce the canonical-seat concept (lowest `PlayerId`, fixed at setup, never recomputed) and route every *write* to library/graveyard storage through it, so journal replay stays deterministic. Covers: `GameState::library_of`/`graveyard_of` (and `_mut`) accessors; write-side canonicalization in `zones.rs` (`remove_from_zone`, `add_to_zone`, `move_to_library_at_index`, `reorder_within_library`, `zone_container_len`), `game/library.rs` (`resolve_and_apply_library_shuffle`/`apply_resolved_library_shuffle`, storage resolves to canonical seat while `ResolvedLibraryShuffleCommand.player` stays the acting player), the raw writers in `engine_resolution_choices.rs` and `effects/conjure.rs`; deck provisioning (`dandan_fixed_deck_names` beside `momir_fixed_deck_names`, a Dandan branch in `load_and_hydrate_decks` loading one 80-card pile into the canonical seat only); the `engine-wasm` empty-library boot guard routed through the accessor; `select_cards_to_draw` in `effects/draw.rs` routed through the accessor (covers the draw-selection and empty-library-flag path for single draws); `mulligan.rs::shuffle_hand_into_library` routed through the library accessor or `resolve_and_apply_library_shuffle`; library-knowledge epoch keys (`advance_library_knowledge_epoch`, `library_knowledge_epoch`, `library_knowledge_boundary_generation`, `LibraryKnowledgeStamp.library_owner`, `viewer_knows_card_identity`, `canonicalize_library_knowledge_epoch`) resolved to the canonical seat.
+
+**Scope rule.** `crates/engine/src/types/game_state.rs` (new accessor methods); `crates/engine/src/game/zones.rs`; `crates/engine/src/game/library.rs`; `crates/engine/src/game/engine_resolution_choices.rs`; `crates/engine/src/game/effects/conjure.rs`; `crates/engine/src/game/deck_loading.rs`; `crates/engine-wasm/src/lib.rs` (boot-guard function only); `crates/engine/src/game/effects/draw.rs` (`select_cards_to_draw`); `crates/engine/src/game/mulligan.rs` (`shuffle_hand_into_library`, `draw_n` — the brief notes `draw_n` reads `player.library[0]` directly and is routed separately from `shuffle_hand_into_library`); the file(s) implementing the library-knowledge epoch functions (locate at phase start — the brief names the functions, not the file, and this file was not touched in the pin→HEAD diff so its location is stable but unconfirmed by this charter).
+
+**Claims to establish.**
+- `GameState` has no shared-pile concept today: `Player.library`/`Player.graveyard` are read per-seat everywhere with no canonical-seat resolution — buy by grepping `zones.rs`/`game_state.rs` for any existing "canonical"/"shared" seat concept at phase start; absence is the claim.
+- `zone_authority_census.py --list` enumerates today's zone-write population as a regenerable command (confirmed reproducible: 48 classified production hits in 29 rows at `BASE_SHA`) — re-run at phase start, not cited as a frozen count.
+- `mulligan.rs::shuffle_hand_into_library` today raw-shuffles the mulliganing seat's own `library` field, which for the non-canonical seat is the empty seat, leaving the shared pile's actual order unchanged (CR 103.5 violation) — buy by reading the function body at phase start.
+
+**Verification plan.** Deck-load test: Dandan boots with one 80-card pile on the canonical seat, empty on the other, both seats' `library_of()` reads return the same pile. Draw test: the non-canonical seat's `select_cards_to_draw` reads from the shared pile via the accessor (revert-failing: bypass the accessor and show the non-canonical seat draws nothing). Shuffle test: the shared pile's order changes when the non-canonical seat mulligans, and separately when it FreeReveals (per the brief) — the FreeReveal leg is `DEFERRED(phase 8)` since `FreeReveal` doesn't exist as a choice until Phase 8; the mulligan-shuffle leg is testable now via the existing `Mulligan` choice. Library-knowledge test: mixed-owner cards in the one shared library keep correct per-viewer knowledge after the epoch-key fix (revert-failing: un-resolve the key to owner-only and show stale knowledge for the non-canonical seat). Card-level "Brainstorm works from either seat" is `DEFERRED(phase 4 or 5)` — the effect's own read site isn't swept until S2b.
+
+**Deferral list.** Read-sweep of the ~150+16 remaining single-player read sites (→ Phases 4–5), filter owner/controller-axis collapse and count dedup (→ Phase 6), hand-entry ownership rebind (→ Phase 7), FreeReveal's shuffle leg (→ Phase 8).
+
+**Seam notes.** `crates/engine-wasm/src/lib.rs` also touched by Phase 1 (different function, sequential). `crates/engine/src/game/mulligan.rs` also touched by Phase 8 (declare round, built on top of this phase's now-correct shuffle routing). `crates/engine/src/game/effects/draw.rs` also touched by Phase 9 (multi-player dealer frame wraps this phase's single-draw routing).
+
+**T1∧T2 check.** 1 unit (one canonical-storage-authority mechanic, many lockstep files). T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 4 — S2b-1: Read sweep, core game/effects files
+
+**Goal.** Convert single-player `.library`/`.graveyard` reads to the Phase 3 accessor across the engine's core game-logic and effect-handler files. All-players flat-map sites (`targeting.rs::zone_object_ids`, `costs.rs`, `triggers.rs`, `visibility.rs`, `quantity.rs::object_count_matching_candidate_ids`) stay raw by design — confirmed by their own module: they already return the pile once under canonical storage, so routing them per-seat would duplicate it N times. Fold the private (player, zone) resolvers `choose_from_zone.rs::object_ids_in_player_zone` and `restrictions.rs::player_zone_ids` into the accessor.
+
+**Scope rule.** `crates/engine/src/game/` (files with unswept `.library`/`.graveyard` reads per the regenerating command, excluding files already fully covered by Phase 3's write-side edits: `zones.rs`, `library.rs`, `engine_resolution_choices.rs`, `conjure.rs`, `deck_loading.rs`, `draw.rs`, `mulligan.rs`); `crates/engine/src/game/effects/` (all files with occurrences: `reveal_top.rs`, `exile_top.rs`, `search_library.rs`, `cascade.rs`, `choose_card.rs`, `choose_from_zone.rs`, `collect_evidence.rs`, `dig.rs`, `explore.rs`, `manifest_dread.rs`, `mill.rs`, `ripple.rs`, `scry.rs`, `seek.rs`, `separate_piles.rs`, `surveil.rs`, `bounce.rs`, `clash.rs`, `discover.rs`, `exile_face_down_pile.rs`, `exile_from_top_until.rs`, `forage.rs`, `free_cast_from_zones.rs`, `heist.rs`, `put_on_top.rs`, `rad_counters.rs`, `reveal_until.rs`, `stack_reach.rs`); `casting.rs`, `casting_costs.rs`, `cost_payability.rs`, `costs.rs` (verify-only: confirm it belongs in the "stays raw" class, no edit), `engine.rs`, `engine_payment_choices.rs`, `replacement.rs`, `visibility.rs` (verify-only), `augment.rs`, `derived.rs`, `derived_views.rs`, `morph.rs`, `restrictions.rs`, `layers.rs`, `engine_debug.rs`. Regenerating command: `python3 <brief-dir>/scripts/count_reads.py HEAD '\.(library|graveyard)\b(?!\s*\()' -v` re-run at scope-freeze to materialize the exact file list against this directory scope.
+
+**Claims to establish.** Each swept file's occurrence is a single-player read (not an all-players flat-map) — buy per-file at phase-plan time by reading the call site; the brief's classification (targeting/costs/triggers/visibility stay raw) is the starting claim, re-confirmed by grep since neither file changed pin→HEAD.
+
+**Verification plan.** Card-level cast-pipeline tests (per `/card-test`) for the cards whose relevant effect lives in a swept file and is reachable now: Brainstorm, Mental Note, Predict, Telling Time (Dig→Hand), Halimar Depths (`reveal_top`/similar). Each test drives the effect from the non-canonical seat and asserts it reads/writes the shared pile, revert-failing by reverting that file's accessor swap alone. Accumulated Knowledge's full behavior (dedup) is `DEFERRED(phase 6)`; its plain per-copy draw is testable here.
+
+**Deferral list.** `quantity.rs`'s `CardTypeSetSource` dedup arm and `QuantityRef::ZoneCardCount`/`GraveyardSize` (→ Phase 6, same file — Phase 5 or this phase converts `quantity.rs`'s individual reads first, whichever phase's scope-freeze claims it); filter owner/controller collapse (→ Phase 6); cross-crate reads (→ Phase 5).
+
+**Seam notes.** None of this phase's files are touched by any other phase except where noted (quantity.rs, handled in the T1∧T2 check below).
+
+**T1∧T2 check.** 1 unit (the read-sweep mechanic, uniformly applied). T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 5 — S2b-2: Read sweep, analysis/ai_support/types + cross-crate
+
+**Goal.** Complete the read sweep: `crates/engine/src/analysis/`, `crates/engine/src/ai_support/`, `crates/engine/src/types/` (the 2 `game_state.rs` occurrences not already covered by Phase 3's accessor definition itself), plus the cross-crate reads in `phase-ai`, `engine-wasm`, `phase-llm`.
+
+**Scope rule.** `crates/engine/src/analysis/resource.rs`; `crates/engine/src/ai_support/candidates.rs`, `crates/engine/src/ai_support/mod.rs`; `crates/engine/src/types/game_state.rs` (remaining reads, not the accessor definition); `crates/phase-ai/src/planner/mod.rs`, `crates/phase-ai/src/combo/detection.rs`, `crates/phase-ai/src/deck_knowledge.rs`, `crates/phase-ai/src/determinize.rs`, `crates/phase-ai/src/policies/fetch_land_patience.rs`, `crates/phase-ai/src/policies/mill_targeting.rs`, `crates/phase-ai/src/policies/payoff.rs`, `crates/phase-ai/src/search.rs`, `crates/phase-ai/src/zone_eval.rs` (mechanical read-swap only in this phase — the semantic fixes to these same files, e.g. `mill_scale`'s urgency pin and `graveyard_value`'s double-credit, are Phase 11's job on the same lines); `crates/engine-wasm/src/lib.rs` (the 1 remaining read, if not already covered by Phase 1/3's edits to the same file); `crates/phase-llm/src/render/game.rs`.
+
+**Claims to establish.** manabrew-compat is out of scope for the whole run (Dandan declared unsupported on that adapter) — buy by confirming no `.library`/`.graveyard` occurrence in `crates/manabrew-compat/` is in this run's read population (the `count_reads.py` roots already exclude it, per the script's `roots` list — confirm the script's root list at phase start).
+
+**Verification plan.** `phase-llm/src/render/game.rs`: a rendering test showing the non-canonical seat's render no longer reports an empty library/graveyard (revert-failing: revert the accessor swap, render goes empty again). Remaining AI read-swap sites get accessor-correctness unit tests where a card-level test isn't available (most of `ai_support`/`phase-ai` here are heuristics, not player-facing rules) — semantic correctness of the heuristic itself is `DEFERRED(phase 11)`.
+
+**Deferral list.** AI heuristic semantic fixes on these same files (→ Phase 11); filter/dedup (→ Phase 6).
+
+**Seam notes.** `crates/phase-ai/src/search.rs` also touched by Phase 8 (FreeReveal emission points) and Phase 11 (semantic fix) — three phases, three distinct functions, sequential. `crates/phase-ai/src/zone_eval.rs` and `policies/mill_targeting.rs`/`policies/payoff.rs` are mechanically swapped here and semantically fixed in Phase 11 — same lines, sequential dependency (mechanical swap must land before the semantic fix can read through the accessor).
+
+**T1∧T2 check.** 1 unit. T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 6 — S2c: Filter owner-axis collapse + count dedup
+
+**Goal.** Two building blocks completing the shared-zone read model: (a) filter owner/controller-axis collapse — for an object in a shared zone, `FilterProp::Owned` (live-object and record/LKI arms), `matches_target_filter_in_owner_zone`, and the typed-filter `controller` axis (via `filter.rs::effective_controller`) treat the axis as satisfied for every seat; (b) count dedup — aggregate folds over `scoped_players` (the `quantity.rs` `CardTypeSetSource` arm, `QuantityRef::ZoneCardCount`, `QuantityRef::GraveyardSize` via `resolve_per_player_scalar`/`aggregate_over_players`) count the shared pile once, modeled on the 2HG precedent (`topology.rs::shared_resource_dedup_key` + `players.rs::aggregate_over_teams`) as a shared-zone dedup key and keyed fold, not hand-written per-site collapse logic.
+
+**Scope rule.** `crates/engine/src/game/filter.rs`; `crates/engine/src/game/quantity.rs` (the dedup arms only — its individual read-site conversions are Phase 4 or 5's job); the file(s) implementing `resolve_per_player_scalar`/`aggregate_over_players` if a new dedup-key parameter is threaded through (locate at phase start; `topology.rs`/`players.rs` are read-only precedent traces unless the keyed-fold signature itself needs the new key type).
+
+**Claims to establish.**
+- `targeting.rs` does not call `matches_target_filter_in_owner_zone` anywhere (confirmed at `BASE_SHA`: `targeting.rs` calls `matches_target_filter`/`player_matches_target_filter_in_state`, never the owner-zone variant) — this determines that the owner-zone collapse alone does not reach target-legality checks, so the controller-axis collapse is independently required for Mystic Sanctuary. Re-confirm with the same grep at phase start since this is decision-critical.
+- `topology.rs::shared_resource_dedup_key` and `players.rs::aggregate_over_teams` exist as the 2HG precedent — buy by grepping both symbols at phase start.
+
+**Verification plan.** Haunted Fengraf fixture: its random-graveyard-return ability resolves correctly when the shared graveyard holds a card owned by the *other* seat (owner-collapse, revert-failing: remove the collapse, the ability's `Owned{You}` filter excludes the other seat's card). Mystic Sanctuary fixture (from the brief): the non-canonical seat's Mystic Sanctuary targets an instant in the shared graveyard owned by the canonical seat (controller-collapse, since `controller: You` is the filter axis and targeting.rs is the reachable path). ZoneCardCount/GraveyardSize dedup test: an all-players-scope quantity read over the shared pile returns the pile's size once, not doubled (revert-failing: remove the dedup key, the aggregate fold double-counts). Accumulated Knowledge's full "no double count" assertion closes here (it goes through the id-deduped `ObjectCount` path per the brief and was already established not to be able to fail that specific path — this test instead exercises `ZoneCardCount`/`GraveyardSize` directly, the actually-vulnerable paths).
+
+**Deferral list.** None outstanding for S2 as a whole after this phase — S2a/b/c close the full shared-library/graveyard read+write+filter+count model.
+
+**Seam notes.** `crates/engine/src/game/quantity.rs` — this phase's dedup-arm edit lands on top of whichever earlier phase (4 or 5) converted the file's individual reads; confirm that conversion is present before editing.
+
+**T1∧T2 check.** 2 units (owner/controller-axis collapse; count dedup — two distinct building blocks per the brief's own "a second building block" / "model this on the 2HG precedent" framing). Estimated scope paths: filter.rs, quantity.rs, the aggregate-fold file, 2 card fixtures (Haunted Fengraf, Mystic Sanctuary), 1 dedup test ≈ 6. T1 fires, T2 (6 < 13) does not — conjunction cannot fire.
+
+---
+
+### Phase 7 — S3: Hand-entry ownership rebind
+
+**Goal.** Under the format's hand-entry-rebind axis (from Phase 1), a zone move from a shared zone into a hand carries the receiving player, and `obj.owner := receiver` before containers are chosen, at the Hand-destination seam in `zone_pipeline.rs` (not in each resolver). The receiver is the drawer for draws and the opening deal, and the effect's "your hand" player for Dig→Hand (Telling Time) and ChangeZone Graveyard→Hand (Haunted Fengraf). With the rebind in place, every cast (`casting_costs::finalize_cast_with_phyrexian_choices_inner` → `ZoneMoveRequest::casting_to_stack`) and every land play (`engine.rs::handle_play_land`) is by the owner by construction — no cast- or land-play-time stamp is added, since no Dandan card casts or plays from the shared library/graveyard directly. The rebind must replay: `apply_resolved_zone_change` refuses with `OwnerMismatch` when `object.owner != command.owner` (confirmed present at `zones.rs`), so the rebind is carried by the zone-change command or journaled as its own typed command (the `ResolvedControllerOverrideCommand` precedent in `resolved_commands.rs` shows the shape); the phase plan picks one based on whether journal replay is live for the chosen approach.
+
+**Scope rule.** `crates/engine/src/game/zone_pipeline.rs` (the Hand-destination seam); `crates/engine/src/types/resolved_commands.rs` (only if the journaled-command approach is chosen); `crates/engine/src/game/zones.rs` (only if `apply_resolved_zone_change`'s `OwnerMismatch` check itself needs to accept the rebound owner — compiler-forced or test-forced, not a design choice made here).
+
+**Claims to establish.** `apply_resolved_zone_change` refuses `OwnerMismatch` on `object.owner != command.owner` today (confirmed at `zones.rs:943,1078` at `BASE_SHA`) — re-confirm at phase start; this is why a raw field write on `obj.owner` is insufficient and the rebind must go through a command path.
+
+**Verification plan.** Fixture (from the brief, fully specified): the non-canonical seat draws (and separately Telling-Times) a creature from the shared library and gets it with owner = itself; it casts the creature; the other seat Control-Magics it (controller changes, owner unchanged); Unsubstantiate returns it to the caster's (owner's) hand. Revert leg: remove the rebind, the card lands in the canonical seat's hand at draw instead (paired positive/negative, both legs in the brief already).
+
+**Deferral list.** None — S3 is fully self-contained given Phase 3's accessor.
+
+**Seam notes.** None — `zone_pipeline.rs` is not touched by any other phase in this run.
+
+**T1∧T2 check.** 1 unit. T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 8 — S4: Mulligan declare round, FreeReveal, pregame dealer
+
+**Goal.** Add a CR 103.5 declare round for formats with a shared library (gated on the shared-zone axis): Mulligan and FreeReveal declarations are recorded without redrawing; once every `Declare` entry has declared, all redrawers are dealt interleaved, active player first, through one pregame interleave primitive (`apnap_order_from`) shared by the opening deal (`start_mulligan`) and the round's redraws. Add `MulliganChoice::FreeReveal` (modeled on `UseSerumPowder`'s shape: validated at declare time, gated on the `Declare` phase, legal only when `mulligan_count == 0` and the settled-decision-1 hand predicate holds — fewer than two lands OR fewer than two nonland cards); it reveals the hand, returns it through `shuffle_hand_into_library`, and redraws through the dealer, incrementing nothing and bottoming nothing. Extend consumers: `game/interaction.rs`'s `GameAction::MulliganDecision` match, `ai_support/candidates.rs` (emit FreeReveal), phase-ai `search.rs`'s `deterministic_choice` and `fallback_action`, client `types.ts` `MulliganChoice` + GamePage mulligan buttons + the `en` locale's `gamePage.mulligan` keys (mirrors follow, no separate edit). `manabrew-compat` gets no protocol output for FreeReveal — Dandan is declared unsupported on that adapter.
+
+**Scope rule.** `crates/engine/src/types/actions.rs` (`MulliganChoice`); `crates/engine/src/game/mulligan.rs` (`MulliganDecisionEntry`/`MulliganDecisionPhase`, `advance_after_decision`, the declare-round machinery, the dealer primitive); `crates/engine/src/game/interaction.rs`; `crates/engine/src/ai_support/candidates.rs`; `crates/phase-ai/src/search.rs` (`deterministic_choice`, `fallback_action` only — `large_board_main_phase_has_no_development_sources` is Phase 11's edit in the same file); `client/src/types.ts`; the GamePage mulligan-button component (locate at phase start); `client/src/i18n/locales/en/game.json` (mirrors regenerate per the repo's i18n tooling, no manual per-locale edit).
+
+**Claims to establish.**
+- `handle_mulligan_decision`'s `MulliganChoice::Mulligan` arm redraws immediately on submission (`shuffle_hand_into_library` + `draw_n` called inline, no declare/interleave step) — confirmed at `mulligan.rs:219-241` at `BASE_SHA`. Re-confirm at phase start; this is the gap the declare round fills.
+- With `grants_free_first_mulligan()` false and 2 seats, `free_first_mulligan()` is false, so `mulligan_count == 0` means "no regular mulligan yet" — this is a property of the *existing* mulligan-count logic the brief asserts holds for any 2-player format with that axis false; buy by reading `free_first_mulligan`'s definition at phase start (Dandan-specific: Phase 1 already set `grants_free_first_mulligan() → false` for Dandan).
+
+**Verification plan.** Declare-round test: both seats declare (one Mulligan, one Keep) before either redraws, then redraws happen interleaved active-player-first (revert-failing: without the round, the eager-redraw path from the pre-existing `Mulligan` arm redraws immediately on that seat's own declaration). FreeReveal test: a qualifying hand (per settled decision 1) may FreeReveal once, before any regular mulligan, with a hostile fixture — a hand that qualifies only after a prior regular mulligan must be rejected (`mulligan_count > 0`). AI emission test: `deterministic_choice`/`fallback_action` emit FreeReveal when legal. Client/locale wiring is `DEFERRED` to no later phase — the `en` locale addition lands in this phase alongside the engine choice; UI-only cosmetic assertions are out of scope per the frontend-display convention (S7 is the pile-display phase; this phase's UI change is the mulligan-button label/handler, covered by an existing frontend test pattern if one exists for `UseSerumPowder`'s button, otherwise noted as a residual per Task-scope-and-verification-work).
+
+**Deferral list.** In-game (post-mulligan) simultaneous draws — e.g. Day's Undoing's wheel — are Phase 9's job; this phase's dealer primitive is reused there, not reimplemented.
+
+**Seam notes.** `crates/engine/src/game/mulligan.rs` builds on Phase 3's now-correct `shuffle_hand_into_library` routing. `crates/phase-ai/src/search.rs` shares the file with Phase 5 (mechanical swap, different lines) and Phase 11 (semantic fix, different lines).
+
+**T1∧T2 check.** 1 unit (one interactive-choice addition + its declare-round machinery, per the anchor's own "routine interactive effect wiring types/parser/resolver/frontend/AI is one unit" example). T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 9 — S4b + PREREQ-3 + S6: In-game simultaneous-draw dealer, Day's Undoing wheel split, deck-out verification
+
+**Goal.** Build the general in-game simultaneous-draw dealer frame (every draw is a CR 121.2 instruction frame with CR 121.2a instruction-level and CR 121.6b per-unit replacement consults, and a pause can happen at any unit): a multi-player dealer frame settles each player's instruction count first, then deals single draws round-robin (active player first, via `apnap_order_from` with the ability's `starting_with`), surviving unit pauses and keeping each player's delivered count intact (`install_previous_effect_counts_by_player`). Intercept at the two fan-out layers in `effects/mod.rs::resolve_chain_body` (the `player_scope` driver and `resolves_for_each_target_player`), using the shape-gated-simultaneous-protocol precedent `scoped_library_search::supports_simultaneous_delivery` (confirmed present). Bump `RESOLUTION_STATE_WIRE_VERSION`. Apply this to Day's Undoing per settled decision 2: every hand and the shared graveyard are shuffled into the shared library once, then 14 cards are dealt one at a time, active player first, through the dealer — this needs the existing sequential per-player wheel (pinned by `tests/integration/all_player_library_wheel.rs`, confirmed present, kept together per the brief by `is_player_scope_local_continuation`) split into an all-players move/shuffle phase followed by a dealt-draw phase. Close S6 (deck-out) as verification only: the loss logic (`sba.rs::collect_draw_from_empty_losers` → `elimination::eliminate_players_simultaneously`) is unchanged; the flag path (`select_cards_to_draw` → `apply_draw_after_replacement` → `resolve_and_apply_cards_drawn` → `apply_resolved_ledger_edit`) was already routed in Phase 3 — this phase's own dealer must not park once any player has flagged empty (the pause hazard: `engine.rs::reconcile_terminal_result` runs SBAs when a player-loss SBA is pending during a resolution prompt, and a pause between two empty draws would turn a simultaneous draw into a single loser).
+
+**Scope rule.** `crates/engine/src/game/effects/draw.rs`; `crates/engine/src/game/effects/mod.rs` (`resolve_chain_body`, standing shared-registration file); `crates/engine/src/types/resolution.rs` (`RESOLUTION_STATE_WIRE_VERSION` bump, `DrawSequenceStack` extension if needed); `crates/engine/src/game/effects/scoped_library_search.rs` (precedent trace; edit only if the wheel-split shares its dispatch); the file implementing the Day's Undoing all-player-wheel resolver (locate via `tests/integration/all_player_library_wheel.rs`'s target at phase start); `crates/engine/tests/integration/all_player_library_wheel.rs` (update the pinned test for the new wheel split, per the test's own discriminating-test contract — not a fixture, a product test); a new S6 test file under `crates/engine/tests/integration/`.
+
+**Claims to establish.**
+- `tests/integration/all_player_library_wheel.rs` exists and pins the sequential per-player wheel from #8757 (confirmed present at `BASE_SHA`) — re-read its assertions at phase start to know exactly what the wheel-split must preserve for non-Dandan formats (the split must be gated so other formats keep the existing sequential-wheel behavior unchanged).
+- `scoped_library_search::supports_simultaneous_delivery` exists as the shape-gate precedent (confirmed at `BASE_SHA`) — its call site in `resolve_chain_body` is the intercept pattern to follow.
+
+**Verification plan.** Day's Undoing fixture (settled decision 2, fully specified): both hands and the shared graveyard shuffle into the shared library once, then 14 cards deal one at a time active-player-first; sibling case — the same card in a non-shared-zone format keeps the pre-existing sequential per-player wheel unchanged (revert-failing on the gate: remove the shared-zone check, Dandan gets the old sequential wheel and the deal-order assertion fails). S6: pile-empty (CR 104.4a draw — both lose) and pile-short-by-one-under-the-dealer (the non-active player alone loses) as two hostile fixtures in one test file; the pause-hazard case (an empty draw with an intervening prompt) is asserted not to occur for the Dandan card list specifically (no Dandan card has a draw replacement) — this is a documented scope limit, not a general pause-safety proof, and is stated as such in the test's own scope, not asserted as a general property.
+
+**Deferral list.** None — S4b, PREREQ-3, and S6 close together; no further shared-zone draw work remains after this phase.
+
+**Seam notes.** `crates/engine/src/game/effects/draw.rs` builds on Phase 3's `select_cards_to_draw` routing. `crates/engine/src/game/effects/mod.rs` is the chartered.md standing shared-registration file, implied rather than needing explicit extension.
+
+**T1∧T2 check.** Up to 2 units if S6 counts as its own mechanic (dealer frame + wheel split as one unit; verification-only S6 as a second, thinner unit) or 1 unit if S6 is read as the dealer's own acceptance evidence. Taking the conservative (higher) count of 2: estimated scope paths ≈ 7 (draw.rs, mod.rs, resolution.rs, scoped_library_search.rs trace, the wheel-resolver file, the pinned wheel test, the new S6 test). T1 may fire, T2 (7 < 13) does not — conjunction cannot fire either way.
+
+---
+
+### Phase 10 — S7: Frontend shared-pile display
+
+**Goal.** Expose which seat holds the shared pile from the engine in a `derived` view (or a shared-pile descriptor), so the client never infers it — display-only, per the project's engine-owns-logic rule. Render the shared library and graveyard once, in `playerPiles` (keep ExilePile per seat); `OpponentSeatPane` is unreachable here (`isSplitBoardActive` requires seatCount > 2). Update the fly-to anchors in `AnimationOverlay.tsx` (keyed by owner id today — must resolve through the same shared-pile identity), `hooks/useCastableZoneObjects.ts`, `viewmodel/gameStateView.ts::getPlayerZoneIds`, `LibraryPile.tsx::isMyLibrary`. `DebugLibraryViewer` reads `derived.debug_library_cards`, so the engine-side derivation must use `library_of` (Phase 3's accessor).
+
+**Scope rule.** The engine-side derived-view file that computes `debug_library_cards` and any new shared-pile-holder field (locate at phase start — likely `crates/engine/src/game/derived.rs` or `derived_views.rs`, both already in the Phase 4/5 read-sweep scope for their own occurrences; this phase's edit is additive, a new field/method, not a further read-sweep edit); `client/src/pages/GamePage.tsx`; `client/src/components/AnimationOverlay.tsx`; `client/src/hooks/useCastableZoneObjects.ts`; `client/src/viewmodel/gameStateView.ts`; `client/src/components/LibraryPile.tsx`.
+
+**Claims to establish.** None load-bearing beyond Phase 3's already-established accessor existing and being read-through by the derived view — no other code-state claim gates this phase's design.
+
+**Verification plan.** A frontend test (existing pattern for pile rendering, e.g. `LibraryPile`/`GamePage` component tests) asserting: with a Dandan-shaped game state, the shared library/graveyard render once under `playerPiles` for both seats' views, not duplicated or split; `AnimationOverlay`'s fly-to anchor resolves to the shared-pile-holder's DOM node regardless of which seat is the local viewer (revert-failing: without the fix, the anchor keys by `owner id` and the non-canonical seat's animation targets a pile that doesn't visually exist for it).
+
+**Deferral list.** None.
+
+**Seam notes.** None with other engine-side phases beyond reading Phase 3's accessor.
+
+**T1∧T2 check.** 1 unit (display-only exposure of one identity signal across its render sites). T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+### Phase 11 — S8: AI consumer rerouting
+
+**Goal.** Route AI heuristics' raw library/graveyard reads through the engine accessor and fix the semantic double-counting/bias this introduces: `policies/payoff.rs::mill_scale` (opponent reading 0 today pins urgency HIGH — read through the accessor instead), `policies/mill_targeting.rs::verdict` (empty-library penalty always-on today), `threat_profile.rs::build_threat_profile_multiplayer` (returns `None` for the seat holding no pile — read through accessor), `zone_eval.rs::graveyard_value` (read through `graveyard_of` so both seats score the shared graveyard identically, canceling in `player_zone_score`'s me-minus-opponent difference instead of crediting it wholly to the canonical seat), `search.rs::large_board_main_phase_has_no_development_sources` (`player.graveyard.is_empty()` through `graveyard_of`). `deck_knowledge.rs::known_remaining_deck_counts`/`remaining_deck_view` look the deck pool up for the pile holder and, for shared-zone cards, drop the `object.owner != player` filter so every non-token card outside the shared library is subtracted regardless of owner. `policies/draw_payoff.rs` needs no change (already correct through `can_draw_at_least_one`). Close with a liveness test: `run_ai_actions_bounded` on a Dandan state (no `ai_duel` format flag exists, so an in-crate test is cheaper than a new mode).
+
+**Scope rule.** `crates/phase-ai/src/policies/payoff.rs`; `crates/phase-ai/src/policies/mill_targeting.rs`; `crates/phase-ai/src/threat_profile.rs`; `crates/phase-ai/src/zone_eval.rs`; `crates/phase-ai/src/search.rs` (`large_board_main_phase_has_no_development_sources` only — distinct from Phase 8's edits to the same file); `crates/phase-ai/src/deck_knowledge.rs`.
+
+**Claims to establish.**
+- `zone_eval.rs::graveyard_value` today credits the shared graveyard's value wholly to the canonical seat in `player_zone_score`'s difference — this is a live bias the fix corrects, buy by reading the function's current read path at phase start (it will read the raw `player.graveyard` field, not an accessor, since Phase 5's mechanical swap on this file only swaps the *reference*, not the *semantics* — confirm Phase 5 landed the mechanical swap first).
+- `ai_duel` has no general-format flag, only Commander modes — buy by grepping `ai_duel`'s CLI flag definitions at phase start; this is why the liveness check is an in-crate test, not a new `ai_duel` mode.
+
+**Verification plan.** For each rerouted heuristic, a unit test comparing the Dandan-config score against the pre-fix (raw-read) score on an identical shared-graveyard/library state, showing the bias is gone (revert-failing: revert the accessor swap on that one function, the biased score returns). Liveness test: `run_ai_actions_bounded` completes without panicking on a Dandan state through several turns (a positive reach-guard: assert at least one legal action was taken by each seat, not just "didn't crash").
+
+**Deferral list.** None — this phase closes the run's AI-facing work.
+
+**Seam notes.** `crates/phase-ai/src/search.rs` and `crates/phase-ai/src/zone_eval.rs`/`policies/payoff.rs`/`policies/mill_targeting.rs` share files with Phase 5's mechanical read-swap (different lines/purpose, sequential — this phase's semantic fix depends on Phase 5's accessor swap already being in place).
+
+**T1∧T2 check.** 1 unit (one "route AI reads through the shared-zone accessor and correct the resulting bias" mechanic, six lockstep call sites). T1 fails regardless of T2 — conjunction cannot fire.
+
+---
+
+## Run-level notes
+
+- **Architecture-scope maintainer review** applies per `.agents/pr-review-policy.toml` `[architecture_scope]` (covers `format.rs`, `deck_loading.rs`, `deck_validation.rs`, `mulligan.rs` — Phases 1, 3, 8) — carried at run-level PR handoff, not a phase concern.
+- **Settled decision 3's "run's charter decides whether CR 612 ships as its own PR"** is resolved here per the run owner's explicit constraint (one PR unless total exceeds ~30,000 lines; measured total ≈9,600, well under): CR 612 ships as Phase 2 of this run's single PR, not a separate PR.
+- **Worker model:** all phase roles run on Sonnet (`claude-sonnet-5` or newer) per settled decision 5; this charter's own model is recorded in the planner's report.

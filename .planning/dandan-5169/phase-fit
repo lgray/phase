@@ -7,3 +7,10 @@
 - T1 (>=2 units): FIRES (>=10 units per the DAG).
 - T2 (>=13 scope paths): FIRES (the S2 read sweep alone expands to 58 engine production files).
 - Verdict: chartered run. Route: fresh draft, no review rounds -> charter-mode planner derives the charter from the draft.
+
+## 2. Charter review round 1 (charter mode; reviewer model claude-sonnet-5-5), against run BASE (upstream/main tip, 1 commit past the charter's stated base)
+- Result: NOT CLEAN. 8 decision revisions (D1 Phase 2 T1∧T2 split; D2 phase-ai read sites move to Phase 11; D3 Phase 8 split; D4 Phase 7 receiver producer + scope; D5 card-bot 25-choice cap; D6 omitted scope paths; D7 acceptance rows land nowhere/too early; D8 manabrew-compat unsupported claim unlanded), 2 review-only (R1 i18n mirrors, R2 threat_profile attribution), 8 corrections (C1–C8). Report: charter-review-r1.md.
+- Design round 1 of the charter loop; behavior-class (decision) count = 8. Route: fresh charter-mode planner revises with all findings as constraints; fresh whole-charter review follows.
+- Round 1 revision: fresh charter-mode planner (claude-sonnet-5-5) closed D1–D8, R1–R2, C1–C8; 15 phases, ~9,700 LOC. Prior version kept as phase-charter.r0 (now phase-charter.r1 is the revised text). Planner's two open questions (per-phase wire bump; 15-phase overhead) are left to phase plans / not decisions needing a human: wire bumps follow scripts/check-protocol-version.mjs per phase.
+
+## 3. Charter review round 2 dispatched (whole charter, fresh reviewer).
