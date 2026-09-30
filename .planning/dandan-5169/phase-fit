@@ -1,0 +1,9 @@
+# phase-fit record — run dandan-5169 (task: phase-rs/phase#5169 Dandan format; budget=standard)
+# Run root: <worktree>/.planning/dandan-5169 (gitignored). The git-common-dir run root is write-blocked by this agent's worktree isolation.
+
+## 1. Adjudication (Step 1a) — input: issue #5169 body (draft plan) "Sizing, measured at the pin" + re-measure at run base
+- Sizing source: the brief's Slice DAG enumerates independently tested units S1, S2a, S2b, S2c, S3, S4, S4b, S6, S7, S8, PREREQ-0, PREREQ-1/2, PREREQ-3.
+- Re-measure at run base 7238b9c183: `python3 brief/scripts/count_reads.py HEAD '\.(library|graveyard)\b(?!\s*\()'` -> files by crate {engine: 58, phase-ai: 9, engine-wasm: 1, phase-llm: 1}.
+- T1 (>=2 units): FIRES (>=10 units per the DAG).
+- T2 (>=13 scope paths): FIRES (the S2 read sweep alone expands to 58 engine production files).
+- Verdict: chartered run. Route: fresh draft, no review rounds -> charter-mode planner derives the charter from the draft.
