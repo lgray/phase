@@ -27495,13 +27495,7 @@ pub fn handle_cancel_cast(
             match state.objects.get(&card).map(|obj| obj.zone) {
                 // CR 733.1: actions that moved cards to a library are not reversed.
                 None | Some(Zone::Library | Zone::Graveyard) => {}
-                // CR 733.1: an undone action triggers no abilities, so the rollback events are dropped.
-                Some(_) => super::zones::restore_after_rollback(
-                    state,
-                    card,
-                    Zone::Graveyard,
-                    &mut Vec::new(),
-                ),
+                Some(_) => super::zones::restore_after_rollback(state, card, Zone::Graveyard),
             }
         }
         super::zones::restore_graveyard_order(state, delve.player, &delve.graveyard_before);

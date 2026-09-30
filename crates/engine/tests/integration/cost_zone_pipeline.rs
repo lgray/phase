@@ -10478,6 +10478,7 @@ fn delve_mana_payment_honors_moved_redirect_without_linking_redirected_fuel() {
 }
 
 struct DelveCancelWitness {
+    before_cast: serde_json::Value,
     runner: GameRunner,
     spell: ObjectId,
     fuel: [ObjectId; 3],
@@ -10522,7 +10523,7 @@ fn delve_cancel_witness_paying_first(fuel_dies_trigger: bool, first: usize) -> D
             .id()
     } else {
         scenario
-            .add_spell_to_graveyard(P0, "Delve Fuel F", true)
+            .add_creature_to_graveyard(P0, "Delve Fuel F", 1, 1)
             .id()
     };
     let c = scenario
@@ -10532,6 +10533,7 @@ fn delve_cancel_witness_paying_first(fuel_dies_trigger: bool, first: usize) -> D
         .map(|name| scenario.add_creature(P0, name, 0, 0).as_enchantment().id());
 
     let mut runner = scenario.build();
+    let before_cast = serde_json::to_value(runner.state()).unwrap();
     let card_id = runner.state().objects[&spell].card_id;
     runner
         .act(GameAction::CastSpell {
@@ -10542,6 +10544,7 @@ fn delve_cancel_witness_paying_first(fuel_dies_trigger: bool, first: usize) -> D
         })
         .expect("delve spell reaches its mana-payment window");
     let mut witness = DelveCancelWitness {
+        before_cast,
         runner,
         spell,
         fuel: [a, f, c],
@@ -10549,6 +10552,124 @@ fn delve_cancel_witness_paying_first(fuel_dies_trigger: bool, first: usize) -> D
     };
     witness.delve(witness.fuel[first]);
     witness
+}
+
+/// JSON-pointer paths at which `a` and `b` differ; unequal-length arrays report the array path.
+fn state_diff_paths(a: &serde_json::Value, b: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    fn walk(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
+        match (a, b) {
+            (Value::Object(x), Value::Object(y)) => {
+                for key in x.keys().chain(y.keys().filter(|k| !x.contains_key(*k))) {
+                    let child = format!("{path}/{key}");
+                    match (x.get(key), y.get(key)) {
+                        (Some(l), Some(r)) => walk(&child, l, r, out),
+                        _ => out.push(child),
+                    }
+                }
+            }
+            (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
+                for (i, (l, r)) in x.iter().zip(y).enumerate() {
+                    walk(&format!("{path}/{i}"), l, r, out);
+                }
+            }
+            _ if a != b => out.push(path.to_string()),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk("", a, b, &mut out);
+    out
+}
+
+impl DelveCancelWitness {
+    /// Cancels the cast and requires the whole state to equal its pre-cast value
+    /// except the paths listed below. `redirected` is a fuel card whose payment
+    /// was redirected out of the graveyard.
+    fn cancel(&mut self, redirected: Option<ObjectId>) {
+        use serde_json::Value;
+        let before_cancel = serde_json::to_value(self.runner.state()).unwrap();
+        let library_bound: Vec<ObjectId> = self
+            .fuel
+            .into_iter()
+            .filter(|fuel| self.runner.state().objects[fuel].zone == Zone::Library)
+            .collect();
+        if let Some(fuel) = redirected {
+            assert_ne!(self.runner.state().objects[&fuel].zone, Zone::Graveyard);
+        }
+
+        self.runner
+            .act(GameAction::CancelCast)
+            .expect("cancel a delve cast");
+
+        let after = serde_json::to_value(self.runner.state()).unwrap();
+        // CR 733.1: library-bound fuel is not reversed, so it leaves the pre-cast graveyard.
+        let mut baseline = self.before_cast.clone();
+        if let Some(Value::Array(graveyard)) = baseline.pointer_mut("/players/0/graveyard") {
+            graveyard.retain(|id| !library_bound.iter().any(|fuel| id == &Value::from(fuel.0)));
+        }
+        let diff = state_diff_paths(&baseline, &after);
+        assert!(diff.iter().any(|path| path == "/cancelled_casts"));
+        assert!(diff.iter().any(|path| path == "/zone_changes_this_turn"));
+
+        let under = |ids: &[ObjectId], path: &str| {
+            ids.iter()
+                .any(|id| path.starts_with(&format!("/objects/{}/", id.0)))
+        };
+        let leaf = |path: &str| path.rsplit('/').next().unwrap().to_string();
+        for path in &diff {
+            let leaf = leaf(path);
+            // Tier A: differences that carry no gameplay history.
+            let tier_a = path == "/cancelled_casts"
+                || path == "/next_pip_id"
+                || path.starts_with("/resolved_rules_journal")
+                || (path.starts_with("/objects/")
+                    && [
+                        "base_characteristics_initialized",
+                        "layer_base_power",
+                        "layer_base_toughness",
+                    ]
+                    .contains(&leaf.as_str()))
+                || (under(&self.fuel, path) && leaf == "incarnation")
+                || (under(&self.redirects, path)
+                    && (path.contains("/replacement_definitions")
+                        || path.contains("/base_replacement_definitions")));
+            // Tier B: the forward payment's own writes; the undo must add nothing to them.
+            let tier_b = [
+                "/zone_changes_this_turn",
+                "/battlefield_entries_this_turn",
+                "/players/0/descended_this_turn",
+                "/next_timestamp",
+                "/players/0/library",
+            ]
+            .contains(&path.as_str())
+                || (under(&self.fuel, path)
+                    && [
+                        "timestamp",
+                        "entered_battlefield_turn",
+                        "has_summoning_sickness",
+                        "summoning_sick",
+                    ]
+                    .contains(&leaf.as_str()))
+                || (under(&library_bound, path) && leaf == "zone")
+                || (under(&self.redirects, path) && leaf == "tapped");
+            assert!(
+                tier_a || (tier_b && before_cancel.pointer(path) == after.pointer(path)),
+                "unexplained cancel residue at {path}"
+            );
+        }
+
+        use engine::types::game_state::{PersistedGameState, PersistedRestoreFinalization};
+        let saved =
+            serde_json::to_string(&PersistedGameState::capture(self.runner.state().clone()))
+                .unwrap();
+        serde_json::from_str::<PersistedGameState>(&saved)
+            .unwrap()
+            .prepare_for_restore(PersistedRestoreFinalization::DeferUntilRehydrated)
+            .expect("post-cancel state prepares for restore")
+            .finalize_after_rehydration(|_| Ok(()))
+            .expect("post-cancel state finalizes after rehydration");
+    }
 }
 
 impl DelveCancelWitness {
@@ -10668,10 +10789,7 @@ fn cancel_after_redirected_delve_payment_restores_fuel_order_hand_and_markers() 
     witness.set_exile_redirect(None);
     witness.delve(c);
     assert_eq!(witness.runner.state().objects[&c].zone, Zone::Exile);
-    witness
-        .runner
-        .act(GameAction::CancelCast)
-        .expect("cancel a delve cast");
+    witness.cancel(Some(f));
 
     witness.assert_cancel_leaves_no_delve_residue();
 }
@@ -10691,10 +10809,7 @@ fn cancel_after_library_redirected_delve_payment_leaves_fuel_in_library() {
 
     witness.set_exile_redirect(None);
     witness.delve(c);
-    witness
-        .runner
-        .act(GameAction::CancelCast)
-        .expect("cancel a delve cast");
+    witness.cancel(Some(f));
 
     let state = witness.runner.state();
     assert_eq!(state.objects[&f].zone, Zone::Library);
@@ -10736,10 +10851,7 @@ fn cancel_after_prevented_delve_payment_moves_nothing_and_clears_marker() {
     witness.assert_mana_payment_open();
     let moves_before_cancel = witness.zone_change_records_for(f);
 
-    witness
-        .runner
-        .act(GameAction::CancelCast)
-        .expect("cancel a delve cast");
+    witness.cancel(None);
 
     assert_eq!(witness.zone_change_records_for(f), moves_before_cancel);
     witness.assert_cancel_leaves_no_delve_residue();
@@ -10758,10 +10870,7 @@ fn cancel_after_same_zone_redirected_delve_payment_restores_order() {
     assert!(witness.markers().contains(&f));
     witness.assert_mana_payment_open();
 
-    witness
-        .runner
-        .act(GameAction::CancelCast)
-        .expect("cancel a delve cast");
+    witness.cancel(None);
 
     witness.assert_cancel_leaves_no_delve_residue();
 }
@@ -10779,14 +10888,91 @@ fn cancel_after_battlefield_redirected_delve_payment_triggers_nothing() {
     assert_eq!(witness.runner.state().objects[&f].zone, Zone::Battlefield);
     assert!(witness.markers().contains(&f));
     witness.assert_mana_payment_open();
+    assert_eq!(witness.zone_change_records_for(f), 1);
+    let entries = witness.runner.state().battlefield_entries_this_turn.len();
 
-    witness
-        .runner
-        .act(GameAction::CancelCast)
-        .expect("cancel a delve cast");
+    witness.cancel(Some(f));
 
     witness.assert_cancel_leaves_no_delve_residue();
     assert_eq!(witness.runner.state().players[0].life, 20);
+    let state = witness.runner.state();
+    assert_eq!(witness.zone_change_records_for(f), 1);
+    assert_eq!(state.battlefield_entries_this_turn.len(), entries);
+    assert!(!state
+        .zone_changes_this_turn
+        .iter()
+        .any(|r| r.from_zone == Some(Zone::Battlefield) && r.to_zone == Zone::Graveyard));
+}
+
+/// CR 733.1: an undone delve payment that a redirect sent to the battlefield
+/// leaves no death behind, so a later real Brimstone Volley is not on morbid.
+#[test]
+fn cancel_after_battlefield_redirected_delve_payment_leaves_morbid_unmet() {
+    use engine::game::scenario_db::GameScenarioDbExt;
+    use engine::types::mana::ManaUnit;
+
+    let db = crate::support::shared_card_db().expect("the committed card fixture loads");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand(P0, "Delve Cancel Witness", true)
+        .with_mana_cost(ManaCost::generic(3))
+        .with_keyword(Keyword::Delve)
+        .id();
+    let fuel = scenario
+        .add_creature_to_graveyard(P0, "Delve Fuel F", 1, 1)
+        .id();
+    let redirect = scenario
+        .add_creature(P0, "Delve Exile Redirect", 0, 0)
+        .as_enchantment()
+        .id();
+    let bystander = scenario.add_creature(P0, "Bystander", 1, 1).id();
+    let volley = scenario.add_real_card(P0, "Brimstone Volley", Zone::Hand, db);
+    let control_volley = scenario.add_real_card(P0, "Brimstone Volley", Zone::Hand, db);
+    scenario.with_mana_pool(
+        P0,
+        (0..6)
+            .map(|_| ManaUnit::new(ManaType::Red, ObjectId(0), false, vec![]))
+            .collect(),
+    );
+    let mut runner = scenario.build();
+    let definitions = vec![redirect_moved_to(Zone::Exile, Zone::Battlefield)];
+    let object = runner.state_mut().objects.get_mut(&redirect).unwrap();
+    object.replacement_definitions = definitions.clone().into();
+    object.base_replacement_definitions = Arc::new(definitions);
+
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Manual,
+        })
+        .expect("delve spell reaches its mana-payment window");
+    runner
+        .act(GameAction::TapForConvoke {
+            object_id: fuel,
+            mana_type: ManaType::Colorless,
+        })
+        .expect("delve fuel is payable");
+    assert_eq!(runner.state().objects[&fuel].zone, Zone::Battlefield);
+    runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    let unmet = runner.cast(volley).target_player(P1).resolve();
+    assert_eq!(unmet.life_delta(P1), -3);
+
+    let mut events = Vec::new();
+    assert!(!move_object_for_test(
+        runner.state_mut(),
+        ZoneMoveRequest::effect(bystander, Zone::Graveyard, bystander),
+        &mut events,
+    ));
+    assert_eq!(runner.state().objects[&bystander].zone, Zone::Graveyard);
+    let met = runner.cast(control_volley).target_player(P1).resolve();
+    assert_eq!(met.life_delta(P1), -5);
 }
 
 /// CR 733.1 + CR 404.2: a library-bound payment of an older card, made after a
@@ -10804,10 +10990,7 @@ fn cancel_after_library_payment_of_older_card_keeps_snapshot_order() {
 
     witness.set_exile_redirect(None);
     witness.delve(c);
-    witness
-        .runner
-        .act(GameAction::CancelCast)
-        .expect("cancel a delve cast");
+    witness.cancel(Some(a));
 
     assert_eq!(witness.graveyard(), [f, c]);
     assert_eq!(witness.runner.state().objects[&a].zone, Zone::Library);

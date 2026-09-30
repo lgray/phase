@@ -13,6 +13,7 @@ use engine::types::ability::{
     QuantityExpr, QuantityRef,
 };
 use engine::types::actions::GameAction;
+use engine::types::card_type::CoreType;
 use engine::types::game_state::{CastPaymentMode, ConvokeMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -272,6 +273,32 @@ fn cancel_delve_restores_graveyard_order_around_undelved_card() {
         Zone::Hand,
         &["Lightning Bolt", "Island", "Shock"],
     );
+}
+
+/// CR 733.1 + CR 700.11: an undone delve exile puts no permanent card into the
+/// graveyard, so the player has not descended.
+#[test]
+fn cancel_delve_of_permanent_card_does_not_mark_descended() {
+    let (mut runner, cruise, ids, _) = cruise_in_hand(&["Grizzly Bears", "Shock"], false);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&ids[0])
+        .unwrap()
+        .card_types
+        .core_types
+        .push(CoreType::Creature);
+    cast_manual(&mut runner, cruise);
+    delve(&mut runner, ids[0]);
+    assert_eq!(runner.state().objects[&ids[0]].zone, Zone::Exile);
+    assert!(!runner.state().players[P0.0 as usize].descended_this_turn);
+    let rows = runner.state().zone_changes_this_turn.len();
+
+    runner.act(GameAction::CancelCast).expect("cancel cast");
+
+    assert_cancel_restored(&runner, cruise, Zone::Hand, &["Grizzly Bears", "Shock"]);
+    assert!(!runner.state().players[P0.0 as usize].descended_this_turn);
+    assert_eq!(runner.state().zone_changes_this_turn.len(), rows);
 }
 
 /// Treasure Cruise in exile castable only while its mana value is at most the
