@@ -3319,8 +3319,16 @@ mod tests {
     }
 
     /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
-    /// `ObjectScope::SpecificObject` and the `granting_object` stamp; v91 state
-    /// cannot decode as v92 state, so it must be refused before state delivery.
+    /// `ObjectScope::SpecificObject` and the `granting_object` stamp; v92 state
+    /// cannot decode as v93 state, so it must be refused before state delivery.
+    /// `ResolvedAbility.parent_target_missing_reason` is serialized and gains
+    /// `ParentTargetMissingReason::RevealUntil`, and `EffectOutcomeSignal` gains
+    /// `RevealUntilMatched`, and the CR 701.20a reveal lease adds
+    /// `ResolvedInformationLifetime::UntilStackObjectLeaves` plus
+    /// `GameState.stack_bound_reveals` (CR 701.20a + CR 603.12), presented through
+    /// `DerivedViews.stack_revealed_cards`; a v91 peer cannot parse
+    /// the tags and would drop a paused reveal-until whiff's verdict, so it must
+    /// be refused before it receives v92 state.
     /// `PendingManaAbility` now carries required `chosen_counter_counts`
     /// instead of `chosen_counter_count` (#9207); v90 state cannot decode as
     /// v91 state, so it must be refused before state delivery.
@@ -3342,8 +3350,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_92_for_granter_binding() {
-        assert_eq!(PROTOCOL_VERSION, 92);
+    fn protocol_version_is_93_for_granter_binding() {
+        assert_eq!(PROTOCOL_VERSION, 93);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3354,7 +3362,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_92_for_granter_binding` stays
+    /// `protocol_version_is_93_for_granter_binding` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

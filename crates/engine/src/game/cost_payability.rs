@@ -806,23 +806,20 @@ impl AbilityCost {
             // CR 601.2b: Reveal N matching cards requires them to exist in hand.
             // Filter-less reveal (self-reveal) is always payable — you can always
             // reveal the source spell you're casting.
-            AbilityCost::Reveal { count, filter } => {
-                let Some(p) = state.players.get(player.0 as usize) else {
-                    return false;
-                };
-                match filter {
-                    None => true,
-                    Some(f) => {
-                        let ctx = FilterContext::from_source(state, source)
-                            .with_granting_object(granting_object);
-                        p.hand
-                            .iter()
-                            .filter(|&&id| matches_target_filter(state, id, f, &ctx))
-                            .count()
-                            >= *count as usize
-                    }
+            AbilityCost::Reveal { count, filter } => match filter {
+                None => true,
+                Some(f) => {
+                    super::casting::find_eligible_reveal_targets(
+                        state,
+                        player,
+                        source,
+                        granting_object,
+                        f,
+                    )
+                    .len()
+                        >= *count as usize
                 }
-            }
+            },
             AbilityCost::Behold {
                 count,
                 filter,

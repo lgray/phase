@@ -4289,6 +4289,40 @@ mod granter_stamp {
         }
     }
 
+    const REVEAL_THRESHOLD: &str = "Reveal a creature card with mana value less than the number of +1/+1 counters on Foo Bar from your hand: Draw a card.";
+
+    /// CR 201.5a + CR 118.3 + CR 701.20a via CR 602.2b: a reveal cost's filter
+    /// reads the paying ability's granter, so two granters' copies on one host differ.
+    #[test]
+    fn reveal_cost_threshold_reads_the_granter() {
+        for (granter, allowed) in [(0, true), (1, false)] {
+            let mut revealed = None;
+            let mut b = board_built(REVEAL_THRESHOLD, &[3, 1], None, "", |s| {
+                let id = s
+                    .add_creature_to_hand(P0, "Revealed", 1, 1)
+                    .with_mana_cost(ManaCost::generic(2))
+                    .id();
+                revealed = Some(id);
+            });
+            let revealed = revealed.unwrap();
+            let index = ability_for_granter(&b, b.granters[granter]);
+            assert_eq!(try_activate(&mut b, index), allowed, "granter={granter}");
+            if allowed {
+                let WaitingFor::PayCost { choices, .. } = &b.runner.state().waiting_for else {
+                    panic!("expected the reveal choice");
+                };
+                assert_eq!(choices, &vec![revealed]);
+                b.runner
+                    .act(GameAction::SelectCards {
+                        cards: vec![revealed],
+                    })
+                    .unwrap();
+            }
+            b.runner.advance_until_stack_empty();
+            assert_eq!(hand(&b), 1 + usize::from(allowed), "granter={granter}");
+        }
+    }
+
     /// CR 201.5a + CR 701.13a: "Exile The Dominion Bracelet" exiles the granter
     /// from the battlefield, whoever controls it (CR 301.5d).
     #[test]

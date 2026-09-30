@@ -4837,6 +4837,9 @@ fn fmt_trigger_condition(cond: &crate::types::ability::TriggerCondition) -> Stri
             parts.join(" or ")
         }
         TC::Not { condition } => format!("not ({})", fmt_trigger_condition(condition)),
+        TC::EventTime { condition } => {
+            format!("at the event: {}", fmt_trigger_condition(condition))
+        }
     }
 }
 
@@ -9658,6 +9661,7 @@ fn condition_feature(cond: &AbilityCondition) -> (&'static str, FeatureSupport) 
                 ("EffectOutcomeCurrentScopeSucceeded", Handled)
             }
             EffectOutcomeSignal::Guessed { .. } => ("EffectOutcomeGuessed", Handled),
+            EffectOutcomeSignal::RevealUntilMatched => ("EffectOutcomeRevealUntilMatched", Handled),
         },
         AbilityCondition::EventOutcomeWon => ("EventOutcomeWon", Handled),
         AbilityCondition::CoinFlipOutcome { .. } => ("CoinFlipOutcome", Handled),

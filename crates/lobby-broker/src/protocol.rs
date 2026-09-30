@@ -60,11 +60,27 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 92 — CR 201.5a granter binding: `ObjectScope::GrantingObject` and
+/// 93 — CR 201.5a granter binding: `ObjectScope::GrantingObject` and
 ///      `ObjectScope::SpecificObject`, plus the `granting_object` stamp on
 ///      `AbilityDefinition`, `TriggerDefinition`, `StaticDefinition`,
 ///      `ReplacementDefinition`, `SpellContext` and `TriggerSourceContext`.
-///      A v91 peer cannot deserialize the new state. P2P moves to wire 74.
+///      A v92 peer cannot deserialize the new state. P2P moves to wire 75.
+/// 92 — `ResolvedAbility.parent_target_missing_reason` is now serialized
+///      (`#[serde(default, skip_serializing_if = "Option::is_none")]`, it was
+///      `#[serde(skip)]`) and `ParentTargetMissingReason` gains `RevealUntil`
+///      (CR 701.20a + CR 603.12: a reveal-until that revealed no matching card),
+///      read by the new `EffectOutcomeSignal::RevealUntilMatched` guard of the
+///      "When you reveal … this way" reflexive (Yuna's Whistle, Calibrated
+///      Blast). A paused continuation carries the verdict across a `GameState`
+///      round trip. The same bump carries the CR 701.20a reveal lease:
+///      `ResolvedInformationLifetime::UntilStackObjectLeaves` and the
+///      `GameState.stack_bound_reveals` map, with its presentation in the new
+///      `DerivedViews.stack_revealed_cards` (viewer projections carry no lease
+///      map; CR 401.2 keeps a revealed library card's position hidden). A v91
+///      peer cannot parse the new
+///      tags and would drop the field, minting a reflexive trigger the rules
+///      forbid. Full-game peers and P2P move in lockstep (wire 74); lobby
+///      messages are unchanged.
 /// 91 — `PendingManaAbility::chosen_counter_count: Option<u32>` is retyped to
 ///      `chosen_counter_counts: Vec<u32>` (#9207), preserving each announced
 ///      amount for a composite `RemoveCounter` cost. The field is required,
@@ -756,7 +772,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 92;
+pub const PROTOCOL_VERSION: u32 = 93;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -1997,12 +2013,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 92);
+        assert_eq!(PROTOCOL_VERSION, 93);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 91);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 92);
     }
 
     #[test]
