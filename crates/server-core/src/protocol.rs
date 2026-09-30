@@ -3319,8 +3319,17 @@ mod tests {
     }
 
     /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
-    /// `ObjectScope::SpecificObject` and the `granting_object` stamp; v92 state
-    /// cannot decode as v93 state, so it must be refused before state delivery.
+    /// `ObjectScope::SpecificObject` and the `granting_object` stamp; v94 state
+    /// cannot decode as v95 state, so it must be refused before state delivery.
+    /// `SpellContext.creation_lookback_event` and `TriggerSourceContext.mana_cost`
+    /// are new in serialized full-game state (CR 603.7 + CR 603.10a + CR 608.2h,
+    /// CR 707.2); a v93 peer would drop both and resolve a phase-delayed
+    /// departure look-back differently, so it must be refused before it
+    /// receives v94 state.
+    /// `ReductionProvenance` gains `SacrificedForCost`, the reduction an Emerge
+    /// or Offering sacrifice earns before a deferred target declaration; v92
+    /// state cannot decode a v93 provenance, so it must be refused before
+    /// state delivery.
     /// `ResolvedAbility.parent_target_missing_reason` is serialized and gains
     /// `ParentTargetMissingReason::RevealUntil`, and `EffectOutcomeSignal` gains
     /// `RevealUntilMatched`, and the CR 701.20a reveal lease adds
@@ -3350,8 +3359,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_93_for_granter_binding() {
-        assert_eq!(PROTOCOL_VERSION, 93);
+    fn protocol_version_is_95_for_granter_binding() {
+        assert_eq!(PROTOCOL_VERSION, 95);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3362,7 +3371,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_93_for_granter_binding` stays
+    /// `protocol_version_is_95_for_granter_binding` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
