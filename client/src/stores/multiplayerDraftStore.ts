@@ -1537,6 +1537,8 @@ function clearInstalledGameRuntime(adapter: unknown): void {
  */
 function disposeMatchAdapter(set: SetFn): void {
   const state = useMultiplayerDraftStore.getState();
+  // Ahead of the adapter check: a start still bringing the pairing up has published no adapter.
+  abandonMatchStart();
   disposeMatchController();
   if (state.matchAdapter) {
     const adapter = state.matchAdapter as { dispose?: () => void };
@@ -2792,8 +2794,6 @@ export const useMultiplayerDraftStore = create<
     const gameId = `draft-match-${matchPairing.matchId}`;
     if (matchAdapter) return gameId;
     if (matchStartInFlight?.matchId === matchPairing.matchId) return null;
-    // A start still parked for an earlier pairing would otherwise hold the slot until its pod session ends.
-    abandonMatchStart();
 
     const abort = new AbortController();
     const handle = { matchId: matchPairing.matchId, abort };
@@ -3271,7 +3271,6 @@ export const useMultiplayerDraftStore = create<
     // synchronous `reset` still unparks both bring-ups. Only the host's
     // `terminateGame()` flush is left to settle on its own — `void`, because
     // `reset` cannot await and a dropped rejection here would be unhandled.
-    abandonMatchStart();
     void abandonCommanderBringUp();
     beginDraftLifecycle();
     disposeMatchAdapter(set);
@@ -3457,6 +3456,8 @@ function handleHostEvent(event: DraftPodHostEvent, set: SetFn): void {
       saveDraftPodProgress("matchInProgress");
       break;
     case "matchStart":
+      // A pairing replaced by another match ends the start bound to the old one.
+      if (matchStartInFlight?.matchId !== event.launch.matchId) abandonMatchStart();
       set({ matchPairing: event.launch, phase: "matchInProgress" });
       void retryDraftSettlement(event.launch, "host");
       break;
@@ -3605,6 +3606,8 @@ function handleGuestEvent(event: DraftPodGuestEvent, set: SetFn): void {
       set({ timerRemainingMs: event.remainingMs });
       break;
     case "matchStart":
+      // A pairing replaced by another match ends the start bound to the old one.
+      if (matchStartInFlight?.matchId !== event.launch.matchId) abandonMatchStart();
       set({
         matchPairing: event.launch,
         phase: "matchInProgress",
@@ -3620,6 +3623,10 @@ function handleGuestEvent(event: DraftPodGuestEvent, set: SetFn): void {
       // written — the pod stays `complete`, which is the view the guest's join
       // affordance renders from — and this does NOT join the game.
       // Joining is the user's decision, made through `joinCommanderGame`.
+      // A replaced launch ends the join bound to it.
+      if (useMultiplayerDraftStore.getState().commanderLaunch?.gameId !== event.launch.gameId) {
+        void abandonCommanderBringUp();
+      }
       set({ commanderLaunch: event.launch });
       break;
     case "matchSettlementAcknowledged": {
