@@ -18,3 +18,7 @@
 - Round 2 revision (planner claude-sonnet-5-5): 17 phases, ~10,100 LOC. D1 -> Dandan capped at Bo1 via a typed best-of-three ceiling on FormatConfig enforced at the engine start authority (new Phase 7); D2 -> Phase 13 split into dealer frame (14) and Day's Undoing wheel (15); D3 -> quantity.rs scoped arms move to Phase 10 with base-red rows; D4 -> pool resolver in Phase 6, consumers in Phase 17. R1, C1–C3 applied. Text kept as phase-charter.r2.
 
 ## 4. Charter review round 3 dispatched (whole charter, fresh reviewer).
+- Round 3 result (reviewer claude-sonnet-5-5): NOT CLEAN. 2 decision revisions (F1 stored Bo3-ceiling FormatConfig field violates the brief's "axis methods, not stored fields" rule and is host-spoofable -> axis method + wasm export; F2 GameSetupPage.tsx second Bo3 control out of scope), 0 review-only, 2 corrections (C1 FixedDeckKeepMulligan::evaluate; C2 Phase 2 claim 2 snapshot). All round-2 findings closed. Design round 3; decision count 4 -> 2 (lowered). Report: charter-review-r3.md.
+- Round 3 revision (planner claude-sonnet-5-5): F1 -> Bo3 ceiling becomes a sixth typed GameFormat axis method enforced from state.format_config.format + wasm export for the lobby (no FormatConfig field); F2 -> GameSetupPage.tsx + test join Phase 7 with a base-red component row; C1, C2 applied. 17 phases, ~10,140 LOC. Text kept as phase-charter.r3.
+
+## 5. Charter review round 4 dispatched (whole charter, fresh reviewer).

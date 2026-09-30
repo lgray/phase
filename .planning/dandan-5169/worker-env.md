@@ -13,7 +13,7 @@
 
 ## Build and test (no Tilt; cloud box: 4 cores, 15 GB RAM, ~29 GB disk)
 - No Tilt. Ignore Tilt instructions; run cargo directly from `/home/user/phase`, e.g. `cd /home/user/phase && cargo nextest run -p phase-engine <filter>`.
-- ONE heavy build at a time; the box is small. Never run two cargo commands concurrently. Prefer targeted `cargo nextest run -p <pkg> <filter>` / `cargo check -p <pkg>`. New engine tests go in `crates/engine/tests/integration/` with a `mod` line in `tests/integration/main.rs`. Redirect long output to a file under `/home/user/phase/.planning/dandan-5169/` and grep it.
+- ONE heavy build at a time; the box is small. EVERY cargo command MUST be prefixed `CARGO_BUILD_JOBS=2` (the phase-engine test crate alone peaks ~13 GB RSS; at -j4 it was OOM-killed). Never run two cargo commands concurrently. Prefer targeted `cargo nextest run -p <pkg> <filter>` / `cargo check -p <pkg>`. New engine tests go in `crates/engine/tests/integration/` with a `mod` line in `tests/integration/main.rs`. Redirect long output to a file under `/home/user/phase/.planning/dandan-5169/` and grep it.
 - Never `cargo clean`, never delete `target/`.
 - CR text: `docs/MagicCompRules.txt`. Grep every CR number before writing it.
 - Card Oracle text: `jq '.data["<Card Name>"][0].text' data/mtgjson/AtomicCards.json` once card data is generated, or the Scryfall API (`curl -s 'https://api.scryfall.com/cards/named?exact=<name>' | jq .oracle_text`). Check `client/public/card-data.json` exists before relying on it.
