@@ -433,6 +433,11 @@ class NativeP2PBridge {
   }
 
   private async attachClient(client: WebSocketAdapter): Promise<NativeSessionAttachment> {
+    if (this.disposed) {
+      // `dispose()` already ran, so it will never release this client.
+      client.dispose();
+      throw new AdapterError("P2P_ERROR", "Native bridge disposed during attachment", true);
+    }
     client.onEvent((event) => {
       if (event.type === "sessionAttached") {
         if (this.disposed) return;

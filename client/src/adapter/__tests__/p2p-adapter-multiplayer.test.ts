@@ -7499,6 +7499,27 @@ describe("NativeP2PBridge — dispose during a native client's handshake", () =>
     expect(nativeWebSocketMocks.dispose).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { host: "fresh host", make: () => makeNativeHost().adapter },
+    { host: "resume", make: makeNativeResumeHost },
+  ])("$host: a dispose during the engine load dials no client and disposes the one it built", async ({ make }) => {
+    const adapter = make();
+    const engineLoad = deferred<undefined>();
+    mocks.initialize.mockImplementationOnce(() => engineLoad.promise);
+    nativeWebSocketMocks.waitForPlayerSlots.mockResolvedValue([]);
+    nativeWebSocketMocks.initializePregame.mockResolvedValueOnce(NATIVE_HOST_ATTACHMENT);
+    const init = adapter.initialize().catch(() => undefined);
+    await flushPromises(10);
+
+    adapter.dispose();
+    engineLoad.resolve(undefined);
+    await init;
+    await flushPromises(10);
+
+    expect(nativeWebSocketMocks.initializePregame).not.toHaveBeenCalled();
+    expect(nativeWebSocketMocks.dispose).toHaveBeenCalledOnce();
+  });
+
   it("resume: a dispose during seat 0's reconnect dials no later seat", async () => {
     const adapter = makeNativeResumeHost();
     const hostAttachment = deferred<typeof NATIVE_HOST_ATTACHMENT>();
