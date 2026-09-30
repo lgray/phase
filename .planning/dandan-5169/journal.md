@@ -29,3 +29,8 @@
 - Charter loop: r1 8 dec -> r2 4 -> r3 2 -> r4 clean (2 corrections applied). Frozen r3: 17 phases ~10,140 LOC. Records: charter-review-r{1..4}.md, phase-charter.r{0..3}.
 - Env: phase-engine test build OOM-killed at -j4 (13.8 GB rustc); CARGO_BUILD_JOBS=2 succeeds (~10 min cold). Completion checks run in the main clone at the clean committed candidate (no second target dir: 21 GB disk free, 15 GB RAM) — deviation from the skill's separate completion worktree, recorded here.
 - Phase 1 accepted (card-bot autocomplete), small-change lane, 1 plan round, 1 impl round.
+
+## J5 container restart + GitHub re-test (2026-09-30 ~22:30Z)
+- Container restarted: Phase 4b executor, its build, and the Phase 6 planner were killed. Worktree kept 4b's partial edits (layers.rs, integration main.rs, new loop_only_dependency_fallback.rs); target/ partially survived (6.8 GB).
+- Lead relay re-test (after restart): `curl api.github.com/repos/phase-rs/phase/issues/5169` -> 403; `gh auth status` -> gh: command not found; `gh pr list --repo phase-rs/phase` -> gh: command not found. PR route remains closed; lead opens the PR from the saved body.
+- Phases accepted so far: 1, 2, 3, 4. Charter r4 + Phase 4b inserted (defective-reference route). Phase 5 plan clean (resynced to consume 4b).
