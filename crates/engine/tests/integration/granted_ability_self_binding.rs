@@ -3863,14 +3863,16 @@ mod granter_stamp {
             .collect()
     }
 
-    /// Foo Bar (beside a MV-2 "Other" artifact) creates `token`; returns Foo Bar and the Ooze.
-    fn create_token(token: &str) -> (GameRunner, ObjectId, ObjectId) {
+    /// Foo Bar (beside `others` "Other" artifacts) creates `token`; returns Foo Bar and the Ooze.
+    fn create_token(token: &str, others: usize) -> (GameRunner, ObjectId, ObjectId) {
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);
         let fb = scenario
             .add_artifact_from_oracle(P0, "Foo Bar", &format!("{{T}}: Create {token}"))
             .id();
-        scenario.add_artifact_from_oracle(P0, "Other", "");
+        for _ in 0..others {
+            scenario.add_artifact_from_oracle(P0, "Other", "");
+        }
         let mut runner = scenario.build();
         runner
             .act(GameAction::ActivateAbility {
@@ -3906,6 +3908,7 @@ mod granter_stamp {
     fn token_cda_excludes_its_creator() {
         let (mut runner, fb, ooze) = create_token(
             "a green Ooze creature token with \"This token's power and toughness are each equal to the number of artifacts you control other than Foo Bar.\"",
+            1,
         );
         let creator = ObjectIncarnationRef::from_object(&runner.state().objects[&fb]);
         assert_eq!(token_pt(&runner, ooze), (Some(1), Some(1)));
@@ -3917,10 +3920,116 @@ mod granter_stamp {
         relayer(st);
         assert_eq!(token_pt(&runner, ooze), (Some(2), Some(2)));
 
-        let (runner, _, ooze) =
-            create_token("a 1/1 green Ooze creature token with \"This token can't block.\"");
+        let (runner, _, ooze) = create_token(
+            "a 1/1 green Ooze creature token with \"This token can't block.\"",
+            1,
+        );
         assert_eq!(token_pt(&runner, ooze), (Some(1), Some(1)));
         assert_eq!(token_stamps(&runner, ooze), vec![None]);
+    }
+
+    const TOKEN_OTHERS: &str = "a 2/2 green Ooze creature token with \"This creature gets +2/+2 as long as you control two or more artifacts other than Foo Bar.\"";
+    const TOKEN_CHARGE: &str = "a 2/2 green Ooze creature token with \"This creature gets +2/+2 as long as there are three or more charge counters on Foo Bar.\"";
+
+    fn set_charge(runner: &mut GameRunner, id: ObjectId, n: u32) {
+        let st = runner.state_mut();
+        st.objects
+            .get_mut(&id)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), n);
+        relayer(st);
+    }
+
+    /// CR 201.5a + CR 611.3a: a token static's condition excludes the object that created it.
+    #[test]
+    fn token_static_condition_excludes_its_creator() {
+        let power = [1, 2].map(|others| {
+            let (runner, _, ooze) = create_token(TOKEN_OTHERS, others);
+            token_pt(&runner, ooze).0
+        });
+        assert_eq!(power, [Some(2), Some(4)]);
+    }
+
+    /// CR 122.1 + CR 201.5a: a token static's condition reads counters on its creator.
+    #[test]
+    fn token_static_counter_condition_reads_its_creator() {
+        let power = [(3, 0), (0, 3)].map(|(creator, token)| {
+            let (mut runner, fb, ooze) = create_token(TOKEN_CHARGE, 1);
+            set_charge(&mut runner, fb, creator);
+            set_charge(&mut runner, ooze, token);
+            token_pt(&runner, ooze).0
+        });
+        assert_eq!(power, [Some(4), Some(2)]);
+    }
+
+    /// CR 400.7: the token's ability names the creator's old incarnation, which no longer exists.
+    #[test]
+    fn token_static_counter_condition_does_not_follow_a_blinked_creator() {
+        let (mut runner, fb, ooze) = create_token(TOKEN_CHARGE, 1);
+        set_charge(&mut runner, fb, 3);
+        set_charge(&mut runner, ooze, 3);
+        assert_eq!(token_pt(&runner, ooze), (Some(4), Some(4)));
+        let st = runner.state_mut();
+        move_to_zone(st, fb, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, fb, Zone::Battlefield, &mut Vec::new());
+        set_charge(&mut runner, fb, 3);
+        assert_eq!(token_pt(&runner, ooze), (Some(2), Some(2)));
+    }
+
+    /// `create_token`, then a new permanent "Mimic" becomes a copy of the Ooze (CR 707.2).
+    fn copy_token(token: &str, others: usize) -> (GameRunner, ObjectId, ObjectId) {
+        let (mut runner, fb, ooze) = create_token(token, others);
+        let st = runner.state_mut();
+        let mimic = engine::game::zones::create_object(
+            st,
+            engine::types::identifiers::CardId(st.next_object_id),
+            P0,
+            "Mimic".to_string(),
+            Zone::Battlefield,
+        );
+        let copy = ResolvedAbility::new(
+            Effect::BecomeCopy {
+                target: TargetFilter::Any,
+                recipient: engine::types::ability::CopyRecipient::Source,
+                duration: None,
+                mana_value_limit: None,
+                additional_modifications: Vec::new(),
+            },
+            vec![TargetRef::Object(ooze)],
+            mimic,
+            P0,
+        );
+        resolve_ability_chain(st, &copy, &mut Vec::new(), 0).unwrap();
+        relayer(st);
+        (runner, fb, mimic)
+    }
+
+    /// CR 201.5a + CR 707.2: a copy of the token still excludes the token's creator.
+    #[test]
+    fn token_copy_static_condition_excludes_its_creator() {
+        let power = [1, 2].map(|others| {
+            let (runner, _, mimic) = copy_token(TOKEN_OTHERS, others);
+            assert_eq!(runner.state().objects[&mimic].name, "Ooze");
+            token_pt(&runner, mimic).0
+        });
+        assert_eq!(power, [Some(2), Some(4)]);
+    }
+
+    /// CR 201.5a + CR 400.7: a copy of the token reads its creator's counters, and not a
+    /// blinked creator's new incarnation.
+    #[test]
+    fn token_copy_counter_condition_reads_its_creator() {
+        let (mut runner, fb, mimic) = copy_token(TOKEN_CHARGE, 1);
+        set_charge(&mut runner, fb, 3);
+        assert_eq!(token_pt(&runner, mimic), (Some(4), Some(4)));
+        set_charge(&mut runner, mimic, 3);
+        assert_eq!(token_pt(&runner, mimic), (Some(4), Some(4)));
+        let st = runner.state_mut();
+        move_to_zone(st, fb, Zone::Exile, &mut Vec::new());
+        move_to_zone(st, fb, Zone::Battlefield, &mut Vec::new());
+        set_charge(&mut runner, fb, 3);
+        assert_eq!(token_pt(&runner, mimic), (Some(2), Some(2)));
     }
 
     /// Adds to each Foo Bar a grant of `replacement` to its equipped creature.
@@ -4587,6 +4696,132 @@ mod granter_stamp {
         move_to_zone(st, fb, Zone::Battlefield, &mut Vec::new());
         relayer(st);
         assert!(can_block_pair(runner.state(), fb, host));
+    }
+
+    use engine::types::ability::{AbilityCost, Duration, StaticCondition};
+    use engine::types::statics::StaticMode;
+
+    fn three_charge_on_granter() -> (QuantityExpr, Comparator, QuantityExpr) {
+        (
+            QuantityExpr::Ref {
+                qty: QuantityRef::CountersOn {
+                    scope: ObjectScope::GrantingObject,
+                    counter_type: Some(CounterType::Generic("charge".to_string())),
+                },
+            },
+            Comparator::GE,
+            QuantityExpr::Fixed { value: 3 },
+        )
+    }
+
+    fn pump_while_three_charge_on_granter() -> StaticDefinition {
+        let (lhs, comparator, rhs) = three_charge_on_granter();
+        StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![
+                ContinuousModification::AddPower { value: 2 },
+                ContinuousModification::AddToughness { value: 2 },
+            ])
+            .condition(StaticCondition::QuantityComparison {
+                lhs,
+                comparator,
+                rhs,
+            })
+    }
+
+    /// Foo Bar grants "{T}: Until end of turn, this creature <`grant`>", activated with three
+    /// charge counters on Foo Bar and on the host.
+    fn transient_board(grant: StaticDefinition) -> Board {
+        let mut b = board_others("{T}: Draw a card.", 0);
+        grant_modification(
+            &mut b,
+            ContinuousModification::GrantAbility {
+                definition: Box::new(
+                    AbilityDefinition::new(
+                        AbilityKind::Activated,
+                        Effect::GenericEffect {
+                            static_abilities: vec![grant.affected(TargetFilter::SelfRef)],
+                            duration: Some(Duration::UntilEndOfTurn),
+                            target: None,
+                            end_cost: None,
+                        },
+                    )
+                    .cost(AbilityCost::Tap),
+                ),
+            },
+        );
+        let (fb, host) = (b.granters[0], b.host);
+        set_charge(&mut b.runner, fb, 3);
+        set_charge(&mut b.runner, host, 3);
+        activate_last(&mut b);
+        b.runner.advance_until_stack_empty();
+        b
+    }
+
+    /// CR 400.7: returns Foo Bar as a new object with three charge counters.
+    fn blink_charged_granter(b: &mut Board) {
+        let fb = b.granters[0];
+        blink(b, fb);
+        set_charge(&mut b.runner, fb, 3);
+    }
+
+    /// CR 400.7: a transient evasion's counter read names the blinked granter's old incarnation.
+    #[test]
+    fn transient_evasion_count_does_not_follow_a_blinked_granter() {
+        let (count, _, _) = three_charge_on_granter();
+        let mut b = transient_board(StaticDefinition::continuous().modifications(vec![
+            ContinuousModification::AddStaticMode {
+                mode: StaticMode::CantBeBlockedBy {
+                    filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature).properties(
+                        vec![FilterProp::Cmc {
+                            comparator: Comparator::LT,
+                            value: count,
+                        }],
+                    )),
+                },
+            },
+        ]));
+        let victim = object_named(&b, "Victim");
+        assert!(!can_block_pair(b.runner.state(), victim, b.host));
+        blink_charged_granter(&mut b);
+        assert!(can_block_pair(b.runner.state(), victim, b.host));
+    }
+
+    /// CR 400.7: a static granted until end of turn names the blinked granter's old incarnation.
+    #[test]
+    fn transient_granted_static_does_not_follow_a_blinked_granter() {
+        let mut b = transient_board(StaticDefinition::continuous().modifications(vec![
+            ContinuousModification::GrantStaticAbility {
+                definition: Box::new(pump_while_three_charge_on_granter()),
+            },
+        ]));
+        assert_eq!(power(&b), 5);
+        blink_charged_granter(&mut b);
+        assert_eq!(power(&b), 3);
+    }
+
+    /// CR 400.7: a replacement granted until end of turn names the blinked granter's old incarnation.
+    #[test]
+    fn transient_granted_replacement_does_not_follow_a_blinked_granter() {
+        let (lhs, comparator, rhs) = three_charge_on_granter();
+        let mut b = transient_board(StaticDefinition::continuous().modifications(vec![
+            ContinuousModification::GrantReplacement {
+                replacement: Box::new(
+                    ReplacementDefinition::new(ReplacementEvent::Untap)
+                        .valid_card(TargetFilter::SelfRef)
+                        .condition(ReplacementCondition::OnlyIfQuantity {
+                            lhs,
+                            comparator,
+                            rhs,
+                            active_player_req: None,
+                        }),
+                ),
+            },
+        ]));
+        let host = b.host;
+        assert!(!untap(&mut b, host));
+        blink_charged_granter(&mut b);
+        assert!(untap(&mut b, host));
     }
 
     #[test]

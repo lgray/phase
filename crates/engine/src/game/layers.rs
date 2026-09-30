@@ -3159,7 +3159,7 @@ pub fn evaluate_layers(state: &mut GameState) {
         }
     }
 
-    let stickers_applied = apply_room_names_then_stickers(state, &bf_ids);
+    let stickers_applied = finish_layer_one(state, &bf_ids);
 
     // Both producers say the same thing: layer 1 can turn a non-generator into a
     // continuous static source mid-pass, and the top-of-pass index was built from
@@ -6087,9 +6087,40 @@ fn derive_room_battlefield_names(state: &mut GameState, ids: &[ObjectId]) {
 /// name. The full and incremental paths must share this exact ordering or a
 /// stickered Room can have different characteristics depending on the flush
 /// path. Ability stickers ride the same existing sticker pass.
-fn apply_room_names_then_stickers(state: &mut GameState, ids: &[ObjectId]) -> bool {
+fn finish_layer_one(state: &mut GameState, ids: &[ObjectId]) -> bool {
     derive_room_battlefield_names(state, ids);
-    crate::game::stickers::apply_battlefield_name_and_ability_stickers(state, ids)
+    let stickers_applied =
+        crate::game::stickers::apply_battlefield_name_and_ability_stickers(state, ids);
+    // CR 201.5a: the reseed and copy effects write live statics only in layer 1, so
+    // binding here reaches every later reader.
+    bind_live_static_granters(state, ids);
+    stickers_applied
+}
+
+/// CR 201.5a + CR 707.2: a live static stamped with its granter (a created token's static
+/// naming its creator, or a copy of one) names that object.
+fn bind_live_static_granters(state: &mut GameState, ids: &[ObjectId]) {
+    for &id in ids {
+        let Some(statics) = state
+            .objects
+            .get(&id)
+            .map(|obj| obj.static_definitions.clone())
+            .filter(|statics| statics.iter_all().any(|def| def.granting_object.is_some()))
+        else {
+            continue;
+        };
+        let bound = statics
+            .iter_all()
+            .cloned()
+            .map(|mut def| {
+                bind_static_granter(state, &mut def);
+                def
+            })
+            .collect();
+        if let Some(obj) = state.objects.get_mut(&id) {
+            obj.static_definitions = bound;
+        }
+    }
 }
 
 fn apply_layers_incremental(state: &mut GameState, prepared: PreparedIncrementalFlush) {
@@ -6131,7 +6162,7 @@ fn apply_layers_incremental(state: &mut GameState, prepared: PreparedIncremental
     }
 
     let recipient_vec: Vec<ObjectId> = recipient_ids.iter().copied().collect();
-    let stickers_changed = apply_room_names_then_stickers(state, &recipient_vec);
+    let stickers_changed = finish_layer_one(state, &recipient_vec);
     // CR 613.2a + CR 613.2c: deliberately no copy disjunct on this rebuild, unlike
     // the full pass. A copy applied here could only add a generator by landing on
     // a recipient, and it cannot: `recipient_ids` is `entered_ids` alone, because
@@ -6982,31 +7013,77 @@ fn replace_granter_symbols(value: &mut serde_json::Value, bound: &serde_json::Va
     }
 }
 
-/// CR 201.5a: rewrites every granter symbol in `body` to `granter` —
-/// `TargetFilter::SpecificObject` in a filter, `ObjectScope::SpecificObject` in a quantity.
-// Completeness comes from Serialize, as in `references_granting_object`; the one encoding
-// below deserializes as whichever of the two enums the symbol's position holds.
-fn bind_granter_symbols<T>(body: &mut T, granter: ObjectIncarnationRef)
+/// RFC 6901 pointers to every granter symbol in `value`.
+fn granter_symbol_pointers(value: &serde_json::Value, path: String, out: &mut Vec<String>) {
+    if is_granter_symbol(value) {
+        out.push(path);
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, inner) in map {
+                let key = key.replace('~', "~0").replace('/', "~1");
+                granter_symbol_pointers(inner, format!("{path}/{key}"), out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, inner) in items.iter().enumerate() {
+                granter_symbol_pointers(inner, format!("{path}/{index}"), out);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+}
+
+/// CR 201.5a + CR 400.7: binds the granter symbols in `body` to `granter` — an `ObjectScope`
+/// position from any stamp, a filter position (which names only an id) only from a current one.
+// Completeness comes from Serialize, as in `references_granting_object`. The merged encoding
+// deserializes in either position; the scope-only encoding only in an `ObjectScope` one.
+fn bind_granter_symbols<T>(state: &GameState, body: &mut T, granter: ObjectIncarnationRef)
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
     let Ok(mut value) = serde_json::to_value(&*body) else {
         return;
     };
-    let (Ok(serde_json::Value::Object(mut bound)), Ok(serde_json::Value::Object(scope))) = (
-        serde_json::to_value(TargetFilter::SpecificObject {
-            id: granter.object_id,
-        }),
+    let (Ok(serde_json::Value::Object(mut bound)), Ok(serde_json::Value::Object(filter))) = (
         serde_json::to_value(crate::types::ability::ObjectScope::SpecificObject {
             object: granter,
+        }),
+        serde_json::to_value(TargetFilter::SpecificObject {
+            id: granter.object_id,
         }),
     ) else {
         unreachable!("both SpecificObject forms serialize as tagged maps");
     };
-    bound.extend(scope);
-    if replace_granter_symbols(&mut value, &serde_json::Value::Object(bound)) {
-        *body = serde_json::from_value(value)
-            .expect("a bound granter deserializes in filter and quantity positions alike");
+    if granter.is_current(state) {
+        bound.extend(filter);
+        if replace_granter_symbols(&mut value, &serde_json::Value::Object(bound)) {
+            *body = serde_json::from_value(value)
+                .expect("a bound granter deserializes in filter and quantity positions alike");
+        }
+        return;
+    }
+    let scope = serde_json::Value::Object(bound);
+    let mut symbols = Vec::new();
+    granter_symbol_pointers(&value, String::new(), &mut symbols);
+    let mut rebound = false;
+    for pointer in &symbols {
+        let Some(slot) = value.pointer_mut(pointer) else {
+            continue;
+        };
+        let symbol = std::mem::replace(slot, scope.clone());
+        if T::deserialize(&value).is_ok() {
+            rebound = true;
+        } else if let Some(slot) = value.pointer_mut(pointer) {
+            *slot = symbol;
+        }
+    }
+    if rebound {
+        *body = serde_json::from_value(value).expect("every kept rewrite deserialized");
     }
 }
 
@@ -7064,6 +7141,7 @@ fn bind_duration_nodes(value: &mut serde_json::Value, scope: &serde_json::Value)
 /// A modification that holds a definition node (a grant or a copy) is left to
 /// that node's own stamping and binding.
 fn bind_granter_in_modification(
+    state: &GameState,
     modification: &mut ContinuousModification,
     granter: ObjectIncarnationRef,
 ) {
@@ -7071,34 +7149,23 @@ fn bind_granter_in_modification(
         nodes_mut::visit_continuous_mod(modification, &mut |_| std::ops::ControlFlow::Break(()))
             .is_break();
     if !holds_definition {
-        bind_granter_symbols(modification, granter);
+        bind_granter_symbols(state, modification, granter);
     }
-}
-
-/// CR 201.5a + CR 400.7 + CR 613.1f: the binding rule for a carrier rebuilt on every
-/// layer pass. While its stamp names the granter's current incarnation, its own
-/// filters, conditions and quantities name that object; a stale stamp keeps the
-/// symbol, which then matches no object.
-fn current_granter(
-    state: &GameState,
-    stamp: Option<ObjectIncarnationRef>,
-) -> Option<ObjectIncarnationRef> {
-    stamp.filter(|granter| granter.is_current(state))
 }
 
 fn bind_static_granter(state: &GameState, def: &mut StaticDefinition) {
-    let Some(granter) = current_granter(state, def.granting_object) else {
+    let Some(granter) = def.granting_object else {
         return;
     };
     if let Some(affected) = def.affected.as_mut() {
-        bind_granter_symbols(affected, granter);
+        bind_granter_symbols(state, affected, granter);
     }
     if let Some(condition) = def.condition.as_mut() {
-        bind_granter_symbols(condition, granter);
+        bind_granter_symbols(state, condition, granter);
     }
-    bind_granter_symbols(&mut def.mode, granter);
+    bind_granter_symbols(state, &mut def.mode, granter);
     for modification in def.modifications.iter_mut() {
-        bind_granter_in_modification(modification, granter);
+        bind_granter_in_modification(state, modification, granter);
     }
 }
 
@@ -7108,7 +7175,7 @@ fn bind_replacement_granter(
     state: &GameState,
     def: &mut crate::types::ability::ReplacementDefinition,
 ) {
-    let Some(granter) = current_granter(state, def.granting_object) else {
+    let Some(granter) = def.granting_object else {
         return;
     };
     let latched = (
@@ -7118,7 +7185,7 @@ fn bind_replacement_granter(
         def.additional_token_spec.take(),
         def.ensure_token_specs.take(),
     );
-    bind_granter_symbols(def, granter);
+    bind_granter_symbols(state, def, granter);
     (
         def.execute,
         def.runtime_execute,
@@ -7129,15 +7196,15 @@ fn bind_replacement_granter(
 }
 
 fn bind_effect_granter(state: &GameState, effect: &mut ActiveContinuousEffect) {
-    let Some(granter) = current_granter(state, effect.granter) else {
+    let Some(granter) = effect.granter else {
         return;
     };
-    bind_granter_symbols(&mut effect.affected_filter, granter);
+    bind_granter_symbols(state, &mut effect.affected_filter, granter);
     if let Some(condition) = effect.condition.as_mut() {
-        bind_granter_symbols(condition, granter);
+        bind_granter_symbols(state, condition, granter);
     }
-    bind_granter_symbols(&mut effect.mode, granter);
-    bind_granter_in_modification(&mut effect.modification, granter);
+    bind_granter_symbols(state, &mut effect.mode, granter);
+    bind_granter_in_modification(state, &mut effect.modification, granter);
 }
 
 /// CR 201.5a + CR 613.1f: the stamping rule. Every definition node of a granted
