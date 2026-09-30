@@ -1,0 +1,58 @@
+   Compiling libc v0.2.186
+   Compiling tracing-core v0.1.36
+   Compiling getrandom v0.3.4
+   Compiling getrandom v0.4.2
+   Compiling rand_core v0.9.5
+   Compiling tempfile v3.27.0
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.4
+   Compiling tracing v0.1.44
+   Compiling console v0.16.3
+   Compiling insta v1.47.2
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14m 02s
+────────────
+ Nextest run ID 3acd7488-a532-4c1f-a929-bea567d6ce70 with nextest profile: default
+    Starting 7 tests across 1 binary (22654 tests skipped)
+        PASS [   0.078s] (1/7) phase-engine parser::swallow_check::tests::replacement_instead_accepts_effect_chain_instead_condition
+        PASS [   0.144s] (2/7) phase-engine parser::swallow_check::tests::replacement_instead_accepts_power_pack_delayed_payload_rider
+        PASS [   0.165s] (3/7) phase-engine parser::swallow_check::tests::replacement_instead_accepts_desperate_gambit_flip_coin_damage_replacements
+        PASS [   0.087s] (4/7) phase-engine parser::swallow_check::tests::replacement_instead_keeps_flagging_counter_without_zone
+        PASS [   0.198s] (5/7) phase-engine parser::swallow_check::tests::replacement_instead_accepts_untap_and_token_choice_replacements
+        PASS [   0.244s] (6/7) phase-engine parser::swallow_check::tests::replacement_instead_swallow_carries_the_event_antecedent
+        FAIL [   0.420s] (7/7) phase-engine parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier
+  stdout ───
+
+    running 1 test
+    test parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier ... FAILED
+
+    failures:
+
+    failures:
+        parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22660 filtered out; finished in 0.38s
+
+  stderr ───
+
+    thread 'parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier' (13698) panicked at crates/engine/src/parser/swallow_check.rs:8514:13:
+    Memory Lapse: [SwallowedClause { detector: "Replacement_Instead", description: "Counter target spell. If that spell is countered this way, put it on top of its owner's library instead of into that player's graveyard.", line_index: 0, unit_span: Some(OracleSourceSpan { first_line: 0, last_line: 0, start_byte: 0, end_byte: 136, precision: Exact, ordinal_within_span: 0 }), items: [OracleItemId(0)], gap: None }]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: engine::parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier
+                 at ./src/parser/swallow_check.rs:8514:13
+       3: engine::parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier::{closure#0}
+                 at ./src/parser/swallow_check.rs:8466:70
+       4: <engine::parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+────────────
+     Summary [   0.453s] 7 tests run: 6 passed, 1 failed, 22654 skipped
+        FAIL [   0.420s] (7/7) phase-engine parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier
+error: test run failed

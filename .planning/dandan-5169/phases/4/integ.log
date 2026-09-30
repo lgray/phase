@@ -1,0 +1,12 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 07s
+────────────
+ Nextest run ID 37856b7a-4633-4ad3-96e4-8d2cd6d1bc60 with nextest profile: default
+    Starting 4 tests across 1 binary (8559 tests skipped)
+        PASS [   0.058s] (1/4) phase-engine::integration counter_spell_zone_redirect::plain_counter_still_sends_countered_spell_to_graveyard
+        PASS [   0.077s] (2/4) phase-engine::integration counter_spell_zone_redirect::spell_crumple_redirects_countered_spell_to_library_bottom
+        PASS [   0.093s] (3/4) phase-engine::integration counter_spell_zone_redirect::memory_lapse_redirects_countered_spell_to_library_top
+        PASS [   0.121s] (4/4) phase-engine::integration counter_spell_zone_redirect::remand_redirects_countered_spell_to_hand_and_draws
+────────────
+     Summary [   0.132s] 4 tests run: 4 passed, 8559 skipped
+EXIT 0

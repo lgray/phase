@@ -20,7 +20,6 @@ Source: `.planning/dandan-5169/brief/issue-5169.md`, pinned `d95cc66019`. Run ba
 2. S1 — Format registration, axes (including the best-of-three ceiling axis), protocol/lobby bump, card-bot mirror, manabrew-compat declaration — ~900 LOC
 3. AI force-keep re-gate on the opening-hands-equivalent axis — ~100 LOC
 4. PREREQ-0 — Memory Lapse swallow-check false positive — ~80 LOC
-4b. Fix-first (defective-reference route): CR 613.8b loop-only dependency-loop fallback in `order_with_dependencies` — ~250 LOC
 5. CR 612 text-changing primitive (Magical Hack, Crystal Spray) — ~1,300 LOC
 6. S2a — Canonical-seat storage authority and pool resolver — ~960 LOC
 7. S5 — Best-of-three ceiling enforced at the engine's match-structure authority, Dandan best-of-one (+ engine export and the lobby and local-setup controls) — ~300 LOC
@@ -120,24 +119,6 @@ Sum ~10,140 LOC. Each phase's recursive T1∧T2 check is stated inline; none tri
 **Seam notes.** None.
 
 **T1∧T2 check.** 1 unit, 1 path. T1 fails and T2 fails.
-
----
-
-### Phase 4b — Fix-first: CR 613.8b loop-only dependency-loop fallback (inserted by the defective-reference route)
-
-**Goal.** CR 613.8b applies timestamp order only to the effects inside a dependency loop; effects outside the loop keep their dependency order. Make `order_with_dependencies` in `crates/engine/src/game/layers.rs` apply that rule for every layer bucket, so Phase 5's text-substitution chain-plus-loop rows read the rules-correct order.
-
-**Scope rule.** `crates/engine/src/game/layers.rs` (`order_with_dependencies` and its tests); a new integration test file under `crates/engine/tests/integration/` with its `mod` line in `crates/engine/tests/integration/main.rs`; the integration fixture re-slice if a real card the tests need is absent (run owner's standing authorization).
-
-**Claims to establish.**
-- The fallback on a dependency cycle today orders the whole bucket by timestamp — buy by reading `order_with_dependencies` and a test red at base.
-- Which existing tests route through a cyclic bucket and whether their outcome changes — buy by grep plus the full `layers` and integration suites.
-
-**Verification plan.** A real-card test on a non-text layer with a dependency loop plus an effect depending on a loop member, red at base and green after; a whole-loop positive guard (existing double-Urborg-style tests keep their outcome); a real-card regression row with verbatim Oracle text (e.g. a layer-4 type-changing loop); the existing layers suite unchanged.
-
-**Deferral list.** None; Phase 5's text-substitution rows consume this.
-
-**T1∧T2 check.** 1 unit, about 3 paths. Neither trigger fires.
 
 ---
 

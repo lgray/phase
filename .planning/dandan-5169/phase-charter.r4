@@ -20,7 +20,6 @@ Source: `.planning/dandan-5169/brief/issue-5169.md`, pinned `d95cc66019`. Run ba
 2. S1 — Format registration, axes (including the best-of-three ceiling axis), protocol/lobby bump, card-bot mirror, manabrew-compat declaration — ~900 LOC
 3. AI force-keep re-gate on the opening-hands-equivalent axis — ~100 LOC
 4. PREREQ-0 — Memory Lapse swallow-check false positive — ~80 LOC
-4b. Fix-first (defective-reference route): CR 613.8b loop-only dependency-loop fallback in `order_with_dependencies` — ~250 LOC
 5. CR 612 text-changing primitive (Magical Hack, Crystal Spray) — ~1,300 LOC
 6. S2a — Canonical-seat storage authority and pool resolver — ~960 LOC
 7. S5 — Best-of-three ceiling enforced at the engine's match-structure authority, Dandan best-of-one (+ engine export and the lobby and local-setup controls) — ~300 LOC
@@ -123,24 +122,6 @@ Sum ~10,140 LOC. Each phase's recursive T1∧T2 check is stated inline; none tri
 
 ---
 
-### Phase 4b — Fix-first: CR 613.8b loop-only dependency-loop fallback (inserted by the defective-reference route)
-
-**Goal.** CR 613.8b applies timestamp order only to the effects inside a dependency loop; effects outside the loop keep their dependency order. Make `order_with_dependencies` in `crates/engine/src/game/layers.rs` apply that rule for every layer bucket, so Phase 5's text-substitution chain-plus-loop rows read the rules-correct order.
-
-**Scope rule.** `crates/engine/src/game/layers.rs` (`order_with_dependencies` and its tests); a new integration test file under `crates/engine/tests/integration/` with its `mod` line in `crates/engine/tests/integration/main.rs`; the integration fixture re-slice if a real card the tests need is absent (run owner's standing authorization).
-
-**Claims to establish.**
-- The fallback on a dependency cycle today orders the whole bucket by timestamp — buy by reading `order_with_dependencies` and a test red at base.
-- Which existing tests route through a cyclic bucket and whether their outcome changes — buy by grep plus the full `layers` and integration suites.
-
-**Verification plan.** A real-card test on a non-text layer with a dependency loop plus an effect depending on a loop member, red at base and green after; a whole-loop positive guard (existing double-Urborg-style tests keep their outcome); a real-card regression row with verbatim Oracle text (e.g. a layer-4 type-changing loop); the existing layers suite unchanged.
-
-**Deferral list.** None; Phase 5's text-substitution rows consume this.
-
-**T1∧T2 check.** 1 unit, about 3 paths. Neither trigger fires.
-
----
-
 ### Phase 5 — CR 612 text-changing primitive (Magical Hack, Crystal Spray)
 
 **Goal.** Build the general CR 612 word-substitution primitive — a text-substitution `ContinuousModification` evaluated at the existing text layer over a typed word domain (`BasicLandType`, `ColorWord`) — and cover both known instances of the class in one pass: Magical Hack (domain `{BasicLandType}`, indefinite duration) and Crystal Spray (domain `{ColorWord, BasicLandType}`, the player choosing which, until-end-of-turn duration, plus its "Draw a card."). The class also covers Sleight of Mind, Mind Bend, Alter Reality and Glamerdye (unsupported today per the brief); one primitive, two cards in this run, no half-built primitive across a phase boundary.
@@ -152,13 +133,13 @@ Sum ~10,140 LOC. Each phase's recursive T1∧T2 check is stated inline; none tri
 - No CR 612 text-substitution primitive exists — buy by grepping `data/engine-inventory.json` (regenerate via `cargo engine-inventory` first) for `SetTextName`/`SetChosenName` siblings; absence of a substitution variant is the claim, and the `add-engine-variant` gate (parameterization filter, categorical-boundary check) runs on the proposal.
 - A word that is not used in the correct way (CR 612.2) is not substituted — buy by the hostile fixture below, not by reading the resolver.
 - `order_with_dependencies` falls back to the whole bucket's timestamp order when any dependency cycle stalls the sort, where CR 613.8b applies timestamp order only to the effects inside a dependency loop (`grep -n '^613.8b' docs/MagicCompRules.txt`) — buy by the discriminating test below, red at `PHASE_BASE_SHA`, not by reading the function. The fix is shared layer machinery and is confined to the loop-only rule.
-- A resolving spell's text is what CR 608.2b rechecks, and `resolve_top` is the single entry handing a resolving spell to resolution — buy by `git grep -n 'stack::resolve_top\|resolve_top(' -- crates/engine/src ':!*tests*'`, classified into production callers versus `#[cfg(test)]` at phase start, and the stack-spell hostile row below.
+- A resolving spell's text is what CR 608.2b rechecks, and `resolve_top` is the single entry handing a resolving spell to resolution — buy by `grep -n 'pub fn resolve_top' crates/engine/src/game/stack.rs` and the stack-spell hostile row below.
 
 **Verification plan.** Cast-pipeline tests (per `/card-test`) for both cards from their verbatim Oracle text: Magical Hack changes a land-type word on a target permanent indefinitely (e.g. an island-walk creature); Crystal Spray changes a color word or a land type until end of turn, both choices of domain exercised, expiry at end of turn asserted, and its draw resolves. Hostile fixtures: a word that is not a land-type/color word in context (CR 612.2's "used in the correct way" carve-out) is not substituted; a spell target versus a permanent target both work. Loop-only ordering test (red at `PHASE_BASE_SHA` on a NON-text layer, so the fix is shown independent of the new variant): a dependency bucket on one layer holding a chain plus an unrelated dependency loop orders the chain by dependency and only the loop by timestamp, where the base returns the whole bucket in timestamp order; paired positive reach-guard: a bucket that is one whole loop still orders by timestamp. Spell-on-stack row: a text change on a spell on the stack is what resolves (CR 608.2b), with the no-change baseline in the same test. Coverage: both cards flip to supported in the regenerated coverage (the jq command in the brief); any Oracle text accepted while semantics stay deferred is kept red via `Effect::unimplemented`.
 
 **Deferral list.** None — this phase closes the full primitive and both known instances.
 
-**Seam notes.** The new variant's forced arms land in files no other phase edits except `crates/engine/src/game/quantity.rs` (an arm here; the dedup and read conversions of Phases 8 and 10 are different lines, sequential) and `crates/engine/src/game/layers.rs` (Phase 11 may add forced `ZoneMoveRequest` literal sites there, in other functions; this phase's functional edits are the layer-evaluator functions named in the scope rule). `crates/engine/src/game/stack.rs` is edited by no other phase. The protocol bump here precedes every later phase's bump (Phases 11, 12, 13, 14 and 16 each carry a serialized shape); each amends the doc entry in `crates/lobby-broker/src/protocol.rs` per the Standing rules.
+**Seam notes.** The new variant's forced arms land in files no other phase edits except `crates/engine/src/game/quantity.rs` (an arm here; the dedup and read conversions of Phases 8 and 10 are different lines, sequential) and `crates/engine/src/game/layers.rs` (Phase 11 may add forced `ZoneMoveRequest` literal sites there, in other functions; this phase's functional edits are the layer-evaluator functions named in the scope rule). `crates/engine/src/game/stack.rs` is edited by no other phase. The protocol bump here precedes Phase 14's and Phase 16's; each amends the doc entry in `crates/lobby-broker/src/protocol.rs`.
 
 **T1∧T2 check.** 1 unit: one primitive covering both cards (one `add-engine-variant` + parser + resolver pass, per the class-pass anchor; the `stack.rs` consumer, the `layers.rs` pre-pass and the loop-only ordering rule are lockstep parts of it). Scope count 30 paths per the phase plan's measured Sizing (28 authored paths plus the integration test file and its `mod` line; the fixture and regenerated data excluded from counting, not from authorization) — T2 fires (≥13). T1 fails, so the conjunction cannot fire. The plan carries no LOC figure, so the ~1,300 estimate stands; the executor reports the measured diff.
 

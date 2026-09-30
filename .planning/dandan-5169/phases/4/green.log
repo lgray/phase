@@ -1,0 +1,268 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8m 18s
+────────────
+ Nextest run ID f83e291c-7f8a-471d-921d-5c4e263b22b4 with nextest profile: default
+    Starting 260 tests across 1 binary (22401 tests skipped)
+        PASS [   0.023s] (  1/260) phase-engine game::coverage::tests::merge_coverage_gaps_flags_swallowed_clause
+        PASS [   0.023s] (  2/260) phase-engine game::coverage::tests::apnap_swallowed_clause_warning_counts_as_coverage_gap
+        PASS [   0.016s] (  3/260) phase-engine game::coverage::tests::swallowed_clause_warning_counts_as_coverage_gap
+        PASS [   0.034s] (  4/260) phase-engine game::coverage::tests::swallowed_clause_pattern_prefers_the_gap_phrase_and_falls_back_without_one
+        PASS [   0.021s] (  5/260) phase-engine game::effects::tests::population_predicate_sees_filters_the_wildcard_arm_used_to_swallow
+        PASS [   0.119s] (  6/260) phase-engine parser::oracle::tests::azors_gateway_transform_condition_parses_with_zero_swallowed_clauses
+        PASS [   0.132s] (  7/260) phase-engine game::haunt_tests::benediction_of_moons_gains_life_per_player_without_swallow
+        PASS [   0.024s] (  8/260) phase-engine parser::oracle::tests::crew_with_semantic_suffix_is_not_swallowed_at_priority_13
+        PASS [   0.038s] (  9/260) phase-engine parser::oracle::tests::crumbling_sanctuary_parses_as_replacement_without_swallowed_clause
+        PASS [   0.030s] ( 10/260) phase-engine parser::oracle::tests::cycling_with_semantic_suffix_is_not_swallowed_at_priority_9
+        PASS [   0.022s] ( 11/260) phase-engine parser::oracle_condition::tests::n_ary_conjunction_nests_instead_of_swallowing_the_tail
+        PASS [   0.034s] ( 12/260) phase-engine parser::oracle::tests::t123_kickerfoo_synthetic_line_is_honestly_unimplemented_not_swallowed
+        PASS [   0.017s] ( 13/260) phase-engine parser::oracle_cost::tests::cost_from_among_type_list_does_not_swallow_later_cost
+        PASS [   0.015s] ( 14/260) phase-engine parser::oracle_effect::conditions::tests::target_attacked_this_turn_does_not_swallow_controller_form
+        PASS [   0.014s] ( 15/260) phase-engine parser::oracle_effect::gap_diagnosis::tests::swallowed_gap_does_not_cross_a_line_boundary
+        PASS [   0.021s] ( 16/260) phase-engine parser::oracle_effect::gap_diagnosis::tests::swallowed_gap_is_none_when_the_axis_authority_accepts
+        PASS [   0.022s] ( 17/260) phase-engine parser::oracle_effect::gap_diagnosis::tests::swallowed_gap_reports_an_as_long_as_guard
+        PASS [   0.028s] ( 18/260) phase-engine parser::oracle_effect::gap_diagnosis::tests::swallowed_gap_reports_the_first_rejected_if_guard
+        PASS [   0.021s] ( 19/260) phase-engine parser::oracle_effect::gap_diagnosis::tests::swallowed_gap_reports_the_rejected_quantity_operand
+        PASS [   0.016s] ( 20/260) phase-engine parser::oracle_effect::gap_diagnosis::tests::swallowed_gap_strips_the_connector_off_a_replacement_antecedent
+        PASS [   0.015s] ( 21/260) phase-engine parser::oracle_effect::lower::tests::comma_separator_does_not_swallow_a_non_counter_clause
+        PASS [   0.013s] ( 22/260) phase-engine parser::oracle_effect::tests::a_non_open_booster_sentence_is_not_swallowed
+        PASS [   0.076s] ( 23/260) phase-engine parser::oracle_effect::tests::conditional_cant_be_regenerated_non_die_exile_tail_not_swallowed
+        PASS [   0.189s] ( 24/260) phase-engine parser::oracle_effect::tests::issue_3308_full_card_parse_has_no_swallow_warnings
+        PASS [   0.303s] ( 25/260) phase-engine parser::oracle_effect::sequence::tests::quoted_token_ability_does_not_swallow_typed_group_sibling
+        PASS [   0.081s] ( 26/260) phase-engine parser::oracle_effect::tests::issue_3308_rune_snag_keeps_swallow_warning
+        PASS [   0.016s] ( 27/260) phase-engine parser::oracle_effect::tests::self_ref_possessive_does_not_swallow_sentence_boundary_in_clause_splitter
+        PASS [   0.016s] ( 28/260) phase-engine parser::oracle_effect::tests::trailing_effect_text_after_redirect_is_not_swallowed
+        PASS [   0.099s] ( 29/260) phase-engine parser::oracle_effect::tests::lost_isle_calling_second_sentence_stays_swallowed
+        PASS [   0.068s] ( 30/260) phase-engine parser::oracle_ir::snapshot_tests::swallow_diagnostics_are_homed_in_the_doc_ir_channel
+        PASS [   0.041s] ( 31/260) phase-engine parser::oracle_static::tests::boarded_window_full_text_has_no_swallowed_clause_regression
+        PASS [   0.018s] ( 32/260) phase-engine parser::oracle_static::tests::static_can_only_attack_alone_not_swallowed_by_cant_attack_alone
+        PASS [   0.044s] ( 33/260) phase-engine parser::oracle_trigger::tests::evercoat_ursine_combat_damage_gate_binds_and_swallow_warning_clears
+        PASS [   0.279s] ( 34/260) phase-engine parser::oracle_ir::snapshot_tests::diagnostic_snapshots::diagnostic_swallowed_clause_cleared_for_a_killer
+        PASS [   0.141s] ( 35/260) phase-engine parser::oracle_trigger::tests::extract_didnt_have_keyword_on_etb_trigger_stays_swallowed
+        PASS [   0.173s] ( 36/260) phase-engine parser::oracle_trigger::tests::extract_didnt_have_keyword_on_ltb_trigger_stays_swallowed
+        PASS [   0.142s] ( 37/260) phase-engine parser::oracle_trigger::tests::extract_didnt_have_landwalk_stays_swallowed
+        PASS [   0.079s] ( 38/260) phase-engine parser::oracle_trigger::tests::talion_kindly_lord_full_oracle_no_swallowed_clause
+        PASS [   0.039s] ( 39/260) phase-engine parser::oracle_trigger::tests::trigger_unless_intervening_does_not_swallow_unless_pay
+        PASS [   0.029s] ( 40/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::compound_replacement_with_unrepresented_second_instead_sentence_is_flagged
+        PASS [   0.180s] ( 41/260) phase-engine parser::oracle_trigger::tests::extract_didnt_have_non_keyword_stays_swallowed
+        PASS [   0.024s] ( 42/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::condition_if_carrier_scoping_does_not_swallow_a_second_matching_rider_in_the_same_unit
+        PASS [   0.024s] ( 43/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::play_from_exile_alt_cost_carrier_scoping_does_not_swallow_a_second_matching_rider_in_the_same_unit
+        PASS [   0.024s] ( 44/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::play_from_exile_alt_cost_residual_scans_newline_separated_conditions
+        PASS [   0.064s] ( 45/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::plague_drone_replacement_antecedent_is_not_swallowed_condition
+        PASS [   0.026s] ( 46/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::represented_replacement_with_trailing_extra_conditional_is_flagged
+        PASS [   0.020s] ( 47/260) phase-engine parser::swallow_check::detect_condition_if_replacement_exemption_tests::strip_helper_only_removes_sentences_backed_by_a_parsed_replacement
+        PASS [   0.021s] ( 48/260) phase-engine parser::swallow_check::tests::a_replacement_gap_does_not_discharge_a_static_conditions_suppression
+        PASS [   0.018s] ( 49/260) phase-engine parser::swallow_check::tests::a_second_same_marker_clause_is_not_discharged_by_the_first
+        PASS [   0.119s] ( 50/260) phase-engine parser::swallow_check::tests::a_card_that_parses_to_nothing_is_still_audited
+        PASS [   0.033s] ( 51/260) phase-engine parser::swallow_check::tests::activate_limit_does_not_raise_the_timing_expectation
+        PASS [   0.033s] ( 52/260) phase-engine parser::swallow_check::tests::activate_only_during_is_silent_when_the_timing_window_is_typed
+        PASS [   0.173s] ( 53/260) phase-engine parser::swallow_check::tests::activate_limit_accepts_crew_once_per_turn_cadence
+        PASS [   0.083s] ( 54/260) phase-engine parser::swallow_check::tests::apnap_protection_racket_reports_turn_order_as_swallowed
+        PASS [   0.061s] ( 55/260) phase-engine parser::swallow_check::tests::apnap_typed_starting_with_evidence_arm_is_not_vacuous
+        PASS [   0.184s] ( 56/260) phase-engine parser::swallow_check::tests::alt_cost_cast_permissions_do_not_swallow_pay_life_riders
+        PASS [   0.025s] ( 57/260) phase-engine parser::swallow_check::tests::birgi_boast_limit_static_does_not_flag_dynamic_qty
+        PASS [   0.074s] ( 58/260) phase-engine parser::swallow_check::tests::black_widow_if_you_dont_grants_typed_play_from_exile_until_eot
+        PASS [   0.102s] ( 59/260) phase-engine parser::swallow_check::tests::breach_the_multiverse_verbatim_still_raises_one_dynamic_qty
+        PASS [   0.028s] ( 60/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_chained_pairs_each_count
+        PASS [   0.040s] ( 61/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_mixed_populations_count_per_population
+        PASS [   0.027s] ( 62/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_population_mismatch_still_warns
+        PASS [   0.026s] ( 63/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_shared_node_counts_once
+        PASS [   0.186s] ( 64/260) phase-engine parser::swallow_check::tests::choice_branch_token_granted_unimplemented_is_reached_by_def_tree_walker
+        PASS [   0.044s] ( 65/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_split_trigger_and_replacement_roots_count_once
+        PASS [   0.029s] ( 66/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_two_same_population_markers_one_iteration_still_warns
+        PASS [   0.023s] ( 67/260) phase-engine parser::swallow_check::tests::co_scoped_iteration_with_extra_marker_still_warns
+        PASS [   0.019s] ( 68/260) phase-engine parser::swallow_check::tests::co_scoped_parent_target_iteration_is_represented
+        PASS [   0.021s] ( 69/260) phase-engine parser::swallow_check::tests::condition_as_long_as_accepts_inverted_equipped_subject_grant
+        PASS [   0.033s] ( 70/260) phase-engine parser::swallow_check::tests::condition_as_long_as_accepts_inverted_attached_subject_color_grant
+        PASS [   0.041s] ( 71/260) phase-engine parser::swallow_check::tests::condition_as_long_as_bronze_horse_reports_known_gap_champions_helm_accepted
+        PASS [   0.075s] ( 72/260) phase-engine parser::swallow_check::tests::condition_as_long_as_accepts_play_from_exile_they_remain_exiled
+        PASS [   0.048s] ( 73/260) phase-engine parser::swallow_check::tests::condition_if_accepts_conditional_enter_with_counters_put_this_way
+        PASS [   0.232s] ( 74/260) phase-engine parser::swallow_check::tests::condition_as_long_as_swallow_carries_the_rejected_guard
+        PASS [   0.193s] ( 75/260) phase-engine parser::swallow_check::tests::condition_if_accepts_counter_destroy_rider
+        PASS [   0.048s] ( 76/260) phase-engine parser::swallow_check::tests::condition_if_accepts_full_bore_target_warp_grant
+        PASS [   0.113s] ( 77/260) phase-engine parser::swallow_check::tests::condition_if_accepts_countered_spell_zone_redirect
+        PASS [   0.108s] ( 78/260) phase-engine parser::swallow_check::tests::condition_if_accepts_graveyard_cast_exile_rider
+        PASS [   0.083s] ( 79/260) phase-engine parser::swallow_check::tests::condition_if_accepts_grimoire_moved_type_enter_modifier
+        PASS [   0.047s] ( 80/260) phase-engine parser::swallow_check::tests::condition_if_accepts_lethargy_trap_alt_cost_gate
+        PASS [   0.148s] ( 81/260) phase-engine parser::swallow_check::tests::condition_if_accepts_lost_life_this_way_draw_that_many
+        PASS [   0.207s] ( 82/260) phase-engine parser::swallow_check::tests::condition_if_accepts_if_you_do_becomes_plotted
+        PASS [   0.037s] ( 83/260) phase-engine parser::swallow_check::tests::condition_if_accepts_must_be_blocked_rider
+        PASS [   0.024s] ( 84/260) phase-engine parser::swallow_check::tests::condition_if_accepts_tiered_enters_with_counter_static
+        PASS [   0.067s] ( 85/260) phase-engine parser::swallow_check::tests::condition_if_accepts_present_tense_enters_this_way_counter_rider
+        PASS [   0.018s] ( 86/260) phase-engine parser::swallow_check::tests::condition_if_accepts_unconditional_valmod_leading_if
+        PASS [   0.018s] ( 87/260) phase-engine parser::swallow_check::tests::condition_if_gated_valmod_captures_condition_not_blanket_exemption
+        PASS [   0.015s] ( 88/260) phase-engine parser::swallow_check::tests::condition_if_still_flags_unrepresented_entry_this_way_voices
+        PASS [   0.166s] ( 89/260) phase-engine parser::swallow_check::tests::condition_if_swallow_carries_the_rejected_guard
+        PASS [   0.251s] ( 90/260) phase-engine parser::swallow_check::tests::condition_if_accepts_you_may_look_if_you_do_reveal_from_among
+        PASS [   0.061s] ( 91/260) phase-engine parser::swallow_check::tests::condition_unless_accepts_declared_as_attackers_cant_tap_exemption
+        PASS [   0.172s] ( 92/260) phase-engine parser::swallow_check::tests::condition_if_swallow_reports_the_guard_that_survives_the_exemptions
+        PASS [   0.082s] ( 93/260) phase-engine parser::swallow_check::tests::condition_unless_swallow_carries_the_rejected_guard
+        PASS [   0.084s] ( 94/260) phase-engine parser::swallow_check::tests::conditional_enter_counters_does_not_hide_unrelated_if
+        PASS [   0.329s] ( 95/260) phase-engine parser::swallow_check::tests::condition_unless_accepts_representative_cards
+        PASS [   0.016s] ( 96/260) phase-engine parser::swallow_check::tests::counter_multiplier_does_not_discharge_a_second_the_number_of_clause
+        PASS [   0.015s] ( 97/260) phase-engine parser::swallow_check::tests::counter_multiplier_recognizer_accepts_each_kind_form
+        PASS [   0.014s] ( 98/260) phase-engine parser::swallow_check::tests::damage_conjunct_shapes_are_classified_by_position
+        PASS [   0.181s] ( 99/260) phase-engine parser::swallow_check::tests::construct_second_draw_body_parses_token_and_plan_counter
+        PASS [   0.041s] (100/260) phase-engine parser::swallow_check::tests::damage_subject_conjunction_detector_sees_the_deferred_families
+        PASS [   0.065s] (101/260) phase-engine parser::swallow_check::tests::defending_player_may_have_you_draw_not_swallowed
+        PASS [   0.171s] (102/260) phase-engine parser::swallow_check::tests::damage_subject_conjunction_detector_matches_the_normative_table
+        PASS [   0.031s] (103/260) phase-engine parser::swallow_check::tests::different_units_carry_different_spans
+        PASS [   0.063s] (104/260) phase-engine parser::swallow_check::tests::defending_player_may_have_you_draw_routes_to_original_controller
+        PASS [   0.016s] (105/260) phase-engine parser::swallow_check::tests::dig_if_you_do_exemption_is_text_scoped
+        PASS [   0.090s] (106/260) phase-engine parser::swallow_check::tests::drag_to_the_underworld_devotion_cost_reduction_parses_without_swallow
+        PASS [   0.102s] (107/260) phase-engine parser::swallow_check::tests::double_each_kind_of_counter_is_not_a_dynamic_qty_swallow
+        PASS [   0.073s] (108/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_activation_restriction_condition
+        PASS [   0.083s] (109/260) phase-engine parser::swallow_check::tests::duration_next_turn_accepts_amplifire_upkeep_pt_set
+        PASS [   0.042s] (110/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_cast_restriction_turn_history_condition
+        PASS [   0.057s] (111/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_cast_permission_scope
+        PASS [   0.037s] (112/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_entered_this_turn_quantity_condition
+        PASS [   0.055s] (113/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_exile_cast_permission_scope
+        PASS [   0.038s] (114/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_force_block_scope
+        PASS [   0.050s] (115/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_intervening_spell_history_condition
+        PASS [   0.055s] (116/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_land_or_spell_this_turn_disjunction_condition
+        PASS [   0.039s] (117/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_life_loss_turn_history_condition
+        PASS [   0.045s] (118/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_player_lookback_relative_clause
+        PASS [   0.081s] (119/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_one_shot_damage_replacement_shield
+        PASS [   0.053s] (120/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_prevention_shield_scope
+        PASS [   0.045s] (121/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_saddled_it_this_turn_filter
+        PASS [   0.036s] (122/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_unrecognized_as_long_as_condition
+        PASS [   0.045s] (123/260) phase-engine parser::swallow_check::tests::duration_this_turn_accepts_turn_history_case_condition
+        PASS [   0.020s] (124/260) phase-engine parser::swallow_check::tests::duration_this_turn_still_fires_outside_exemption_scope
+        PASS [   0.040s] (125/260) phase-engine parser::swallow_check::tests::duration_this_turn_fires_when_duration_and_activation_restriction_coexist
+        PASS [   0.179s] (126/260) phase-engine parser::swallow_check::tests::duration_until_eot_accepts_token_granted_trigger
+        PASS [   0.188s] (127/260) phase-engine parser::swallow_check::tests::duration_until_eot_agility_bobblehead
+        PASS [   0.056s] (128/260) phase-engine parser::swallow_check::tests::duration_until_eot_barbarian_bully
+        PASS [   0.208s] (129/260) phase-engine parser::swallow_check::tests::duration_until_eot_alandra_sky_dreamer
+        PASS [   0.033s] (130/260) phase-engine parser::swallow_check::tests::duration_until_eot_drop_tower
+        PASS [   0.178s] (131/260) phase-engine parser::swallow_check::tests::duration_until_eot_dragon_egg_reports_known_gap
+        PASS [   0.046s] (132/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_counter_multiplier_carrier
+        PASS [   0.023s] (133/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_damage_double_carrier_neriv
+        PASS [   0.153s] (134/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_choose_and_sacrifice_rest_for_each_player
+        PASS [   0.127s] (135/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_foretell_cost_equal_to_mana_cost_reduced
+        PASS [   0.027s] (136/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_granted_ward_pay_life_equal_to_power
+        PASS [   0.229s] (137/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_emissary_green_vote_tally
+        PASS [   0.046s] (138/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_jaws_of_defeat_pt_difference_carrier
+        PASS [   0.038s] (139/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_plot_cost_equal_to_mana_cost
+        PASS [   0.049s] (140/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_repeat_for_carrier_secrets_of_the_key
+        PASS [   0.059s] (141/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_repeat_for_carrier_increasing_vengeance
+        PASS [   0.106s] (142/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_ward_pay_life_equal_to_power
+        PASS [   0.022s] (143/260) phase-engine parser::swallow_check::tests::dynamic_qty_damage_double_marker_gate
+        PASS [   0.022s] (144/260) phase-engine parser::swallow_check::tests::dynamic_qty_flags_compound_ward_with_power_life_payment
+        PASS [   0.019s] (145/260) phase-engine parser::swallow_check::tests::dynamic_qty_flags_unbacked_rather_than_once_with_repeat_for
+        PASS [   0.018s] (146/260) phase-engine parser::swallow_check::tests::dynamic_qty_flags_unbacked_rather_than_once_wording
+        PASS [   0.016s] (147/260) phase-engine parser::swallow_check::tests::dynamic_qty_keeps_warning_for_non_tally_dynamic_in_vote_body
+        PASS [   0.237s] (148/260) phase-engine parser::swallow_check::tests::dynamic_qty_accepts_vote_voted_for_carrier
+        PASS [   0.028s] (149/260) phase-engine parser::swallow_check::tests::dynamic_qty_not_double_reported_when_the_gate_recorded_the_whole_clause
+        PASS [   0.061s] (150/260) phase-engine parser::swallow_check::tests::dynamic_qty_keeps_warning_when_counter_multiplier_card_has_second_dynamic_clause
+        PASS [   0.022s] (151/260) phase-engine parser::swallow_check::tests::dynamic_qty_still_warns_for_a_second_unrepresented_marker_in_a_ward_unit
+        PASS [   0.021s] (152/260) phase-engine parser::swallow_check::tests::dynamic_qty_still_warns_for_a_sibling_marker_beside_affinity
+        PASS [   0.095s] (153/260) phase-engine parser::swallow_check::tests::dynamic_qty_suppressed_for_unimplemented_granted_trigger_child
+        PASS [   0.018s] (154/260) phase-engine parser::swallow_check::tests::effect_has_internal_optionality_cast_copy_of_card
+        PASS [   0.023s] (155/260) phase-engine parser::swallow_check::tests::enchant_creature_without_flying_do_not_swallow
+        PASS [   0.016s] (156/260) phase-engine parser::swallow_check::tests::enters_modified_if_exemption_is_text_scoped
+        PASS [   0.147s] (157/260) phase-engine parser::swallow_check::tests::dynamic_qty_swallow_carries_the_rejected_operand
+        PASS [   0.072s] (158/260) phase-engine parser::swallow_check::tests::eternal_wanderer_minus_four_bare_choose_does_not_flag_dynamic_qty
+        PASS [   0.084s] (159/260) phase-engine parser::swallow_check::tests::feather_return_rider_is_not_a_swallowed_condition_if
+        PASS [   0.062s] (160/260) phase-engine parser::swallow_check::tests::findings_carry_the_units_pooled_evidence_items
+        PASS [   0.053s] (161/260) phase-engine parser::swallow_check::tests::hawkeye_dealt_damage_intervening_if_not_swallowed
+        PASS [   0.052s] (162/260) phase-engine parser::swallow_check::tests::hawkeye_trailing_dealt_damage_if_not_hoisted
+        PASS [   0.038s] (163/260) phase-engine parser::swallow_check::tests::kid_loki_full_oracle_parses_zero_unimplemented
+        PASS [   0.094s] (164/260) phase-engine parser::swallow_check::tests::kaya_orzhov_usurper_plus_one_gates_gain_life_on_creature_exiled_this_way
+        PASS [   0.049s] (165/260) phase-engine parser::swallow_check::tests::lilah_plotted_rider_is_not_a_swallowed_condition_if
+        PASS [   0.049s] (166/260) phase-engine parser::swallow_check::tests::make_an_example_verbatim_still_raises_one_dynamic_qty
+        PASS [   0.015s] (167/260) phase-engine parser::swallow_check::tests::modal_dynamic_max_dropped_fires_on_modal_without_dynamic_cap
+        PASS [   0.043s] (168/260) phase-engine parser::swallow_check::tests::modal_dynamic_max_dropped_registered_via_real_parse
+        PASS [   0.074s] (169/260) phase-engine parser::swallow_check::tests::modal_bullet_lines_are_audited_not_orphaned
+        PASS [   0.076s] (170/260) phase-engine parser::swallow_check::tests::modal_dynamic_max_dropped_silent_on_ruinous
+        PASS [   0.016s] (171/260) phase-engine parser::swallow_check::tests::modal_dynamic_max_dropped_silent_when_dynamic_cap_present
+        PASS [   0.015s] (172/260) phase-engine parser::swallow_check::tests::modal_dynamic_max_dropped_silent_without_modal_node
+        PASS [   0.193s] (173/260) phase-engine parser::swallow_check::tests::mole_man_token_trigger_accounts_for_optional_you_may
+        PASS [   0.062s] (174/260) phase-engine parser::swallow_check::tests::moon_girl_full_oracle_parses_zero_unimplemented
+        PASS [   0.374s] (175/260) phase-engine parser::swallow_check::tests::modal_dynamic_max_dropped_silent_on_non_modal_selection_clauses
+        PASS [   0.101s] (176/260) phase-engine parser::swallow_check::tests::optional_may_have_channel_harm
+        PASS [   0.042s] (177/260) phase-engine parser::swallow_check::tests::optional_may_have_murderous_redcap_avatar
+        PASS [   0.091s] (178/260) phase-engine parser::swallow_check::tests::optional_may_have_requiem_monolith
+        PASS [   0.059s] (179/260) phase-engine parser::swallow_check::tests::optional_may_have_risk_factor
+        PASS [   0.042s] (180/260) phase-engine parser::swallow_check::tests::optional_may_have_siege_behemoth_reports_known_gap
+        PASS [   0.072s] (181/260) phase-engine parser::swallow_check::tests::optional_may_have_wall_of_stolen_identity
+        PASS [   0.027s] (182/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_activate_abilities_as_though_haste_static
+        PASS [   0.032s] (183/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_activation_timing_permission_static
+        PASS [   0.048s] (184/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_amareth_pattern
+        PASS [   0.521s] (185/260) phase-engine parser::swallow_check::tests::non_phrase_detectors_carry_no_gap
+        PASS [   0.046s] (186/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_any_number_land_drop_static
+        PASS [   0.042s] (187/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_chromatic_orrery_real_oracle_text
+        PASS [   0.034s] (188/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_copy_retarget_clause
+        PASS [   0.039s] (189/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_copy_retarget_clause_in_delayed_trigger
+        PASS [   0.080s] (190/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_copy_retarget_clause_in_flip_coin_win_branch
+        PASS [   0.320s] (191/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_change_targets_retarget_spells
+        PASS [   0.057s] (192/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_delayed_trigger_inner_optionality
+        PASS [   0.148s] (193/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_copy_retarget_clause_in_triggered_ability
+        PASS [   0.066s] (194/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_increasing_vengeance_copy_retarget
+        PASS [   0.152s] (195/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_garruk_savage_herald_minus_seven
+        PASS [   0.073s] (196/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_mizzix_mastery_cast_copy
+        PASS [   0.052s] (197/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_outside_game_wish_search
+        PASS [   0.028s] (198/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_proud_wildbonder_real_oracle_text
+        PASS [   0.087s] (199/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_outside_game_face_up_exile_disjunction
+        PASS [   0.054s] (200/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_repeat_this_process
+        PASS [   0.022s] (201/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_spend_mana_as_any_color_static
+        PASS [   0.096s] (202/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_reveal_until_optional_kept
+        PASS [   0.031s] (203/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_thousand_year_elixir_real_oracle_text
+        PASS [   0.089s] (204/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_teferi_flash_grant_generic_effect
+        PASS [   0.042s] (205/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_up_to_change_zone_choice
+        PASS [   0.093s] (206/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_tithe_optional_search
+        PASS [   0.127s] (207/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_wishboard_creature_or_land_and_loyalty_fetches
+        PASS [   0.123s] (208/260) phase-engine parser::swallow_check::tests::optional_you_may_accepts_xanathar_upkeep_permissions
+        PASS [   0.064s] (209/260) phase-engine parser::swallow_check::tests::optional_you_may_atraxa_grand_unifier_reports_known_gap
+        PASS [   0.016s] (210/260) phase-engine parser::swallow_check::tests::plotted_grant_linkage_exemption_is_text_scoped
+        PASS [   0.094s] (211/260) phase-engine parser::swallow_check::tests::optional_you_may_still_flags_unrepresented_optional_verb
+        PASS [   0.045s] (212/260) phase-engine parser::swallow_check::tests::progenitors_icon_chosen_type_next_spell_flash_do_not_swallow
+        PASS [   0.017s] (213/260) phase-engine parser::swallow_check::tests::recorded_unrecognized_text_discharges_only_the_markers_it_contains
+        PASS [   0.100s] (214/260) phase-engine parser::swallow_check::tests::quistis_cast_from_graveyard_is_castfromzone_with_any_type_mana_and_exile_rider
+        PASS [   0.058s] (215/260) phase-engine parser::swallow_check::tests::replacement_carrier_acceptance_is_per_clause_not_per_card
+        PASS [   0.139s] (216/260) phase-engine parser::swallow_check::tests::replacement_accepts_add_pending_etb_counters_as_a_614_1c_carrier
+        PASS [   0.017s] (217/260) phase-engine parser::swallow_check::tests::replacement_carrier_scoping_does_not_swallow_a_second_matching_rider_in_the_same_unit
+        PASS [   0.016s] (218/260) phase-engine parser::swallow_check::tests::replacement_carrier_scoping_ignores_a_second_enters_with_clause_in_the_same_unit
+        PASS [   0.047s] (219/260) phase-engine parser::swallow_check::tests::replacement_carrier_scoping_accepts_the_literal_self_reference_form
+        PASS [   0.099s] (220/260) phase-engine parser::swallow_check::tests::replacement_instead_accepts_desperate_gambit_flip_coin_damage_replacements
+        PASS [   0.150s] (221/260) phase-engine parser::swallow_check::tests::replacement_instead_accepts_countered_spell_redirect_carrier
+        PASS [   0.060s] (222/260) phase-engine parser::swallow_check::tests::replacement_instead_accepts_effect_chain_instead_condition
+        PASS [   0.105s] (223/260) phase-engine parser::swallow_check::tests::replacement_instead_accepts_power_pack_delayed_payload_rider
+        PASS [   0.151s] (224/260) phase-engine parser::swallow_check::tests::replacement_instead_accepts_untap_and_token_choice_replacements
+        PASS [   0.087s] (225/260) phase-engine parser::swallow_check::tests::replacement_instead_keeps_flagging_counter_without_zone
+        PASS [   0.113s] (226/260) phase-engine parser::swallow_check::tests::represented_entry_this_way_counter_rider_does_not_hide_unrelated_if
+        PASS [   0.063s] (227/260) phase-engine parser::swallow_check::tests::represented_tiered_counter_pair_does_not_hide_unrelated_if
+        PASS [   0.224s] (228/260) phase-engine parser::swallow_check::tests::replacement_instead_swallow_carries_the_event_antecedent
+        PASS [   0.065s] (229/260) phase-engine parser::swallow_check::tests::reveal_until_chosen_type_and_shares_type_do_not_swallow
+        PASS [   0.085s] (230/260) phase-engine parser::swallow_check::tests::represented_typed_rider_does_not_hide_an_unrepresented_pronoun_rider
+        PASS [   0.021s] (231/260) phase-engine parser::swallow_check::tests::single_scoped_def_without_co_scoped_consumer_still_warns
+        PASS [   0.015s] (232/260) phase-engine parser::swallow_check::tests::static_carries_optional_modification_recurses_into_grant_static_ability
+        PASS [   0.065s] (233/260) phase-engine parser::swallow_check::tests::same_line_clauses_share_the_unit_span_until_subline_item_spans_exist
+        PASS [   0.035s] (234/260) phase-engine parser::swallow_check::tests::strip_then_extract_reports_the_surviving_guard
+        PASS [   0.045s] (235/260) phase-engine parser::swallow_check::tests::tinybones_cast_from_damaged_player_graveyard_owned_triggering_player_any_mana
+        PASS [   0.062s] (236/260) phase-engine parser::swallow_check::tests::target_opponent_may_have_you_draw_routes_to_original_controller
+        PASS [   0.160s] (237/260) phase-engine parser::swallow_check::tests::token_granted_optional_trigger_is_a_general_building_block
+        PASS [   0.180s] (238/260) phase-engine parser::swallow_check::tests::token_granted_mandatory_trigger_is_not_optional
+        PASS [   0.022s] (239/260) phase-engine parser::swallow_check::tests::twice_is_activation_limit_scopes_to_fixed_limits_only
+        PASS [   0.020s] (240/260) phase-engine parser::swallow_check::tests::twice_is_only_dynamic_marker_gate
+        PASS [   0.120s] (241/260) phase-engine parser::swallow_check::tests::unsupported_unit_does_not_suppress_the_audit_of_a_sibling_unit
+        PASS [   0.173s] (242/260) phase-engine parser::swallow_check::tests::token_granted_unimplemented_trigger_is_reached_by_def_tree_walker
+        PASS [   0.052s] (243/260) phase-engine parser::swallow_check::tests::untypeable_activation_window_is_an_honest_unimplemented_not_a_silent_swallow
+        PASS [   0.112s] (244/260) phase-engine parser::swallow_check::tests::valki_verbatim_co_scoped_iteration_raises_no_dynamic_qty
+        PASS [   0.038s] (245/260) phase-engine parser::swallow_check::tests::wretched_banquet_least_power_destroy_parses_without_swallow
+        PASS [   0.015s] (246/260) phase-engine parser::swallow_evidence::tests::a_quantity_under_a_quantity_key_is_still_evidence
+        PASS [   0.014s] (247/260) phase-engine parser::swallow_evidence::tests::a_real_duration_node_is_evidence
+        PASS [   0.014s] (248/260) phase-engine parser::swallow_evidence::tests::a_real_effect_under_the_effect_key_is_still_evidence
+        PASS [   0.147s] (249/260) phase-engine parser::swallow_check::tests::visions_of_ruin_flashback_commander_reduction_parses_without_swallow
+        PASS [   0.013s] (250/260) phase-engine parser::swallow_evidence::tests::activation_restriction_probe_is_key_anchored_not_tag_matched
+        PASS [   0.014s] (251/260) phase-engine parser::swallow_evidence::tests::data_carrying_duration_variants_are_reachable
+        PASS [   0.013s] (252/260) phase-engine parser::swallow_evidence::tests::description_prose_is_never_evidence
+        PASS [   0.014s] (253/260) phase-engine parser::swallow_evidence::tests::duration_probe_is_key_anchored_not_string_matched
+        PASS [   0.013s] (254/260) phase-engine parser::swallow_evidence::tests::effect_probe_is_key_anchored_not_tag_matched
+        PASS [   0.016s] (255/260) phase-engine parser::swallow_evidence::tests::fixed_quantities_are_not_dynamic_evidence
+        PASS [   0.014s] (256/260) phase-engine parser::swallow_evidence::tests::has_slot_does_not_match_a_containing_key
+        PASS [   0.016s] (257/260) phase-engine parser::swallow_evidence::tests::quantity_probe_is_key_anchored_not_tag_matched
+        PASS [   0.015s] (258/260) phase-engine parser::swallow_evidence::tests::typed_probe_reaches_nested_carriers
+        PASS [  11.761s] (259/260) phase-engine game::coverage::tests::oracle_patterns_group_swallow_gaps_by_rejected_phrase
+        PASS [  11.830s] (260/260) phase-engine game::coverage::tests::analyze_coverage_surfaces_swallowed_clause_gap_details
+────────────
+     Summary [  11.844s] 260 tests run: 260 passed, 22401 skipped
+EXIT 0

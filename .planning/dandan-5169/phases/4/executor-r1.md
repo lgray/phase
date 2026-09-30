@@ -1,0 +1,12 @@
+MODEL: claude-sonnet-5-5
+Mode: implementation/fix (phase mode, k=4). BASE_SHA(run)=b9ba9360. START_SHA=06554d0e8e610d9d935f251197de7530607aa92b. IMPLEMENTATION_WORKTREE=/home/user/phase.
+
+1. Diff: only crates/engine/src/parser/swallow_check.rs (+94/-1). Production: `Effect::Counter { countered_spell_zone: Some(_), .. }` arm (CR comment) added to the `=> true` or-pattern of `effect_is_replacement_carrier`. Tests: `replacement_instead_accepts_countered_spell_redirect_carrier` (Memory Lapse, Lapse of Certainty, Remand, Spell Crumple, verbatim text, reach guard on expected zone before the negative), `replacement_instead_keeps_flagging_counter_without_zone` (Hinder, reach guard zone None + only_swallow).
+2. Worktree: clean start at HEAD==START_SHA; end: HEAD unchanged, nothing staged, only that path modified. PREPARATORY evidence, not completion evidence.
+3. Red/green: with tests added and no arm, `replacement_instead_accepts_countered_spell_redirect_carrier` FAILED at the `!has_swallowed_detector(Replacement_Instead)` assertion for Memory Lapse (reach guard passed); Hinder test passed. With arm: `nextest -p phase-engine --lib swallow` 260/260 pass; `--test integration counter_spell_zone_redirect` 4/4 pass; `clippy -p phase-engine --all-targets -D warnings` exit 0. fmt run on the path. Logs: phases/4/{red,green,clippy,integ}.log.
+4. Parser gate: inline grep on added lines empty; check-parser-combinators.sh Gate G and A PASS. coverage/semantic-audit/card-data NOT run (per instructions).
+5. Coverage map: claim=countered-spell redirect is a carrier; seam=effect_is_replacement_carrier via detect_replacement_instead; test=replacement_instead_accepts_countered_spell_redirect_carrier; fails on revert (shown); negative=Hinder test (Some(_) not widened). Runtime honoured by existing counter_spell_zone_redirect tests (Lapse of Certainty and full-text Spell Crumple have no dedicated runtime test, per plan review F2, not required).
+6. Matrix: pure diagnostic predicate over static parse output; no authority/binding/storage/serde impact; hostile rows UNREACHABLE (no game state).
+7. CR gate: zero UNVERIFIED (614.1a, 701.6a, 608.2c, 702.170c existing).
+8. Judgement: matrix F1 name fix applied implicitly (existing suite run whole-module). `Some(_)` also admits `Exile`, which the counter parser never emits (type doc).
+9. Stop-and-return: none. 11. Deviations: none. 12. Risks: Hinder stays flagged by design; closing coverage measurement left to orchestrator. Disk is at 4.1 GB free after the integration build.

@@ -1,0 +1,18 @@
+    Checking libc v0.2.186
+    Checking tracing-core v0.1.36
+    Checking tracing v0.1.44
+    Checking unicode-ident v1.0.24
+    Checking proc-macro2 v1.0.106
+    Checking getrandom v0.3.4
+    Checking rand_core v0.9.5
+    Checking getrandom v0.4.2
+    Checking rand_chacha v0.9.0
+    Checking tempfile v3.27.0
+    Checking quote v1.0.45
+    Checking rand v0.9.4
+    Checking console v0.16.3
+    Checking insta v1.47.2
+    Checking phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Checking syn v2.0.117
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15m 11s
+EXIT 0
