@@ -4,6 +4,7 @@ use engine::game::effects::resolve_ability_chain;
 use engine::game::game_object::AttachTarget;
 use engine::game::mana_abilities::activate_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::zone_pipeline::{move_object_for_test, ZoneMoveRequest};
 use engine::parser::oracle_cost::parse_oracle_cost;
 use engine::types::ability::{
@@ -26,17 +27,18 @@ use engine::types::game_state::{
     BatchCompletion, CastPaymentMode, CollectEvidenceResume, ExileLinkKind, GameState,
     ManaAbilityCostParentLifecycle, ManaAbilityCostResolutionMode, ManaAbilityResume, ManaChoice,
     PayCostKind, PendingCast, PendingCostMoveResume, PendingReplacement, PersistedGameState,
-    StackEntryKind, WaitingFor, ZoneDeliveryExileTracking,
+    PersistedRestoreFinalization, StackEntryKind, WaitingFor, ZoneDeliveryExileTracking,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
-use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::proposed_event::{ProposedEvent, ReplacementId};
 use engine::types::replacements::ReplacementEvent;
 use engine::types::resolution::ResolutionStateWire;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::{EtbTapState, Zone};
+use serde_json::Value;
 use std::sync::Arc;
 
 fn redirect_moved_to(destination: Zone, redirected_to: Zone) -> ReplacementDefinition {
@@ -10556,7 +10558,6 @@ fn delve_cancel_witness_paying_first(fuel_dies_trigger: bool, first: usize) -> D
 
 /// JSON-pointer paths at which `a` and `b` differ; unequal-length arrays report the array path.
 fn state_diff_paths(a: &serde_json::Value, b: &serde_json::Value) -> Vec<String> {
-    use serde_json::Value;
     fn walk(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
         match (a, b) {
             (Value::Object(x), Value::Object(y)) => {
@@ -10587,7 +10588,6 @@ impl DelveCancelWitness {
     /// except the paths listed below. `redirected` is a fuel card whose payment
     /// was redirected out of the graveyard.
     fn cancel(&mut self, redirected: Option<ObjectId>) {
-        use serde_json::Value;
         let before_cancel = serde_json::to_value(self.runner.state()).unwrap();
         let library_bound: Vec<ObjectId> = self
             .fuel
@@ -10659,7 +10659,6 @@ impl DelveCancelWitness {
             );
         }
 
-        use engine::types::game_state::{PersistedGameState, PersistedRestoreFinalization};
         let saved =
             serde_json::to_string(&PersistedGameState::capture(self.runner.state().clone()))
                 .unwrap();
@@ -10908,9 +10907,6 @@ fn cancel_after_battlefield_redirected_delve_payment_triggers_nothing() {
 /// leaves no death behind, so a later real Brimstone Volley is not on morbid.
 #[test]
 fn cancel_after_battlefield_redirected_delve_payment_leaves_morbid_unmet() {
-    use engine::game::scenario_db::GameScenarioDbExt;
-    use engine::types::mana::ManaUnit;
-
     let db = crate::support::shared_card_db().expect("the committed card fixture loads");
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
