@@ -1512,6 +1512,7 @@ export class WebSocketAdapter implements EngineAdapter {
     };
 
     socket.ws.onerror = () => {
+      if (this.sessionIdentityRejected) return;
       const err = new AdapterError("WS_ERROR", "WebSocket connection failed", true);
       if (this.initReject || this.pregameReject || this.gameStartedReject) {
         this.rejectInitialization(err);

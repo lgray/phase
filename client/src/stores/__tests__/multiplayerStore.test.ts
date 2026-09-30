@@ -1935,6 +1935,33 @@ describe("multiplayerStore", () => {
     expect(lostToasts()).toBe(0);
   });
 
+  it("spares the replacement hosting when a closed host socket errors late", async () => {
+    const deck = { main_deck: ["Forest"], sideboard: [], commander: [] };
+    useMultiplayerStore.getState().startHosting(hostingSettings(), deck, HOST_URL);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const first = socketMocks.currentWs!;
+    emitServerMessage("GameCreated", {
+      game_code: "AAAAA",
+      player_token: "host-token",
+      full_key: { game_code: "AAAAA", generation: 1 },
+    });
+    useMultiplayerStore.getState().startHosting(hostingSettings(), deck, HOST_URL);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(socketMocks.currentWs).not.toBe(first);
+    expect(first.close).toHaveBeenCalled();
+
+    first.onerror?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const lost = [...useMultiplayerStore.getState().toasts.values()].filter(
+      (toast) => toast.message === "Connection to server lost.",
+    ).length;
+    expect({ status: useMultiplayerStore.getState().hostingStatus, lost }).toEqual({
+      status: "connecting",
+      lost: 0,
+    });
+  });
+
   // V-U15h — the LIVE mid-game reconnect, the third `openServerHostSocket`
   // call site. The only case in this file that needs fake timers, so they are
   // scoped to this block: installing them suite-wide would perturb two

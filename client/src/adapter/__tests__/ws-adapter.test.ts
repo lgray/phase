@@ -277,6 +277,28 @@ describe("WebSocketAdapter", () => {
     }
   });
 
+  it("stays silent on a late socket error after rejecting the session identity", () => {
+    const listener = vi.fn();
+    adapter.onEvent(listener);
+    ws.dispatchSynthetic(
+      "message",
+      JSON.stringify({
+        type: "GameCreated",
+        data: {
+          game_code: "GAME01",
+          player_token: "player-token",
+          full_key: { game_code: "GAME01", generation: 0 },
+        },
+      }),
+    );
+    expect(ws.close).toHaveBeenCalledOnce();
+
+    ws.onerror?.();
+
+    expect(listener.mock.calls.map(([event]) => event).filter((event) => event.type === "error"))
+      .toEqual([{ type: "error", message: "Server omitted a valid Full session identity" }]);
+  });
+
   it("exports only the trusted snapshot returned by the server", async () => {
     const exported = adapter.exportPersistenceState();
 

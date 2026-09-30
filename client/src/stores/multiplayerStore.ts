@@ -2803,7 +2803,7 @@ async function openServerHostSocket(
     handleServerHostMessage(set, get, socket.ws, msg, url, held, requestedCode);
   };
   socket.ws.onerror = () => {
-    if (!gameStartedFired) {
+    if (!gameStartedFired && hostWs === socket.ws) {
       hostWs = null;
       onReopen();
     }
