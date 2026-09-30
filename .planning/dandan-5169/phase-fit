@@ -14,3 +14,7 @@
 - Round 1 revision: fresh charter-mode planner (claude-sonnet-5-5) closed D1–D8, R1–R2, C1–C8; 15 phases, ~9,700 LOC. Prior version kept as phase-charter.r0 (now phase-charter.r1 is the revised text). Planner's two open questions (per-phase wire bump; 15-phase overhead) are left to phase plans / not decisions needing a human: wire bumps follow scripts/check-protocol-version.mjs per phase.
 
 ## 3. Charter review round 2 dispatched (whole charter, fresh reviewer).
+- Round 2 result (reviewer claude-sonnet-5-5): NOT CLEAN. 4 decision revisions (D1 Bo3 restart unowned; D2 Phase 13 T1∧T2 fires; D3 Phase 9 count-dedup row green at base; D4 seat-keyed deck_pools readers unowned), 1 review-only (R1 Hinder class claim), 3 corrections. All 18 round-1 findings verified closed. Design round 2; decision count 8 -> 4 (lowered). Report: charter-review-r2.md. Route: fresh charter-mode planner revision.
+- Round 2 revision (planner claude-sonnet-5-5): 17 phases, ~10,100 LOC. D1 -> Dandan capped at Bo1 via a typed best-of-three ceiling on FormatConfig enforced at the engine start authority (new Phase 7); D2 -> Phase 13 split into dealer frame (14) and Day's Undoing wheel (15); D3 -> quantity.rs scoped arms move to Phase 10 with base-red rows; D4 -> pool resolver in Phase 6, consumers in Phase 17. R1, C1–C3 applied. Text kept as phase-charter.r2.
+
+## 4. Charter review round 3 dispatched (whole charter, fresh reviewer).

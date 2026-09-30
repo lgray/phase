@@ -12,7 +12,7 @@
 - Run root (gitignored): `W/.planning/dandan-5169/`. Charter: `phase-charter`. Phase plans: `phase-<k>/plan.md`. Reviews: `phase-<k>/...`.
 
 ## Build and test (no Tilt; cloud box: 4 cores, 15 GB RAM, ~29 GB disk)
-- No Tilt. Ignore Tilt instructions; run cargo directly from `/home/user/phase`, e.g. `cd /home/user/phase && cargo nextest run -p engine <filter>`.
+- No Tilt. Ignore Tilt instructions; run cargo directly from `/home/user/phase`, e.g. `cd /home/user/phase && cargo nextest run -p phase-engine <filter>`.
 - ONE heavy build at a time; the box is small. Never run two cargo commands concurrently. Prefer targeted `cargo nextest run -p <pkg> <filter>` / `cargo check -p <pkg>`. New engine tests go in `crates/engine/tests/integration/` with a `mod` line in `tests/integration/main.rs`. Redirect long output to a file under `/home/user/phase/.planning/dandan-5169/` and grep it.
 - Never `cargo clean`, never delete `target/`.
 - CR text: `docs/MagicCompRules.txt`. Grep every CR number before writing it.
