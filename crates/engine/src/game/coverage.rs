@@ -4819,6 +4819,9 @@ fn fmt_trigger_condition(cond: &crate::types::ability::TriggerCondition) -> Stri
             parts.join(" or ")
         }
         TC::Not { condition } => format!("not ({})", fmt_trigger_condition(condition)),
+        TC::EventTime { condition } => {
+            format!("at the event: {}", fmt_trigger_condition(condition))
+        }
     }
 }
 
@@ -9640,6 +9643,7 @@ fn condition_feature(cond: &AbilityCondition) -> (&'static str, FeatureSupport) 
                 ("EffectOutcomeCurrentScopeSucceeded", Handled)
             }
             EffectOutcomeSignal::Guessed { .. } => ("EffectOutcomeGuessed", Handled),
+            EffectOutcomeSignal::RevealUntilMatched => ("EffectOutcomeRevealUntilMatched", Handled),
         },
         AbilityCondition::EventOutcomeWon => ("EventOutcomeWon", Handled),
         AbilityCondition::CoinFlipOutcome { .. } => ("CoinFlipOutcome", Handled),
@@ -10149,7 +10153,13 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         // `combat::attacker_can_attack_target` rather than guess. The board census is
         // `filter::player_controls_matching` (CR 109.2 + CR 108.4).
         StaticCondition::DefendingPlayerControls { .. } => ("DefendingPlayerControls", Handled),
-        StaticCondition::SourceAttackingAlone => ("SourceAttackingAlone", Unhandled),
+        // CR 506.5: resolved by `layers::evaluate_condition_inner` against the live
+        // `combat.attackers` set. Every static-condition consumer (layers, combat's
+        // `evaluate_condition_with_recipient` callers, `functioning_abilities`)
+        // routes through that evaluator, and combat membership edits mark layers
+        // dirty. `OpponentPoisonAtLeast` / `CompletedADungeon` stay `Unhandled`:
+        // poison and dungeon-completion writes do not mark layers dirty.
+        StaticCondition::SourceAttackingAlone => ("SourceAttackingAlone", Handled),
         // CR 508.1k / 509.1g / 509.1h: runtime-evaluated against the live combat
         // attacker/blocker sets (conditions.rs:81 / layers.rs:1118 / layers.rs:1123).
         StaticCondition::SourceIsAttacking => ("SourceIsAttacking", Handled),
@@ -20315,7 +20325,11 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
     /// intentionally NOT asserted here so a future stub does not silently pass.
     #[test]
     fn source_state_static_conditions_are_marked_handled() {
-        let conditions: [(StaticCondition, &str); 6] = [
+        let conditions: [(StaticCondition, &str); 7] = [
+            (
+                StaticCondition::SourceAttackingAlone,
+                "SourceAttackingAlone",
+            ),
             (StaticCondition::SourceIsEquipped, "SourceIsEquipped"),
             (StaticCondition::SourceIsEnchanted, "SourceIsEnchanted"),
             (StaticCondition::SourceIsMonstrous, "SourceIsMonstrous"),

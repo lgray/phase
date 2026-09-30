@@ -358,6 +358,11 @@ fn collect_trigger_condition_source_zones(condition: &TriggerCondition, out: &mu
                 collect_trigger_condition_source_zones(inner, out);
             }
         }
+        // CR 508.1m: a "while ~ is in your graveyard" event-time gate pins the
+        // source's zone exactly like an intervening "if" does.
+        TriggerCondition::EventTime { condition } => {
+            collect_trigger_condition_source_zones(condition, out);
+        }
         _ => {}
     }
 }
@@ -787,6 +792,7 @@ fn quantity_comparison_operands(cond: &TriggerCondition) -> Option<(&QuantityExp
         TriggerCondition::And { conditions } | TriggerCondition::Or { conditions } => {
             conditions.iter().find_map(quantity_comparison_operands)
         }
+        TriggerCondition::EventTime { condition } => quantity_comparison_operands(condition),
         _ => None,
     }
 }
@@ -1328,8 +1334,16 @@ fn is_damage_done_trigger_pattern(cond_lower: &str) -> bool {
     .map(|(rest, _)| rest)
     .unwrap_or(input);
 
-    // Check for "deals damage to a player" or "deals combat damage to a player"
-    let Ok((rest, _)) = parse_damage_source_subject(input) else {
+    // Check for "deals damage to a player" or "deals combat damage to a player".
+    // Accepts self-references ("~", "this creature", "this permanent") as well as
+    // external damage sources parsed by `parse_damage_source_subject`.
+    let Ok((rest, _)) = alt((
+        value((), tag::<_, _, OracleError<'_>>("~ ")),
+        value((), tag("this creature ")),
+        value((), tag("this permanent ")),
+        value((), parse_damage_source_subject),
+    ))
+    .parse(input) else {
         return false;
     };
     let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("deals ").parse(rest) else {
@@ -2616,6 +2630,7 @@ fn condition_contains_source_counter(condition: &TriggerCondition) -> bool {
             conditions.iter().any(condition_contains_source_counter)
         }
         TriggerCondition::Not { condition } => condition_contains_source_counter(condition),
+        TriggerCondition::EventTime { condition } => condition_contains_source_counter(condition),
         _ => false,
     }
 }
@@ -3386,6 +3401,11 @@ fn lift_filter_shared_quality_parent_target_to_triggering_source(filter: &mut Ta
 /// which then re-emits a `ZoneChanged` event and loops the ETB trigger
 /// (CR 603.2g: triggers fire only when their specific event occurs — the
 /// trigger source must be the entering object).
+///
+/// A hand reveal that parks a card choice
+/// (`reveal_hand::effect_parks_reveal_card_choice`) also returns `true`: a later
+/// `ParentTarget` binds to the chosen revealed card, whatever player the reveal
+/// targets.
 fn introduces_chosen_object_target(effect: &Effect) -> bool {
     // CR 608.2c + CR 603.2g: Effects that populate state.last_revealed_ids
     // introduce revealed objects. Sub-ability ParentTarget binds to those
@@ -3400,6 +3420,15 @@ fn introduces_chosen_object_target(effect: &Effect) -> bool {
             | Effect::Clash
             | Effect::TurnFaceUp { .. }
     ) {
+        return true;
+    }
+    // CR 608.2c + CR 608.2d: a hand reveal that parks a card choice introduces the
+    // chosen revealed card as the referent of a later `ParentTarget` ("exile a
+    // creature card they revealed this way", "exile that card"), not the trigger
+    // event. Its player target (`Controller` / `ScopedPlayer` under a per-player
+    // scope, `TriggeringPlayer`, …) is not a chosen object filter, so the `Typed`
+    // test below cannot see it. Shares the resolver's card-parking authority.
+    if crate::game::effects::reveal_hand::effect_parks_reveal_card_choice(effect) {
         return true;
     }
     fn is_chosen(filter: &TargetFilter) -> bool {
@@ -5489,6 +5518,9 @@ fn remap_self_cast_scope_to_triggering_spell(cond: &mut TriggerCondition) {
                 .for_each(remap_self_cast_scope_to_triggering_spell);
         }
         TriggerCondition::Not { condition } => remap_self_cast_scope_to_triggering_spell(condition),
+        TriggerCondition::EventTime { condition } => {
+            remap_self_cast_scope_to_triggering_spell(condition)
+        }
         // All other variants are leaves that cannot carry a `ManaSpentToCast`
         // quantity ref — nothing to remap.
         _ => {}
@@ -5635,6 +5667,9 @@ fn rebind_attack_anaphor_to_defending_player(cond: &mut TriggerCondition) {
                 .for_each(rebind_attack_anaphor_to_defending_player);
         }
         TriggerCondition::Not { condition } => rebind_attack_anaphor_to_defending_player(condition),
+        TriggerCondition::EventTime { condition } => {
+            rebind_attack_anaphor_to_defending_player(condition)
+        }
         // All other variants are leaves that carry no `PlayerScope`, which
         // `TriggerCondition::designation_player_anchor` enforces exhaustively
         // for the designation family — nothing to rebind.
@@ -11409,8 +11444,16 @@ pub(crate) fn parse_trigger_condition(
                 // Subject-ful state gate ("while ~ is attacking") — AND onto the
                 // parsed trigger's condition so the rest of the event clause
                 // parses exactly as it would unqualified.
+                // CR 508.1m + CR 603.4: the gate is read at the trigger event,
+                // not rechecked on resolution — wrap it as `EventTime` so an
+                // intervening `if` beside it keeps its own recheck.
                 let (mode, mut def) = parse_trigger_condition(&stripped, ctx);
-                def.condition = Some(and_trigger_conditions(def.condition.take(), while_cond));
+                def.condition = Some(and_trigger_conditions(
+                    def.condition.take(),
+                    TriggerCondition::EventTime {
+                        condition: Box::new(while_cond),
+                    },
+                ));
                 return (mode, def);
             }
             WhileStateGate::AttackSubjectState(filter) => {
@@ -11998,7 +12041,9 @@ fn trigger_object_pronoun_ref_for_intervening_if(
             TriggerCondition::And { conditions } | TriggerCondition::Or { conditions } => {
                 conditions.iter().any(pins_source_off_battlefield)
             }
-            TriggerCondition::Not { condition } => pins_source_off_battlefield(condition),
+            TriggerCondition::Not { condition } | TriggerCondition::EventTime { condition } => {
+                pins_source_off_battlefield(condition)
+            }
             _ => false,
         }
     }

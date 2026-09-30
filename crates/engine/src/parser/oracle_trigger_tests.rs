@@ -17,9 +17,9 @@ use crate::types::ability::{
     Duration, Effect, EffectScope, FilterProp, ManaContribution, ManaProduction,
     ManaSpendPermission, ModalChoice, ObjectProperty, ObjectScope, PerpetualModification,
     PlayerFilter, PlayerScope, PropertyAggregate, PtStat, PtValue, PtValueScope, QuantityExpr,
-    QuantityRef, SeatDirection, SharedQuality, SiblingCondition, SubAbilityLink, TapStateChange,
-    TargetFilter, TriggerCondition, TriggerDefinition, TurnJournalKind, TypeFilter, TypedFilter,
-    ZoneRef,
+    QuantityRef, RoundingMode, SeatDirection, SharedQuality, SiblingCondition, SubAbilityLink,
+    TapStateChange, TargetFilter, TriggerCondition, TriggerDefinition, TurnJournalKind, TypeFilter,
+    TypedFilter, ZoneRef,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::{CounterMatch, CounterType};
@@ -7685,12 +7685,10 @@ fn parse_ezio_damage_trigger_verbatim_oracle_text() {
 /// event-bound trigger and resolves to 0 — the reported silent no-op).
 #[test]
 fn parse_unstoppable_slasher_combat_damage_half_life() {
-    use crate::types::ability::{Effect, PlayerScope, QuantityExpr, QuantityRef, RoundingMode};
-
     let def = parse_trigger_line(
-            "Whenever this creature deals combat damage to a player, they lose half their life, rounded up.",
-            "Unstoppable Slasher",
-        );
+        "Whenever this creature deals combat damage to a player, they lose half their life, rounded up.",
+        "Unstoppable Slasher",
+    );
 
     let execute = def.execute.as_ref().expect("execute must be Some");
     match &*execute.effect {
@@ -7709,14 +7707,94 @@ fn parse_unstoppable_slasher_combat_damage_half_life() {
                     assert_eq!(*divisor, 2, "half ⇒ divisor 2");
                     assert_eq!(*rounding, RoundingMode::Up, "rounded up");
                     assert_eq!(
-                            **inner,
-                            QuantityExpr::Ref {
-                                qty: QuantityRef::LifeTotal {
-                                    player: PlayerScope::ScopedPlayer,
-                                },
+                        **inner,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
                             },
-                            "inner amount must read the event player's life (ScopedPlayer), got {inner:?}",
-                        );
+                        },
+                        "inner amount must read the event player's life (ScopedPlayer), got {inner:?}",
+                    );
+                }
+                other => panic!("amount must be DivideRounded, got {other:?}"),
+            }
+        }
+        other => panic!("effect must be LoseLife, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_virtus_the_veiled_combat_damage_half_life() {
+    let def = parse_trigger_line(
+        "Whenever Virtus the Veiled deals combat damage to a player, that player loses half their life, rounded up.",
+        "Virtus the Veiled",
+    );
+
+    let execute = def.execute.as_ref().expect("execute must be Some");
+    match &*execute.effect {
+        Effect::LoseLife { amount, target } => {
+            assert_eq!(
+                target.as_ref(),
+                Some(&TargetFilter::TriggeringPlayer),
+                "LoseLife.target must be TriggeringPlayer (the damaged player)",
+            );
+            match amount {
+                QuantityExpr::DivideRounded {
+                    inner,
+                    divisor,
+                    rounding,
+                } => {
+                    assert_eq!(*divisor, 2, "half ⇒ divisor 2");
+                    assert_eq!(*rounding, RoundingMode::Up, "rounded up");
+                    assert_eq!(
+                        **inner,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
+                            },
+                        },
+                        "inner amount must read ScopedPlayer, got {inner:?}",
+                    );
+                }
+                other => panic!("amount must be DivideRounded, got {other:?}"),
+            }
+        }
+        other => panic!("effect must be LoseLife, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_raving_dead_combat_damage_half_life() {
+    let def = parse_trigger_line(
+        "Whenever Raving Dead deals combat damage to a player, that player loses half their life, rounded down.",
+        "Raving Dead",
+    );
+
+    let execute = def.execute.as_ref().expect("execute must be Some");
+    match &*execute.effect {
+        Effect::LoseLife { amount, target } => {
+            assert_eq!(
+                target.as_ref(),
+                Some(&TargetFilter::TriggeringPlayer),
+                "LoseLife.target must be TriggeringPlayer (the damaged player)",
+            );
+            match amount {
+                QuantityExpr::DivideRounded {
+                    inner,
+                    divisor,
+                    rounding,
+                } => {
+                    assert_eq!(*divisor, 2, "half ⇒ divisor 2");
+                    assert_eq!(*rounding, RoundingMode::Down, "rounded down");
+                    assert_eq!(
+                        **inner,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::LifeTotal {
+                                player: PlayerScope::ScopedPlayer,
+                            },
+                        },
+                        "inner amount must read ScopedPlayer, got {inner:?}",
+                    );
                 }
                 other => panic!("amount must be DivideRounded, got {other:?}"),
             }
@@ -21495,7 +21573,7 @@ fn balefire_dragon_damages_creatures_controlled_by_damaged_player() {
             assert_eq!(
                 *target,
                 TargetFilter::Typed(
-                    TypedFilter::creature().controller(ControllerRef::TargetPlayer)
+                    TypedFilter::creature().controller(ControllerRef::TriggeringPlayer)
                 )
             );
         }
@@ -23137,8 +23215,10 @@ fn trigger_cast_spell_while_attacking_gates_on_combat() {
     assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     assert_eq!(
         def.condition,
-        Some(TriggerCondition::SourceIsAttacking),
-        "the `while ~ is attacking` gate must become a SourceIsAttacking condition"
+        Some(TriggerCondition::EventTime {
+            condition: Box::new(TriggerCondition::SourceIsAttacking),
+        }),
+        "the `while ~ is attacking` gate must become an event-time SourceIsAttacking condition"
     );
     // The remaining event clause still parses to the copy effect.
     assert!(matches!(
@@ -23161,7 +23241,9 @@ fn trigger_while_attacking_composes_with_existing_condition() {
     match def.condition {
         Some(TriggerCondition::And { conditions }) => {
             assert!(
-                conditions.contains(&TriggerCondition::SourceIsAttacking),
+                conditions.contains(&TriggerCondition::EventTime {
+                    condition: Box::new(TriggerCondition::SourceIsAttacking),
+                }),
                 "expected SourceIsAttacking among AND conditions, got {conditions:?}"
             );
             assert!(
@@ -23252,10 +23334,12 @@ fn trigger_cast_instant_sorcery_while_two_or_more_quest_counters() {
     assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     assert_eq!(
         def.condition,
-        Some(TriggerCondition::HasCounters {
-            counters: CounterMatch::OfType(CounterType::Generic("quest".to_string())),
-            minimum: 2,
-            maximum: None,
+        Some(TriggerCondition::EventTime {
+            condition: Box::new(TriggerCondition::HasCounters {
+                counters: CounterMatch::OfType(CounterType::Generic("quest".to_string())),
+                minimum: 2,
+                maximum: None,
+            }),
         }),
         "the quest-counter gate must become a HasCounters condition"
     );
@@ -27208,6 +27292,57 @@ fn unadmitted_state_change_head_yields_an_honest_unknown_arm() {
     );
 }
 
+/// CR 508.1m + CR 109.4: Pugnacious Hammerskull's while-gate must survive. The
+/// negated "you don't control another Dinosaur" used to fail to parse, the gate
+/// was dropped (`condition: None`) and the stun counter landed on EVERY attack.
+#[test]
+fn attacks_while_you_dont_control_another_type_keeps_the_gate() {
+    let triggers = parse_trigger_lines(
+        "Whenever this creature attacks while you don't control another Dinosaur, put a stun counter on it.",
+        "Pugnacious Hammerskull",
+    );
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers[0].mode, TriggerMode::Attacks);
+    // The gate lowers to "count of OTHER Dinosaurs you control == 0" (the same
+    // shape as Kari Zev's "you don't control a legendary Monkey").
+    let cond = format!("{:?}", triggers[0].condition);
+    // CR 508.1m + CR 603.4: an event-time gate, never a resolution recheck.
+    assert!(
+        cond.starts_with("Some(EventTime"),
+        "the while-gate must be wrapped as EventTime, got {cond}"
+    );
+    assert!(
+        cond.contains("Another")
+            && cond.contains("Dinosaur")
+            && (cond.contains("Not {")
+                || (cond.contains("comparator: EQ") && cond.contains("Fixed { value: 0 }"))),
+        "expected the 'no other Dinosaur' gate, got {cond}"
+    );
+}
+
+/// CR 603.4 + CR 201.2: The Majestic Duo — the intervening-if reads "another
+/// permanent named The Majestic Duo" and stops at the comma, so the copy effect
+/// survives. Pins the name boundary the negated-control fix exposed: before it,
+/// the name swallowed ", create a token …" and the copy was dropped.
+#[test]
+fn majestic_duo_named_condition_stops_at_the_effect_comma() {
+    let triggers = parse_trigger_lines(
+        "When The Majestic Duo enters, if you don't control another permanent named The Majestic Duo, create a token that's a copy of it, except it's not legendary, it has \"Whenever this creature deals combat damage to a player, draw a card and earnestly tell them good luck,\" and it loses all other abilities.",
+        "The Majestic Duo",
+    );
+    assert_eq!(triggers.len(), 1);
+    let cond = format!("{:?}", triggers[0].condition);
+    assert!(
+        cond.contains("Another") && cond.to_lowercase().contains("name: \"the majestic duo\""),
+        "condition must name exactly The Majestic Duo, got {cond}"
+    );
+    let exec = format!("{:?}", triggers[0].execute);
+    assert!(
+        exec.contains("CopyTokenOf"),
+        "the copy effect must survive the condition, got {exec}"
+    );
+}
+
 /// CR 603.2 / CR 603.8 + CR 508.1m: an `or` inside a trigger's CONDITION is a
 /// condition disjunction, not an event list.
 #[test]
@@ -29039,9 +29174,7 @@ fn walk_to_fight_sub_ability(
 /// test for #1667 — ensures the DefendingPlayer fix doesn't break
 /// damage-to-player triggers.
 #[test]
-fn damage_to_player_trigger_uses_target_player() {
-    use crate::types::ability::Effect;
-
+fn damage_to_player_trigger_uses_triggering_player() {
     let def = parse_trigger_line(
         "Whenever ~ deals combat damage to a player, destroy target creature that player controls.",
         "Test Card",
@@ -29052,8 +29185,8 @@ fn damage_to_player_trigger_uses_target_player() {
         Effect::Destroy { target, .. } => match target {
             TargetFilter::Typed(t) => assert_eq!(
                 t.controller,
-                Some(ControllerRef::TargetPlayer),
-                "Damage-to-player trigger should use TargetPlayer, not DefendingPlayer",
+                Some(ControllerRef::TriggeringPlayer),
+                "Damage-to-player trigger should use TriggeringPlayer",
             ),
             other => panic!("expected Typed target filter, got {other:?}"),
         },
@@ -29061,23 +29194,22 @@ fn damage_to_player_trigger_uses_target_player() {
     }
 }
 
-/// CR 120.3: Damage-to-opponent triggers introduce the damaged player,
-/// which remains TargetPlayer even though attack-to-opponent triggers use
-/// DefendingPlayer.
+/// Damage-to-opponent triggers introduce the damaged opponent, which uses
+/// TriggeringPlayer (the event player), not DefendingPlayer or TargetPlayer.
 #[test]
-fn damage_to_opponent_trigger_uses_target_player() {
+fn damage_to_opponent_trigger_uses_triggering_player() {
     let def = parse_trigger_line(
-            "Whenever ~ deals combat damage to an opponent, destroy target creature that player controls.",
-            "Test Card",
-        );
+        "Whenever ~ deals combat damage to an opponent, destroy target creature that player controls.",
+        "Test Card",
+    );
     assert_eq!(def.mode, TriggerMode::DamageDone);
     let execute = def.execute.as_deref().expect("execute ability");
     match execute.effect.as_ref() {
         Effect::Destroy { target, .. } => match target {
             TargetFilter::Typed(t) => assert_eq!(
                 t.controller,
-                Some(ControllerRef::TargetPlayer),
-                "Damage-to-opponent trigger should use TargetPlayer, not DefendingPlayer",
+                Some(ControllerRef::TriggeringPlayer),
+                "Damage-to-opponent trigger should use TriggeringPlayer",
             ),
             other => panic!("expected Typed target filter, got {other:?}"),
         },
@@ -29091,8 +29223,6 @@ fn damage_to_opponent_trigger_uses_target_player() {
 /// `ControllerRef::You`. Guards against accidental scope leakage.
 #[test]
 fn non_attack_player_trigger_does_not_emit_target_player() {
-    use crate::types::ability::Effect;
-
     let def = parse_trigger_line(
         "Whenever you draw a card, tap target creature that player controls.",
         "Test Card",
@@ -34724,4 +34854,177 @@ fn split_graveyard_origin_owner_axes() {
             }
         );
     }
+}
+/// CR 120.3a + CR 109.4 + CR 603.2: Emissary of Despair and Emissary of Hope
+/// combat-damage triggers establish TriggeringPlayer as the relative player
+/// scope for "that player" / "they" references in their effect bodies.
+#[test]
+fn emissary_of_despair_and_hope_trigger_definitions() {
+    let despair = parse_trigger_line(
+        "Whenever this creature deals combat damage to a player, that player loses 1 life for each artifact they control.",
+        "Emissary of Despair",
+    );
+    assert_eq!(despair.mode, TriggerMode::DamageDone);
+    let despair_exec = despair.execute.as_deref().expect("despair body");
+    let Effect::LoseLife { amount, target } = &*despair_exec.effect else {
+        panic!("expected LoseLife, got {:?}", despair_exec.effect);
+    };
+    assert_eq!(
+        target.as_ref(),
+        Some(&TargetFilter::TriggeringPlayer),
+        "damaged player must be the directed life loss target"
+    );
+    assert_eq!(
+        amount,
+        &QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Artifact],
+                    controller: Some(ControllerRef::TriggeringPlayer),
+                    properties: Vec::new(),
+                })
+            }
+        },
+        "artifact count must be scoped to TriggeringPlayer"
+    );
+
+    let hope = parse_trigger_line(
+        "Whenever this creature deals combat damage to a player, you gain 1 life for each artifact that player controls.",
+        "Emissary of Hope",
+    );
+    assert_eq!(hope.mode, TriggerMode::DamageDone);
+    let hope_exec = hope.execute.as_deref().expect("hope body");
+    let Effect::GainLife { amount, player } = &*hope_exec.effect else {
+        panic!("expected GainLife, got {:?}", hope_exec.effect);
+    };
+    assert_eq!(
+        player,
+        &TargetFilter::Controller,
+        "ability controller gains the life"
+    );
+    assert_eq!(
+        amount,
+        &QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Artifact],
+                    controller: Some(ControllerRef::TriggeringPlayer),
+                    properties: Vec::new(),
+                })
+            }
+        },
+        "artifact count must be scoped to TriggeringPlayer"
+    );
+}
+
+/// CR 608.2c + CR 608.2d: a hand reveal that parks a card choice introduces the
+/// chosen revealed card as the referent of a later `ParentTarget`, so it is a
+/// chosen-object boundary for the event-source lift — whatever player the
+/// reveal targets (Valki's per-opponent reveal targets `Controller`, which the
+/// `Typed` chosen-filter arm cannot see). Without the boundary the lift rewrites
+/// Valki's "exile a creature card they revealed this way" to
+/// `TriggeringSource`, so Valki exiles itself and its ETB re-fires.
+#[test]
+fn card_parking_hand_reveal_is_a_chosen_object_boundary_for_the_event_source_lift() {
+    use crate::game::effects::reveal_hand::effect_parks_reveal_card_choice;
+
+    // (i) Valki, God of Lies — verbatim ETB.
+    let valki = parse_trigger_line(
+        "When Valki enters, each opponent reveals their hand. For each opponent, exile a creature card they revealed this way until Valki leaves the battlefield.",
+        "Valki, God of Lies",
+    );
+    assert_eq!(valki.mode, TriggerMode::ChangesZone);
+    let exec = valki.execute.as_deref().expect("Valki ETB execute");
+    // Reach-guards: the verbatim two-instruction shape reached trigger lowering.
+    assert!(
+        !effect_parks_reveal_card_choice(&exec.effect),
+        "the root reveal pass parks no card choice: {:?}",
+        exec.effect
+    );
+    assert_eq!(exec.player_scope, Some(PlayerFilter::Opponent));
+    let choice = exec.sub_ability.as_deref().expect("the choice step");
+    assert!(
+        effect_parks_reveal_card_choice(&choice.effect),
+        "the choice step parks the card choice: {:?}",
+        choice.effect
+    );
+    assert_eq!(choice.player_scope, Some(PlayerFilter::Opponent));
+    let sub = choice.sub_ability.as_deref().expect("the exile consumer");
+    assert_eq!(sub.duration, Some(Duration::UntilHostLeavesPlay));
+    match &*sub.effect {
+        Effect::ChangeZone {
+            destination,
+            target,
+            ..
+        } => {
+            assert_eq!(*destination, Zone::Exile);
+            assert_eq!(
+                *target,
+                TargetFilter::ParentTarget,
+                "the exile consumer keeps the chosen revealed card, not the trigger event"
+            );
+        }
+        other => panic!("expected the exile consumer, got {other:?}"),
+    }
+
+    // (ii) Reach-guard: the lift still runs where no card-parking reveal stops it.
+    let necroduality = parse_trigger_line(
+        "Whenever a nontoken Zombie you control enters, create a token that's a copy of that creature.",
+        "Necroduality",
+    );
+    assert!(matches!(
+        &*necroduality.execute.as_deref().expect("execute").effect,
+        Effect::CopyTokenOf {
+            target: TargetFilter::TriggeringSource,
+            ..
+        }
+    ));
+
+    // (iii) Sibling pin where the new stop fires with no liftable consumer after
+    // it: Armored Kincaller lowers exactly as before.
+    let kincaller = parse_trigger_line(
+        "When this creature enters, you may reveal a Dinosaur card from your hand. If you do or if you control another Dinosaur, you gain 3 life.",
+        "Armored Kincaller",
+    );
+    let kincaller_exec = kincaller.execute.as_deref().expect("execute");
+    assert!(effect_parks_reveal_card_choice(&kincaller_exec.effect));
+    assert!(matches!(
+        &*kincaller_exec.effect,
+        Effect::RevealHand {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    let base_kincaller: serde_json::Value = serde_json::from_str(
+        r#"{"kind":"Spell","effect":{"type":"RevealHand","target":{"type":"Controller"},"card_filter":{"type":"Typed","type_filters":[{"Subtype":"Dinosaur"}],"controller":null,"properties":[]},"count":null,"reveal":true},"cost":null,"sub_ability":{"kind":"Spell","effect":{"type":"GainLife","amount":{"type":"Fixed","value":3}},"cost":null,"sub_ability":null,"duration":null,"description":null,"target_prompt":null,"condition":{"type":"Or","conditions":[{"type":"EffectOutcome","signal":"OptionalEffectPerformed"},{"type":"QuantityCheck","lhs":{"type":"Ref","qty":{"type":"ObjectCount","filter":{"type":"Typed","type_filters":[{"Subtype":"Dinosaur"}],"controller":"You","properties":[{"type":"Another"},{"type":"InZone","zone":"Battlefield"}]}}},"comparator":"GE","rhs":{"type":"Fixed","value":1}}]},"optional_targeting":false,"optional":false,"forward_result":false,"sub_link":"SequentialSibling"},"duration":null,"description":null,"target_prompt":null,"condition":null,"optional_targeting":false,"optional":true,"forward_result":false}"#,
+    )
+    .expect("base Kincaller JSON");
+    assert_eq!(
+        serde_json::to_value(kincaller_exec).expect("serialize"),
+        base_kincaller,
+        "Armored Kincaller's lowered trigger is unchanged"
+    );
+
+    // (iv) Predicate units: the new arm keys on card-parking, not on "is a
+    // RevealHand".
+    let reveal = |card_filter: TargetFilter, choice_optional: bool| Effect::RevealHand {
+        target: TargetFilter::Controller,
+        card_filter,
+        count: None,
+        selection: CardSelectionMode::default(),
+        choice_optional,
+        reveal: true,
+    };
+    assert!(introduces_chosen_object_target(&reveal(
+        TargetFilter::Typed(TypedFilter::creature()),
+        false
+    )));
+    assert!(introduces_chosen_object_target(&reveal(
+        TargetFilter::None,
+        true
+    )));
+    assert!(!introduces_chosen_object_target(&reveal(
+        TargetFilter::None,
+        false
+    )));
 }

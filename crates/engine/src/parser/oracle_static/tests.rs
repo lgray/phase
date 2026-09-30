@@ -15585,6 +15585,113 @@ fn persistent_exile_cast_permission_azula_flash_and_any_mana() {
     );
 }
 
+/// The exact permission Tibalt, Cosmic Impostor's emblem (and Rogue Class
+/// level 3) grants: play cards exiled with the source, any time, paying normal
+/// costs, with mana spendable as though it were mana of any color.
+fn persistent_play_any_color_permission() -> StaticMode {
+    StaticMode::ExileCastPermission {
+        frequency: CastFrequency::Unlimited,
+        // CR 305.1: "play cards" covers lands (played) and spells (cast).
+        play_mode: CardPlayMode::Play,
+        cost: ExileCastCost::PayNormalCost,
+        pool: ExileCardPool::Persistent,
+        timing: ExileCastTiming::AnyTime,
+        // CR 609.4b: "as though it were mana of any color".
+        mana_spend_permission: Some(crate::types::ability::ManaSpendPermission::AnyColor),
+        grants_flash: false,
+        extra_cost: None,
+        enters_with_counter: None,
+        grantee: crate::types::statics::ExileCastGrantee::SourceController,
+    }
+}
+
+/// Tibalt, Cosmic Impostor's emblem text, verbatim, with the self-reference
+/// normalized to `~` (as `replace_self_refs` leaves it).
+const TIBALT_EMBLEM_INNER: &str = "You may play cards exiled with ~, and you may spend mana as though it were mana of any color to cast those spells.";
+
+/// CR 609.4b + CR 118.14: the persistent exile-play permission composes the
+/// shared mana-spend rider grammar, joined by ", and ". Before the rider was
+/// composed, the ", and you may spend mana …" tail was an unmodeled remainder
+/// and the whole permission declined.
+#[test]
+fn persistent_exile_play_permission_composes_any_color_rider() {
+    let lower = TIBALT_EMBLEM_INNER.to_lowercase();
+    let def = try_parse_persistent_exile_play_permission(TIBALT_EMBLEM_INNER, &lower)
+        .expect("the emblem's play permission must parse");
+    assert_eq!(def.mode, persistent_play_any_color_permission());
+    assert_eq!(def.affected, Some(TargetFilter::Any));
+
+    let def = parse_static_line(TIBALT_EMBLEM_INNER).expect("static dispatch reaches it");
+    assert_eq!(def.mode, persistent_play_any_color_permission());
+}
+
+/// The emblem body is lowered through `parse_static_line_multi`
+/// (`try_parse_emblem_creation`): it must yield exactly the one permission.
+#[test]
+fn emblem_inner_static_lowers_to_single_persistent_permission() {
+    let defs = parse_static_line_multi(TIBALT_EMBLEM_INNER);
+    assert_eq!(defs.len(), 1, "exactly one static, got {defs:?}");
+    assert_eq!(defs[0].mode, persistent_play_any_color_permission());
+}
+
+/// CR 609.4b: a rider that relaxes one kind of mana only ("spend colorless
+/// mana as though …") has no `ManaSpendPermission` shape; the whole permission
+/// declines rather than widen to every mana.
+#[test]
+fn persistent_exile_play_permission_declines_single_kind_rider() {
+    let text = "You may play cards exiled with ~, and you may spend colorless mana as though it were mana of any color to cast those spells.";
+    assert!(
+        try_parse_persistent_exile_play_permission(text, &text.to_lowercase()).is_none(),
+        "a single-kind rider must decline the permission"
+    );
+    // Positive twin: the same frame with the any-color rider is accepted, so the
+    // decline above came from the rider leg, not an earlier clause.
+    assert!(try_parse_persistent_exile_play_permission(
+        TIBALT_EMBLEM_INNER,
+        &TIBALT_EMBLEM_INNER.to_lowercase()
+    )
+    .is_some());
+}
+
+/// Rogue Class (verbatim): the level-3 line is the same persistent permission,
+/// gated by the class level. Before the rider composed, the static parser
+/// declined it and the line fell to a bare `Spell` `CastFromZone` ability that
+/// nothing at cast time reads.
+#[test]
+fn rogue_class_level_three_play_permission_is_level_gated() {
+    let text = "(Gain the next level as a sorcery to add its ability.)\nWhenever a creature you control deals combat damage to a player, exile the top card of that player's library face down. You may look at it for as long as it remains exiled.\n{1}{U}{B}: Level 2\nCreatures you control have menace.\n{2}{U}{B}: Level 3\nYou may play cards exiled with this Class, and you may spend mana as though it were mana of any color to cast those spells.";
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        text,
+        "Rogue Class",
+        &[],
+        &["Enchantment".to_string()],
+        &["Class".to_string()],
+    );
+    // CR 716.2a: a Class level's abilities apply only at that level or above.
+    assert!(
+        parsed
+            .statics
+            .iter()
+            .any(|def| def.mode == persistent_play_any_color_permission()
+                && def.condition == Some(StaticCondition::ClassLevelGE { level: 3 })),
+        "level 3 must be a level-gated persistent permission, got {:?}",
+        parsed.statics
+    );
+    assert!(
+        !parsed
+            .abilities
+            .iter()
+            .any(|ability| ability.description.is_none()
+                && matches!(*ability.effect, Effect::CastFromZone { .. })),
+        "the bare CastFromZone misparse must be gone, got {:?}",
+        parsed.abilities
+    );
+    // Reach-guard: the level-2 static still parses alongside it.
+    assert!(parsed.statics.iter().any(|def| def.condition
+        == Some(StaticCondition::ClassLevelGE { level: 2 })
+        && matches!(def.mode, StaticMode::Continuous)));
+}
+
 /// CR 113.6b: The persistent handler must NOT swallow the Maralen "this turn"
 /// per-turn-pool line — that belongs to `try_parse_exile_cast_permission`.
 #[test]
@@ -38404,4 +38511,157 @@ fn attached_subject_production_still_fires_with_a_trailing_rider() {
         animate_wall.condition, None,
         "Animate Wall prints no gate and must remain unconditioned"
     );
+}
+
+/// CR 702.11e + CR 702.18a + CR 609.4: the shared targeting-bypass tail reads the
+/// verb number, pronoun, beneficiary qualifier and quality independently. The
+/// static form only models the hexproof bypass; a shroud bypass has no static form.
+#[test]
+fn targeting_bypass_tail_axes_are_independent() {
+    for (tail, beneficiary, quality) in [
+        (
+            " can be the targets of spells and abilities as though they didn't have hexproof",
+            TargetingBypassBeneficiary::Anyone,
+            TargetingBypassQuality::Hexproof,
+        ),
+        (
+            " can be the target of spells and abilities you control as though it didn't have hexproof",
+            TargetingBypassBeneficiary::YouControl,
+            TargetingBypassQuality::Hexproof,
+        ),
+        (
+            " can be the target of spells and abilities controlled by target player as though it didn't have shroud",
+            TargetingBypassBeneficiary::ControlledByTargetPlayer,
+            TargetingBypassQuality::Shroud,
+        ),
+    ] {
+        let (rest, parsed) = parse_targeting_bypass_tail(tail).expect(tail);
+        assert_eq!(rest, "", "{tail}");
+        assert_eq!(parsed, (beneficiary, quality), "{tail}");
+    }
+    assert!(parse_targeting_bypass_tail(" can be the target of spells").is_err());
+
+    // Static path: the shroud bypass stays unparsed there (paired with the hexproof
+    // form, which `Glaring Spotlight` already covers above).
+    let tp = TextPair::new(
+        "Creatures your opponents control can be the targets of spells and abilities as though they didn't have shroud.",
+        "creatures your opponents control can be the targets of spells and abilities as though they didn't have shroud.",
+    );
+    assert!(parse_ignore_hexproof_static(&tp, tp.original).is_none());
+}
+
+/// CR 611.3a + CR 506.5 + CR 509.1b: in an attached-subject evasion static the
+/// pronoun of "as long as it's attacking alone" names the enchanted/equipped
+/// creature, not the Aura/Equipment source (which is never an attacker). The gate
+/// binds to the recipient, matching the inverted form (Security Bypass). A SelfRef
+/// static (Dream Prowler) keeps the source-scoped `SourceAttackingAlone`.
+#[test]
+fn attached_subject_cant_be_blocked_attacking_alone_gates_on_the_recipient() {
+    let recipient_gate = StaticCondition::RecipientMatchesFilter {
+        filter: TargetFilter::Typed(
+            TypedFilter::creature().properties(vec![FilterProp::AttackingAlone]),
+        ),
+    };
+    for (text, attachment) in [
+        (
+            "Enchanted creature can't be blocked as long as it's attacking alone.",
+            FilterProp::EnchantedBy,
+        ),
+        (
+            "Equipped creature can't be blocked as long as it's attacking alone.",
+            FilterProp::EquippedBy,
+        ),
+    ] {
+        let def = parse_static_line(text).unwrap_or_else(|| panic!("{text}: no static"));
+        assert_eq!(def.mode, StaticMode::CantBeBlocked, "{text}");
+        assert_eq!(
+            def.affected,
+            Some(TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![attachment])
+            )),
+            "{text}"
+        );
+        assert_eq!(def.condition, Some(recipient_gate.clone()), "{text}");
+    }
+    let inverted = parse_static_line_multi(
+        "As long as enchanted creature is attacking alone, it can't be blocked.",
+    );
+    assert_eq!(inverted[0].condition, Some(recipient_gate));
+    let own = parse_static_line("This creature can't be blocked as long as it's attacking alone.")
+        .expect("self form");
+    assert_eq!(own.condition, Some(StaticCondition::SourceAttackingAlone));
+}
+
+/// CR 611.3a + CR 506.5: the recipient rebind is the attached-static authority
+/// (`rebind_source_object_quantities_to_recipient`), so it applies to every attached
+/// route and not just the evasion one: a continuous grant gated "as long as it's
+/// attacking alone", and its "unless" polarity wrapped in `Not`.
+#[test]
+fn attached_subject_attacking_alone_rebind_covers_grants_and_unless_gates() {
+    let recipient_gate = StaticCondition::RecipientMatchesFilter {
+        filter: TargetFilter::Typed(
+            TypedFilter::creature().properties(vec![FilterProp::AttackingAlone]),
+        ),
+    };
+    let grant = parse_static_line("Enchanted creature gets +2/+0 as long as it's attacking alone.")
+        .expect("gated grant");
+    assert_eq!(grant.condition, Some(recipient_gate.clone()), "{grant:?}");
+    let unless =
+        parse_static_line("Enchanted creature can't be blocked unless it's attacking alone.")
+            .expect("unless form");
+    assert_eq!(
+        unless.condition,
+        Some(StaticCondition::Not {
+            condition: Box::new(recipient_gate)
+        }),
+        "{unless:?}"
+    );
+    // The CantUntap "as long as" route shares the same rebind authority.
+    let cant_untap = parse_static_line(
+        "Enchanted creature doesn't untap during its controller's untap step as long as it has a +1/+1 counter on it.",
+    )
+    .expect("gated CantUntap");
+    assert!(
+        matches!(
+            cant_untap.condition,
+            Some(StaticCondition::RecipientHasCounters { .. })
+        ),
+        "{cant_untap:?}"
+    );
+}
+
+/// CR 101.2 + CR 604.1: a leading "if <cond>," on "this spell can't be countered"
+/// attaches the typed condition instead of dropping it (Exquisite Firecraft class);
+/// a condition the static grammar cannot type, or an unmodeled tail after the
+/// phrase (Banefire's "and the damage can't be prevented"), keeps the static behind
+/// the coverage-visible gap marker rather than publishing an unconditional
+/// CantBeCountered.
+#[test]
+fn leading_if_gates_this_spell_cant_be_countered_or_fails_closed() {
+    let gated = parse_static_line(
+        "If there are two or more instant and/or sorcery cards in your graveyard, this spell can't be countered.",
+    )
+    .expect("typed leading condition");
+    assert_eq!(gated.mode, StaticMode::CantBeCountered);
+    assert_eq!(gated.affected, Some(TargetFilter::SelfRef));
+    assert!(gated.condition.is_some(), "{gated:?}");
+
+    for text in [
+        "If you revealed a Dragon card or controlled a Dragon as you cast this spell, this spell can't be countered.",
+        "If X is 5 or more, this spell can't be countered and the damage can't be prevented.",
+    ] {
+        let def = parse_static_line(text).unwrap_or_else(|| panic!("{text}: no static"));
+        assert_eq!(def.mode, StaticMode::CantBeCountered, "{text}");
+        assert!(
+            def.condition
+                .as_ref()
+                .is_some_and(StaticCondition::contains_unrecognized),
+            "{text}: must carry the coverage-visible gap marker, got {:?}",
+            def.condition
+        );
+    }
+
+    let bare = parse_static_line("This spell can't be countered.").expect("bare form");
+    assert_eq!(bare.mode, StaticMode::CantBeCountered);
+    assert_eq!(bare.condition, None);
 }
