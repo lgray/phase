@@ -3322,7 +3322,8 @@ mod tests {
     /// deserializes through `FromStr`; a v92 peer cannot parse a `GameState`
     /// whose format names it, so it must be refused before it receives v93
     /// state.
-    /// `ResolvedAbility.parent_target_missing_reason` is serialized and gains
+    ///
+    /// Earlier bump, v92: `ResolvedAbility.parent_target_missing_reason` is serialized and gains
     /// `ParentTargetMissingReason::RevealUntil`, and `EffectOutcomeSignal` gains
     /// `RevealUntilMatched`, and the CR 701.20a reveal lease adds
     /// `ResolvedInformationLifetime::UntilStackObjectLeaves` plus

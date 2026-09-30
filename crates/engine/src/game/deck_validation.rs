@@ -9051,6 +9051,24 @@ mod tests {
                 "summary_only={summary_only}: {reasons:?}"
             );
 
+            // The pool is `AdmitsEveryCard`: a card no legality table admits is
+            // accepted, while the same list under Standard is refused for that card.
+            let (compatible, reasons) =
+                reasons_of(&dandan_request(expand("Not Standard", 80), summary_only));
+            assert_eq!(
+                compatible,
+                Some(true),
+                "summary_only={summary_only}: {reasons:?}"
+            );
+            let mut under_standard = dandan_request(expand("Not Standard", 80), summary_only);
+            under_standard.selected_format = Some(SelectedFormat::Tag(GameFormat::Standard));
+            let (compatible, reasons) = reasons_of(&under_standard);
+            assert_eq!(compatible, Some(false));
+            assert!(
+                reasons.iter().any(|r| r.contains("Not Standard")),
+                "summary_only={summary_only}: {reasons:?}"
+            );
+
             let mut sideboarded = dandan_request(expand("Legal Standard", 80), summary_only);
             sideboarded.sideboard = vec!["Legal Standard".to_string()];
             let (compatible, reasons) = reasons_of(&sideboarded);
