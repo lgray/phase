@@ -15463,6 +15463,7 @@ fn finalize_mana_payment_with_resume(
             pending_resumed.casting_permission_index = pending.casting_permission_index;
             pending_resumed.origin_zone = pending.origin_zone;
             pending_resumed.convoked_creatures = pending.convoked_creatures.clone();
+            pending_resumed.delve = pending.delve.clone();
 
             // CR 601.2d: "divided evenly, rounded down" — EvenSplitDamage bypasses
             // interactive distribution. Remainder is intentionally lost per Oracle text.
@@ -15953,6 +15954,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
             pending_resumed.casting_permission_index = pending.casting_permission_index;
             pending_resumed.origin_zone = pending.origin_zone;
             pending_resumed.convoked_creatures = pending.convoked_creatures.clone();
+            pending_resumed.delve = pending.delve.clone();
 
             if unit == DistributionUnit::EvenSplitDamage && !targets.is_empty() {
                 let num = targets.len() as u32;

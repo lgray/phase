@@ -14,7 +14,7 @@ use engine::types::ability::{
 };
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::{CastPaymentMode, ConvokeMode, WaitingFor};
+use engine::types::game_state::{CastPaymentMode, ConvokeMode, ShardChoice, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -394,4 +394,78 @@ fn rejected_finalize_control_fixed_constraint_casts() {
         .act(GameAction::PassPriority)
         .expect("constraint satisfied, cast completes");
     assert_eq!(runner.state().objects[&cruise].zone, Zone::Stack);
+}
+
+const DELVE_DIVIDED_X_ORACLE: &str =
+    "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\n\
+~ deals X damage divided as you choose among any number of targets.";
+
+/// CR 601.2d + CR 601.2i: X = 0 leaves the divided pool empty at target
+/// selection, so the distribution opens only after payment; cancelling there
+/// must still undo the delve exile.
+fn cancel_delve_at_post_payment_distribution(shard: ManaCostShard) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Delve Volley", false, DELVE_DIVIDED_X_ORACLE)
+        .from_oracle_text_with_keywords(&["Delve"], DELVE_DIVIDED_X_ORACLE)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::X, shard],
+            generic: 1,
+        })
+        .id();
+    let gy: Vec<ObjectId> = ["Lightning Bolt", "Island", "Shock"]
+        .iter()
+        .map(|name| scenario.add_spell_to_graveyard(P0, name, true).id())
+        .collect();
+    scenario.with_mana_pool(P0, mana_pool(0, 1));
+    let mut runner = scenario.build();
+
+    cast_manual(&mut runner, spell);
+    runner
+        .act(GameAction::ChooseX { value: 0 })
+        .expect("announce X = 0");
+    delve(&mut runner, gy[0]);
+    runner
+        .act(GameAction::PassPriority)
+        .expect("finish payment");
+    let phyrexian_prompted = matches!(
+        runner.state().waiting_for,
+        WaitingFor::PhyrexianPayment { .. }
+    );
+    assert_eq!(phyrexian_prompted, shard == ManaCostShard::PhyrexianRed);
+    if phyrexian_prompted {
+        runner
+            .act(GameAction::SubmitPhyrexianChoices {
+                choices: vec![ShardChoice::PayMana],
+            })
+            .expect("pay the Phyrexian shard with mana");
+    }
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::DistributeAmong { .. }
+        ),
+        "payment must end at the post-payment distribution, got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(runner.state().objects[&gy[0]].zone, Zone::Exile);
+
+    runner.act(GameAction::CancelCast).expect("cancel cast");
+    assert_cancel_restored(
+        &runner,
+        spell,
+        Zone::Hand,
+        &["Lightning Bolt", "Island", "Shock"],
+    );
+}
+
+#[test]
+fn cancel_delve_at_post_payment_distribution_restores_graveyard() {
+    cancel_delve_at_post_payment_distribution(ManaCostShard::Red);
+}
+
+#[test]
+fn cancel_delve_at_post_payment_distribution_after_phyrexian_choice_restores_graveyard() {
+    cancel_delve_at_post_payment_distribution(ManaCostShard::PhyrexianRed);
 }
