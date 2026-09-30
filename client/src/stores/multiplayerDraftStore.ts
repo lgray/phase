@@ -310,11 +310,10 @@ interface MultiplayerDraftState {
    * BECAUSE that guard excludes both paths — the store's `matchAdapter` is not
    * assigned until the success path, after `installMatchRuntime` returns.
    *
-   * It is ALSO cleared wherever `initialState` is spread, which is every
-   * session boundary and NOT only `leave`/`reset` — `hostDraft` and `joinDraft`
-   * each spread it on their success and offline-error paths too. Do not read
-   * the deliberate list above as exhaustive; grep `initialState` for the
-   * full set.
+   * It is ALSO cleared by every new-session write — `replaceDraftSession`, and
+   * the `set(initialState)` writes of the route-owner aborts and `ownFailure` —
+   * not only `leave`/`reset`. Do not read the deliberate list above as
+   * exhaustive; grep `replaceDraftSession\|set(initialState)` for the full set.
    */
   commanderLaunch: DraftCommanderLaunch | null;
   /** This client's own seat in the launched Commander game. */
@@ -1831,7 +1830,7 @@ export const useMultiplayerDraftStore = create<
     // its own.
     const ownFailure = (): DraftSessionOpenOutcome => {
       const { error } = get();
-      if (failureReport === "caller") replaceDraftSession(set, {});
+      if (failureReport === "caller") set(initialState);
       return { status: "failed", error };
     };
     const epoch = ++draftAdapterEpoch;
