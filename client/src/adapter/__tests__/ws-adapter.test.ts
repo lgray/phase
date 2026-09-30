@@ -299,6 +299,13 @@ describe("WebSocketAdapter", () => {
       .toEqual([{ type: "error", message: "Server omitted a valid Full session identity" }]);
   });
 
+  it("emits a live socket error before any identity rejection", () => {
+    const listener = vi.fn();
+    adapter.onEvent(listener);
+    ws.onerror!();
+    expect(listener).toHaveBeenCalledWith({ type: "error", message: "WebSocket connection failed" });
+  });
+
   it("exports only the trusted snapshot returned by the server", async () => {
     const exported = adapter.exportPersistenceState();
 

@@ -1962,6 +1962,29 @@ describe("multiplayerStore", () => {
     });
   });
 
+  it("re-dials when the live host socket errors before the game starts", async () => {
+    vi.useFakeTimers();
+    try {
+      useMultiplayerStore.getState().startHosting(
+        hostingSettings(),
+        { main_deck: ["Forest"], sideboard: [], commander: [] },
+        HOST_URL,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      emitServerMessage("GameCreated", {
+        game_code: "ABCDE",
+        player_token: "host-token",
+        full_key: { game_code: "ABCDE", generation: 1 },
+      });
+      const opensBefore = vi.mocked(openPhaseSocket).mock.calls.length;
+      socketMocks.currentWs!.onerror!();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(vi.mocked(openPhaseSocket).mock.calls.length).toBeGreaterThan(opensBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // V-U15h — the LIVE mid-game reconnect, the third `openServerHostSocket`
   // call site. The only case in this file that needs fake timers, so they are
   // scoped to this block: installing them suite-wide would perturb two
