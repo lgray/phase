@@ -313,7 +313,7 @@ interface MultiplayerDraftState {
    * It is ALSO cleared wherever `initialState` is spread, which is every
    * session boundary and NOT only `leave`/`reset` — `hostDraft` and `joinDraft`
    * each spread it on their success and offline-error paths too. Do not read
-   * the deliberate list above as exhaustive; grep `...initialState` for the
+   * the deliberate list above as exhaustive; grep `initialState` for the
    * full set.
    */
   commanderLaunch: DraftCommanderLaunch | null;
@@ -515,7 +515,7 @@ let activeHostAbort: AbortController | null = null;
  * `terminateGame()`, which flushes `host_left` before closing — `dispose()`
  * would race that).
  */
-let commanderLaunchInFlight: { adapter: P2PHostAdapter | null; abort: AbortController } | null = null;
+let commanderLaunchInFlight: { adapter: P2PHostAdapter | null; abort: AbortController; teardown?: Promise<void> } | null = null;
 /**
  * The Commander JOIN currently bringing its adapter up, on a guest.
  *
@@ -583,9 +583,11 @@ function abandonCommanderBringUp(): Promise<void> {
   const handle = commanderLaunchInFlight;
   if (!handle) return Promise.resolve();
   handle.abort.abort();
+  // Once per handle: a launch parked on an await that ignores the abort keeps its handle across several session ends.
   // The `.catch` is not decoration: `send` has no rejection handling, so a
   // rejecting `host_left` would otherwise reject this whole teardown.
-  return handle.adapter?.terminateGame().catch(() => {}) ?? Promise.resolve();
+  handle.teardown ??= handle.adapter?.terminateGame().catch(() => {}) ?? Promise.resolve();
+  return handle.teardown;
 }
 
 let activeGuestAbort: AbortController | null = null;
@@ -1583,7 +1585,7 @@ function disposeCapturedMatchController(controller: GameLoopController | null): 
  * its newer owner, and `disposeMatchAdapter`'s `set()` would overwrite it.
  *
  * Capturing by identity is what makes this reachable: by the time a newer
- * session's own opening `set({...initialState, ...})` clears the STORE'S
+ * session's own opening `replaceDraftSession` clears the STORE'S
  * `matchAdapter` field, `get().matchAdapter` no longer answers "what did this
  * call own", so the caller must have asked before its first `await`.
  */
@@ -1638,6 +1640,13 @@ const initialState: MultiplayerDraftState = {
   playDrawPrompt: null,
   sideboardSubmitted: false,
 };
+
+/** Abandon and write are one step because a bring-up can be pressed until this write clears the state its button renders from. */
+function replaceDraftSession(set: SetFn, next: Partial<MultiplayerDraftState>): void {
+  abandonMatchStart();
+  void abandonCommanderBringUp();
+  set({ ...initialState, ...next });
+}
 
 /**
  * Single authority for how long a pod error lives.
@@ -1734,7 +1743,7 @@ export const useMultiplayerDraftStore = create<
       // Replacement teardown was authorized before connectivity changed. This
       // epoch now owns the detached lifecycle, so it must not leave the prior
       // role/phase live after declining to construct its successor.
-      set({ ...initialState, error: DRAFT_OFFLINE_ERROR });
+      replaceDraftSession(set, { error: DRAFT_OFFLINE_ERROR });
       return { status: "failed", error: DRAFT_OFFLINE_ERROR };
     }
 
@@ -1764,13 +1773,7 @@ export const useMultiplayerDraftStore = create<
     config.signal?.addEventListener("abort", abortOwner, { once: true });
     if (config.signal) activeHostRouteAbortListener = { signal: config.signal, listener: abortOwner };
 
-    set({
-      ...initialState,
-      role: "host",
-      phase: "connecting",
-      seatIndex: 0,
-      interactionGeneration: generation,
-    });
+    replaceDraftSession(set, { role: "host", phase: "connecting", seatIndex: 0, interactionGeneration: generation });
 
     let initialized = false;
     try {
@@ -1811,7 +1814,7 @@ export const useMultiplayerDraftStore = create<
         activeHostRouteAbortListener = null;
         await disposeHostAdapter(adapter, true);
         if (epoch === draftAdapterEpoch && generation === lifecycleGeneration && getEffectiveOffline()) {
-          set({ ...initialState, error: DRAFT_OFFLINE_ERROR });
+          replaceDraftSession(set, { error: DRAFT_OFFLINE_ERROR });
         }
       }
     }
@@ -1828,7 +1831,7 @@ export const useMultiplayerDraftStore = create<
     // its own.
     const ownFailure = (): DraftSessionOpenOutcome => {
       const { error } = get();
-      if (failureReport === "caller") set(initialState);
+      if (failureReport === "caller") replaceDraftSession(set, {});
       return { status: "failed", error };
     };
     const epoch = ++draftAdapterEpoch;
@@ -1841,7 +1844,7 @@ export const useMultiplayerDraftStore = create<
       // See hostDraft: this current replacement owns the already-detached
       // lifecycle and must publish an idle offline state rather than a phantom
       // connecting/lobby owner with no adapter.
-      set({ ...initialState, error: DRAFT_OFFLINE_ERROR });
+      replaceDraftSession(set, { error: DRAFT_OFFLINE_ERROR });
       return ownFailure();
     }
 
@@ -1870,12 +1873,7 @@ export const useMultiplayerDraftStore = create<
     config.signal?.addEventListener("abort", abortOwner, { once: true });
     if (config.signal) activeGuestRouteAbortListener = { signal: config.signal, listener: abortOwner };
 
-    set({
-      ...initialState,
-      role: "guest",
-      phase: "connecting",
-      interactionGeneration: generation,
-    });
+    replaceDraftSession(set, { role: "guest", phase: "connecting", interactionGeneration: generation });
 
     let initialized = false;
     try {
@@ -1897,7 +1895,7 @@ export const useMultiplayerDraftStore = create<
         activeGuestRouteAbortListener = null;
         await disposeGuestAdapter(adapter);
         if (epoch === draftAdapterEpoch && generation === lifecycleGeneration && getEffectiveOffline()) {
-          set({ ...initialState, error: DRAFT_OFFLINE_ERROR });
+          replaceDraftSession(set, { error: DRAFT_OFFLINE_ERROR });
         }
       }
     }
@@ -3263,18 +3261,13 @@ export const useMultiplayerDraftStore = create<
     if (activeGuestAdapter === guest) {
       activeGuestAdapter = null;
     }
-    set({ ...initialState, interactionGeneration: lifecycleGeneration });
+    replaceDraftSession(set, { interactionGeneration: lifecycleGeneration });
   },
 
   reset: () => {
-    // Same obligation as `leave`, and the aborts inside are synchronous, so a
-    // synchronous `reset` still unparks both bring-ups. Only the host's
-    // `terminateGame()` flush is left to settle on its own — `void`, because
-    // `reset` cannot await and a dropped rejection here would be unhandled.
-    void abandonCommanderBringUp();
     beginDraftLifecycle();
     disposeMatchAdapter(set);
-    set({ ...initialState, interactionGeneration: lifecycleGeneration });
+    replaceDraftSession(set, { interactionGeneration: lifecycleGeneration });
   },
 })));
 
