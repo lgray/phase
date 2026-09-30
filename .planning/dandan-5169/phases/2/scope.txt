@@ -1,0 +1,18 @@
+crates/engine/src/game/deck_validation.rs
+crates/engine/src/types/custom_format.rs
+crates/engine-wasm/src/lib.rs
+crates/engine/tests/integration/custom_format_schema.rs
+crates/engine/tests/integration/format_axis_census.rs
+client/src/adapter/types.ts
+client/src/data/formatRegistry.ts
+client/src/adapter/ws-adapter.ts
+client/src/network/protocol.ts
+client/src/network/__tests__/protocol.test.ts
+client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts
+client/src/services/__tests__/deckUrlImport.test.ts
+crates/lobby-broker/src/protocol.rs
+crates/server-core/src/protocol.rs
+scripts/check-protocol-version.mjs
+scripts/card-bot/formats.ts
+crates/manabrew-compat/src/lib.rs
+  Not edited: `crates/engine/tests/integration/main.rs` (no new integration file), `scripts/card-bot/__tests__/*` (mirror equality and the Phase 1 autocomplete tests are consumed unchanged), `built_in_axes_no_looser_than_rules` (read unchanged), `client/src/wasm/engine_wasm.d.ts` (no wasm doc or signature changes), locale catalogs (no new key: the floor surfaces through the generic `lobbyCapability.formatNeedsNewerServer` string, which takes `{{needed}}`).

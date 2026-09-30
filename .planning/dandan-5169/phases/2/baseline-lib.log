@@ -1,0 +1,85 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+────────────
+ Nextest run ID 7fb96210-029a-44dd-b148-c08da2502163 with nextest profile: default
+    Starting 79 tests across 1 binary (22577 tests skipped)
+        PASS [   0.024s] ( 1/79) phase-engine game::deck_validation::tests::momir_madness_non_empty_sideboard_fails
+        PASS [   0.024s] ( 2/79) phase-engine game::deck_validation::tests::momir_madness_non_basic_fails
+        PASS [   0.025s] ( 3/79) phase-engine game::deck_validation::tests::momir_madness_count_off_total_fails
+        PASS [   0.026s] ( 4/79) phase-engine game::deck_validation::tests::momir_madness_missing_type_fails
+        PASS [   0.020s] ( 5/79) phase-engine game::deck_validation::tests::momir_madness_regular_basics_fail
+        PASS [   0.019s] ( 6/79) phase-engine game::deck_validation::tests::momir_madness_snow_covered_wastes_fails
+        PASS [   0.020s] ( 7/79) phase-engine game::deck_validation::tests::momir_madness_wrong_per_type_count_fails
+        PASS [   0.022s] ( 8/79) phase-engine game::deck_validation::tests::momir_madness_snow_basics_pass
+        PASS [   0.016s] ( 9/79) phase-engine types::format::tests::archenemy_registry_entry_uses_default_topology
+        PASS [   0.020s] (10/79) phase-engine types::format::tests::client_format_registry_legality_keys_match_the_engine
+        PASS [   0.020s] (11/79) phase-engine types::format::tests::client_builtin_game_format_union_matches_the_engine
+        PASS [   0.024s] (12/79) phase-engine game::deck_validation::tests::momir_refuses_a_commander_without_a_signature_spell
+        PASS [   0.014s] (13/79) phase-engine types::format::tests::client_format_registry_matches_the_engine_registry
+        PASS [   0.016s] (14/79) phase-engine types::format::tests::command_zone_holds_decklist_commander_sits_between_uses_commander_and_command_zone
+        PASS [   0.018s] (15/79) phase-engine types::format::tests::command_zone_holds_decklist_commander_matches_the_validator_netting_set
+        PASS [   0.015s] (16/79) phase-engine types::format::tests::commander_deck_is_exactly_100_but_commander_draft_is_min_60
+        PASS [   0.012s] (17/79) phase-engine types::format::tests::commander_draft_format_config_matches_cr
+        PASS [   0.013s] (18/79) phase-engine types::format::tests::commander_pairing_agrees_with_the_command_zone_axis
+        PASS [   0.015s] (19/79) phase-engine types::format::tests::custom_command_zone_without_a_damage_threshold_still_holds_a_decklist_commander
+        PASS [   0.017s] (20/79) phase-engine types::format::tests::commander_pairing_admits_exactly_todays_counts
+        PASS [   0.013s] (21/79) phase-engine types::format::tests::deck_copy_limit_permits_no_more_than_is_a_sound_permissiveness_order
+        PASS [   0.014s] (22/79) phase-engine types::format::tests::deck_copy_limit_serializes_as_tagged_union
+        PASS [   0.013s] (23/79) phase-engine types::format::tests::deck_size_subject_agrees_with_the_command_zone_axis
+        PASS [   0.014s] (24/79) phase-engine types::format::tests::deck_size_authority_registry_completeness
+        PASS [   0.018s] (25/79) phase-engine types::format::tests::deck_size_rule_serializes_as_tagged_union
+        PASS [   0.013s] (26/79) phase-engine types::format::tests::default_for_player_count_is_always_valid_for_the_count_it_was_chosen_for
+        PASS [   0.014s] (27/79) phase-engine types::format::tests::default_for_player_count_picks_standard_at_or_below_two_seats
+        PASS [   0.013s] (28/79) phase-engine types::format::tests::deserialize_admission_and_validate_for_player_count_are_independent_layers
+        PASS [   0.019s] (29/79) phase-engine types::format::tests::default_for_player_count_picks_free_for_all_above_two_seats
+        PASS [   0.013s] (30/79) phase-engine types::format::tests::digital_only_admission_partitions_every_legality_format
+        PASS [   0.013s] (31/79) phase-engine types::format::tests::every_legality_table_records_exactly_one_registry_format
+        PASS [   0.016s] (32/79) phase-engine types::format::tests::format_config_commander
+        PASS [   0.022s] (33/79) phase-engine types::format::tests::format_config_brawl_deck_sizes
+        PASS [   0.016s] (34/79) phase-engine types::format::tests::format_config_field_destructure_is_exhaustive
+        PASS [   0.015s] (35/79) phase-engine types::format::tests::format_config_free_for_all
+        PASS [   0.014s] (36/79) phase-engine types::format::tests::format_config_limited
+        PASS [   0.014s] (37/79) phase-engine types::format::tests::format_config_oathbreaker
+        PASS [   0.015s] (38/79) phase-engine types::format::tests::format_config_premodern
+        PASS [   0.020s] (39/79) phase-engine types::format::tests::format_config_serde_roundtrip
+        PASS [   0.016s] (40/79) phase-engine types::format::tests::format_config_standard
+        PASS [   0.013s] (41/79) phase-engine types::format::tests::format_config_two_headed_giant
+        PASS [   0.015s] (42/79) phase-engine types::format::tests::format_config_tiny_leaders
+        PASS [   0.017s] (43/79) phase-engine types::format::tests::freeform_commander_grants_free_first_mulligan
+        PASS [   0.017s] (44/79) phase-engine types::format::tests::freeform_no_free_first_mulligan
+        PASS [   0.023s] (45/79) phase-engine types::format::tests::format_registry_includes_two_headed_giant
+        PASS [   0.019s] (46/79) phase-engine types::format::tests::legacy_scalar_range_of_influence_deserializes_and_remains_rejected
+        PASS [   0.014s] (47/79) phase-engine types::format::tests::legality_format_is_the_card_pool_projection
+        PASS [   0.014s] (48/79) phase-engine types::format::tests::limited_for_format_roundtrip
+        PASS [   0.014s] (49/79) phase-engine types::format::tests::limited_in_registry
+        PASS [   0.019s] (50/79) phase-engine types::format::tests::limited_label
+        PASS [   0.014s] (51/79) phase-engine types::format::tests::limited_legality_format_is_none
+        PASS [   0.014s] (52/79) phase-engine types::format::tests::limited_no_free_first_mulligan
+        PASS [   0.019s] (53/79) phase-engine types::format::tests::limited_sideboard_policy_is_unlimited
+        PASS [   0.014s] (54/79) phase-engine types::format::tests::premodern_legality_format
+        PASS [   0.018s] (55/79) phase-engine types::format::tests::premodern_for_format_roundtrip
+        PASS [   0.016s] (56/79) phase-engine types::format::tests::premodern_registry_entry_is_ordered_with_constructed_formats
+        PASS [   0.018s] (57/79) phase-engine types::format::tests::premodern_uses_normal_constructed_mulligan
+        PASS [   0.015s] (58/79) phase-engine types::format::tests::range_of_influence_config_defaults_missing_overrides_to_empty
+        PASS [   0.013s] (59/79) phase-engine types::format::tests::range_of_influence_validation_uses_actual_seating
+        PASS [   0.019s] (60/79) phase-engine types::format::tests::range_of_influence_config_round_trips_with_player_overrides
+        PASS [   0.014s] (61/79) phase-engine types::format::tests::registry_constructed_formats_declare_a_deck_construction_pool
+        PASS [   0.017s] (62/79) phase-engine types::format::tests::recorded_legality_table_agrees_with_every_table_backed_card_pool
+        PASS [   0.015s] (63/79) phase-engine types::format::tests::registry_entries_publish_their_own_formats_legality_key
+        PASS [   0.017s] (64/79) phase-engine types::format::tests::registry_lists_every_builtin_format
+        PASS [   0.017s] (65/79) phase-engine types::format::tests::selected_format_rejects_both_externally_tagged_envelopes
+        PASS [   0.017s] (66/79) phase-engine types::format::tests::selected_format_resolved_serializes_to_the_bare_tag_and_returns_as_tag
+        PASS [   0.018s] (67/79) phase-engine types::format::tests::selected_format_tag_round_trips_as_a_bare_game_format_string
+        PASS [   0.017s] (68/79) phase-engine types::format::tests::sideboard_policy_matches_format_semantics
+        PASS [   0.014s] (69/79) phase-engine types::format::tests::sideboard_policy_permits_no_more_than_is_a_sound_permissiveness_order
+        PASS [   0.017s] (70/79) phase-engine types::format::tests::sideboard_policy_serializes_as_tagged_union
+        PASS [   0.015s] (71/79) phase-engine types::format::tests::starting_life_admission_gate_pins_both_bounds_for_custom_format
+        PASS [   0.019s] (72/79) phase-engine types::format::tests::starting_life_admission_gate_pins_both_bounds
+        PASS [   0.014s] (73/79) phase-engine types::format::tests::starting_life_for_seat_pins_fixed_teams_division
+        PASS [   0.015s] (74/79) phase-engine types::format::tests::starting_life_total_for_player_follows_topology
+        PASS [   0.015s] (75/79) phase-engine types::format::tests::validate_for_player_count_accepts_every_seat_in_the_registry_range
+        PASS [   0.018s] (76/79) phase-engine types::format::tests::uses_commander_matches_default_config_and_threshold
+        PASS [   0.024s] (77/79) phase-engine types::format::tests::starting_life_for_seat_preserves_non_team_formats
+        PASS [   0.014s] (78/79) phase-engine types::format::tests::validate_for_player_count_rejects_outside_commander_range
+        PASS [   0.013s] (79/79) phase-engine types::format::tests::validate_for_player_count_two_headed_giant_rejects_outside_its_registry_range
+────────────
+     Summary [   0.361s] 79 tests run: 79 passed, 22577 skipped

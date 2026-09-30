@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+────────────
+ Nextest run ID 16e3ba48-b42d-42b9-808f-4d09b405502d with nextest profile: default
+    Starting 16 tests across 1 binary (8546 tests skipped)
+        PASS [   0.024s] ( 1/16) phase-engine::integration custom_format_schema::commander_eligibility_rule_from_source_format_rejects_custom_without_panicking
+        PASS [   0.027s] ( 2/16) phase-engine::integration custom_format_schema::game_format_deserialize_accepts_valid_custom_string
+        PASS [   0.028s] ( 3/16) phase-engine::integration custom_format_schema::commander_eligibility_rule_from_source_format_covers_every_builtin
+        PASS [   0.030s] ( 4/16) phase-engine::integration custom_format_schema::from_lobby_config_rejects_momir_source
+        PASS [   0.014s] ( 5/16) phase-engine::integration custom_format_schema::game_format_from_str_display_roundtrip_builtins
+        PASS [   0.014s] ( 6/16) phase-engine::integration custom_format_schema::game_format_from_str_display_roundtrip_custom
+        PASS [   0.018s] ( 7/16) phase-engine::integration custom_format_schema::game_format_deserialize_rejects_malformed_custom_strings
+        PASS [   0.016s] ( 8/16) phase-engine::integration custom_format_schema::game_format_serde_roundtrip_builtin_and_custom
+        PASS [   0.019s] ( 9/16) phase-engine::integration custom_format_schema::game_format_serialization_is_byte_identical_to_old_derive_for_builtins
+        PASS [   0.027s] (10/16) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        PASS [   0.037s] (11/16) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS [   0.047s] (12/16) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS [   0.046s] (13/16) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS [   0.017s] (14/16) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS [   0.030s] (15/16) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS [   0.038s] (16/16) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+────────────
+     Summary [   0.116s] 16 tests run: 16 passed, 8546 skipped
+exit=0
