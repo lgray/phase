@@ -400,9 +400,8 @@ const DELVE_DIVIDED_X_ORACLE: &str =
     "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\n\
 ~ deals X damage divided as you choose among any number of targets.";
 
-/// CR 601.2d + CR 601.2i: X = 0 leaves the divided pool empty at target
-/// selection, so the distribution opens only after payment; cancelling there
-/// must still undo the delve exile.
+/// CR 733.1: cancelling at the post-payment distribution (opened only because
+/// X = 0 leaves the pool empty at target selection) must undo the delve exile.
 fn cancel_delve_at_post_payment_distribution(shard: ManaCostShard) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
