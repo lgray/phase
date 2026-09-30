@@ -24,3 +24,8 @@
 - After the policy change: magic.wizards.com, mtgjson.com and api.scryfall.com answer 200. CR fetched (MagicCompRules 20260925, 9372 lines). gen-card-data.sh started (cold build).
 - Lead relay test: `curl https://api.github.com/repos/phase-rs/phase/issues/5169` -> 403; `gh auth status` -> gh: command not found; `gh pr list --repo phase-rs/phase` -> gh: command not found. PR route stays closed: the lead opens the PR from the saved body.
 - Charter review round 1 dispatched (Sonnet) against BASE_SHA b9ba9360.
+
+## J4 charter frozen, phase 1 (2026-09-30)
+- Charter loop: r1 8 dec -> r2 4 -> r3 2 -> r4 clean (2 corrections applied). Frozen r3: 17 phases ~10,140 LOC. Records: charter-review-r{1..4}.md, phase-charter.r{0..3}.
+- Env: phase-engine test build OOM-killed at -j4 (13.8 GB rustc); CARGO_BUILD_JOBS=2 succeeds (~10 min cold). Completion checks run in the main clone at the clean committed candidate (no second target dir: 21 GB disk free, 15 GB RAM) — deviation from the skill's separate completion worktree, recorded here.
+- Phase 1 accepted (card-bot autocomplete), small-change lane, 1 plan round, 1 impl round.

@@ -26,3 +26,9 @@
   - C1 line 1: "(revision r2)" -> "(revision r3)".
   - C2 Settled-decision-3 note: "(one PR unless total exceeds ~30,000 lines; the estimate is ~10,100)" -> "(one PR unless total exceeds ~30,000 lines; the estimate is the phase-list sum stated in the Deliverable line)". Sweep: whole charter, predicate literal "10,100", 0 remaining.
 - CHARTER FROZEN: 17 phases, ~10,140 LOC, one PR. Charter loop closed at design round 3 (4 review rounds). Phase loops start at 0.
+
+## 6. Phase 1 (card-bot autocomplete)
+- Plan round 1 (planner + reviewer claude-sonnet-5-5): small-change lane confirmed (1 unit, 4 paths, no variant/serialized/WaitingFor change). Findings: F1 text, F2 text (adds a defaulted param + synthetic 30-entry test), N1 note. small-change lane: all three passed to the executor as constraints (F1/F2 old strings were paraphrases, not exact quotes, so not applied to the plan text); Step 6 reviewer confirms closure.
+- Scope frozen: 4 paths (scope.nul). PHASE_BASE_SHA = run BASE.
+- Impl review round 1 (claude-sonnet-5-5): ACCEPT, 0 HIGH/MED, 1 LOW informational (L1 name-truncation untested; no wrong behavior; residual-free — trivially correct one-line slice). F1/F2/N1 confirmed closed. Completion: `bun test scripts/card-bot` 158/0 at the clean committed candidate.
+- PHASE 1 ACCEPTED.
