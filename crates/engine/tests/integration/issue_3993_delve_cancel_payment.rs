@@ -342,7 +342,8 @@ fn cancel_after_rejected_finalize_keeps_delve_record_and_restores_order() {
             .state()
             .pending_cast
             .as_ref()
-            .map(|pending| pending.delved_cards.len()),
+            .and_then(|pending| pending.delve.as_ref())
+            .map(|delve| delve.cards.len()),
         Some(2)
     );
 

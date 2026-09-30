@@ -2298,22 +2298,22 @@ pub(crate) fn random_top_slot_index(
     rng.random_range(0..upper)
 }
 
-/// CR 404.2 + CR 733.1: Put a graveyard card back at `index` (clamped) in its
-/// owner's graveyard, undoing the position change of a reversed cost.
-pub(crate) fn reorder_within_graveyard(
-    state: &mut GameState,
-    player: PlayerId,
-    object_id: ObjectId,
-    index: usize,
-) {
+/// CR 404.2: Sort `player`'s graveyard into `order`; cards absent from `order`
+/// (arrived since it was taken) stay on top in their current relative order.
+pub(crate) fn restore_graveyard_order(state: &mut GameState, player: PlayerId, order: &[ObjectId]) {
     let player_state = state
         .players
         .iter_mut()
         .find(|candidate| candidate.id == player)
         .expect("player exists");
-    player_state.graveyard.retain(|id| *id != object_id);
-    let insert_index = index.min(player_state.graveyard.len());
-    player_state.graveyard.insert(insert_index, object_id);
+    let mut pile: Vec<ObjectId> = player_state.graveyard.iter().copied().collect();
+    pile.sort_by_key(|id| {
+        order
+            .iter()
+            .position(|ordered| ordered == id)
+            .unwrap_or(usize::MAX)
+    });
+    player_state.graveyard = pile.into_iter().collect();
 }
 
 /// Move an object to a specific index in its owner's library.
@@ -3954,9 +3954,9 @@ mod tests {
     }
 
     #[test]
-    fn reorder_within_graveyard_repositions_and_clamps_index() {
+    fn restore_graveyard_order_sorts_members_and_keeps_arrivals_on_top() {
         let mut state = setup();
-        let [a, b, c] = [1, 2, 3].map(|n| {
+        let [a, b, c, x, y] = [1, 2, 3, 4, 5].map(|n| {
             create_object(
                 &mut state,
                 CardId(n),
@@ -3965,26 +3965,10 @@ mod tests {
                 Zone::Graveyard,
             )
         });
-
-        reorder_within_graveyard(&mut state, PlayerId(0), c, 0);
-        assert_eq!(
-            state.players[0]
-                .graveyard
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
-            [c, a, b]
-        );
-
-        reorder_within_graveyard(&mut state, PlayerId(0), c, 99);
-        assert_eq!(
-            state.players[0]
-                .graveyard
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
-            [a, b, c]
-        );
+        let absent = ObjectId(9999);
+        restore_graveyard_order(&mut state, PlayerId(0), &[absent, c, a, b]);
+        let graveyard: Vec<_> = state.players[0].graveyard.iter().copied().collect();
+        assert_eq!(graveyard, [c, a, b, x, y]);
     }
 
     #[test]

@@ -27431,54 +27431,36 @@ pub fn handle_cancel_cast(
             obj.tapped = false;
         }
     }
-    // CR 733.1 + CR 404.2: undo delve payments newest-first, each card back at
-    // the graveyard position it held, wherever its cost move delivered it
-    // (a library excepted).
-    for delved in pending.delved_cards.iter().rev() {
-        let Some(obj) = state.objects.get(&delved.card) else {
-            continue;
-        };
-        let owner = obj.owner;
-        match obj.zone {
-            // CR 733.1: actions that moved cards to a library are not reversed.
-            Zone::Library => {}
-            Zone::Graveyard => super::zones::reorder_within_graveyard(
-                state,
-                owner,
-                delved.card,
-                delved.graveyard_index,
-            ),
-            _ => {
+    // CR 733.1: undo each delve payment; the graveyard is then put back in its pre-cast order (CR 404.2).
+    let delve_cards: &[ObjectId] = pending
+        .delve
+        .as_ref()
+        .map_or(&[], |delve| delve.cards.as_slice());
+    if let Some(delve) = &pending.delve {
+        for &card in &delve.cards {
+            match state.objects.get(&card).map(|obj| obj.zone) {
+                // CR 733.1: actions that moved cards to a library are not reversed.
+                None | Some(Zone::Library | Zone::Graveyard) => {}
                 // CR 733.1: an undone action triggers no abilities, so the rollback events are dropped.
-                super::zones::restore_after_rollback(
+                Some(_) => super::zones::restore_after_rollback(
                     state,
-                    delved.card,
+                    card,
                     Zone::Graveyard,
                     &mut Vec::new(),
-                );
-                super::zones::reorder_within_graveyard(
-                    state,
-                    owner,
-                    delved.card,
-                    delved.graveyard_index,
-                );
+                ),
             }
         }
+        super::zones::restore_graveyard_order(state, delve.player, &delve.graveyard_before);
     }
-    let delved_cards: Vec<ObjectId> = pending
-        .delved_cards
-        .iter()
-        .map(|delved| delved.card)
-        .collect();
-    if !delved_cards.is_empty() {
+    if !delve_cards.is_empty() {
         state.exile_links.retain(|link| {
-            !(link.source_id == pending.object_id && delved_cards.contains(&link.exiled_id))
+            !(link.source_id == pending.object_id && delve_cards.contains(&link.exiled_id))
         });
         if let Some(exiled) = state
             .cards_exiled_with_source_this_turn
             .get_mut(&pending.object_id)
         {
-            exiled.retain(|id| !delved_cards.contains(id));
+            exiled.retain(|id| !delve_cards.contains(id));
             if exiled.is_empty() {
                 state
                     .cards_exiled_with_source_this_turn
@@ -27489,7 +27471,7 @@ pub fn handle_cancel_cast(
     for player in &mut state.players {
         player.mana_pool.mana.retain(|unit| {
             !(unit.is_convoke_payment() && convoked_creatures.contains(&unit.source_id))
-                && !(unit.is_convoke_payment() && delved_cards.contains(&unit.source_id))
+                && !(unit.is_convoke_payment() && delve_cards.contains(&unit.source_id))
         });
     }
     if let Some(obj) = state.objects.get_mut(&pending.object_id) {

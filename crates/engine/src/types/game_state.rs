@@ -7231,12 +7231,15 @@ pub struct DeferredSacrificeSelection {
 #[serde(transparent)]
 pub struct CastingPermissionIndex(pub usize);
 
-/// CR 702.66a + CR 733.1: A graveyard card chosen to pay for delve, with the
-/// position it held so a cancelled cast can put it back exactly (CR 404.2).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DelvedCard {
-    pub card: ObjectId,
-    pub graveyard_index: usize,
+/// CR 702.66a + CR 733.1: The delve payments of one cast and the graveyard
+/// they were paid from, so a cancelled cast can reverse them (CR 404.2).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelvePayments {
+    pub player: PlayerId,
+    /// The player's graveyard order just before the cast's first delve payment.
+    pub graveyard_before: Vec<ObjectId>,
+    /// Cards chosen to pay, in payment order.
+    pub cards: Vec<ObjectId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -7398,10 +7401,10 @@ pub struct PendingCast {
     /// quantities can resolve later.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convoked_creatures: Vec<ObjectId>,
-    /// CR 702.66a: Graveyard cards chosen to pay this cast's delve, in payment
-    /// order, recorded before the replacement-aware cost move.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub delved_cards: Vec<DelvedCard>,
+    /// CR 702.66a: This cast's delve payments, recorded before the
+    /// replacement-aware cost move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delve: Option<DelvePayments>,
     /// CR 601.2g + CR 601.2h: Non-mana spell additional-cost permanents selected
     /// for sacrifice, but whose actual zone move is deferred until the final
     /// payment commit so mana abilities can be activated first.
@@ -8039,7 +8042,7 @@ impl PendingCast {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delved_cards: Vec::new(),
+            delve: None,
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -39494,7 +39497,7 @@ mod tests {
                 declared_kickers_to_pay: Vec::new(),
                 declined_kickers: Vec::new(),
                 convoked_creatures: Vec::new(),
-                delved_cards: Vec::new(),
+                delve: None,
                 deferred_sacrificed_permanents: Vec::new(),
                 pinned_pool_units: Vec::new(),
                 cancel_restore_prepared_source: None,
@@ -39952,7 +39955,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delved_cards: Vec::new(),
+            delve: None,
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,

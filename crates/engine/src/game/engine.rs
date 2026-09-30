@@ -13657,23 +13657,25 @@ fn apply_non_priority_pass_action(
                     "Delve can only pay generic mana".to_string(),
                 ));
             }
-            let owner = state.objects[&object_id].owner;
-            let graveyard_index = state
+            let graveyard_before: Vec<ObjectId> = state
                 .players
                 .iter()
-                .find(|candidate| candidate.id == owner)
-                .and_then(|candidate| candidate.graveyard.iter().position(|id| *id == object_id))
-                .ok_or_else(|| {
-                    EngineError::InvalidAction("Delved card is not in its graveyard".to_string())
-                })?;
+                .find(|candidate| candidate.id == player)
+                .map(|candidate| candidate.graveyard.iter().copied().collect())
+                .unwrap_or_default();
             let pending = state.pending_cast.as_mut().ok_or_else(|| {
                 EngineError::InvalidAction("No pending cast for delve".to_string())
             })?;
             let spell_id = pending.object_id;
-            pending.delved_cards.push(crate::types::game_state::DelvedCard {
-                card: object_id,
-                graveyard_index,
-            });
+            pending
+                .delve
+                .get_or_insert_with(|| crate::types::game_state::DelvePayments {
+                    player,
+                    graveyard_before,
+                    cards: Vec::new(),
+                })
+                .cards
+                .push(object_id);
             state.pending_cost_move_resume = Some(PendingCostMoveResume::DelveManaPayment {
                 player,
                 fuel_id: object_id,

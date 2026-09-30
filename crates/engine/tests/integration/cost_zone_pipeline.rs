@@ -10487,6 +10487,11 @@ struct DelveCancelWitness {
 /// Delve spell mid-cast with graveyard `[A, F, C]`; A is already delved to
 /// exile before any redirect exists. `F` optionally carries a dies trigger.
 fn delve_cancel_witness(fuel_dies_trigger: bool) -> DelveCancelWitness {
+    delve_cancel_witness_paying_first(fuel_dies_trigger, 0)
+}
+
+/// Same witness with `fuel[first]` as the already-paid card.
+fn delve_cancel_witness_paying_first(fuel_dies_trigger: bool, first: usize) -> DelveCancelWitness {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let spell = scenario
@@ -10542,7 +10547,7 @@ fn delve_cancel_witness(fuel_dies_trigger: bool) -> DelveCancelWitness {
         fuel: [a, f, c],
         redirects,
     };
-    witness.delve(a);
+    witness.delve(witness.fuel[first]);
     witness
 }
 
@@ -10572,8 +10577,12 @@ impl DelveCancelWitness {
     /// Delves F under the installed redirects and resolves the competing-Moved
     /// choice; returns after the mana-payment window is restored.
     fn delve_fuel_f_through_replacement_choice(&mut self) {
+        self.delve_through_replacement_choice(1);
+    }
+
+    fn delve_through_replacement_choice(&mut self, fuel_index: usize) {
         assert!(matches!(
-            self.delve(self.fuel[1]),
+            self.delve(self.fuel[fuel_index]),
             WaitingFor::ReplacementChoice { .. }
         ));
         self.runner
@@ -10778,6 +10787,105 @@ fn cancel_after_battlefield_redirected_delve_payment_triggers_nothing() {
 
     witness.assert_cancel_leaves_no_delve_residue();
     assert_eq!(witness.runner.state().players[0].life, 20);
+}
+
+/// CR 733.1 + CR 404.2: a library-bound payment of an older card, made after a
+/// newer card was paid, leaves the rest of the graveyard in its pre-cast order.
+#[test]
+fn cancel_after_library_payment_of_older_card_keeps_snapshot_order() {
+    let mut witness = delve_cancel_witness_paying_first(false, 1);
+    let [a, f, c] = witness.fuel;
+    witness.set_exile_redirect(Some(Zone::Library));
+    witness.delve_through_replacement_choice(0);
+
+    assert_eq!(witness.runner.state().objects[&a].zone, Zone::Library);
+    assert!(witness.markers().contains(&a));
+    witness.assert_mana_payment_open();
+
+    witness.set_exile_redirect(None);
+    witness.delve(c);
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    assert_eq!(witness.graveyard(), [f, c]);
+    assert_eq!(witness.runner.state().objects[&a].zone, Zone::Library);
+    assert_eq!(witness.hand(), [witness.spell]);
+    assert!(witness.markers().is_empty());
+    let state = witness.runner.state();
+    assert!(!state
+        .exile_links
+        .iter()
+        .any(|link| link.source_id == witness.spell));
+    assert!(!state
+        .cards_exiled_with_source_this_turn
+        .contains_key(&witness.spell));
+}
+
+/// CR 404.2: a card that reaches the graveyard mid-cast stays above the
+/// restored pre-cast pile.
+#[test]
+fn cancel_delve_puts_mid_cast_graveyard_arrival_on_top() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand(P0, "Delve Cancel Witness", true)
+        .with_mana_cost(ManaCost::generic(3))
+        .with_keyword(Keyword::Delve)
+        .id();
+    let [a, f, c] = ["A", "F", "C"].map(|n| {
+        scenario
+            .add_spell_to_graveyard(P0, &format!("Delve Fuel {n}"), true)
+            .id()
+    });
+    let artifact = scenario
+        .add_artifact_from_oracle(
+            P0,
+            "Arrival Artifact",
+            "{T}, Sacrifice this artifact: Add {C}.",
+        )
+        .id();
+    let mut runner = scenario.build();
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Manual,
+        })
+        .expect("delve spell reaches its mana-payment window");
+    let graveyard = |runner: &GameRunner| -> Vec<ObjectId> {
+        runner.state().players[0]
+            .graveyard
+            .iter()
+            .copied()
+            .collect()
+    };
+    let delve = |runner: &mut GameRunner, object_id| {
+        runner
+            .act(GameAction::TapForConvoke {
+                object_id,
+                mana_type: ManaType::Colorless,
+            })
+            .expect("delve fuel is payable");
+    };
+
+    delve(&mut runner, a);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: artifact,
+            ability_index: 0,
+        })
+        .expect("mana ability is activatable during delve payment");
+    assert_eq!(graveyard(&runner), [f, c, artifact]);
+    delve(&mut runner, c);
+    runner
+        .act(GameAction::CancelCast)
+        .expect("cancel a delve cast");
+
+    assert_eq!(graveyard(&runner), [a, f, c, artifact]);
 }
 
 #[test]
