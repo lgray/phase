@@ -7,17 +7,16 @@
 - Census scripts from the brief: `.planning/dandan-5169/brief/scripts/` (`matches.py`, `count_reads.py`, `count_reads_lines.py`, `names.txt`). Run as `python3 <abs path>/count_reads.py HEAD '<pattern>' -v`.
 
 ## Paths
-- Work tree W = `/home/lgray/vibe-coding/phase-rs-workdir/.claude/worktrees/agent-a31b944b51f33e128` (branch `feat/dandan-format`). All relative paths in this file are relative to W. Use absolute paths; your cwd is reset between shell calls.
-- Skills: read them by absolute path under `W/.claude/skills/<name>/SKILL.md`. Do NOT use the Skill tool: it loads a stale copy from a different checkout.
+- Work tree W = `/home/user/phase` (cloud clone, branch `feat/dandan-format`). All relative paths in this file are relative to W. Use absolute paths.
+- Skills: read them by absolute path under `/home/user/phase/.claude/skills/<name>/SKILL.md` (the Skill tool also loads this same copy).
 - Run root (gitignored): `W/.planning/dandan-5169/`. Charter: `phase-charter`. Phase plans: `phase-<k>/plan.md`. Reviews: `phase-<k>/...`.
 
-## Build and test (no Tilt watches W)
-- Tilt does not watch W. Ignore any Tilt instructions; run cargo directly. Every cargo command must be ONE shell statement of this form (the isolation silently degrades otherwise):
-  `source /home/lgray/vibe-coding/cargo-isolate.sh /home/lgray/vibe-coding/phase-rs-workdir/.claude/worktrees/agent-a31b944b51f33e128 && cd /home/lgray/vibe-coding/phase-rs-workdir/.claude/worktrees/agent-a31b944b51f33e128 && cargo ...`
-- One heavy build at a time; the box is memory-tight and shared with other lanes. Prefer `cargo nextest run -p phase-engine <filter>` for tests (new engine tests go in `crates/engine/tests/integration/` with a `mod` line in `tests/integration/main.rs`). Redirect long output to a file under `W/.planning/dandan-5169/` and grep it.
+## Build and test (no Tilt; cloud box: 4 cores, 15 GB RAM, ~29 GB disk)
+- No Tilt. Ignore Tilt instructions; run cargo directly from `/home/user/phase`, e.g. `cd /home/user/phase && cargo nextest run -p engine <filter>`.
+- ONE heavy build at a time; the box is small. Never run two cargo commands concurrently. Prefer targeted `cargo nextest run -p <pkg> <filter>` / `cargo check -p <pkg>`. New engine tests go in `crates/engine/tests/integration/` with a `mod` line in `tests/integration/main.rs`. Redirect long output to a file under `/home/user/phase/.planning/dandan-5169/` and grep it.
 - Never `cargo clean`, never delete `target/`.
-- CR text: `docs/MagicCompRules.txt` (present). Grep every CR number before writing it.
-- Card Oracle text: `jq '.data["<Card Name>"][0].text' data/mtgjson/AtomicCards.json` (present), or the Scryfall API. `client/public/card-data.json` (parsed engine card data) appears once the background generation finishes; check before relying on it.
+- CR text: `docs/MagicCompRules.txt`. Grep every CR number before writing it.
+- Card Oracle text: `jq '.data["<Card Name>"][0].text' data/mtgjson/AtomicCards.json` once card data is generated, or the Scryfall API (`curl -s 'https://api.scryfall.com/cards/named?exact=<name>' | jq .oracle_text`). Check `client/public/card-data.json` exists before relying on it.
 
 ## Git
 - Never `git stash`, `git checkout <file>`, `git restore`, `git reset`, `git commit`, `git push`, or any branch switch. Planners and reviewers are read-only on tracked files. Executors edit only their authorized paths and never commit (the orchestrator commits).
