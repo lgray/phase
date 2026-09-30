@@ -1,0 +1,4 @@
+error: expect(received).toEqual(expected)
+(fail) FORMATS mirrors the client format registry > deep-equals the registry's projection [1.42ms]
+ 157 pass
+ 1 fail

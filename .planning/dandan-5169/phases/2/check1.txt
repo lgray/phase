@@ -62,3 +62,27 @@
     Checking regex-syntax v0.8.10
     Checking regex-automata v0.4.14
    Compiling wasm-bindgen-macro-support v0.2.121
+   Compiling wasm-bindgen v0.2.121
+    Checking log v0.4.29
+    Checking lazy_static v1.5.0
+    Checking unicode-ident v1.0.24
+    Checking sharded-slab v0.1.7
+    Checking tracing-log v0.2.0
+   Compiling wasm-bindgen-macro v0.2.121
+    Checking matchers v0.2.0
+    Checking thread_local v1.1.9
+    Checking nu-ansi-term v0.50.3
+    Checking tracing-subscriber v0.3.23
+    Checking mimalloc v0.1.52
+    Checking futures-task v0.3.32
+    Checking slab v0.4.12
+    Checking futures-core v0.3.32
+    Checking futures-util v0.3.32
+    Checking js-sys v0.3.98
+    Checking serde-wasm-bindgen v0.6.5
+    Checking console_error_panic_hook v0.1.7
+    Checking phase-ai v0.97.0 (/home/user/phase/crates/phase-ai)
+    Checking seat-reducer v0.97.0 (/home/user/phase/crates/seat-reducer)
+    Checking phase-llm v0.97.0 (/home/user/phase/crates/phase-llm)
+    Checking engine-wasm v0.97.0 (/home/user/phase/crates/engine-wasm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 17s

@@ -1,0 +1,7 @@
+[31m     [31m×[31m pins the P2P wire protocol to v75[39m[32m 16[2mms[22m[39m
+[31m     [31m×[31m refuses the previous wire protocol (v74) and admits its own (v75)[39m[32m 10[2mms[22m[39m
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+[41m[1m FAIL [22m[49m src/adapter/__tests__/p2p-adapter-multiplayer.test.ts[2m > [22mP2P wire-protocol version gate[2m > [22mrefuses the previous wire protocol (v74) and admits its own (v75)
+[41m[1m FAIL [22m[49m src/network/__tests__/protocol.test.ts[2m > [22mencodeWireMessage / decodeWireMessage[2m > [22mpins the P2P wire protocol to v75
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m200 passed[39m[22m[90m (202)[39m
+P2P wire protocol version must remain 75: got 74. A GameState shape change must bump this alongside PROTOCOL_VERSION, not instead of it.

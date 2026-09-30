@@ -1,0 +1,6 @@
+ [31m❯[39m src/network/__tests__/protocol.test.ts [2m([22m[2m57 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 78[2mms[22m[39m
+[41m[1m FAIL [22m[49m src/network/__tests__/protocol.test.ts[2m > [22mlobby capability floor for the Dandan format[2m > [22mrequires the frozen Dandan floor for a lobby frame naming the format
+[32m- Expected:[39m
+[31m+ Received:[39m
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m56 passed[39m[22m[90m (57)[39m

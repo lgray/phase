@@ -1,0 +1,2 @@
+wrote 812 enums, 5909 variants → /home/user/phase/data/engine-inventory.json
+done 0

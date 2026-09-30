@@ -1,0 +1,190 @@
+   Compiling tracing-core v0.1.36
+   Compiling serde_json v1.0.149
+   Compiling tracing v0.1.44
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+   Compiling regex-syntax v0.8.10
+   Compiling regex-automata v0.4.14
+   Compiling log v0.4.29
+   Compiling tracing-log v0.2.0
+   Compiling matchers v0.2.0
+   Compiling libmimalloc-sys v0.1.49
+   Compiling sharded-slab v0.1.7
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling tracing-subscriber v0.3.23
+   Compiling mimalloc v0.1.52
+   Compiling parking_lot_core v0.9.12
+   Compiling errno v0.3.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling parking_lot v0.12.5
+   Compiling socket2 v0.6.3
+   Compiling mio v1.2.0
+   Compiling wait-timeout v0.2.1
+   Compiling tokio-macros v2.7.0
+   Compiling server-core v0.97.0 (/home/user/phase/crates/server-core)
+   Compiling bit-vec v0.8.0
+   Compiling fnv v1.0.7
+   Compiling bytes v1.11.1
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling tokio v1.52.3
+   Compiling bit-set v0.8.0
+   Compiling num-traits v0.2.19
+   Compiling rand_xorshift v0.4.0
+   Compiling unarray v0.1.4
+   Compiling proptest v1.11.0
+   Compiling manabrew-protocol v5.2.0
+   Compiling lobby-broker v0.97.0 (/home/user/phase/crates/lobby-broker)
+   Compiling phase-ai v0.97.0 (/home/user/phase/crates/phase-ai)
+   Compiling seat-reducer v0.97.0 (/home/user/phase/crates/seat-reducer)
+   Compiling draft-core v0.97.0 (/home/user/phase/crates/draft-core)
+   Compiling manabrew-compat v0.97.0 (/home/user/phase/crates/manabrew-compat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 53s
+────────────
+ Nextest run ID 39ad356a-5b5d-441f-bba8-c5f75a23f5bd with nextest profile: default
+    Starting 140 tests across 5 binaries (755 tests skipped)
+        PASS [   0.007s] (  1/140) lobby-broker protocol::tests::a_pre_correlation_frame_parses_with_no_request_id
+        PASS [   0.007s] (  2/140) lobby-broker protocol::tests::an_explicit_scoring_serializes_byte_identically_to_the_pre_six_shape
+        PASS [   0.011s] (  3/140) lobby-broker protocol::tests::absent_requested_code_defaults_to_none
+        PASS [   0.011s] (  4/140) lobby-broker protocol::tests::an_invented_tournament_tag_is_still_unknown
+        PASS [   0.008s] (  5/140) lobby-broker protocol::tests::broadcast_tournament_messages_never_carry_a_token
+        PASS [   0.009s] (  6/140) lobby-broker protocol::tests::correlated_gated_frames_round_trip_and_none_omits_the_key
+        PASS [   0.006s] (  7/140) lobby-broker protocol::tests::correlated_settlement_messages_never_carry_a_token
+        PASS [   0.008s] (  8/140) lobby-broker protocol::tests::every_client_variant_tag_is_known
+        PASS [   0.007s] (  9/140) lobby-broker protocol::tests::every_pairing_outcome_survives_the_view_projection
+        PASS [   0.007s] ( 10/140) lobby-broker protocol::tests::known_tag_with_bad_payload_routes_to_malformed
+        PASS [   0.009s] ( 11/140) lobby-broker protocol::tests::known_tags_parse_to_messages
+        PASS [   0.006s] ( 12/140) lobby-broker protocol::tests::malformed_requested_code_routes_to_malformed
+        PASS [   0.010s] ( 13/140) lobby-broker protocol::tests::lobby_protocol_version_is_independent_of_the_full_game_one
+        PASS [   0.007s] ( 14/140) lobby-broker protocol::tests::malformed_json_routes_to_malformed
+        PASS [   0.006s] ( 15/140) lobby-broker protocol::tests::scoring_is_optional_from_six_and_the_pre_six_shape_still_requires_it
+        PASS [   0.006s] ( 16/140) lobby-broker protocol::tests::summary_counts_active_players_while_the_view_keeps_dropped_ones
+        PASS [   0.006s] ( 17/140) lobby-broker protocol::tests::the_tournament_chain_spans_lobby_versions_four_through_fifteen
+        PASS [   0.009s] ( 18/140) lobby-broker protocol::tests::protocol_version_tracks_full_game_wire_additions
+        PASS [   0.006s] ( 19/140) lobby-broker protocol::tests::tournament_client_variants_round_trip_through_serde
+        PASS [   0.007s] ( 20/140) lobby-broker protocol::tests::the_views_carry_the_brokers_action_legality_verbatim
+        PASS [   0.007s] ( 21/140) lobby-broker protocol::tests::tournament_server_variants_round_trip_through_serde
+        PASS [   0.008s] ( 22/140) lobby-broker protocol::tests::tournament_request_id_is_total_and_only_gated_variants_carry_one
+        PASS [   0.006s] ( 23/140) lobby-broker protocol::tests::tournament_views_never_carry_a_token
+        PASS [   0.006s] ( 24/140) lobby-broker protocol::tests::unit_variant_with_no_data_parses
+        PASS [   0.005s] ( 25/140) lobby-broker protocol::tests::unknown_tag_routes_to_reject
+        PASS [   0.006s] ( 26/140) lobby-broker protocol::tests::well_formed_frame_with_out_of_bounds_field_routes_to_malformed
+        PASS [   0.006s] ( 27/140) lobby-broker protocol::tests::wire_frame_admits_all_four_host_choices_combined_and_rejects_an_out_of_range_value
+        PASS [   0.006s] ( 28/140) lobby-broker protocol::tests::wire_frame_admits_a_single_field_varied_host_chosen_commander_config
+        PASS [   0.007s] ( 29/140) lobby-broker protocol::tests::well_formed_requested_code_survives_the_parse_boundary
+        PASS [   0.006s] ( 30/140) lobby-broker protocol::tests::wire_frame_admits_the_untouched_commander_config_proving_the_envelope_is_fine
+        PASS [   0.009s] ( 31/140) manabrew-compat tests::every_protocol_error_code_has_a_producer
+        PASS [   0.011s] ( 32/140) manabrew-compat tests::every_declared_capability_code_regression_pin
+        PASS [   0.014s] ( 33/140) manabrew-compat tests::capability_registry_reflects_v3_reality
+        PASS [   0.014s] ( 34/140) manabrew-compat tests::meld_actions_return_stable_unsupported_capability_codes
+        PASS [   0.010s] ( 35/140) manabrew-compat tests::no_emitted_capability_code_is_undeclared
+        PASS [   0.012s] ( 36/140) manabrew-compat tests::prepare_snapshot_refuses_a_format_with_shared_zones
+        PASS [   0.012s] ( 37/140) manabrew-compat tests::protocol_error_round_trips_and_rejects_unknown_fields
+        PASS [   0.012s] ( 38/140) manabrew-compat tests::prepare_snapshot_requires_exactly_two_players
+        PASS [   0.008s] ( 39/140) manabrew-compat tests::protocol_version_is_the_relay_crate_major
+        PASS [   0.008s] ( 40/140) manabrew-compat tests::unsupported_capability_registry_is_well_formed
+        PASS [   0.011s] ( 41/140) server-core protocol::tests::ai_seat_request_roundtrips
+        PASS [   0.011s] ( 42/140) server-core protocol::tests::ai_seat_request_uses_camel_case_keys
+        PASS [   0.011s] ( 43/140) server-core protocol::tests::authoritative_state_export_messages_roundtrip
+        PASS [   0.010s] ( 44/140) server-core protocol::tests::build_commit_is_nonempty
+        PASS [   0.010s] ( 45/140) server-core protocol::tests::client_hello_roundtrips
+        PASS [   0.011s] ( 46/140) server-core protocol::tests::client_hello_defaults_missing_and_future_wire_formats_safely
+        PASS [   0.011s] ( 47/140) server-core protocol::tests::client_message_abandon_game_roundtrips
+        PASS [   0.012s] ( 48/140) server-core protocol::tests::client_message_action_roundtrips
+        PASS [   0.009s] ( 49/140) server-core protocol::tests::client_message_cancel_takeback_roundtrips
+        PASS [   0.010s] ( 50/140) server-core protocol::tests::client_message_concede_roundtrips
+        PASS [   0.011s] ( 51/140) server-core protocol::tests::client_message_create_game_roundtrips
+        PASS [   0.015s] ( 52/140) server-core protocol::tests::client_message_concede_match_roundtrips_without_authority_payload
+        PASS [   0.010s] ( 53/140) server-core protocol::tests::client_message_create_game_with_settings_roundtrips
+        PASS [   0.010s] ( 54/140) server-core protocol::tests::client_message_create_sealed_draft_with_settings_roundtrips
+        PASS [   0.009s] ( 55/140) server-core protocol::tests::client_message_emote_roundtrips
+        PASS [   0.013s] ( 56/140) server-core protocol::tests::client_message_draft_action_roundtrips
+        PASS [   0.009s] ( 57/140) server-core protocol::tests::client_message_join_draft_with_password_roundtrips
+        PASS [   0.014s] ( 58/140) server-core protocol::tests::client_message_interaction_preview_roundtrips_and_an_unknown_tag_is_a_benign_err
+        PASS [   0.011s] ( 59/140) server-core protocol::tests::client_message_join_game_roundtrips
+        PASS [   0.010s] ( 60/140) server-core protocol::tests::client_message_join_game_with_password_roundtrips
+        PASS [   0.011s] ( 61/140) server-core protocol::tests::client_message_lookup_join_target_roundtrips
+        PASS [   0.009s] ( 62/140) server-core protocol::tests::client_message_mana_payment_preview_roundtrips
+        PASS [   0.009s] ( 63/140) server-core protocol::tests::client_message_ping_roundtrips
+        PASS [   0.009s] ( 64/140) server-core protocol::tests::client_message_reconnect_draft_roundtrips
+        PASS [   0.010s] ( 65/140) server-core protocol::tests::client_message_request_takeback_roundtrips
+        PASS [   0.009s] ( 66/140) server-core protocol::tests::client_message_respond_takeback_roundtrips
+        PASS [   0.009s] ( 67/140) server-core protocol::tests::client_message_spectate_draft_roundtrips
+        PASS [   0.011s] ( 68/140) server-core protocol::tests::client_message_subscribe_lobby_roundtrips
+        PASS [   0.010s] ( 69/140) server-core protocol::tests::client_message_unsubscribe_lobby_roundtrips
+        PASS [   0.010s] ( 70/140) server-core protocol::tests::create_draft_frame_accepts_the_legacy_set_codes_sequence_as_uniform
+        PASS [   0.010s] ( 71/140) server-core protocol::tests::create_draft_frame_accepts_the_legacy_single_set_code
+        PASS [   0.011s] ( 72/140) server-core protocol::tests::create_draft_frame_preserves_pack_order_and_repeats
+        PASS [   0.010s] ( 73/140) server-core protocol::tests::create_draft_frame_serializes_chaos_candidates_without_assignments
+        PASS [   0.010s] ( 74/140) server-core protocol::tests::create_draft_frame_serializes_the_tagged_uniform_source
+        PASS [   0.012s] ( 75/140) server-core protocol::tests::create_game_with_settings_ai_seats_roundtrips
+        PASS [   0.009s] ( 76/140) server-core protocol::tests::create_game_with_settings_host_peer_id_roundtrips
+        PASS [   0.010s] ( 77/140) server-core protocol::tests::create_game_with_settings_missing_ai_seats_defaults_to_empty
+        PASS [   0.009s] ( 78/140) server-core protocol::tests::create_game_with_settings_missing_host_peer_id_defaults_to_none
+        PASS [   0.010s] ( 79/140) server-core protocol::tests::create_game_with_settings_missing_match_config_defaults_to_bo1
+        PASS [   0.009s] ( 80/140) server-core protocol::tests::create_game_with_settings_missing_requested_code_defaults_to_none
+        PASS [   0.010s] ( 81/140) server-core protocol::tests::draft_pool_groups_nested_workspace_metadata_is_strict_and_legacy_compatible
+        PASS [   0.014s] ( 82/140) server-core protocol::tests::create_game_with_settings_requested_code_roundtrips
+        PASS [   0.009s] ( 83/140) server-core protocol::tests::emote_guard_tests::emote_rejects_oversized_text
+        PASS [   0.014s] ( 84/140) server-core protocol::tests::emote_guard_tests::emote_accepts_valid_text
+        PASS [   0.012s] ( 85/140) server-core protocol::tests::full_game_floor_is_current_only_not_a_rollout_window
+        PASS [   0.010s] ( 86/140) server-core protocol::tests::join_target_info_roundtrips
+        PASS [   0.010s] ( 87/140) server-core protocol::tests::lobby_game_with_full_metadata_roundtrips
+        PASS [   0.018s] ( 88/140) server-core protocol::tests::game_started_fixture_matches_server_message_contract
+        PASS [   0.010s] ( 89/140) server-core protocol::tests::lobby_game_without_optional_metadata_deserializes_with_defaults
+        PASS [   0.010s] ( 90/140) server-core protocol::tests::meld_actions_roundtrip
+        PASS [   0.009s] ( 91/140) server-core protocol::tests::peer_info_roundtrips
+        PASS [   0.012s] ( 92/140) server-core protocol::tests::protocol_version_is_93_for_dandan_format
+        PASS [   0.012s] ( 93/140) server-core protocol::tests::request_takeback_turn_start_roundtrips_with_exact_wire_bytes
+        PASS [   0.009s] ( 94/140) server-core protocol::tests::request_takeback_without_data_decodes_as_last_action
+        PASS [   0.010s] ( 95/140) server-core protocol::tests::seat_mutation_deck_list_choice_roundtrips
+        PASS [   0.009s] ( 96/140) server-core protocol::tests::server_message_action_no_op_roundtrips
+        PASS [   0.011s] ( 97/140) server-core protocol::tests::server_hello_omits_public_url_when_none
+        PASS [   0.013s] ( 98/140) server-core protocol::tests::server_hello_roundtrips
+        PASS [   0.010s] ( 99/140) server-core protocol::tests::server_message_ai_driver_fault_roundtrips_with_client_wire_keys
+        PASS [   0.010s] (100/140) server-core protocol::tests::server_message_conceded_roundtrips
+        PASS [   0.009s] (101/140) server-core protocol::tests::server_message_draft_created_roundtrips
+        PASS [   0.013s] (102/140) server-core protocol::tests::server_message_draft_action_rejected_roundtrips
+        PASS [   0.010s] (103/140) server-core protocol::tests::server_message_draft_match_start_roundtrips
+        PASS [   0.009s] (104/140) server-core protocol::tests::server_message_draft_over_roundtrips
+        PASS [   0.010s] (105/140) server-core protocol::tests::server_message_draft_spectator_view_roundtrips
+        PASS [   0.013s] (106/140) server-core protocol::tests::server_message_draft_state_update_roundtrips
+        PASS [   0.011s] (107/140) server-core protocol::tests::server_message_draft_timer_sync_roundtrips
+        PASS [   0.010s] (108/140) server-core protocol::tests::server_message_emote_roundtrips
+        PASS [   0.013s] (109/140) server-core protocol::tests::server_message_game_created_roundtrips
+        PASS [   0.010s] (110/140) server-core protocol::tests::server_message_game_over_roundtrips
+        PASS [   0.015s] (111/140) server-core protocol::tests::server_message_game_started_without_opponent_name_roundtrips
+        PASS [   0.018s] (112/140) server-core protocol::tests::server_message_game_started_with_opponent_name_roundtrips
+        PASS [   0.011s] (113/140) server-core protocol::tests::server_message_interaction_preview_roundtrips
+        PASS [   0.010s] (114/140) server-core protocol::tests::server_message_lobby_game_added_roundtrips
+        PASS [   0.009s] (115/140) server-core protocol::tests::server_message_lobby_game_removed_roundtrips
+        PASS [   0.010s] (116/140) server-core protocol::tests::server_message_lobby_game_updated_roundtrips
+        PASS [   0.009s] (117/140) server-core protocol::tests::server_message_lobby_update_roundtrips
+        PASS [   0.012s] (118/140) server-core protocol::tests::server_message_mana_payment_preview_roundtrips
+        PASS [   0.009s] (119/140) server-core protocol::tests::server_message_password_required_roundtrips
+        PASS [   0.010s] (120/140) server-core protocol::tests::server_message_player_count_roundtrips
+        PASS [   0.010s] (121/140) server-core protocol::tests::server_message_pong_roundtrips
+        PASS [   0.010s] (122/140) server-core protocol::tests::server_message_tagged_json_format
+        PASS [   0.010s] (123/140) server-core protocol::tests::server_message_takeback_requested_roundtrips
+        PASS [   0.008s] (124/140) server-core protocol::tests::server_message_takeback_resolved_omits_resolved_by_when_none
+        PASS [   0.009s] (125/140) server-core protocol::tests::server_message_takeback_resolved_roundtrips
+        PASS [   0.011s] (126/140) server-core protocol::tests::server_message_timer_update_roundtrips
+        PASS [   0.009s] (127/140) server-core protocol::tests::session_attached_roundtrips_with_only_its_own_token
+        PASS [   0.014s] (128/140) server-core protocol::tests::state_update_fixture_matches_server_message_contract
+        PASS [   0.011s] (129/140) server-core protocol::tests::terminal_bootstrap_request_roundtrips_with_exact_full_key
+        PASS [   0.011s] (130/140) server-core protocol::tests::terminal_delivery_response_roundtrips
+        PASS [   0.018s] (131/140) server-core protocol::tests::state_update_rewind_targets_roundtrip_and_omission
+        PASS [   0.009s] (132/140) server-core protocol::tests::unregister_lobby_roundtrips
+        PASS [   0.020s] (133/140) server-core session::tests::persisted_takeback_restore_rekeys_abandoned_interaction_capabilities
+        PASS [   0.031s] (134/140) server-core session::tests::approved_takeback_rekeys_all_interaction_capabilities
+        PASS [   0.017s] (135/140) server-core session::tests::restore_keeps_a_sandbox_games_capability_including_its_revocations
+        PASS [   0.047s] (136/140) server-core session::tests::restore_drops_a_sidecar_blobs_debug_capability_on_a_shared_server
+        PASS [   0.013s] (137/140) server-core session::tests::seat_delta_rebuild_rederives_debug_capability
+        PASS [   0.017s] (138/140) server-core session::tests::shared_instance_does_not_seed_debug_capability
+        PASS [   0.059s] (139/140) server-core session::tests::restore_keeps_the_sidecars_capability_when_it_resumes_its_own_game
+        PASS [   2.032s] (140/140) server-core session::tests::approved_takeback_rekeys_precast_shortcut_capabilities
+────────────
+     Summary [   2.365s] 140 tests run: 140 passed, 755 skipped
+done 0

@@ -1,0 +1,68 @@
+    Checking libc v0.2.186
+   Compiling serde_json v1.0.149
+    Checking getrandom v0.3.4
+    Checking rand_core v0.9.5
+    Checking rand_chacha v0.9.0
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Checking rand v0.9.4
+    Checking linux-raw-sys v0.12.1
+    Checking bitflags v2.11.1
+    Checking rustix v1.1.4
+    Checking getrandom v0.4.2
+    Checking fastrand v2.4.1
+    Checking tempfile v3.27.0
+    Checking proc-macro2 v1.0.106
+    Checking diff v0.1.13
+    Checking adler2 v2.0.1
+    Checking yansi v1.0.1
+    Checking simd-adler32 v0.3.10
+    Checking miniz_oxide v0.8.9
+    Checking pretty_assertions v1.4.1
+    Checking quote v1.0.45
+    Checking crc32fast v1.5.0
+    Checking console v0.16.3
+    Checking similar v2.7.0
+    Checking regex-syntax v0.8.10
+    Checking insta v1.47.2
+    Checking flate2 v1.1.9
+    Checking syn v2.0.117
+    Checking assert_matches v1.5.0
+    Checking regex-automata v0.4.14
+    Checking matchers v0.2.0
+    Checking tracing-subscriber v0.3.23
+   Compiling parking_lot_core v0.9.12
+   Compiling autocfg v1.5.0
+    Checking scopeguard v1.2.0
+    Checking lock_api v0.4.14
+   Compiling num-traits v0.2.19
+    Checking errno v0.3.14
+    Checking signal-hook-registry v1.4.8
+    Checking parking_lot v0.12.5
+    Checking socket2 v0.6.3
+    Checking wait-timeout v0.2.1
+    Checking mio v1.2.0
+   Compiling tokio-macros v2.7.0
+    Checking bytes v1.11.1
+    Checking bit-vec v0.8.0
+    Checking fnv v1.0.7
+   Compiling server-core v0.97.0 (/home/user/phase/crates/server-core)
+    Checking quick-error v1.2.3
+    Checking rusty-fork v0.3.1
+    Checking bit-set v0.8.0
+   Compiling ts-rs-macros v10.1.0
+    Checking tokio v1.52.3
+    Checking rand_xorshift v0.4.0
+    Checking unarray v0.1.4
+    Checking proptest v1.11.0
+    Checking ts-rs v10.1.0
+   Compiling strum_macros v0.28.0
+    Checking manabrew-protocol v5.2.0
+    Checking phase-ai v0.97.0 (/home/user/phase/crates/phase-ai)
+    Checking draft-core v0.97.0 (/home/user/phase/crates/draft-core)
+    Checking lobby-broker v0.97.0 (/home/user/phase/crates/lobby-broker)
+    Checking manabrew-compat v0.97.0 (/home/user/phase/crates/manabrew-compat)
+    Checking seat-reducer v0.97.0 (/home/user/phase/crates/seat-reducer)
+    Checking phase-llm v0.97.0 (/home/user/phase/crates/phase-llm)
+    Checking engine-wasm v0.97.0 (/home/user/phase/crates/engine-wasm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17m 55s
+done 0

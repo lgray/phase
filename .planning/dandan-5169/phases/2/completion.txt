@@ -1,0 +1,20 @@
+HEAD b96d6ef2f2c5d4029f545395a2adada00beebe47 dirty=0
+FMT-OK
+    Checking manabrew-compat v0.97.0 (/home/user/phase/crates/manabrew-compat)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15m 14s
+        PASS [   3.860s] (32194/32195) server-core session::tests::persisted_session_restores_legacy_raw_state_and_current_trusted_envelope
+        PASS [  23.746s] (32195/32195) phase-engine::bin/set-check tests::run_with_io_emits_reproducible_collision_json
+────────────
+     Summary [1927.035s] 32195 tests run: 32195 passed (11 slow), 12 skipped
+     Running `target/debug/interaction-bindings --check`
+ 2028 expect() calls
+Ran 158 tests across 9 files. [408.00ms]
+TSC-OK
+[2m Test Files [22m [1m[32m565 passed[39m[22m[2m | [22m[33m2 skipped[39m[90m (567)[39m
+[2m      Tests [22m [1m[32m8404 passed[39m[22m[2m | [22m[90m12 todo[39m[90m (8416)[39m
+[2m   Start at [22m 17:36:39
+[2m   Duration [22m 266.97s[2m (transform 28.19s, setup 77.69s, import 198.38s, tests 251.56s, environment 167.70s)[22m
+
+✖ 57 problems (0 errors, 57 warnings)
+  0 errors and 4 warnings potentially fixable with the `--fix` option.
+

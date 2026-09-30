@@ -1,0 +1,163 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13m 01s
+────────────
+ Nextest run ID 55445c32-8353-468f-9c8b-df813d69f52b with nextest profile: default
+    Starting 4 tests across 8 binaries (31308 tests skipped)
+        FAIL [   0.321s] (1/4) phase-engine::integration custom_format_schema::from_lobby_config_rejects_dandan_source
+  stdout ───
+
+    running 1 test
+    test custom_format_schema::from_lobby_config_rejects_dandan_source ... FAILED
+
+    failures:
+
+    failures:
+        custom_format_schema::from_lobby_config_rejects_dandan_source
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8562 filtered out; finished in 0.30s
+
+  stderr ───
+
+    thread 'custom_format_schema::from_lobby_config_rejects_dandan_source' (27272) panicked at crates/engine/tests/integration/custom_format_schema.rs:2415:10:
+    Dandan must not be saveable as a custom format: CustomFormatDef { rules: CustomFormatRules { id: CustomFormatId(0), structural: StructuralRules { starting_life: 20, min_players: 2, max_players: 2, deck_size: Exactly(60), singleton: false, command_zone_mode: Disabled, range_of_influence: None, team_based: false, sideboard_policy: Forbidden, default_deck_copy_limit: UpTo(4) }, legality: LegalityRules { legal_sets: None, legal_cards: [], banned: [], restricted: [], legacy: LegacyRuleSet { mana_burn: Modern, damage_timing: Modern, wish_scope: PostM10SideboardOnly, legend_rule_scope: Modern, ante: Excluded } } }, label: "Dan", short_label: "DAN", description: "60-card, 2-player, 20 life", reprint_policy: None, printing_fidelity: NotApplicable }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: core::result::unwrap_failed
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/result.rs:1867:5
+       3: <core::result::Result<engine::types::custom_format::CustomFormatDef, engine::types::custom_format::FormatConfigError>>::expect_err
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/result.rs:1298:22
+       4: integration::custom_format_schema::from_lobby_config_rejects_dandan_source
+                 at ./tests/integration/custom_format_schema.rs:2415:10
+       5: integration::custom_format_schema::from_lobby_config_rejects_dandan_source::{closure#0}
+                 at ./tests/integration/custom_format_schema.rs:2408:45
+       6: <integration::custom_format_schema::from_lobby_config_rejects_dandan_source::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   0.347s] (2/4) phase-engine types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared
+  stdout ───
+
+    running 1 test
+    test types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared ... FAILED
+
+    failures:
+
+    failures:
+        types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22658 filtered out; finished in 0.32s
+
+  stderr ───
+
+    thread 'types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared' (27273) panicked at crates/engine/src/types/format.rs:5414:9:
+    assertion `left == right` failed
+      left: []
+     right: [Dandan]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: core::panicking::assert_failed_inner
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:439:17
+       3: core::panicking::assert_failed::<alloc::vec::Vec<engine::types::format::GameFormat>, alloc::vec::Vec<engine::types::format::GameFormat>>
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:394:5
+       4: format_axes_depart_from_the_stock_answers_only_where_declared
+                 at ./src/types/format.rs:5414:9
+       5: engine::types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared::{closure#0}
+                 at ./src/types/format.rs:5389:71
+       6: <engine::types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   0.400s] (3/4) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+  stdout ───
+
+    running 1 test
+    test game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths ... FAILED
+
+    failures:
+
+    failures:
+        game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22658 filtered out; finished in 0.37s
+
+  stderr ───
+
+    thread 'game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths' (27274) panicked at crates/engine/src/game/deck_validation.rs:9040:13:
+    assertion `left == right` failed: summary_only=false: ["Dandân deck must have exactly 60 cards (found 80)", "More than 4 copies (main + sideboard combined): Legal Standard (80 copies)"]
+      left: Some(false)
+     right: Some(true)
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: core::panicking::assert_failed_inner
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:434:23
+       3: core::panicking::assert_failed::<core::option::Option<bool>, core::option::Option<bool>>
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:394:5
+       4: dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+                 at ./src/game/deck_validation.rs:9040:13
+       5: engine::game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths::{closure#0}
+                 at ./src/game/deck_validation.rs:9025:71
+       6: <engine::game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   0.416s] (4/4) phase-engine types::format::tests::dandan_config_and_registry_entry
+  stdout ───
+
+    running 1 test
+    test types::format::tests::dandan_config_and_registry_entry ... FAILED
+
+    failures:
+
+    failures:
+        types::format::tests::dandan_config_and_registry_entry
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22658 filtered out; finished in 0.38s
+
+  stderr ───
+
+    thread 'types::format::tests::dandan_config_and_registry_entry' (27275) panicked at crates/engine/src/types/format.rs:5355:9:
+    assertion `left == right` failed
+      left: Exactly(60)
+     right: Exactly(80)
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: core::panicking::assert_failed_inner
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:439:17
+       3: core::panicking::assert_failed::<engine::types::format::DeckSizeRule, engine::types::format::DeckSizeRule>
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:394:5
+       4: dandan_config_and_registry_entry
+                 at ./src/types/format.rs:5355:9
+       5: engine::types::format::tests::dandan_config_and_registry_entry::{closure#0}
+                 at ./src/types/format.rs:5350:42
+       6: <engine::types::format::tests::dandan_config_and_registry_entry::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+────────────
+     Summary [   0.452s] 4 tests run: 0 passed, 4 failed, 31308 skipped
+        FAIL [   0.321s] (1/4) phase-engine::integration custom_format_schema::from_lobby_config_rejects_dandan_source
+        FAIL [   0.347s] (2/4) phase-engine types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared
+        FAIL [   0.400s] (3/4) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+        FAIL [   0.416s] (4/4) phase-engine types::format::tests::dandan_config_and_registry_entry
+error: test run failed
+done 100

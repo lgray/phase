@@ -1,3 +1,4 @@
+crates/engine/src/types/format.rs
 crates/engine/src/game/deck_validation.rs
 crates/engine/src/types/custom_format.rs
 crates/engine-wasm/src/lib.rs
@@ -15,4 +16,3 @@ crates/server-core/src/protocol.rs
 scripts/check-protocol-version.mjs
 scripts/card-bot/formats.ts
 crates/manabrew-compat/src/lib.rs
-  Not edited: `crates/engine/tests/integration/main.rs` (no new integration file), `scripts/card-bot/__tests__/*` (mirror equality and the Phase 1 autocomplete tests are consumed unchanged), `built_in_axes_no_looser_than_rules` (read unchanged), `client/src/wasm/engine_wasm.d.ts` (no wasm doc or signature changes), locale catalogs (no new key: the floor surfaces through the generic `lobbyCapability.formatNeedsNewerServer` string, which takes `{{needed}}`).
