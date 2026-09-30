@@ -1615,7 +1615,14 @@ fn effect_is_replacement_carrier(effect: &Effect) -> bool {
         // name IS the replacement, with or without the `on_exile` rider (the
         // Feather return / Lilah plot parameterization is a second consequence
         // folded into the same carrier, so it stays exempt either way).
-        | Effect::ExileResolvingSpellInsteadOfGraveyard { .. } => true,
+        | Effect::ExileResolvingSpellInsteadOfGraveyard { .. }
+        // CR 614.1a + CR 701.6a + CR 608.2c: "if that spell is countered this way, put it
+        // <zone> instead of into that player's graveyard" — the destination rides on the
+        // Counter effect (Memory Lapse, Remand).
+        | Effect::Counter {
+            countered_spell_zone: Some(_),
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -8456,6 +8463,92 @@ If you sang a song the whole time you were searching and shuffling, you may unta
             &["Instant"],
         );
         assert!(!has_swallowed_detector(&remand, "Condition_If"));
+    }
+
+    /// CR 608.2c + CR 614.1a: "put it on top of its owner's library instead of into
+    /// that player's graveyard" (Memory Lapse) is a replacement carried by
+    /// `Effect::Counter.countered_spell_zone`, so `Replacement_Instead` must not flag
+    /// any card whose parse lifts the redirect into that field.
+    #[test]
+    fn replacement_instead_accepts_countered_spell_redirect_carrier() {
+        use crate::types::ability::{LibraryPosition, SpellStackToGraveyardReplacement};
+
+        let cases = [
+            (
+                "Memory Lapse",
+                "Counter target spell. If that spell is countered this way, put it on top of \
+                 its owner's library instead of into that player's graveyard.",
+                SpellStackToGraveyardReplacement::Library {
+                    position: LibraryPosition::Top,
+                },
+            ),
+            (
+                "Lapse of Certainty",
+                "Counter target spell. If that spell is countered this way, put it on top of \
+                 its owner's library instead of into that player's graveyard.",
+                SpellStackToGraveyardReplacement::Library {
+                    position: LibraryPosition::Top,
+                },
+            ),
+            (
+                "Remand",
+                "Counter target spell. If that spell is countered this way, put it into its \
+                 owner's hand instead of into that player's graveyard.\nDraw a card.",
+                SpellStackToGraveyardReplacement::Hand,
+            ),
+            (
+                "Spell Crumple",
+                "Counter target spell. If that spell is countered this way, put it on the \
+                 bottom of its owner's library instead of into that player's graveyard. Put \
+                 Spell Crumple on the bottom of its owner's library.",
+                SpellStackToGraveyardReplacement::Library {
+                    position: LibraryPosition::Bottom,
+                },
+            ),
+        ];
+        for (name, text, expected) in cases {
+            let parsed = parse_named(text, name, &["Instant"]);
+            // Reach guard: the redirect was lifted into the Counter effect, so the
+            // negative assertion below is not satisfied by an unimplemented unit.
+            assert!(
+                matches!(
+                    parsed.abilities.first().map(|def| &*def.effect),
+                    Some(Effect::Counter { countered_spell_zone: Some(zone), .. }) if *zone == expected
+                ),
+                "{name}: expected a Counter carrying {expected:?}; got {:?}",
+                parsed.abilities
+            );
+            assert!(
+                !has_swallowed_detector(&parsed, "Replacement_Instead"),
+                "{name}: {:?}",
+                parsed.parse_warnings
+            );
+        }
+    }
+
+    /// A Counter whose parse carries no redirect zone (Hinder's "your choice of the top
+    /// or bottom" sends the card to the graveyard) is still flagged.
+    #[test]
+    fn replacement_instead_keeps_flagging_counter_without_zone() {
+        let hinder = parse_named(
+            "Counter target spell. If that spell is countered this way, put that card on \
+             your choice of the top or bottom of its owner's library instead of into that \
+             player's graveyard.",
+            "Hinder",
+            &["Instant"],
+        );
+        assert!(
+            matches!(
+                hinder.abilities.first().map(|def| &*def.effect),
+                Some(Effect::Counter {
+                    countered_spell_zone: None,
+                    ..
+                })
+            ),
+            "got {:?}",
+            hinder.abilities
+        );
+        only_swallow(&hinder, "Replacement_Instead");
     }
 
     /// CR 702.170c + CR 608.2c: "You may exile a card … If you do, it becomes
