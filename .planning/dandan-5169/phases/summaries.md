@@ -9,3 +9,6 @@
 - Deck validation: Dandan joins the Freeform constructed arm group (no card pool; axes read). `custom_format.rs` refuses Dandan as a Custom source. manabrew-compat refuses shared-zone snapshots (`upstream.shared-zone-ownership-missing`).
 - Protocol: full-game 93, lobby 15 (`MIN_LOBBY_PROTOCOL_FOR_DANDAN = 15` frozen in ws-adapter.ts), wire 75. card-bot `formats.ts` has the Dandan entry.
 - Known interim: `supplies_fixed_deck` true but deck loading keys on Momir until Phase 6.
+
+## Phase 3 — AI force-keep re-gate
+- `FixedDeckKeepMulligan` (phase-ai `policies/mulligan/fixed_deck_keepables.rs`) force-keeps only when `format.opening_hand_equivalence()` is Equivalent (Momir); Dandan abstains. Trace fact `opening_hand_equivalent`. ai-gate owed at run level after Phase 17.

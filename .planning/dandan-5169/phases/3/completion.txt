@@ -1,0 +1,4 @@
+FMT-OK
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6m 47s
+────────────
+     Summary [ 104.128s] 2837 tests run: 2837 passed, 21 skipped

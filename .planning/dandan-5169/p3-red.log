@@ -1,0 +1,93 @@
+   Compiling libc v0.2.186
+   Compiling regex-syntax v0.8.10
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.9.5
+   Compiling rand_chacha v0.9.0
+   Compiling regex-automata v0.4.14
+   Compiling rand v0.9.4
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling phase-ai v0.97.0 (/home/user/phase/crates/phase-ai)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 03s
+────────────
+ Nextest run ID 590f79dd-3c1a-405a-9bef-a6f1dcf1d82b with nextest profile: default
+    Starting 5 tests across 26 binaries (2853 tests skipped)
+        PASS [   0.016s] (1/5) phase-ai policies::mulligan::cedh_registration_tests::default_registry_contains_fixed_deck_keepables
+        PASS [   0.016s] (2/5) phase-ai policies::mulligan::fixed_deck_keepables::tests::fixed_deck_format_force_keeps
+        PASS [   0.016s] (3/5) phase-ai policies::mulligan::fixed_deck_keepables::tests::non_fixed_deck_format_abstains
+        FAIL [   0.175s] (4/5) phase-ai policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains
+  stdout ───
+
+    running 1 test
+    test policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains ... FAILED
+
+    failures:
+
+    failures:
+        policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2641 filtered out; finished in 0.15s
+
+  stderr ───
+
+    thread 'policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains' (27366) panicked at crates/phase-ai/src/policies/mulligan/fixed_deck_keepables.rs:93:22:
+    expected neutral Score for Dandan, got ForceKeep { reason: PolicyReason { kind: "fixed_deck_force_keep", facts: [("supplies_fixed_deck", 1)] } }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: dandan_format_abstains
+                 at ./src/policies/mulligan/fixed_deck_keepables.rs:93:22
+       3: phase_ai::policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains::{closure#0}
+                 at ./src/policies/mulligan/fixed_deck_keepables.rs:82:32
+       4: <phase_ai::policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   0.192s] (5/5) phase-ai policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands
+  stdout ───
+
+    running 1 test
+    test policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands ... FAILED
+
+    failures:
+
+    failures:
+        policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2641 filtered out; finished in 0.17s
+
+  stderr ───
+
+    thread 'policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands' (27363) panicked at crates/phase-ai/src/policies/mulligan/fixed_deck_keepables.rs:106:13:
+    assertion `left == right` failed: Dandan
+      left: true
+     right: false
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
+       1: core::panicking::panic_fmt
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
+       2: core::panicking::assert_failed_inner
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:434:23
+       3: core::panicking::assert_failed::<bool, bool>
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:394:5
+       4: phase_ai::policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands
+                 at ./src/policies/mulligan/fixed_deck_keepables.rs:106:13
+       5: phase_ai::policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands::{closure#0}
+                 at ./src/policies/mulligan/fixed_deck_keepables.rs:99:57
+       6: <phase_ai::policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+────────────
+     Summary [   0.197s] 5 tests run: 3 passed, 2 failed, 2853 skipped
+        FAIL [   0.175s] (4/5) phase-ai policies::mulligan::fixed_deck_keepables::tests::dandan_format_abstains
+        FAIL [   0.192s] (5/5) phase-ai policies::mulligan::fixed_deck_keepables::tests::force_keep_iff_format_declares_equivalent_hands
+error: test run failed

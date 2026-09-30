@@ -45,3 +45,8 @@
 
 ## 8. Phase 3 (AI force-keep re-gate)
 - Plan r1 (planner + reviewer claude-sonnet-5-5): small-change lane confirmed (1 unit, 1 path). Findings: F1 text LOW (Custom/Err hedge), F2 text LOW (no action). Both passed as constraints; no re-review.
+
+## 9. Phase 4 (PREREQ-0 Memory Lapse)
+- Plan r1 (planner + reviewer claude-sonnet-5-5), planned concurrently with phase 3 execution (disjoint file): small-change lane confirmed (1 unit, 1 path). Findings F1 text LOW (test name), F2 LOW behavior note (Spell Crumple 2nd sentence covered by unit test; no action). Passed as constraints.
+- (Phase 3) Completion at the candidate: fmt ok; clippy phase-ai ok; nextest phase-ai 2837/2837. cargo ai-gate NOT run per phase (disk: server-release build does not fit beside the debug target); expansion-free substitution: one run-level ai-gate (no --refresh-baseline) after phase 17, stated in the PR. Reviewer accepted the deferral with measured reasoning (suite reaches no fixed-deck format).
+- Phase 3 impl review r1: ACCEPT, L1 LOW text (comment rewording justified). PHASE 3 ACCEPTED.
