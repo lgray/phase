@@ -1,0 +1,6 @@
+HEAD 41b2e35369ada8c138b506d280ff7f41a166114b dirty=0
+FMT-OK
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.60s
+────────────
+     Summary [2014.823s] 32195 tests run: 32195 passed (15 slow), 12 skipped
+PROTO-OK

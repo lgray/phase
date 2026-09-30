@@ -39,3 +39,9 @@
 - Orchestrator correction: the scope.nul handed to the executor was mis-extracted (off by one line: omitted crates/engine/src/types/format.rs, included the plan's 'Not edited' sentence). Regenerated from the plan's 18 literal paths; the executor worked from the plan's list and its delta equals those 18 paths exactly (diff check).
 - Candidate 1 = phase-2 checkpoint. Completion at the clean committed candidate: fmt ok; clippy 5 pkgs -D warnings ok; nextest phase-engine+manabrew-compat+lobby-broker+server-core 32195/32195; check-protocol-version ok; interaction-bindings --check ok; card-bot 158; tsc ok; vitest 8404 pass; eslint 0 errors (57 warnings). coverage/semantic-audit not run (no parser path; deferred to parser phases and run end).
 - Impl review r1 (claude-sonnet-5-5): F1 MED behavior (no-card-pool claim untested: positive uses a Standard-legal card); F2 LOW text (server-core doc paragraph split); F3 LOW note (supplies_fixed_deck before Phase 6 loader; plan row 12 records it -> charter-deferred to Phase 6). Design round 1 of the phase-2 impl loop (behavior count 1). Fix executor from the reviewed candidate with F1+F2 as constraints.
+- Fix round -> candidate 2 (fix commit on candidate 1). Completion at candidate 2: fmt ok; clippy phase-engine+server-core ok; nextest phase-engine+manabrew-compat+lobby-broker+server-core 32195/32195; protocol check ok (client/card-bot unchanged since candidate 1).
+- Impl review r2 (claude-sonnet-5-5, fresh whole-phase): ACCEPT, no findings; F1/F2 closed. Impl loop: 2 rounds (1 design).
+- PHASE 2 ACCEPTED.
+
+## 8. Phase 3 (AI force-keep re-gate)
+- Plan r1 (planner + reviewer claude-sonnet-5-5): small-change lane confirmed (1 unit, 1 path). Findings: F1 text LOW (Custom/Err hedge), F2 text LOW (no action). Both passed as constraints; no re-review.
