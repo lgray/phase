@@ -22,3 +22,7 @@
 - Round 3 revision (planner claude-sonnet-5-5): F1 -> Bo3 ceiling becomes a sixth typed GameFormat axis method enforced from state.format_config.format + wasm export for the lobby (no FormatConfig field); F2 -> GameSetupPage.tsx + test join Phase 7 with a base-red component row; C1, C2 applied. 17 phases, ~10,140 LOC. Text kept as phase-charter.r3.
 
 ## 5. Charter review round 4 dispatched (whole charter, fresh reviewer).
+- Round 4 result (reviewer claude-sonnet-5-5): CLEAN — 0 decision, 0 review-only, 2 corrections. All round-3 findings closed. Corrections applied by the orchestrator (two-sided verified, each old string count 1 -> 0, new count 1):
+  - C1 line 1: "(revision r2)" -> "(revision r3)".
+  - C2 Settled-decision-3 note: "(one PR unless total exceeds ~30,000 lines; the estimate is ~10,100)" -> "(one PR unless total exceeds ~30,000 lines; the estimate is the phase-list sum stated in the Deliverable line)". Sweep: whole charter, predicate literal "10,100", 0 remaining.
+- CHARTER FROZEN: 17 phases, ~10,140 LOC, one PR. Charter loop closed at design round 3 (4 review rounds). Phase loops start at 0.

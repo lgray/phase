@@ -1,4 +1,4 @@
-# Phase charter — Dandan format (issue #5169), run dandan-5169 (revision r2)
+# Phase charter — Dandan format (issue #5169), run dandan-5169 (revision r3)
 
 Source: `.planning/dandan-5169/brief/issue-5169.md`, pinned `d95cc66019`. Run base (`BASE_SHA`) = `b9ba9360`. The brief's code-shape claims were re-measured against `BASE_SHA`: `python3 <brief-dir>/scripts/count_reads.py b9ba9360 '\.(library|graveyard)\b(?!\s*\()' -v` reports the same read population as at `d95cc66019`, and `git diff --stat d95cc66019 b9ba9360 -- crates` touches no format, mulligan, zones, game_state, filter, draw or quantity anchor file (`casting*.rs`, `splice.rs` and a comment in `collect_evidence.rs` only). Each phase still buys its own claims per the charter contract below.
 
@@ -402,7 +402,7 @@ Sum ~10,140 LOC. Each phase's recursive T1∧T2 check is stated inline; none tri
 ## Run-level notes
 
 - **Architecture-scope maintainer review** applies per `.agents/pr-review-policy.toml` `[architecture_scope]` (its `patterns` list — measured at review: `format.rs`, `deck_loading.rs`, `deck_validation.rs`, `match_flow.rs`, `mulligan.rs`, `crates/server-core/**` among others; reached by Phases 2, 6, 11, 12, 13 and, through the `crates/server-core/src/protocol.rs` pin when the bump requires it, 14; no phase edits `match_flow.rs`, whose between-games path Phase 7 keeps shared-zone formats out of) — carried at run-level PR handoff, not a phase concern.
-- **Settled decision 3's "run's charter decides whether CR 612 ships as its own PR"** is resolved per the run owner's explicit constraint (one PR unless total exceeds ~30,000 lines; the estimate is ~10,100): CR 612 ships as Phase 5 of this run's single PR, not a separate PR.
+- **Settled decision 3's "run's charter decides whether CR 612 ships as its own PR"** is resolved per the run owner's explicit constraint (one PR unless total exceeds ~30,000 lines; the estimate is the phase-list sum stated in the Deliverable line): CR 612 ships as Phase 5 of this run's single PR, not a separate PR.
 - **Phase split record:** Phases 14 and 15 split the former single dealer/wheel phase along its dealer→consumer seam and carry its loop count (zero); Phase 7 is new and starts at zero.
 - **Worker model:** all phase roles run on Sonnet (`claude-sonnet-5` or newer) per settled decision 5.
 - **Hidden information:** open issue #9377 (object ids track cards into hand and library) is amplified by a library both players draw from; the Phase 6 and Phase 16 reviews note it in their review scope.
