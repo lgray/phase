@@ -119,18 +119,18 @@ use crate::types::ability::{
     DieResultBranch, DigRestOrder, Duration, Effect, EffectOutcomeSignal, EffectScope, FilterProp,
     GameRestriction, GuardReading, GuessSubject, IntensityScope, IterationKindBinding,
     KeeperConstraint, KeeperCounterMark, LibraryPosition, ManaProduction, ManaSpendPermission,
-    ManaTargetRole, MassLibraryShuffleMode, MultiTargetSpec, NumberDistinctness, ObjectProperty,
-    ObjectScope, OriginConstraint, PerPlayerScope, PerpetualModification,
+    ManaTargetRole, MassLibraryShuffleMode, MultiTargetSpec, NameStickerSet, NumberDistinctness,
+    ObjectProperty, ObjectScope, OriginConstraint, PerPlayerScope, PerpetualModification,
     PlayPermissionInvalidation, PlayerChoiceDistinctness, PlayerFilter, PlayerRelation,
     PlayerScope, PreventionAmount, PreventionScope, ProhibitedActivity, PropertyAggregate, PtValue,
     QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole, ReplacementCondition,
     ReplacementDefinition, ResolutionCastWindow, RestrictionExpiry, RestrictionPlayerScope,
     RevealUntilDisposition, RoundingMode, SharedQuality, SharedQualityRelation, SiblingCondition,
     SkipScope, SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, StepSkipTarget,
-    SubAbilityLink, TapStateChange, TargetFilter, TargetSelectionMode, ThisWayCause,
-    TrackedAnaphorSource, TriggerCondition, TriggerDefinition, TurnGate, TypeFilter, TypedFilter,
-    UnlessPayModifier, UnloweredGuard, UntilCondition, VoteSubject, WheneverEventExpiry,
-    ZoneChoiceCandidateSource, ZoneChoiceChooser, ZoneOwner,
+    SubAbilityLink, TapStateChange, TargetFilter, TargetReadOrigin, TargetSelectionMode,
+    ThisWayCause, TrackedAnaphorSource, TriggerCondition, TriggerDefinition, TurnGate, TypeFilter,
+    TypedFilter, UnlessPayModifier, UnloweredGuard, UntilCondition, VoteSubject,
+    WheneverEventExpiry, ZoneChoiceCandidateSource, ZoneChoiceChooser, ZoneOwner,
 };
 // `DoubleTarget` has no production use in this module since the counter-doubling
 // discriminator moved to `Effect::is_counter_multiplication()`; the child
@@ -13703,6 +13703,10 @@ fn quantity_ref_reads_chain_local_result(reference: &QuantityRef) -> bool {
         | QuantityRef::ZoneCardCount { .. }
         | QuantityRef::BasicLandTypeCount { .. }
         | QuantityRef::ExiledFromHandThisResolution
+        // CR 608.2c: "that sticker" is the record the preceding PutSticker
+        // instruction set, not a chain-local effect result; the object-scoped
+        // form reads the object's stickers.
+        | QuantityRef::NameStickerLetterCount { .. }
         | QuantityRef::LifeLostThisTurn { .. }
         | QuantityRef::PartySize { .. }
         | QuantityRef::UnspentMana { .. }
@@ -23939,6 +23943,10 @@ fn amount_reads_the_antecedent(amount: &QuantityExpr) -> bool {
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. }
         | QuantityRef::CountersOn { scope, .. } => scope,
@@ -24042,6 +24050,10 @@ fn rebind_object_scope_ref(
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. }
         | QuantityRef::CountersOn { scope, .. } => scope,
@@ -24708,7 +24720,32 @@ fn chain_prior_chosen_target(clauses: &[ClauseIr]) -> Option<&TargetFilter> {
 /// `lower::rekey_counter_slot_in_chain` must re-key to `Some(0)` precisely
 /// because its condition node has its own local target.
 fn chain_declared_object_target(clauses: &[ClauseIr]) -> Option<&TargetFilter> {
-    for prev in clauses.iter().rev() {
+    chain_declared_object_target_clause(clauses).map(|(_, filter)| filter)
+}
+
+/// CR 115.1: does this clause announce a target of its OWN — an instance of the
+/// word "target" in its effect, its compound remainder, or a multi-target spec?
+/// Context references (`SelfRef`, `ParentTarget`, …) announce nothing.
+fn clause_announces_own_target(clause: &ClauseIr) -> bool {
+    clause.multi_target.is_some()
+        || clause.parsed.multi_target.is_some()
+        || triggers::extract_target_filter_from_effect(&clause.parsed.effect).is_some()
+        || std::iter::successors(clause.parsed.sub_ability.as_deref(), |def| {
+            def.sub_ability.as_deref()
+        })
+        .any(|def| {
+            def.multi_target.is_some()
+                || triggers::extract_target_filter_from_effect(&def.effect).is_some()
+        })
+}
+
+/// [`chain_declared_object_target`], also naming WHICH clause declared the
+/// antecedent (its index in `clauses`). Same walk, same exclusions: the only
+/// difference is that the declaring clause's position is returned alongside the
+/// filter, for a caller that must know the antecedent is the IMMEDIATELY
+/// preceding instruction (the comparative "that creature" gate).
+fn chain_declared_object_target_clause(clauses: &[ClauseIr]) -> Option<(usize, &TargetFilter)> {
+    for (index, prev) in clauses.iter().enumerate().rev() {
         // CR 608.2c + CR 118.12 / CR 603.12: an affirmative "if you do" / "when you do" gate decides whether its
         // instruction happens, not what that instruction declared, so its declared
         // target stays the nearest antecedent of a later "that creature" (Magitek
@@ -24730,7 +24767,7 @@ fn chain_declared_object_target(clauses: &[ClauseIr]) -> Option<&TargetFilter> {
             {
                 return None
             }
-            Some(t @ TargetFilter::Typed(_)) if !t.is_player_scope() => return Some(t),
+            Some(t @ TargetFilter::Typed(_)) if !t.is_player_scope() => return Some((index, t)),
             Some(TargetFilter::Typed(_)) => return None,
             // CR 608.2c: an earlier anaphor already bound to the declared target
             // ("That land becomes a 0/0 Elemental creature") names the same object,
@@ -24753,7 +24790,7 @@ fn chain_declared_object_target(clauses: &[ClauseIr]) -> Option<&TargetFilter> {
                     def.sub_ability.as_deref()
                 })
                 .filter_map(|def| match def.effect.target_filter() {
-                    Some(t @ TargetFilter::Typed(_)) if !t.is_player_scope() => Some(t),
+                    Some(t @ TargetFilter::Typed(_)) if !t.is_player_scope() => Some((index, t)),
                     _ => None,
                 })
                 .last();
@@ -26465,6 +26502,10 @@ pub(super) fn rebind_target_subject_object_scope(expr: &mut QuantityExpr) {
                 | QuantityRef::ObjectManaValue { scope }
                 | QuantityRef::ObjectColorCount { scope }
                 | QuantityRef::ObjectNameWordCount { scope }
+                | QuantityRef::NameStickerLetterCount {
+                    stickers: NameStickerSet::OnObject { scope },
+                    letters: _,
+                }
                 | QuantityRef::ObjectTypelineComponentCount { scope }
                 | QuantityRef::ManaSymbolsInManaCost { scope, .. }
                 | QuantityRef::CountersOn { scope, .. } => scope,
@@ -26507,6 +26548,10 @@ fn rebind_anaphoric_ref(qty: &mut QuantityRef, target: ObjectScope) {
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. }
         | QuantityRef::CountersOn { scope, .. } => scope,
@@ -38578,10 +38623,12 @@ pub(crate) fn parse_effect_chain_ir(
     let (chain_zada_distinct_copy_targets, text) =
         lower::strip_each_copy_targets_distinct_member_suffix(text);
     let text = text.as_str();
-    let chunks =
+    let chunks = merge_counter_unless_cost_riders(
+        text,
         sequence::split_subject_elided_control_continuations(split_clause_sequence(text), |head| {
             head_carries_player_subject(head, ctx)
-        });
+        }),
+    );
     // CR 611.2a + CR 608.2c: expand any chunk whose leading duration governs conjuncts the
     // single-clause parse discarded. The expanded conjuncts become ORDINARY chunks of THIS
     // chain, which is the only construction under which chain-level anaphor state
@@ -40181,8 +40228,15 @@ pub(crate) fn parse_effect_chain_ir(
         } else {
             (None, text)
         };
-        // CR 608.2c: "If that creature has [keyword], [effect] instead"
-        let (keyword_instead_cond, text) = if condition.is_none()
+        // CR 608.2c: "If that creature has <predicate>, [effect][ instead]" — the
+        // target "has" gate family. A P/T comparison against the source (CR 208.1,
+        // Conformer Shuriken) is tried first; then a keyword (Porcelain Zealot,
+        // Super-Adaptoid). Both fail closed instead of shipping a gate they
+        // cannot evaluate: a comparison whose "that creature" has no declared
+        // object target, or a non-keyword predicate (`Keyword::Unknown`: counter
+        // and P/T thresholds such as Bring Low's "a +1/+1 counter on it").
+        let mut comparative_gate_producer: Option<usize> = None;
+        let (target_has_cond, text) = if condition.is_none()
             && specialized_guard_available
             && counter_cond.is_none()
             && mv_cond.is_none()
@@ -40194,7 +40248,51 @@ pub(crate) fn parse_effect_chain_ir(
             && player_property_cond.is_none()
             && turn_cond.is_none()
         {
-            strip_target_keyword_instead(&text)
+            // CR 115.1 + CR 608.2c: "that creature" names the object the
+            // immediately preceding instruction announced as its one target. The
+            // antecedent must be exactly that instruction — the same walk and
+            // exclusions as every other "that creature" anaphor (no mass,
+            // resolution-chosen, private-zone or player producer; no intervening
+            // conditional) — with a single announced object and no compound
+            // remainder, so the lowered gated clause's runtime parent IS the
+            // announcing node.
+            let producer = chain_declared_object_target_clause(builder.clauses())
+                .map(|(index, _)| index)
+                .filter(|&index| {
+                    let clause = &builder.clauses()[index];
+                    index + 1 == builder.clauses().len()
+                        && clause.multi_target.is_none()
+                        && clause.parsed.multi_target.is_none()
+                        && clause.parsed.sub_ability.is_none()
+                });
+            match strip_target_comparative_pt_conditional(&text, producer.is_some()) {
+                ComparativePtGate::Parsed { condition, body } => {
+                    comparative_gate_producer = producer;
+                    (Some(*condition), body)
+                }
+                ComparativePtGate::Unbound => {
+                    unimplemented_clause(
+                        &mut builder,
+                        "comparative_pt_anaphor_unbound",
+                        normalized_text,
+                        chunk.boundary_after,
+                    );
+                    continue;
+                }
+                ComparativePtGate::NotOwned => match strip_target_keyword_instead(&text) {
+                    KeywordConditionStrip::Parsed { condition, body } => (Some(*condition), body),
+                    KeywordConditionStrip::UnknownKeyword => {
+                        unimplemented_clause(
+                            &mut builder,
+                            "target_has_unknown_keyword_condition",
+                            normalized_text,
+                            chunk.boundary_after,
+                        );
+                        continue;
+                    }
+                    KeywordConditionStrip::NotOwned => (None, text),
+                },
+            }
         } else {
             (None, text)
         };
@@ -40212,7 +40310,7 @@ pub(crate) fn parse_effect_chain_ir(
             && property_cond.is_none()
             && player_property_cond.is_none()
             && turn_cond.is_none()
-            && keyword_instead_cond.is_none()
+            && target_has_cond.is_none()
         {
             strip_suffix_conditional(&text, ctx)
         } else {
@@ -40228,7 +40326,7 @@ pub(crate) fn parse_effect_chain_ir(
             .or(property_cond)
             .or(player_property_cond)
             .or(turn_cond)
-            .or(keyword_instead_cond)
+            .or(target_has_cond)
             .or(suffix_cond);
         // CR 603.12 + CR 603.4 + CR 608.2a: A `When you do, if <guard>, ...` rider is
         // not equivalent to a bare reflexive trigger. The shared leading
@@ -42946,6 +43044,27 @@ pub(crate) fn parse_effect_chain_ir(
             .printed_color_choice(chunk_ctx.pending_printed_color_choice.take())
             .push();
 
+        // CR 115.1 + CR 608.2c: the comparative gate's "that creature" reads the
+        // single object the immediately preceding instruction announced
+        // (`TargetReadOrigin::ParentAnnouncement`), so this instruction declares
+        // no target of its own. The origin is per INSTRUCTION — every `Target`
+        // read on it shares it — so an instruction that would ALSO announce its
+        // own object target ("…put counters on target creature you control")
+        // would have one scope naming two objects. That mixed shape is refused
+        // rather than represented.
+        if comparative_gate_producer.is_some() {
+            if let Some(reader) = builder.last_mut() {
+                if clause_announces_own_target(reader) {
+                    reader.parsed = parsed_clause(Effect::unimplemented(
+                        "comparative_pt_rider_declares_target",
+                        normalized_text,
+                    ));
+                } else {
+                    reader.target_reads = TargetReadOrigin::ParentAnnouncement;
+                }
+            }
+        }
+
         // Drain chunk-ctx diagnostics into the accumulator (the outer `ctx` is
         // shadowed inside the loop, so we collect here and extend after the loop).
         chunk_diagnostics.append(&mut chunk_ctx.diagnostics);
@@ -43767,9 +43886,16 @@ pub(super) fn counter_unless_pay_modifier(cost: AbilityCost) -> UnlessPayModifie
 pub(super) fn parse_unless_payment(lower: &str) -> Option<AbilityCost> {
     // Find "unless" followed by a subject ("its controller", "that player", …).
     let after_unless = strip_after(lower, "unless ")?;
-    // CR 117.3: the mana / energy / {X} forms require the "pays " verb. Try
-    // them first so existing behavior is preserved exactly for mana costs.
-    if let Some(cost_str) = strip_after(after_unless, "pays ") {
+    // CR 118.12: the mana / energy / {X} forms require "[subject] pays ". The
+    // gate is anchored at the start of the tail so a mixed sentence ("discards
+    // their hand or pays {2}") is never swallowed as a bare `Counter unless {2}`.
+    // Try them first so existing behavior is preserved exactly for mana costs.
+    if let Ok((cost_str, _)) = preceded(
+        parse_counter_unless_pays_subject,
+        tag::<_, _, OracleError<'_>>("pays "),
+    )
+    .parse(after_unless)
+    {
         if let Some(cost) = parse_unless_mana_or_energy_payment(cost_str) {
             return Some(cost);
         }
@@ -43789,6 +43915,11 @@ pub(super) fn parse_unless_payment(lower: &str) -> Option<AbilityCost> {
     // (Decoy Gambit) — the controller may have the spell's controller draw
     // instead of the primary effect.
     if let Some(cost) = parse_unless_have_you_draw_cost(after_unless) {
+        return Some(cost);
+    }
+    // CR 118.12a + CR 701.9a + CR 109.4: "unless its controller discards their
+    // hand" (Perplex) — whole-hand discard by the targeted spell's controller.
+    if let Some(cost) = parse_unless_discard_hand_cost(after_unless) {
         return Some(cost);
     }
     // CR 118.12 / CR 119.4 / CR 608.2c: non-mana alternative costs — "pays N
@@ -43901,16 +44032,172 @@ fn is_discard_unless_you_discard_filter(before_unless: &str, after_unless: &str)
 /// discard (and `or`-disjunctions) without duplicating the verb dispatch here.
 /// Returns `None` when no recognized subject is present.
 fn normalize_counter_unless_subject(after_unless: &str) -> Option<String> {
-    let (rest, _) = alt((
-        tag::<_, _, OracleError<'_>>("its controller "),
+    let (rest, _) = parse_counter_unless_subject(after_unless).ok()?;
+    Some(format!("they {rest}"))
+}
+
+/// CR 118.12 + CR 109.4: The payer subject of a counter spell's non-mana
+/// "unless" cost — the single owner of this subject axis.
+fn parse_counter_unless_subject(input: &str) -> OracleResult<'_, &str> {
+    alt((
+        tag("its controller "),
         tag("their controller "),
         tag("that player "),
         tag("that opponent "),
         tag("they "),
     ))
-    .parse(after_unless)
+    .parse(input)
+}
+
+/// CR 118.12 + CR 109.4: Subjects accepted before "pays " in a counter spell's
+/// mana / energy unless-cost: the non-mana subject set plus the possessive
+/// controller forms ("that spell's controller", "that ability's controller").
+fn parse_counter_unless_pays_subject(input: &str) -> OracleResult<'_, &str> {
+    alt((
+        parse_counter_unless_subject,
+        preceded(
+            alt((tag("that spell's"), tag("that ability's"))),
+            tag(" controller "),
+        ),
+    ))
+    .parse(input)
+}
+
+/// CR 118.12 + CR 608.2c: A counter spell's "unless [payer] <cost>" tail belongs
+/// to the payer ("its controller"), not the caster. When the clause splitter
+/// detaches a same-sentence continuation (" and draws a card", ", then
+/// sacrifices a creature") from a Counter clause whose unless-cost parsed, the
+/// detached clause would resolve as an independent caster-scoped sub-ability
+/// while the payer's cost silently lost half its text. Rejoin the whole
+/// sentence into one chunk so `parse_unless_payment` sees (and refuses) the
+/// compound cost and the chain stays an honest `unless_payment` Unimplemented.
+/// Period-separated sentences are independent instructions and stay split.
+fn merge_counter_unless_cost_riders(text: &str, chunks: Vec<ClauseChunk>) -> Vec<ClauseChunk> {
+    let mut merged: Vec<ClauseChunk> = Vec::with_capacity(chunks.len());
+    let mut iter = chunks.into_iter().peekable();
+    // Byte offset in `text` past the last chunk consumed; chunk texts are
+    // contiguous, in-order substrings of the printed text.
+    let mut cursor = 0usize;
+    while let Some(head) = iter.next() {
+        let head_start = locate_chunk_start(text, cursor, &head.text);
+        cursor = head_start.map_or(cursor, |start| start + head.text.len());
+        let head_lower = head.text.to_ascii_lowercase();
+        let splits_same_sentence = matches!(
+            head.boundary_after,
+            Some(ClauseBoundary::Comma | ClauseBoundary::Then)
+        );
+        let carries_unless_cost = splits_same_sentence
+            && is_counter_spell_clause(&head_lower)
+            && parse_unless_payment(&head_lower).is_some();
+        if !carries_unless_cost {
+            merged.push(head);
+            continue;
+        }
+        // Fail closed: when a chunk cannot be located in the printed text
+        // (synthesized chunks), the merged text is the chunk texts joined by
+        // their boundary separators. Any same-sentence continuation makes the
+        // compound cost unparsable, so the sentence is refused either way.
+        let mut span_start = head_start;
+        let mut end = cursor;
+        let mut joined = head.text.clone();
+        let mut boundary_after = head.boundary_after;
+        while matches!(
+            boundary_after,
+            Some(ClauseBoundary::Comma | ClauseBoundary::Then)
+        ) {
+            let Some(next) = iter.next() else { break };
+            let separator = if boundary_after == Some(ClauseBoundary::Then) {
+                ", then "
+            } else {
+                ", "
+            };
+            joined.push_str(separator);
+            joined.push_str(&next.text);
+            match span_start.and(locate_chunk_start(text, end, &next.text)) {
+                Some(next_start) => end = next_start + next.text.len(),
+                None => span_start = None,
+            }
+            boundary_after = next.boundary_after;
+        }
+        cursor = end;
+        merged.push(ClauseChunk {
+            text: span_start.map_or(joined, |start| text[start..end].to_string()),
+            boundary_after,
+            leading_duration: head.leading_duration,
+        });
+    }
+    merged
+}
+
+/// A counter-spell clause (verb "counter" + its object), at any word boundary so
+/// leading prefixes ("if you do, counter ...", "then counter ...", "you may
+/// counter ...") are covered. The noun ("a +1/+1 counter on ...") never matches:
+/// the verb must be followed by a spell/ability object determiner.
+fn is_counter_spell_clause(lower: &str) -> bool {
+    nom_primitives::scan_at_word_boundaries(lower, |i| {
+        value(
+            (),
+            (
+                tag("counter "),
+                alt((
+                    tag("target "),
+                    tag("that "),
+                    tag("it "),
+                    tag("the "),
+                    tag("this "),
+                    tag("each "),
+                    tag("all "),
+                    tag("up to "),
+                )),
+            ),
+        )
+        .parse(i)
+    })
+    .is_some()
+}
+
+/// Byte offset of `chunk_text` in `text` at or after `from`, via `take_until`.
+fn locate_chunk_start(text: &str, from: usize, chunk_text: &str) -> Option<usize> {
+    let tail = text.get(from..)?;
+    let (_, skipped) = take_until::<_, _, OracleError<'_>>(chunk_text)
+        .parse(tail)
+        .ok()?;
+    Some(from + skipped.len())
+}
+
+/// CR 118.12a + CR 701.9a + CR 109.4: "unless its controller discards their
+/// hand" (Perplex) — the targeted spell's controller may discard their whole
+/// hand instead of having the spell countered. The count is the hand size of
+/// the resolving ability's first object target's controller, read when the cost
+/// is paid. Anchored at both ends: only an optional period may follow "hand".
+/// "your hand" is refused: a non-controller payer cannot discard the caster's hand.
+fn parse_unless_discard_hand_cost(after_unless: &str) -> Option<AbilityCost> {
+    all_consuming(terminated(
+        (
+            parse_counter_unless_subject,
+            alt((tag("discards "), tag("discard "))),
+            opt(alt((
+                tag("all the cards in "),
+                tag("all of the cards in "),
+                tag("all cards in "),
+            ))),
+            alt((tag("their"), tag("his or her"))),
+            tag(" hand"),
+        ),
+        opt(tag(".")),
+    ))
+    .parse(after_unless.trim())
     .ok()?;
-    Some(format!("they {rest}"))
+    Some(AbilityCost::Discard {
+        count: QuantityExpr::Ref {
+            qty: QuantityRef::HandSize {
+                player: PlayerScope::ParentObjectTargetController,
+            },
+        },
+        filter: None,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+        self_scope: crate::types::ability::DiscardSelfScope::FromHand,
+    })
 }
 
 /// CR 118.12a: Tail of "deal N damage to them" unless-cost alternatives.

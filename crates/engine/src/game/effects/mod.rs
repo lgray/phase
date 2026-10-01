@@ -16,8 +16,8 @@ use crate::types::ability::{
     CounterKindDomain, DetachedRemainder, Duration, EachDamageRecipient, Effect, EffectError,
     EffectKind, EffectOutcomeSignal, EffectResolutionResult, EffectScope, FilterProp,
     ForEachCategoryAction, ForwardedResultContext, ManaProduction, MassLibraryShuffleMode,
-    ObjectSelectionCardinality, OpponentMayScope, PlayerFilter, PlayerRelation, PlayerScope,
-    PossessionAxis, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
+    NameStickerSet, ObjectSelectionCardinality, OpponentMayScope, PlayerFilter, PlayerRelation,
+    PlayerScope, PossessionAxis, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
     RepeatContinuation, ResolvedAbility, RevealUntilDisposition, SacrificeCost,
     SacrificeRequirement, SharedQuality, SharedQualityRelation, SiblingCondition, StaticDefinition,
     SubAbilityLink, TapStateChange, TargetChoiceTiming, TargetDamageSourceBinding, TargetFilter,
@@ -4889,6 +4889,9 @@ fn instruction_outlives_declined_gate(
         target_constraints,
         multi_target,
         force_block_attacker,
+        // Reads the object an earlier instruction announced, so it can name a
+        // gated result: only the default origin is unbound.
+        target_reads,
         // Walked by the caller.
         sub_ability: _,
         sub_link: _,
@@ -4962,7 +4965,8 @@ fn instruction_outlives_declined_gate(
         && target_chooser.is_none()
         && target_constraints.is_empty()
         && multi_target.is_none()
-        && force_block_attacker.is_none();
+        && force_block_attacker.is_none()
+        && *target_reads == crate::types::ability::TargetReadOrigin::OwnAnnouncement;
     unbound
         && duration
             .as_ref()
@@ -5807,6 +5811,7 @@ fn quantity_ref_counts_population_matching(
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::NameStickerLetterCount { .. }
         | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
@@ -6871,6 +6876,10 @@ fn quantity_ref_references_demonstrative(qty: &QuantityRef) -> bool {
         | QuantityRef::CountersOn { scope, .. }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. } => scope,
         _ => return false,
@@ -14427,6 +14436,9 @@ fn reset_top_level_resolution_state(state: &mut GameState) {
     // CR 608.2d: same reasoning, one axis over — a new top-level
     // resolution cannot inherit a prior resolution's announced colour.
     state.chosen_color_this_resolution = None;
+    // CR 608.2c: "that sticker" names a sticker this resolution's own PutSticker
+    // instruction placed; a new top-level resolution cannot inherit a prior one's.
+    state.placed_sticker_this_resolution = None;
     // CR 401.5 + CR 608.2c + CR 609.3 + issue #4950: Defense in depth —
     // `apply_parent_chain_context` already consumes this at the very next
     // parent->child hand-off after a Dig/ChooseFromZone/RevealHand sets

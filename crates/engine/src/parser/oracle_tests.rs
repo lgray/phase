@@ -9,6 +9,7 @@ use crate::parser::oracle_util::GRANTING_SELF_PLACEHOLDER;
 use crate::types::ability::{
     AdditionalCostOrigin, AdditionalCostPaymentSource, CountScope, CounterAdjustment,
     DamageKindFilter, DoorLockOp, PlayerRelation, SpellStackToGraveyardReplacement, SubAbilityLink,
+    TargetReadOrigin,
 };
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::triggers::AttackTargetFilter;
@@ -13568,6 +13569,266 @@ fn put_up_to_two_name_stickers_parses() {
     );
 }
 
+/// Parse a census face with verbatim Oracle text and return its "When this
+/// creature enters, you may put a name sticker on it" trigger's PutSticker and
+/// the clause chained after it. Reach-guard for every row: the whole card
+/// parses with zero `Effect::Unimplemented`.
+fn census_sticker_chain(
+    oracle: &str,
+    name: &str,
+    keywords: &[&str],
+    subtypes: &[&str],
+) -> (AbilityDefinition, AbilityDefinition) {
+    let keywords: Vec<String> = keywords.iter().map(|k| k.to_string()).collect();
+    let subtypes: Vec<String> = subtypes.iter().map(|s| s.to_string()).collect();
+    let parsed = parse_oracle_text(oracle, name, &keywords, &["Creature".into()], &subtypes);
+    assert!(
+        !parsed_has_unimplemented(&parsed),
+        "{name} must parse with zero Unimplemented effects: {parsed:#?}"
+    );
+    let execute = parsed
+        .triggers
+        .iter()
+        .find_map(|trigger| trigger.execute.as_deref())
+        .expect("enters trigger")
+        .clone();
+    assert!(
+        matches!(
+            execute.effect.as_ref(),
+            Effect::PutSticker {
+                target: TargetFilter::ParentTarget,
+                kind: Some(crate::types::stickers::StickerKind::Name),
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
+            }
+        ),
+        "{name}: expected the PutSticker head, got {:?}",
+        execute.effect
+    );
+    let sub = execute
+        .sub_ability
+        .as_deref()
+        .expect("clause after the PutSticker")
+        .clone();
+    (execute, sub)
+}
+
+/// CR 123.6e + CR 608.2c: "for each unique vowel on that sticker".
+fn that_sticker_unique_vowels() -> QuantityExpr {
+    QuantityExpr::Ref {
+        qty: QuantityRef::NameStickerLetterCount {
+            stickers: crate::types::ability::NameStickerSet::ThatSticker,
+            letters: crate::types::ability::LetterQuery::UniqueVowels,
+        },
+    }
+}
+
+/// SHAPE: _____ Goblin — "Add {R} for each unique vowel on that sticker" is a
+/// red mana effect counted by the sticker the PutSticker put (CR 123.6e).
+#[test]
+fn blank_goblin_mana_counts_unique_vowels_on_that_sticker() {
+    let (execute, sub) = census_sticker_chain(
+        "When this creature enters, you may put a name sticker on it. Add {R} for each unique vowel on that sticker. (The vowels are A, E, I, O, U, and Y.)",
+        "_____ Goblin",
+        &[],
+        &["Goblin", "Guest"],
+    );
+    assert!(execute.optional, "CR 603.5: the put is optional");
+    let Effect::Mana {
+        produced:
+            ManaProduction::AnyOneColor {
+                count,
+                color_options,
+                ..
+            },
+        ..
+    } = sub.effect.as_ref()
+    else {
+        panic!("expected red mana, got {:?}", sub.effect);
+    };
+    assert_eq!(count, &that_sticker_unique_vowels());
+    assert_eq!(color_options, &vec![ManaColor::Red]);
+}
+
+/// SHAPE: _____-o-saurus — one +1/+1 counter on itself for each unique vowel
+/// on that sticker (the "for each" is no longer dropped).
+#[test]
+fn o_saurus_counters_count_unique_vowels_on_that_sticker() {
+    let (_, sub) = census_sticker_chain(
+        "Trample\nWhen this creature enters, you may put a name sticker on it. Put a +1/+1 counter on it for each unique vowel on that sticker. (The vowels are A, E, I, O, U, and Y.)",
+        "_____-o-saurus",
+        &["Trample"],
+        &["Alien", "Dinosaur"],
+    );
+    let Effect::PutCounter {
+        counter_type,
+        count,
+        target,
+    } = sub.effect.as_ref()
+    else {
+        panic!("expected PutCounter, got {:?}", sub.effect);
+    };
+    assert_eq!(*counter_type, CounterType::Plus1Plus1);
+    assert_eq!(count, &that_sticker_unique_vowels());
+    assert_eq!(target, &TargetFilter::SelfRef);
+}
+
+/// SHAPE: _____ Bird Gets the Worm — "You gain X life, where X is the number
+/// of unique vowels on that sticker" (CR 107.3i binds X).
+#[test]
+fn bird_gets_the_worm_life_counts_unique_vowels_on_that_sticker() {
+    let (_, sub) = census_sticker_chain(
+        "Flying\nWhen this creature enters, you may put a name sticker on it. You gain X life, where X is the number of unique vowels on that sticker. (The vowels are A, E, I, O, U, and Y.)",
+        "_____ Bird Gets the Worm",
+        &["Flying"],
+        &["Bird", "Guest"],
+    );
+    let Effect::GainLife { amount, player } = sub.effect.as_ref() else {
+        panic!("expected GainLife, got {:?}", sub.effect);
+    };
+    assert_eq!(amount, &that_sticker_unique_vowels());
+    assert_eq!(player, &TargetFilter::Controller);
+}
+
+/// SHAPE: Wizards of the _____ — "look at the top X cards …, where X is the
+/// number of unique vowels on that sticker. Put one of those cards into your
+/// hand and the rest on the bottom" is one Dig counted by that sticker.
+#[test]
+fn wizards_of_the_blank_dig_counts_unique_vowels_on_that_sticker() {
+    let (_, sub) = census_sticker_chain(
+        "When this creature enters, you may put a name sticker on it, then look at the top X cards of your library, where X is the number of unique vowels on that sticker. Put one of those cards into your hand and the rest on the bottom of your library in any order. (The vowels are A, E, I, O, U, and Y.)",
+        "Wizards of the _____",
+        &[],
+        &["Human", "Wizard", "Performer"],
+    );
+    let Effect::Dig {
+        count,
+        keep_count,
+        destination,
+        rest_destination,
+        ..
+    } = sub.effect.as_ref()
+    else {
+        panic!("expected Dig, got {:?}", sub.effect);
+    };
+    assert_eq!(count, &that_sticker_unique_vowels());
+    assert_eq!(*keep_count, Some(1));
+    assert_eq!(*destination, Some(Zone::Hand));
+    assert_eq!(*rest_destination, Some(Zone::Library));
+}
+
+/// SHAPE: Wolf in _____ Clothing — CR 603.12: "When you do, up to X target
+/// creatures each get -1/-1 until end of turn", X the unique vowels on that
+/// sticker.
+#[test]
+fn wolf_in_blank_clothing_reflexive_cap_counts_unique_vowels_on_that_sticker() {
+    let (_, sub) = census_sticker_chain(
+        "When this creature enters, you may put a name sticker on it. When you do, up to X target creatures each get -1/-1 until end of turn, where X is the number of unique vowels on that sticker. (The vowels are A, E, I, O, U, and Y.)",
+        "Wolf in _____ Clothing",
+        &[],
+        &["Wolf", "Guest"],
+    );
+    assert!(
+        matches!(sub.condition, Some(AbilityCondition::WhenYouDo)),
+        "{:?}",
+        sub.condition
+    );
+    assert!(
+        matches!(sub.effect.as_ref(), Effect::Pump { .. }),
+        "{:?}",
+        sub.effect
+    );
+    let spec = sub.multi_target.as_ref().expect("up to X targets");
+    assert_eq!(spec.min, QuantityExpr::Fixed { value: 0 });
+    assert_eq!(spec.max, Some(that_sticker_unique_vowels()));
+}
+
+/// The "Whenever you put a sticker on this enchantment" trigger of an
+/// enchantment census face: its mode stays `Unknown` (the face stays
+/// unsupported) and its execute is returned.
+fn sticker_enchantment_trigger(oracle: &str, name: &str, keywords: &[&str]) -> AbilityDefinition {
+    let keywords: Vec<String> = keywords.iter().map(|k| k.to_string()).collect();
+    let parsed = parse_oracle_text(oracle, name, &keywords, &["Enchantment".into()], &[]);
+    let trigger = parsed
+        .triggers
+        .iter()
+        .find(|trigger| matches!(trigger.mode, TriggerMode::Unknown(_)))
+        .expect("the put-a-sticker trigger mode is still unrecognized");
+    trigger.execute.as_deref().expect("trigger execute").clone()
+}
+
+/// CR 123.6d: "the number of <letter>'s in name stickers on this enchantment".
+fn letters_in_name_stickers_on_self(letter: char) -> QuantityExpr {
+    QuantityExpr::Ref {
+        qty: QuantityRef::NameStickerLetterCount {
+            stickers: crate::types::ability::NameStickerSet::OnObject {
+                scope: ObjectScope::Source,
+            },
+            letters: crate::types::ability::LetterQuery::Letter { letter },
+        },
+    }
+}
+
+/// SHAPE (honesty): _____ Balls of Fire's damage now reads the o's in its name
+/// stickers, while its "Whenever you put a sticker" trigger mode stays unknown.
+#[test]
+fn balls_of_fire_damage_counts_os_in_name_stickers_on_self() {
+    let execute = sticker_enchantment_trigger(
+        "When this enchantment enters, you may put a name sticker on it.\nWhenever you put a sticker on this enchantment, it deals damage equal to the number of o's in name stickers on this enchantment to any target.",
+        "_____ Balls of Fire",
+        &[],
+    );
+    let Effect::DealDamage { amount, .. } = execute.effect.as_ref() else {
+        panic!("expected DealDamage, got {:?}", execute.effect);
+    };
+    assert_eq!(amount, &letters_in_name_stickers_on_self('o'));
+}
+
+/// SHAPE (honesty): Make a _____ Splash taps up to X creatures, X the u's in
+/// its name stickers, while its trigger mode stays unknown.
+#[test]
+fn make_a_splash_tap_cap_counts_us_in_name_stickers_on_self() {
+    let execute = sticker_enchantment_trigger(
+        "Flash\nWhen this enchantment enters, you may put a name sticker on it.\nWhenever you put a sticker on this enchantment, tap up to X target creatures, where X is the number of u's in name stickers on this enchantment.",
+        "Make a _____ Splash",
+        &["Flash"],
+    );
+    let spec = execute.multi_target.as_ref().expect("up to X targets");
+    assert_eq!(spec.max, Some(letters_in_name_stickers_on_self('u')));
+}
+
+/// SHAPE (negative): Disemvowel counts vowels in the creature's *name* (CR
+/// 201), not on a name sticker (CR 123.6), so it keeps its base parse.
+#[test]
+fn disemvowel_is_not_a_name_sticker_count() {
+    let parsed = parse_oracle_text(
+        "Destroy target creature. That creature's controller loses 1 life for each unique vowel in the creature's name. (The vowels are A, E, I, O, U, and Y.)",
+        "Disemvowel",
+        &[],
+        &["Sorcery".into()],
+        &[],
+    );
+    let spell = parsed.abilities.first().expect("spell ability");
+    // Reach-guard: the Destroy head parsed.
+    assert!(
+        matches!(spell.effect.as_ref(), Effect::Destroy { .. }),
+        "{:?}",
+        spell.effect
+    );
+    let sub = spell.sub_ability.as_deref().expect("life-loss clause");
+    assert!(
+        matches!(
+            sub.effect.as_ref(),
+            Effect::LoseLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                target: Some(TargetFilter::ParentTargetController),
+            }
+        ),
+        "{:?}",
+        sub.effect
+    );
+}
+
 #[test]
 fn repeat_this_process_you_may_sets_controller_choice() {
     use crate::parser::oracle_effect::parse_effect_chain;
@@ -17217,8 +17478,8 @@ fn strip_counter_conditional_demonstrative_target_non_trigger() {
 /// `DealDamage`. The leading demonstrative is deliberately withheld from
 /// `strip_counter_conditional` (offered only in the trailing form), so
 /// `strip_counter_conditional` returns no condition here and this
-/// replacement-class clause stays on the same inert deferral path as upstream
-/// `main` (CR 608.2c). Discriminating: under the pre-fix over-acceptance the
+/// replacement-class clause stays off the counter-conditional (the "if that
+/// creature has" owner fails it closed instead, CR 608.2c). Discriminating: under the pre-fix over-acceptance the
 /// leading demonstrative matched and the condition became
 /// `QuantityCheck(Target, GE 1)`, with the "instead" replacement wrongly lowered
 /// as an additive 5-damage sibling (target with a counter → 3+5=8 instead of the
@@ -25741,15 +26002,17 @@ fn difference_counter_anaphor_without_comparison_stays_unimplemented() {
     );
 }
 
-/// CR 122.1 + CR 603.4: Conformer Shuriken class — the "equal to the difference"
-/// put-counter sits under a CLAUSE-LEVEL conditional continuation (a
-/// `sub_ability`), not the trigger's hoisted intervening-if, so there is no
-/// `QuantityComparison` on `def.condition` to bind against. The deferred
-/// placeholder is nested one level below the top-level effect, where the
-/// top-level-only `count_expr_mut` guard cannot see it. The recursive resolver
-/// must still downgrade it to an honest Unimplemented so the card does NOT
-/// appear falsely supported (no surviving `PutCounter { Variable{"difference"} }`
-/// anywhere in the tree).
+/// CR 122.1 + CR 603.4: the "equal to the difference" put-counter sits under a
+/// CLAUSE-LEVEL conditional continuation (a `sub_ability`), not the trigger's
+/// hoisted intervening-if. Here the gate uses the stat-first order "has power
+/// greater than ~'s power", which the comparative gate
+/// (`strip_target_comparative_pt_conditional`) deliberately does not accept, so
+/// there is no `QuantityCheck` for "the difference" to bind against. The card
+/// must NOT appear falsely supported: no surviving
+/// `PutCounter { Variable{"difference"} }` anywhere in the tree, and a loud
+/// `Unimplemented` residual instead. (Conformer Shuriken's printed wording,
+/// "has greater power than this creature", IS accepted — see
+/// `conformer_shuriken_binds_difference_to_the_clause_comparison`.)
 #[test]
 fn nested_conditional_difference_anaphor_downgrades_to_unimplemented() {
     use crate::types::ability::QuantityRef;
@@ -25779,7 +26042,7 @@ fn nested_conditional_difference_anaphor_downgrades_to_unimplemented() {
         "Whenever this creature attacks, tap target creature defending player controls. \
          If that creature has power greater than this creature's power, put a number of \
          +1/+1 counters on this creature equal to the difference.",
-        "Conformer Shuriken",
+        "Test Relic",
         &[],
         &["Artifact"],
         &["Equipment"],
@@ -25799,6 +26062,354 @@ fn nested_conditional_difference_anaphor_downgrades_to_unimplemented() {
         has_unimplemented(execute),
         "nested unbindable difference anaphor must become a loud Unimplemented residual: {execute:#?}"
     );
+}
+
+/// The granted trigger's execute chain on an "Equipped creature has \"…\""
+/// Equipment (Conformer Shuriken's shape).
+fn granted_trigger_execute(r: &ParsedAbilities) -> &AbilityDefinition {
+    r.statics
+        .iter()
+        .flat_map(|s| s.modifications.iter())
+        .find_map(|m| match m {
+            crate::types::ability::ContinuousModification::GrantTrigger { trigger } => {
+                trigger.execute.as_deref()
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no granted trigger with a body: {r:#?}"))
+}
+
+/// Asserts the complete Conformer-class chain: tap target creature defending
+/// player controls, then a `QuantityCheck`-gated `PutCounter` of +1/+1 counters
+/// on the source whose count is the `Difference` of the gate's two operands.
+fn assert_comparative_difference_chain(
+    r: &ParsedAbilities,
+    stat: fn(ObjectScope) -> QuantityRef,
+    comparator: Comparator,
+) {
+    assert!(
+        !format!("{r:?}").contains("Unimplemented"),
+        "the whole card must parse with no Unimplemented: {r:#?}"
+    );
+    let execute = granted_trigger_execute(r);
+    assert!(
+        matches!(
+            &*execute.effect,
+            Effect::SetTapState {
+                target: TargetFilter::Typed(_),
+                ..
+            }
+        ),
+        "root must tap the target creature: {execute:#?}"
+    );
+    let sub = execute
+        .sub_ability
+        .as_deref()
+        .unwrap_or_else(|| panic!("the gated clause must chain off the tap: {execute:#?}"));
+    let target_stat = QuantityExpr::Ref {
+        qty: stat(ObjectScope::Target),
+    };
+    let source_stat = QuantityExpr::Ref {
+        qty: stat(ObjectScope::Source),
+    };
+    assert_eq!(
+        sub.condition,
+        Some(AbilityCondition::QuantityCheck {
+            lhs: target_stat.clone(),
+            comparator,
+            rhs: source_stat.clone(),
+        }),
+        "gate must compare the tapped target's stat with the source's: {sub:#?}"
+    );
+    assert_eq!(
+        *sub.effect,
+        Effect::PutCounter {
+            counter_type: CounterType::Plus1Plus1,
+            count: QuantityExpr::Difference {
+                left: Box::new(target_stat),
+                right: Box::new(source_stat),
+            },
+            target: TargetFilter::SelfRef,
+        },
+        "count must be the Difference of the gate's operands, on the source: {sub:#?}"
+    );
+    assert_eq!(
+        sub.target_reads,
+        crate::types::ability::TargetReadOrigin::ParentAnnouncement,
+        "the gated clause's `Target` reads are the tap's announcement: {sub:#?}"
+    );
+    assert_eq!(
+        execute.target_reads,
+        crate::types::ability::TargetReadOrigin::OwnAnnouncement,
+        "the tap announces its own target: {execute:#?}"
+    );
+    assert!(
+        sub.reads_chosen_group.is_none() && execute.declares_chosen_group.is_none(),
+        "the gate must not ride the effect-population chosen-group channel: {execute:#?}"
+    );
+}
+
+/// CR 208.1 + CR 608.2c: Conformer Shuriken — "If that creature has greater
+/// power than this creature, put a number of +1/+1 counters on this creature
+/// equal to the difference." The clause-level comparison is typed, so the
+/// clause's own difference bind resolves "the difference" to its operands.
+#[test]
+fn conformer_shuriken_binds_difference_to_the_clause_comparison() {
+    let r = parse(
+        "Equipped creature has \"Whenever this creature attacks, tap target creature defending player controls. If that creature has greater power than this creature, put a number of +1/+1 counters on this creature equal to the difference.\"\nEquip {2}",
+        "Conformer Shuriken",
+        &[],
+        &["Artifact"],
+        &["Equipment"],
+    );
+    assert_comparative_difference_chain(&r, |scope| QuantityRef::Power { scope }, Comparator::GT);
+}
+
+/// CR 208.1 + CR 608.2c: every shape the comparative gate accepts,
+/// `{greater, less} × {power, toughness}`, lowers to the full chain through the
+/// production dispatch path (synthetic Equipment texts; only "greater power" is
+/// printed).
+#[test]
+fn comparative_pt_gate_accepted_shapes_bind_the_difference() {
+    let power: fn(ObjectScope) -> QuantityRef = |scope| QuantityRef::Power { scope };
+    let toughness: fn(ObjectScope) -> QuantityRef = |scope| QuantityRef::Toughness { scope };
+    for (phrase, stat, comparator) in [
+        ("greater power", power, Comparator::GT),
+        ("less power", power, Comparator::LT),
+        ("greater toughness", toughness, Comparator::GT),
+        ("less toughness", toughness, Comparator::LT),
+    ] {
+        let text = format!(
+            "Equipped creature has \"Whenever this creature attacks, tap target creature defending player controls. If that creature has {phrase} than this creature, put a number of +1/+1 counters on this creature equal to the difference.\"\nEquip {{2}}"
+        );
+        let r = parse(&text, "Test Shuriken", &[], &["Artifact"], &["Equipment"]);
+        assert_comparative_difference_chain(&r, stat, comparator);
+    }
+}
+
+/// CR 115.1 + CR 608.2c: "that creature" in the comparative gate reads an
+/// object target an earlier clause declared. With no such clause the gate must
+/// fail closed (a named `Unimplemented`), never bind a guess; the adjacent
+/// control with a declared tap target binds.
+#[test]
+fn comparative_pt_gate_without_a_target_antecedent_fails_closed() {
+    let unbound = parse(
+        "When this creature enters, draw a card. If that creature has greater power than this creature, put a +1/+1 counter on this creature.",
+        "Test Creature",
+        &[],
+        &["Creature"],
+        &[],
+    );
+    assert!(
+        has_unimplemented_mentioning(&unbound, "comparative_pt_anaphor_unbound"),
+        "an unbound comparative gate must fail closed: {unbound:#?}"
+    );
+    let bound = parse(
+        "When this creature enters, tap target creature. If that creature has greater power than this creature, put a +1/+1 counter on this creature.",
+        "Test Creature",
+        &[],
+        &["Creature"],
+        &[],
+    );
+    assert!(
+        !format!("{bound:?}").contains("Unimplemented"),
+        "control: a declared tap target binds the gate: {bound:#?}"
+    );
+    assert!(
+        format!("{bound:?}").contains("QuantityCheck"),
+        "control: the bound gate is a typed comparison: {bound:#?}"
+    );
+}
+
+/// CR 115.1: a gate that names a NEW target ("if target creature has greater
+/// power than this creature") is not the "that creature" anaphor, so it is never
+/// marked as reading the tap's announcement. Whatever it lowers to, the rider
+/// exists and either keeps its own default-origin `Target` read or fails closed.
+#[test]
+fn comparative_gate_naming_a_new_target_is_not_linked_to_the_parent() {
+    let r = parse(
+        "Equipped creature has \"Whenever this creature attacks, tap target creature defending player controls. If target creature has greater power than this creature, put a number of +1/+1 counters on this creature equal to the difference.\"\nEquip {2}",
+        "Test Shuriken",
+        &[],
+        &["Artifact"],
+        &["Equipment"],
+    );
+    let execute = granted_trigger_execute(&r);
+    // REACH GUARD: the granted trigger and its tap parsed.
+    assert!(
+        matches!(&*execute.effect, Effect::SetTapState { .. }),
+        "reach guard: the tap clause parsed: {execute:#?}"
+    );
+    // REACH GUARD: the rider after the tap exists.
+    let rider = execute
+        .sub_ability
+        .as_deref()
+        .unwrap_or_else(|| panic!("the rider must be represented: {execute:#?}"));
+    assert!(
+        rider.target_reads == TargetReadOrigin::OwnAnnouncement
+            && matches!(
+                &*rider.effect,
+                Effect::Unimplemented { .. } | Effect::PutCounter { .. }
+            ),
+        "a new-target gate keeps its own announcement or fails closed: {rider:#?}"
+    );
+    fn any_parent_announcement(def: &AbilityDefinition) -> bool {
+        def.target_reads == TargetReadOrigin::ParentAnnouncement
+            || def
+                .sub_ability
+                .as_deref()
+                .is_some_and(any_parent_announcement)
+            || def
+                .else_ability
+                .as_deref()
+                .is_some_and(any_parent_announcement)
+    }
+    assert!(
+        !any_parent_announcement(execute),
+        "a new-target gate must not be marked as reading the tap's target: {execute:#?}"
+    );
+}
+
+/// CR 115.1 + CR 608.2c + CR 115.10a: "that creature" names the ONE object the
+/// immediately preceding instruction announced. A mass producer ("exile all
+/// creatures", "tap all creatures"), an intervening instruction, and a compound
+/// producer have no such single immediate antecedent, so each fails closed.
+/// Control: the printed immediate single-target tap binds.
+#[test]
+fn comparative_gate_after_a_non_announcing_producer_fails_closed() {
+    let shape = |head: &str| {
+        format!(
+            "Equipped creature has \"Whenever this creature attacks, {head} If that creature has greater power than this creature, put a number of +1/+1 counters on this creature equal to the difference.\"\nEquip {{2}}"
+        )
+    };
+    for head in [
+        "exile all creatures.",
+        "tap all creatures defending player controls.",
+        "tap target creature defending player controls. You draw a card.",
+        "tap target creature defending player controls and you draw a card.",
+    ] {
+        let r = parse(
+            &shape(head),
+            "Test Shuriken",
+            &[],
+            &["Artifact"],
+            &["Equipment"],
+        );
+        assert!(
+            has_unimplemented_mentioning(&r, "comparative_pt_anaphor_unbound"),
+            "{head}: no single immediate announced antecedent, must fail closed: {r:#?}"
+        );
+    }
+    let control = parse(
+        &shape("tap target creature defending player controls."),
+        "Test Shuriken",
+        &[],
+        &["Artifact"],
+        &["Equipment"],
+    );
+    assert_comparative_difference_chain(
+        &control,
+        |scope| QuantityRef::Power { scope },
+        Comparator::GT,
+    );
+}
+
+/// CR 115.1 + CR 608.2c: a rider that reads its parent's announcement through
+/// the gate AND announces a target of its own ("…put … counters on target
+/// creature you control equal to the difference") would have one `Target` scope
+/// naming two objects; it fails closed. Control: the printed rider binds.
+#[test]
+fn rider_declaring_its_own_target_fails_closed() {
+    let r = parse(
+        "Equipped creature has \"Whenever this creature attacks, tap target creature defending player controls. If that creature has greater power than this creature, put a number of +1/+1 counters on target creature you control equal to the difference.\"\nEquip {2}",
+        "Test Shuriken",
+        &[],
+        &["Artifact"],
+        &["Equipment"],
+    );
+    let execute = granted_trigger_execute(&r);
+    // REACH GUARD: the root tap parsed.
+    assert!(
+        matches!(&*execute.effect, Effect::SetTapState { .. }),
+        "reach guard: the tap clause parsed: {execute:#?}"
+    );
+    assert!(
+        has_unimplemented_mentioning(&r, "comparative_pt_rider_declares_target"),
+        "a rider with its own target must fail closed: {r:#?}"
+    );
+}
+
+/// CR 608.2c: an "if that creature has <predicate>," gate whose predicate is not
+/// a keyword (a counter or power threshold) cannot be evaluated by the
+/// keyword check, so it must fail closed as a named `Unimplemented` rather than
+/// ship as an inert `TargetHasKeywordInstead{Unknown}` that reads as supported.
+/// Real keyword gates (Toxic, Flying) are unchanged.
+#[test]
+fn unknown_keyword_gate_fails_closed() {
+    for (name, text, types) in [
+        (
+            "Bring Low",
+            "Bring Low deals 3 damage to target creature. If that creature has a +1/+1 counter on it, Bring Low deals 5 damage to it instead.",
+            &["Instant"][..],
+        ),
+        (
+            "Strider, Ranger of the North",
+            "Landfall — Whenever a land you control enters, target creature gets +1/+1 until end of turn. Then if that creature has power 4 or greater, it gains first strike until end of turn.",
+            &["Creature"][..],
+        ),
+        (
+            "Urdnan, Dromoka Warrior",
+            "When Urdnan enters, put a +1/+1 counter on target creature.\nWhenever you attack, target attacking creature with a +1/+1 counter on it gains first strike until end of turn. If that creature has two or more +1/+1 counters on it, it gains double strike until end of turn instead.",
+            &["Creature"][..],
+        ),
+    ] {
+        let r = parse(text, name, &[], types, &[]);
+        let rendered = format!("{r:?}");
+        assert!(
+            has_unimplemented_mentioning(&r, "target_has_unknown_keyword_condition"),
+            "{name}: a non-keyword gate must fail closed: {r:#?}"
+        );
+        assert!(
+            !rendered.contains("TargetHasKeywordInstead"),
+            "{name}: no inert keyword gate may survive: {r:#?}"
+        );
+    }
+    for (name, text, types, keyword_matches) in [
+        (
+            "Porcelain Zealot",
+            "At the beginning of combat on your turn, target creature you control gets +1/+1 until end of turn. If that creature has toxic, instead it gets +2/+2 until end of turn.",
+            &["Creature"][..],
+            (|k: &Keyword| matches!(k, Keyword::Toxic(_))) as fn(&Keyword) -> bool,
+        ),
+        (
+            "Cut Propulsion",
+            "Target creature deals damage to itself equal to its power. If that creature has flying, it deals twice that much damage to itself instead.",
+            &["Instant"][..],
+            (|k: &Keyword| matches!(k, Keyword::Flying)) as fn(&Keyword) -> bool,
+        ),
+    ] {
+        let r = parse(text, name, &[], types, &[]);
+        assert!(
+            !format!("{r:?}").contains("Unimplemented"),
+            "{name}: a real keyword gate must still parse: {r:#?}"
+        );
+        fn find_keyword_gate(def: &AbilityDefinition) -> Option<&Keyword> {
+            if let Some(AbilityCondition::TargetHasKeywordInstead { keyword }) = &def.condition {
+                return Some(keyword);
+            }
+            def.sub_ability
+                .as_deref()
+                .and_then(find_keyword_gate)
+                .or_else(|| def.else_ability.as_deref().and_then(find_keyword_gate))
+        }
+        let gate = r
+            .abilities
+            .iter()
+            .chain(r.triggers.iter().filter_map(|t| t.execute.as_deref()))
+            .find_map(find_keyword_gate)
+            .unwrap_or_else(|| panic!("{name}: keyword gate must survive: {r:#?}"));
+        assert!(keyword_matches(gate), "{name}: wrong keyword {gate:?}");
+    }
 }
 
 /// CR 508.6 + CR 608.2c: The Commander 2017 "whenever enchanted player is

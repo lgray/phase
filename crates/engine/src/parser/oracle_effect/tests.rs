@@ -8051,6 +8051,308 @@ fn effect_counter_unless_parses_non_mana_costs() {
     );
 }
 
+/// Assert a counter clause parsed to a whole-sentence `Effect::Unimplemented`
+/// (never a partial `Counter` with a wrong or absent `unless_pay`).
+fn assert_counter_unless_stays_unimplemented(text: &str) {
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    assert!(
+        matches!(*def.effect, Effect::Unimplemented { .. }),
+        "{text:?} must stay whole-sentence Unimplemented, got {:?} / {:?} / sub {:?}",
+        def.effect,
+        def.unless_pay,
+        def.sub_ability
+    );
+}
+
+fn counter_unless_cost(text: &str) -> AbilityCost {
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    assert!(
+        matches!(*def.effect, Effect::Counter { .. }),
+        "{text:?} must parse to Counter, got {:?}",
+        def.effect
+    );
+    let unless_pay = def
+        .unless_pay
+        .unwrap_or_else(|| panic!("{text:?} must carry unless_pay"));
+    assert_eq!(unless_pay.payer, TargetFilter::ParentTargetController);
+    unless_pay.cost
+}
+
+fn whole_hand_discard_cost() -> AbilityCost {
+    AbilityCost::Discard {
+        count: QuantityExpr::Ref {
+            qty: QuantityRef::HandSize {
+                player: PlayerScope::ParentObjectTargetController,
+            },
+        },
+        filter: None,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+        self_scope: crate::types::ability::DiscardSelfScope::FromHand,
+    }
+}
+
+/// CR 118.12a + CR 701.9a + CR 109.4: Perplex — whole-hand unless-discard.
+#[test]
+fn effect_counter_unless_discards_their_hand() {
+    for text in [
+        "Counter target spell unless its controller discards their hand.",
+        "Counter target spell unless its controller discards their hand",
+        "Counter target spell unless its controller discards all the cards in their hand.",
+        "Counter target spell unless its controller discards his or her hand.",
+        "Counter target spell unless that player discards their hand.",
+        "Counter target spell unless they discard their hand.",
+    ] {
+        assert_eq!(
+            counter_unless_cost(text),
+            whole_hand_discard_cost(),
+            "{text}"
+        );
+    }
+}
+
+/// Hostile sentences around the whole-hand arm must stay fully red.
+#[test]
+fn effect_counter_unless_discards_hand_hostile_sentences_stay_unimplemented() {
+    // Positive reach-guard: the arm is live for the well-formed sentence.
+    assert_eq!(
+        counter_unless_cost("Counter target spell unless its controller discards their hand."),
+        whole_hand_discard_cost()
+    );
+    for text in [
+        "Counter target spell unless its controller discards your hand.",
+        "Counter target spell unless its controller discards their handful.",
+        "Counter target spell unless its controller discards their hand or pays {2}.",
+        "Counter target spell unless its controller discards their hand and pays {2}.",
+        "Counter target spell unless its controller discards their.",
+        "Counter target spell unless its controller discards hand.",
+        "Counter target spell unless its controller discards a card and pays {2}.",
+    ] {
+        assert_counter_unless_stays_unimplemented(text);
+    }
+}
+
+/// The clause splitter (shared by every unless-cost) detaches a same-sentence
+/// conjoined / `then` rider from a Counter clause. The payer's cost and the rider
+/// are one sentence, so the rider must never become a caster-scoped sub-ability
+/// of a "supported" Counter: the whole sentence stays `unless_payment`
+/// Unimplemented. A period starts an independent instruction and stays split.
+#[test]
+fn effect_counter_unless_discards_hand_rider_is_never_dropped() {
+    for text in [
+        "Counter target spell unless its controller discards their hand and draws a card.",
+        "Counter target spell unless its controller discards their hand, then sacrifices a creature.",
+        "Counter target spell unless its controller discards a card and draws a card.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(
+                &*def.effect,
+                Effect::Unimplemented { name, .. } if name == "unless_payment"
+            ) && def.sub_ability.is_none() && def.unless_pay.is_none(),
+            "{text:?} must be whole-sentence unless_payment Unimplemented, got {:?} / {:?} / sub {:?}",
+            def.effect,
+            def.unless_pay,
+            def.sub_ability
+        );
+    }
+
+    // Paired positive: a period-separated second sentence is an independent
+    // caster instruction, so the unless-cost parses and Draw is a sub-effect.
+    let def = parse_effect_chain(
+        "Counter target spell unless its controller discards their hand. Draw a card.",
+        AbilityKind::Spell,
+    );
+    assert!(matches!(*def.effect, Effect::Counter { .. }));
+    assert_eq!(
+        def.unless_pay.expect("unless_pay").cost,
+        whole_hand_discard_cost()
+    );
+    assert!(matches!(
+        def.sub_ability.as_deref().map(|s| &*s.effect),
+        Some(Effect::Draw { .. })
+    ));
+}
+
+/// The merge anchor is the counter-spell clause anywhere in the head chunk, not
+/// a "counter " prefix: prefixed forms must not leave the rider detached as a
+/// caster-scoped sub-ability of a "supported" Counter.
+#[test]
+fn effect_counter_unless_rider_merge_covers_prefixed_counter_heads() {
+    // SHAPE: reach the regrouping authority directly, including prefixes whose
+    // standalone full parse depends on a preceding gated instruction.
+    for head in [
+        "if you do, counter target spell unless its controller discards their hand",
+        "then counter target spell unless its controller discards their hand",
+        "you may counter target spell unless its controller discards their hand",
+    ] {
+        assert_eq!(parse_unless_payment(head), Some(whole_hand_discard_cost()));
+        let text = format!("{head} and draws a card.");
+        let chunks = vec![
+            ClauseChunk {
+                text: head.to_string(),
+                boundary_after: Some(ClauseBoundary::Comma),
+                leading_duration: None,
+            },
+            ClauseChunk {
+                text: "draws a card".to_string(),
+                boundary_after: None,
+                leading_duration: None,
+            },
+        ];
+        let merged = merge_counter_unless_cost_riders(&text, chunks);
+        assert_eq!(merged.len(), 1, "{text}: rider must remain with its payer");
+        assert_eq!(merged[0].text, text.trim_end_matches('.'));
+        assert!(parse_unless_payment(&merged[0].text).is_none());
+    }
+    for text in [
+        "If you do, counter target spell unless its controller discards their hand and draws a card.",
+        "Then counter target spell unless its controller discards their hand and draws a card.",
+        "You may counter target spell unless its controller discards their hand, then sacrifices a creature.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let mut cur = Some(&def);
+        while let Some(d) = cur {
+            assert!(
+                !matches!(&*d.effect, Effect::Draw { .. } | Effect::Sacrifice { .. }),
+                "{text:?} must not detach the rider as a sub-ability, got {:?}",
+                d.effect
+            );
+            cur = d.sub_ability.as_deref();
+        }
+        assert!(
+            !(matches!(*def.effect, Effect::Counter { .. }) && def.unless_pay.is_some()),
+            "{text:?} must not be a supported Counter+unless_pay, got {:?}",
+            def.effect
+        );
+    }
+}
+
+/// The counter-clause predicate matches the verb+object only, never the noun.
+#[test]
+fn counter_spell_clause_predicate_rejects_the_noun() {
+    for yes in [
+        "counter target spell unless its controller pays {2}",
+        "if you do, counter target spell unless",
+        "you may counter that spell unless",
+    ] {
+        assert!(is_counter_spell_clause(yes), "{yes}");
+    }
+    for no in [
+        "put a +1/+1 counter on target creature unless its controller pays {2}",
+        "remove a counter from it unless you pay {1}",
+        "that player gets two poison counters unless",
+    ] {
+        assert!(!is_counter_spell_clause(no), "{no}");
+    }
+    // Noun-"counter" sentence with a rider stays untouched (split, Draw sub-ability).
+    let def = parse_effect_chain(
+        "Put a +1/+1 counter on target creature, then draw a card.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        matches!(*def.effect, Effect::PutCounter { .. }),
+        "{:?}",
+        def.effect
+    );
+    assert!(matches!(
+        def.sub_ability.as_deref().map(|s| &*s.effect),
+        Some(Effect::Draw { .. })
+    ));
+}
+
+/// Fail closed: a counter+unless head whose chunks cannot be located in the
+/// printed text (synthesized chunks) is still merged with its continuation, so
+/// the compound cost is refused rather than partially lowered.
+#[test]
+fn counter_unless_rider_merge_fails_closed_on_unlocatable_chunks() {
+    let chunks = vec![
+        ClauseChunk {
+            text: "counter target spell unless its controller discards their hand".to_string(),
+            boundary_after: Some(ClauseBoundary::Comma),
+            leading_duration: None,
+        },
+        ClauseChunk {
+            text: "draws a card.".to_string(),
+            boundary_after: None,
+            leading_duration: None,
+        },
+    ];
+    let merged = merge_counter_unless_cost_riders("unrelated printed text", chunks);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(
+        merged[0].text,
+        "counter target spell unless its controller discards their hand, draws a card."
+    );
+    assert!(parse_unless_payment(&merged[0].text).is_none());
+}
+
+/// The rider merge only fires for a same-sentence detached clause; every real
+/// counter-unless card in the corpus keeps its Counter + unless_pay parse.
+#[test]
+fn effect_counter_unless_rider_merge_preserves_real_cards() {
+    for text in [
+        "Counter target spell unless its controller pays {1} and 1 life.",
+        "Counter target spell unless its controller pays {X}, where X is its mana value.",
+        "Counter target spell unless its controller pays {X}, where X is your devotion to blue.",
+        "Counter target instant or sorcery spell unless its controller pays {X}, where X is this creature's power.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(*def.effect, Effect::Counter { .. })
+                && def.unless_pay.is_some()
+                && def.sub_ability.is_none(),
+            "{text:?} changed: {:?} / {:?} / {:?}",
+            def.effect,
+            def.unless_pay,
+            def.sub_ability
+        );
+    }
+}
+
+/// The "pays " gate is anchored to the payer subject: every currently
+/// supported mana / energy / life subject form still parses.
+#[test]
+fn effect_counter_unless_pays_gate_keeps_supported_subjects() {
+    for text in [
+        "Counter target spell unless its controller pays {2}.",
+        "Counter target spell unless that player pays {1}.",
+        "Counter target spell unless that spell's controller pays {B} or {3}.",
+        "Counter target spell unless its controller pays {X}.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(*def.effect, Effect::Counter { .. }) && def.unless_pay.is_some(),
+            "{text:?} must keep its unless_pay, got {:?} / {:?}",
+            def.effect,
+            def.unless_pay
+        );
+    }
+    assert!(matches!(
+        counter_unless_cost("Counter target spell unless its controller pays {2}."),
+        AbilityCost::Mana { .. }
+    ));
+}
+
+/// CR 118.12a: a mixed discard-or-mana disjunction is fully modelled (not the
+/// bare `Counter unless {2}` the unanchored "pays " scan produced).
+#[test]
+fn effect_counter_unless_discard_or_pays_is_one_of() {
+    let cost = counter_unless_cost(
+        "Counter target spell unless its controller discards a card or pays {2}.",
+    );
+    let AbilityCost::OneOf { costs } = cost else {
+        panic!("expected OneOf, got {cost:?}");
+    };
+    assert!(
+        matches!(
+            costs.as_slice(),
+            [AbilityCost::Discard { count, .. }, AbilityCost::Mana { .. }]
+                if *count == QuantityExpr::Fixed { value: 1 }
+        ),
+        "expected OneOf[Discard(1), Mana], got {costs:?}"
+    );
+}
+
 #[test]
 fn then_if_control_count_conditions_followup_transform() {
     let def = parse_effect_chain(
@@ -67146,10 +67448,13 @@ fn lost_isle_calling_second_sentence_stays_swallowed() {
 /// Blocker 1 / Minor 5 replacement-collision regression: Bring Low —
 /// "Bring Low deals 3 damage to target creature. If that creature has a
 /// +1/+1 counter on it, Bring Low deals 5 damage to it instead." — present
-/// tense `has`, stays on the `TargetHasKeywordInstead` replacement path,
-/// untouched by the new PAST-tense `had` branch.
+/// tense `has` is the target-gated replacement class, untouched by the new
+/// PAST-tense `had` branch. Its counter gate is not a keyword, so the "if that
+/// creature has" owner fails the rider closed (CR 608.2c) instead of emitting
+/// an inert `TargetHasKeywordInstead{Unknown}` that read as supported; it must
+/// still never be captured as an additive `ChainRootTarget`-gated clause.
 #[test]
-fn bring_low_stays_on_replacement_path() {
+fn bring_low_replacement_rider_fails_closed() {
     let parsed = parse_oracle_text(
         "Bring Low deals 3 damage to target creature. If that creature has a +1/+1 \
          counter on it, Bring Low deals 5 damage to it instead.",
@@ -67162,18 +67467,47 @@ fn bring_low_stays_on_replacement_path() {
         .abilities
         .first()
         .expect("Bring Low must produce a spell ability");
+    // Reach guard: the root damage clause still parses, so the ChainRootTarget
+    // check below inspects a real chain rather than a wholly failed parse.
+    assert!(
+        matches!(
+            &*ability.effect,
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Typed(tf),
+                ..
+            } if tf.type_filters == vec![TypeFilter::Creature]
+        ),
+        "Bring Low's root must stay 3 damage to target creature, got {ability:#?}"
+    );
     let sub = ability
         .sub_ability
         .as_deref()
         .expect("Bring Low's replacement rider must still be represented");
     assert!(
         matches!(
-            sub.condition,
-            Some(AbilityCondition::TargetHasKeywordInstead { .. })
+            &*sub.effect,
+            Effect::Unimplemented { name, .. } if name == "target_has_unknown_keyword_condition"
         ),
-        "present-tense 'has' must stay on the replacement-class condition, \
-         got {:?}",
-        sub.condition
+        "the non-keyword gate must fail closed, got {sub:#?}"
+    );
+    fn unimplemented_names(def: &AbilityDefinition, out: &mut Vec<String>) {
+        if let Effect::Unimplemented { name, .. } = &*def.effect {
+            out.push(name.clone());
+        }
+        for child in [def.sub_ability.as_deref(), def.else_ability.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            unimplemented_names(child, out);
+        }
+    }
+    let mut names = Vec::new();
+    unimplemented_names(ability, &mut names);
+    assert_eq!(
+        names,
+        vec!["target_has_unknown_keyword_condition".to_string()],
+        "the rider must be the only Unimplemented node: {ability:#?}"
     );
     fn tree_mentions_chain_root_target(def: &AbilityDefinition) -> bool {
         let self_hit = matches!(

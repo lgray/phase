@@ -106,6 +106,12 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  79 — game_setup and state_update carry GameState, whose stack abilities now
+ *       serialize ResolvedAbility.target_reads (TargetReadOrigin): a
+ *       ParentAnnouncement instruction reads the object its parent announced
+ *       and announces no target of its own. A v78 peer would default the field
+ *       and rebuild a target slot, so first contact rejects the skew. Bumped in
+ *       lockstep with full-game protocol 97.
  *  77 — game_setup and state_update carry GameState, whose ability definitions
  *       now carry FilterProp.BlockStatus { status } in place of the unit
  *       FilterProp.Unblocked (CR 509.1h). A v76 peer cannot parse the new
@@ -495,7 +501,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 77 as const;
+export const WIRE_PROTOCOL_VERSION = 79 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

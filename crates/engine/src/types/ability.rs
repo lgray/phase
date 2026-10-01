@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::ops::{BitOrAssign, ControlFlow};
@@ -9082,6 +9082,14 @@ pub enum QuantityRef {
     /// "enchanted/equipped creature gets +N/+N for each word in its name" by
     /// binding to the affected object rather than the Aura or Equipment source.
     ObjectNameWordCount { scope: ObjectScope },
+    /// CR 123.6d + CR 123.6e: A letter statistic over the text of name stickers —
+    /// "for each unique vowel on that sticker", "the number of o's in name
+    /// stickers on ~". `stickers` selects which name stickers are read; `letters`
+    /// selects the statistic. Non-name stickers carry no letters and are ignored.
+    NameStickerLetterCount {
+        stickers: NameStickerSet,
+        letters: LetterQuery,
+    },
     /// CR 205.4a + CR 205.2a + CR 205.3: Number of typeline components on an
     /// object (supertypes + core card types + subtypes). Embiggen: "+1/+1 for
     /// each supertype, card type, and subtype it has."
@@ -9792,6 +9800,52 @@ pub enum QuantityRef {
     VoteCount { choice_index: u32 },
 }
 
+/// Which name stickers a [`QuantityRef::NameStickerLetterCount`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum NameStickerSet {
+    /// CR 608.2c + CR 123.6e: "that sticker" — the sticker this resolution's
+    /// preceding put-a-sticker instruction placed
+    /// (`GameState::placed_sticker_this_resolution`). No such sticker → 0.
+    ThatSticker,
+    /// CR 123.6d: every name sticker currently on the scoped object
+    /// ("in name stickers on ~").
+    OnObject { scope: ObjectScope },
+}
+
+/// A letter statistic over name-sticker text (CR 123.6d / CR 123.6e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum LetterQuery {
+    /// CR 123.6e: the number of different vowels (A, E, I, O, U, Y) that
+    /// appear, however often each appears.
+    UniqueVowels,
+    /// CR 123.6d: the number of occurrences of `letter`.
+    Letter { letter: char },
+}
+
+impl LetterQuery {
+    /// CR 123.6d + CR 123.6e: A lowercase letter and its uppercase equivalent
+    /// are the same letter. Over several stickers, occurrences are summed and
+    /// unique vowels are the distinct vowels appearing on any of them.
+    pub fn count_in<'a>(self, texts: impl IntoIterator<Item = &'a str>) -> usize {
+        let letters = texts
+            .into_iter()
+            .flat_map(str::chars)
+            .flat_map(char::to_lowercase);
+        match self {
+            LetterQuery::UniqueVowels => letters
+                .filter(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
+                .collect::<BTreeSet<char>>()
+                .len(),
+            LetterQuery::Letter { letter } => {
+                let wanted: Vec<char> = letter.to_lowercase().collect();
+                letters.filter(|c| wanted.contains(c)).count()
+            }
+        }
+    }
+}
+
 impl QuantityRef {
     /// CR 109.4: mutable access to this reference's single player-relativity
     /// axis, when it has one.
@@ -9843,6 +9897,7 @@ impl QuantityRef {
             | QuantityRef::TargetObjectManaValue { .. }
             | QuantityRef::ObjectColorCount { .. }
             | QuantityRef::ObjectNameWordCount { .. }
+            | QuantityRef::NameStickerLetterCount { .. }
             | QuantityRef::ObjectTypelineComponentCount { .. }
             | QuantityRef::ManaSymbolsInManaCost { .. }
             | QuantityRef::SelfManaValue
@@ -25959,6 +26014,9 @@ pub struct AbilityDefinition {
     /// `SequentialSibling` = independent following instruction. Set during
     /// `lower_effect_chain_ir` from the `ClauseBoundary` PRECEDING this clause.
     pub sub_link: SubAbilityLink,
+    /// CR 115.1 + CR 608.2c: where this instruction's `ObjectScope::Target`
+    /// reads take their object from. See [`TargetReadOrigin`].
+    pub target_reads: TargetReadOrigin,
     /// CR 608.2c + CR 122.1: when this ability is a `ChooseOneOf` branch driven
     /// by a counter-kind iteration (`repeat_for: DistinctCounterKindsAmong`),
     /// `Some(RebindToIteratedKind)` marks the branch whose `PutCounter`
@@ -26062,6 +26120,8 @@ struct AbilityDefinitionRepr<'a> {
     repeat_until: &'a Option<RepeatContinuation>,
     #[serde(skip_serializing_if = "SubAbilityLink::is_continuation")]
     sub_link: SubAbilityLink,
+    #[serde(skip_serializing_if = "TargetReadOrigin::is_own")]
+    target_reads: TargetReadOrigin,
     #[serde(skip_serializing_if = "Option::is_none")]
     iteration_kind_binding: &'a Option<IterationKindBinding>,
     #[serde(skip_serializing_if = "SiblingCondition::is_default")]
@@ -26119,6 +26179,7 @@ impl Serialize for AbilityDefinition {
             target_chooser,
             repeat_until,
             sub_link,
+            target_reads,
             iteration_kind_binding,
             sibling_condition,
             unlowered_guard,
@@ -26167,6 +26228,7 @@ impl Serialize for AbilityDefinition {
             target_chooser,
             repeat_until,
             sub_link: *sub_link,
+            target_reads: *target_reads,
             iteration_kind_binding,
             sibling_condition: *sibling_condition,
             unlowered_guard,
@@ -26290,6 +26352,8 @@ struct AbilityDefinitionDe {
     #[serde(default)]
     sub_link: SubAbilityLink,
     #[serde(default)]
+    target_reads: TargetReadOrigin,
+    #[serde(default)]
     iteration_kind_binding: Option<IterationKindBinding>,
     #[serde(default)]
     sibling_condition: SiblingCondition,
@@ -26351,6 +26415,7 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
             target_chooser: de.target_chooser,
             repeat_until: de.repeat_until,
             sub_link: de.sub_link,
+            target_reads: de.target_reads,
             iteration_kind_binding: de.iteration_kind_binding,
             sibling_condition: de.sibling_condition,
             unlowered_guard: de.unlowered_guard,
@@ -26395,6 +26460,37 @@ impl SubAbilityLink {
     /// `skip_serializing_if` predicate — the default needs no JSON byte.
     pub fn is_continuation(link: &Self) -> bool {
         matches!(link, Self::ContinuationStep)
+    }
+}
+
+/// CR 115.1 + CR 608.2c: where an instruction's `ObjectScope::Target` reads — its
+/// condition and its quantities — take their object from.
+///
+/// A target is declared only by an instance of the word "target" (CR 115.1). A
+/// later instruction that says "that creature" names the object an EARLIER
+/// instruction of the same ability announced (CR 608.2c) and declares nothing
+/// itself, so a `Target`-scoped magnitude on it must not surface a slot of its
+/// own. The origin is a property of the whole instruction: every `Target` read
+/// on it shares one origin, which is why an instruction that would both read its
+/// parent's announcement and announce a target of its own is refused at parse
+/// time rather than represented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum TargetReadOrigin {
+    /// `Target` reads name this instruction's own announced target(s); a
+    /// `Target`-scoped magnitude with no primary target supplies its own slot.
+    #[default]
+    OwnAnnouncement,
+    /// `Target` reads name the single object the immediately preceding
+    /// instruction announced (Conformer Shuriken: "tap target creature defending
+    /// player controls. If that creature has greater power than this creature,
+    /// put … equal to the difference"). This instruction announces no target.
+    ParentAnnouncement,
+}
+
+impl TargetReadOrigin {
+    /// `skip_serializing_if` predicate — the default needs no JSON byte.
+    pub fn is_own(origin: &Self) -> bool {
+        matches!(origin, Self::OwnAnnouncement)
     }
 }
 
@@ -26618,6 +26714,7 @@ impl AbilityDefinition {
             target_chooser: None,
             repeat_until: None,
             sub_link: SubAbilityLink::ContinuationStep,
+            target_reads: TargetReadOrigin::OwnAnnouncement,
             iteration_kind_binding: None,
             sibling_condition: SiblingCondition::Dependent,
             unlowered_guard: None,
@@ -32604,6 +32701,54 @@ mod parent_target_missing_reason_tests {
     }
 }
 
+#[cfg(test)]
+mod target_read_origin_tests {
+    use super::*;
+
+    /// CR 115.1 + CR 608.2c: `target_reads` rides both carriers. The
+    /// parent-announcement origin serializes its key and round-trips; the
+    /// default omits the key, round-trips, and is what a key-less payload
+    /// (every pre-v93 save) deserializes to.
+    #[test]
+    fn target_reads_round_trips_and_omits_the_default() {
+        let effect = Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        };
+        for origin in [
+            TargetReadOrigin::ParentAnnouncement,
+            TargetReadOrigin::OwnAnnouncement,
+        ] {
+            let mut def = AbilityDefinition::new(AbilityKind::Spell, effect.clone());
+            def.target_reads = origin;
+            let json = serde_json::to_value(&def).unwrap();
+            assert_eq!(
+                json.get("target_reads").is_some(),
+                origin == TargetReadOrigin::ParentAnnouncement,
+                "definition key presence for {origin:?}: {json}"
+            );
+            let back: AbilityDefinition = serde_json::from_value(json).unwrap();
+            assert_eq!(back.target_reads, origin);
+
+            let mut resolved = ResolvedAbility::new(
+                effect.clone(),
+                vec![],
+                crate::types::identifiers::ObjectId(1),
+                crate::types::player::PlayerId(0),
+            );
+            resolved.target_reads = origin;
+            let json = serde_json::to_value(&resolved).unwrap();
+            assert_eq!(
+                json.get("target_reads").is_some(),
+                origin == TargetReadOrigin::ParentAnnouncement,
+                "resolved key presence for {origin:?}: {json}"
+            );
+            let back: ResolvedAbility = serde_json::from_value(json).unwrap();
+            assert_eq!(back.target_reads, origin);
+        }
+    }
+}
+
 /// CR 608.2c: what a chain split — a `player_scope` fan-out, or a multi-target
 /// player subject — DETACHED from this node's chain.
 ///
@@ -33154,6 +33299,10 @@ pub struct ResolvedAbility {
     /// `SequentialSibling` subs resolve even when an optional parent is declined.
     #[serde(default, skip_serializing_if = "SubAbilityLink::is_continuation")]
     pub sub_link: SubAbilityLink,
+    /// CR 115.1 + CR 608.2c: Copied through from the originating
+    /// `AbilityDefinition`. See [`TargetReadOrigin`].
+    #[serde(default, skip_serializing_if = "TargetReadOrigin::is_own")]
+    pub target_reads: TargetReadOrigin,
     /// CR 702.1c ("the same is true") + CR 608.2c (written order): Copied through
     /// from the originating `AbilityDefinition`. When `ReplicatedOrBranch`, this
     /// `SequentialSibling` is an INDEPENDENT
@@ -33274,6 +33423,7 @@ impl PartialEq for ResolvedAbility {
             repeat_until: a_repeat_until,
             replacement_applied: a_replacement_applied,
             sub_link: a_sub_link,
+            target_reads: a_target_reads,
             sibling_condition: a_sibling_condition,
             modal: a_modal,
             mode_abilities: a_mode_abilities,
@@ -33342,6 +33492,7 @@ impl PartialEq for ResolvedAbility {
             repeat_until: b_repeat_until,
             replacement_applied: b_replacement_applied,
             sub_link: b_sub_link,
+            target_reads: b_target_reads,
             sibling_condition: b_sibling_condition,
             modal: b_modal,
             mode_abilities: b_mode_abilities,
@@ -33411,6 +33562,7 @@ impl PartialEq for ResolvedAbility {
             && a_repeat_until == b_repeat_until
             && a_replacement_applied == b_replacement_applied
             && a_sub_link == b_sub_link
+            && a_target_reads == b_target_reads
             && a_sibling_condition == b_sibling_condition
             && a_modal == b_modal
             && a_mode_abilities == b_mode_abilities
@@ -33514,6 +33666,7 @@ impl ResolvedAbility {
             repeat_until: None,
             replacement_applied: HashSet::new(),
             sub_link: SubAbilityLink::ContinuationStep,
+            target_reads: TargetReadOrigin::OwnAnnouncement,
             sibling_condition: SiblingCondition::Dependent,
             source_incarnation: None,
             trigger_source: None,
@@ -35068,6 +35221,67 @@ mod tests {
     use crate::types::game_state::{DelayedTrigger, GameState, ZoneChangeRecord};
     use crate::types::mana::ZoneSpendPolarity;
     use crate::types::zones::Zone;
+
+    /// CR 123.6e: unique vowels are the *different* vowels among A, E, I, O,
+    /// U and Y, case-insensitively, over every text read. Each value exposes
+    /// one wrong implementation: occurrences ("Unique" → 4), case-sensitive
+    /// distinct ("Unique" → 4), Y not a vowel ("Sassy" → 1, "Myr"/"Rhythm" →
+    /// 0), no case fold ("Yogurt" → 2), per-text sum (["Unique", "Cheese"] → 4).
+    #[test]
+    fn letter_query_counts_unique_vowels_per_cr_123_6e() {
+        let vowels = |texts: &[&str]| LetterQuery::UniqueVowels.count_in(texts.iter().copied());
+        assert_eq!(vowels(&["Unique"]), 3);
+        assert_eq!(vowels(&["Sassy"]), 2);
+        assert_eq!(vowels(&["Myr"]), 1);
+        assert_eq!(vowels(&["Rhythm"]), 1);
+        assert_eq!(vowels(&["Yogurt"]), 3);
+        // CR 123.6e: the distinct vowels across both stickers (U, I, E).
+        assert_eq!(vowels(&["Unique", "Cheese"]), 3);
+        assert_eq!(vowels(&[]), 0);
+    }
+
+    /// CR 123.6d: letter occurrences are counted case-insensitively and summed
+    /// over every text read.
+    #[test]
+    fn letter_query_counts_letter_occurrences_per_cr_123_6d() {
+        let letter = |letter: char, texts: &[&str]| {
+            LetterQuery::Letter { letter }.count_in(texts.iter().copied())
+        };
+        assert_eq!(letter('o', &["Hot Dog", "Doom"]), 4);
+        // CR 123.6d: "O" and "o" are the same letter.
+        assert_eq!(letter('o', &["Otter"]), 1);
+        assert_eq!(letter('u', &["Unique"]), 2);
+        // A hand-authored uppercase letter still folds.
+        assert_eq!(letter('O', &["Hot Dog"]), 2);
+    }
+
+    #[test]
+    fn name_sticker_letter_count_serde_shapes() {
+        let that_sticker = QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::ThatSticker,
+            letters: LetterQuery::UniqueVowels,
+        };
+        let on_source = QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject {
+                scope: ObjectScope::Source,
+            },
+            letters: LetterQuery::Letter { letter: 'o' },
+        };
+        let shapes = [
+            (
+                that_sticker,
+                r#"{"type":"NameStickerLetterCount","stickers":{"type":"ThatSticker"},"letters":{"type":"UniqueVowels"}}"#,
+            ),
+            (
+                on_source,
+                r#"{"type":"NameStickerLetterCount","stickers":{"type":"OnObject","scope":{"type":"Source"}},"letters":{"type":"Letter","letter":"o"}}"#,
+            ),
+        ];
+        for (value, json) in shapes {
+            assert_eq!(serde_json::to_string(&value).unwrap(), json);
+            assert_eq!(serde_json::from_str::<QuantityRef>(json).unwrap(), value);
+        }
+    }
 
     /// CR 607.1 + CR 607.5 + CR 613.1f: every trigger occurrence classifies
     /// exhaustively — printed and copied-value occurrences are characteristic
