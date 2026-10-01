@@ -4576,6 +4576,11 @@ async fn handle_socket(
 
             result = socket.recv() => {
                 match result {
+                    // RFC 6455 §5.5.1: tungstenite sends the queued Close reply on the next read, which then ends the stream.
+                    Some(Ok(Message::Close(_))) => {
+                        while let Some(Ok(_)) = socket.recv().await {}
+                        break;
+                    }
                     Some(Ok(msg)) => {
                         if !rate_limiter.check() {
                             debug!("rate limit exceeded, dropping message");
@@ -4593,7 +4598,6 @@ async fn handle_socket(
                                     }
                                 }
                             }
-                            Message::Close(_) => break,
                             _ => continue,
                         };
 
@@ -14898,6 +14902,10 @@ mod issue_4548_full_create_tests {
     use super::draft_socket_authority_tests::{start_draft_match, test_draft_config};
     use super::game_submission_tests::connect_and_hello;
     use super::*;
+    use draft_core::set_pool::{
+        LimitedSetPool, PackSlot, PackVariant, Rarity, SheetCard, SheetDefinition,
+        WeightedSheetChoice,
+    };
     use futures_util::{SinkExt, StreamExt};
     use phase_ai::config::AiDifficulty;
     use server_core::protocol::{
@@ -14905,6 +14913,7 @@ mod issue_4548_full_create_tests {
         ServerMessage,
     };
     use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use tokio_tungstenite::WebSocketStream;
 
@@ -16963,14 +16972,34 @@ mod issue_4548_full_create_tests {
         assert!(result.is_ok(), "timed out");
     }
 
+    #[tokio::test]
+    async fn a_client_close_is_answered_with_a_close_before_the_socket_ends() {
+        let (url, server, _temp_dir, _app_state) = spawn_full_mode_server().await;
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut socket = connect_and_hello(url).await;
+            let close = CloseFrame {
+                code: CloseCode::Normal,
+                reason: "bye".into(),
+            };
+            socket
+                .send(WsMessage::Close(Some(close.clone())))
+                .await
+                .expect("send close");
+            let mut last = None;
+            while let Some(frame) = socket.next().await {
+                last = Some(frame.map_err(|error| error.to_string()));
+            }
+            assert_eq!(last, Some(Ok(WsMessage::Close(Some(close)))));
+        })
+        .await;
+        server.abort();
+        assert!(result.is_ok(), "timed out");
+    }
+
     // ── Draft pods under the listing authority ─────────────────────────────
 
     /// A one-sheet `TST` pool, so a test server can create and start pods.
     fn tst_draft_pools() -> draft_pools::DraftPools {
-        use draft_core::set_pool::{
-            LimitedSetPool, PackSlot, PackVariant, Rarity, SheetCard, SheetDefinition,
-            WeightedSheetChoice,
-        };
         let cards: Vec<SheetCard> = (0..40)
             .map(|i| SheetCard {
                 name: format!("Card {i}"),

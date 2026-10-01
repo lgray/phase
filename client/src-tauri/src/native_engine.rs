@@ -2239,6 +2239,9 @@ fn emit_progress(app: &AppHandle, phase: NativeEngineProgressPhase, detail: Opti
 mod tests {
     use std::{cell::RefCell, fs, time::Duration};
 
+    use tokio::sync::mpsc::error::TryRecvError;
+    use tokio_tungstenite::tungstenite::Message;
+
     use super::*;
 
     const TEST_PUBLIC_KEY: &str = "RWRkGDPsxuBykSbl2mdODJL2Wa/o8ow/1LHjD7Vg8ucmQEM4loTWhAyw";
@@ -3569,8 +3572,6 @@ mod tests {
 
     #[test]
     fn closing_a_registered_bridge_closes_its_queue_without_aborting() {
-        use tokio::sync::mpsc::error::TryRecvError;
-        use tokio_tungstenite::tungstenite::Message;
         let (abort, _registration) = futures_util::future::AbortHandle::new_pair();
         let (outbound, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut bridges = BTreeMap::from([(1, BridgeHandle::new(abort.clone(), outbound))]);
