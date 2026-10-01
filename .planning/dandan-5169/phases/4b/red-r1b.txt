@@ -1,0 +1,41 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 6m 25s
+────────────
+ Nextest run ID 776a06f5-273d-428c-a019-31f3a4b6be73 with nextest profile: default
+    Starting 4 tests across 1 binary (8563 tests skipped)
+        PASS [   2.872s] (1/4) phase-engine::integration loop_only_dependency_fallback::loop_alone_applies_every_member
+        FAIL [   3.078s] (2/4) phase-engine::integration loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+  stdout ───
+
+    running 1 test
+    test loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it ... FAILED
+
+    failures:
+
+    failures:
+        loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8566 filtered out; finished in 3.04s
+
+  stderr ───
+
+    thread 'loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it' (7393) panicked at crates/engine/tests/integration/loop_only_dependency_fallback.rs:134:5:
+    assertion `left == right` failed
+      left: ["Rogue", "Equipment"]
+     right: ["Equipment"]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>>
+       4: integration::loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+       5: integration::loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it::{closure#0}
+       6: <integration::loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   3.316s] (3/4) phase-engine::integration loop_only_dependency_fallback::curse_newer_than_the_loop_applies_after_it
+        PASS [   3.469s] (4/4) phase-engine::integration loop_only_dependency_fallback::curse_on_another_player_leaves_the_loop_recipients_untouched
+────────────
+     Summary [   3.480s] 4 tests run: 3 passed, 1 failed, 8563 skipped
+        FAIL [   3.078s] (2/4) phase-engine::integration loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+error: test run failed

@@ -1,0 +1,373 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 6m 45s
+────────────
+ Nextest run ID fd69d8fd-21ae-4540-b81a-e7d215f7369c with nextest profile: default
+    Starting 355 tests across 1 binary (22312 tests skipped)
+        PASS [   0.023s] (  1/355) phase-engine game::layers::tests::a_phased_out_host_ends_the_presence_effect_and_spares_the_event_deadline
+        PASS [   0.024s] (  2/355) phase-engine game::layers::tests::a_turn_deadline_no_seam_can_key_is_refused_at_the_grant
+        PASS [   0.024s] (  3/355) phase-engine game::layers::tests::a_door_stamped_anthem_applies_only_while_its_half_is_unlocked
+        PASS [   0.025s] (  4/355) phase-engine game::layers::tests::a_dynamic_object_count_escalates_only_for_an_entrant_that_perturbs_it
+        PASS [   0.016s] (  5/355) phase-engine game::layers::tests::add_all_basic_land_types_adds_five_subtypes
+        PASS [   0.019s] (  6/355) phase-engine game::layers::tests::activated_slot_provenance_tracks_layer_1_set_and_layer_6_grants
+        PASS [   0.018s] (  7/355) phase-engine game::layers::tests::add_keyword_annihilator_installs_parameterized_attack_trigger
+        PASS [   0.024s] (  8/355) phase-engine game::layers::tests::add_dynamic_keyword_annihilator_installs_resolved_attack_trigger
+        PASS [   0.016s] (  9/355) phase-engine game::layers::tests::add_keyword_annihilator_preserves_printed_and_granted_instances
+        PASS [   0.015s] ( 10/355) phase-engine game::layers::tests::add_keyword_preserves_distinct_protection_parameters
+        PASS [   0.018s] ( 11/355) phase-engine game::layers::tests::add_keyword_deduplicates_identical_parameters
+        PASS [   0.023s] ( 12/355) phase-engine game::layers::tests::add_keyword_preserves_distinct_ward_parameters
+        PASS [   0.019s] ( 13/355) phase-engine game::layers::tests::add_keyword_undying_installs_and_removes_synthesized_trigger
+        PASS [   0.016s] ( 14/355) phase-engine game::layers::tests::alpha_status_counts_other_creatures_sharing_recipient_creature_type
+        PASS [   0.021s] ( 15/355) phase-engine game::layers::tests::agatha_grants_only_creature_card_abilities_to_countered_creatures
+        PASS [   0.015s] ( 16/355) phase-engine game::layers::tests::arming_keys_on_the_grantee_not_on_the_granting_ability_controller
+        PASS [   0.015s] ( 17/355) phase-engine game::layers::tests::attached_continuous_condition_reads_recipient_power
+        PASS [   0.021s] ( 18/355) phase-engine game::layers::tests::an_event_deadline_permission_ends_only_at_the_hosts_battlefield_exit
+        PASS [   0.014s] ( 19/355) phase-engine game::layers::tests::attached_object_presence_condition_uses_source_attachment_context
+        PASS [   0.015s] ( 20/355) phase-engine game::layers::tests::attribution_clears_between_passes
+        PASS [   0.015s] ( 21/355) phase-engine game::layers::tests::attribution_distinguishes_modifications_within_one_source
+        PASS [   0.017s] ( 22/355) phase-engine game::layers::tests::attribution_multiple_sources_accumulate
+        PASS [   0.021s] ( 23/355) phase-engine game::layers::tests::attribution_layer_copy_records_source
+        PASS [   0.014s] ( 24/355) phase-engine game::layers::tests::attribution_records_removal_modifications
+        PASS [   0.014s] ( 25/355) phase-engine game::layers::tests::attribution_self_grant_is_emitted_engine_side
+        PASS [   0.014s] ( 26/355) phase-engine game::layers::tests::attribution_static_source_keyword_grant
+        PASS [   0.019s] ( 27/355) phase-engine game::layers::tests::attribution_transient_snapshots_source_name
+        PASS [   0.015s] ( 28/355) phase-engine game::layers::tests::attribution_transient_source_pt_grant
+        PASS [   0.014s] ( 29/355) phase-engine game::layers::tests::attribution_transient_uses_lki_when_source_dead
+        PASS [   0.015s] ( 30/355) phase-engine game::layers::tests::base_only_replacement_is_not_duplicated_by_the_carry_over
+        PASS [   0.014s] ( 31/355) phase-engine game::layers::tests::basic_swamp_receives_no_duplicate_swamp_ability_from_urborg
+        PASS [   0.014s] ( 32/355) phase-engine game::layers::tests::blood_moon_does_not_end_a_resolution_created_shield
+        PASS [   0.014s] ( 33/355) phase-engine game::layers::tests::cairn_graveyard_keyword_static_grants_flying_only_while_flyer_in_graveyard
+        PASS [   0.015s] ( 34/355) phase-engine game::layers::tests::cant_have_keyword_denial_applies_to_incremental_entry
+        PASS [   0.014s] ( 35/355) phase-engine game::layers::tests::cant_have_keyword_denial_is_observed_by_layer7_pt
+        PASS [   0.014s] ( 36/355) phase-engine game::layers::tests::cant_have_keyword_denial_overrides_keyword_counter
+        PASS [   0.016s] ( 37/355) phase-engine game::layers::tests::cant_have_keyword_denial_overrides_concurrent_grant
+        PASS [   0.080s] ( 38/355) phase-engine game::layers::tests::azure_beastbinder_attack_artifact_target_skips_base_pt
+        PASS [   0.015s] ( 39/355) phase-engine game::layers::tests::carried_resolution_def_does_not_suppress_an_identical_derived_grant
+        PASS [   0.016s] ( 40/355) phase-engine game::layers::tests::carried_resolution_defs_sort_after_derived_grants
+        PASS [   0.086s] ( 41/355) phase-engine game::layers::tests::azure_beastbinder_attack_sets_target_base_pt_and_strips_abilities_e2e
+        PASS [   0.015s] ( 42/355) phase-engine game::layers::tests::cavernous_maw_animation_retains_cave_land_through_layers
+        PASS [   0.016s] ( 43/355) phase-engine game::layers::tests::cda_admitted_off_battlefield_via_sibling_broad_zone_static
+        PASS [   0.014s] ( 44/355) phase-engine game::layers::tests::characteristic_origin_live_only_replacement_is_still_reset_away
+        PASS [   0.017s] ( 45/355) phase-engine game::layers::tests::cloaked_face_down_retains_ward_under_copy
+        PASS [   0.016s] ( 46/355) phase-engine game::layers::tests::codsworth_ward_grant_targets_only_commanders
+        PASS [   0.015s] ( 47/355) phase-engine game::layers::tests::combat_assignment_rule_effects_observe_final_layered_characteristics
+        PASS [   0.015s] ( 48/355) phase-engine game::layers::tests::combat_assignment_rule_effects_respect_zone_of_function_active_zones
+        PASS [   0.016s] ( 49/355) phase-engine game::layers::tests::combat_assignment_rule_flags_are_post_layer_effects
+        PASS [   0.015s] ( 50/355) phase-engine game::layers::tests::combat_assignment_static_condition_uses_controller_after_layer_two
+        PASS [   0.015s] ( 51/355) phase-engine game::layers::tests::command_zone_cda_reaches_layer_pipeline
+        PASS [   0.015s] ( 52/355) phase-engine game::layers::tests::commanders_you_control_filter_respects_per_player_scope
+        PASS [   0.014s] ( 53/355) phase-engine game::layers::tests::compound_and_false_when_not_your_turn
+        PASS [   0.017s] ( 54/355) phase-engine game::layers::tests::compound_and_false_when_no_counters
+        PASS [   0.016s] ( 55/355) phase-engine game::layers::tests::compound_and_true_when_both_conditions_met
+        PASS [   0.020s] ( 56/355) phase-engine game::layers::tests::commanders_you_control_static_no_op_without_commander
+        PASS [   0.015s] ( 57/355) phase-engine game::layers::tests::compound_condition_animates_planeswalker_as_creature
+        PASS [   0.014s] ( 58/355) phase-engine game::layers::tests::compound_or_true_when_only_one_condition_met
+        PASS [   0.016s] ( 59/355) phase-engine game::layers::tests::compound_condition_does_not_animate_on_opponents_turn
+        PASS [   0.015s] ( 60/355) phase-engine game::layers::tests::condition_over_life_total_escalates
+        PASS [   0.014s] ( 61/355) phase-engine game::layers::tests::conditional_life_more_than_starting_applies_only_above_threshold
+        PASS [   0.016s] ( 62/355) phase-engine game::layers::tests::continuous_effect_scan_zones_preserves_non_or_zone_semantics
+        PASS [   0.015s] ( 63/355) phase-engine game::layers::tests::continuous_effect_scan_zones_recurses_through_or_nested_under_and
+        PASS [   0.014s] ( 64/355) phase-engine game::layers::tests::control_change_expiry_resicks_original_controller
+        PASS [   0.015s] ( 65/355) phase-engine game::layers::tests::control_change_sicks_new_controller
+        PASS [   0.019s] ( 66/355) phase-engine game::layers::tests::controller_lost_life_anthem_escalates
+        PASS [   0.014s] ( 67/355) phase-engine game::layers::tests::copy_effect_does_not_destroy_a_carried_resolution_shield
+        PASS [   0.013s] ( 68/355) phase-engine game::layers::tests::copy_grants_continuous_static_covers_every_copy_layer_variant
+        PASS [   0.050s] ( 69/355) phase-engine game::layers::tests::conditional_grant_with_unenforceable_payment_gate_does_not_apply
+        PASS [   0.012s] ( 70/355) phase-engine game::layers::tests::dependency_order_acyclic_graphs_follow_plain_kahn_order
+        PASS [   0.012s] ( 71/355) phase-engine game::layers::tests::dependency_order_chain_plus_loop_keeps_the_chain
+        PASS [   0.014s] ( 72/355) phase-engine game::layers::tests::dependency_order_dependent_on_whole_loop_waits
+        PASS [   0.025s] ( 73/355) phase-engine game::layers::tests::darksteel_mutation_full_layer_evaluation_e2e
+        PASS [   0.013s] ( 74/355) phase-engine game::layers::tests::dependency_order_loop_member_waits_for_upstream_node
+        PASS [   0.013s] ( 75/355) phase-engine game::layers::tests::dependency_order_stalls_recur_across_loops
+        PASS [   0.013s] ( 76/355) phase-engine game::layers::tests::dependency_order_whole_loop_is_timestamp_order
+        PASS [   0.016s] ( 77/355) phase-engine game::layers::tests::doctor_doom_has_indestructible_with_artifact_creature
+        PASS [   0.019s] ( 78/355) phase-engine game::layers::tests::doctor_doom_has_indestructible_with_plan_enchantment
+        PASS [   0.014s] ( 79/355) phase-engine game::layers::tests::doctor_doom_no_indestructible_when_opponent_controls_artifact_creature
+        PASS [   0.016s] ( 80/355) phase-engine game::layers::tests::doctor_doom_no_indestructible_without_artifact_creature_or_plan
+        PASS [   0.017s] ( 81/355) phase-engine game::layers::tests::dragon_man_cda_power_greatest_mana_value_across_zones
+        PASS [   0.019s] ( 82/355) phase-engine game::layers::tests::double_urborg_only_injects_one_swamp_mana_ability
+        PASS [   0.048s] ( 83/355) phase-engine game::layers::tests::doctor_doom_indestructible_parsed_end_to_end_with_plan_enchantment
+        PASS [   0.014s] ( 84/355) phase-engine game::layers::tests::dynamic_pt_counts_recipient_mana_cost_symbols_per_creature
+        PASS [   0.015s] ( 85/355) phase-engine game::layers::tests::dynamic_pt_counts_words_in_recipient_name_not_source_name
+        PASS [   0.039s] ( 86/355) phase-engine game::layers::tests::dynamic_legendary_anthem_counts_and_affects_legendary_creatures_you_control
+        PASS [   0.015s] ( 87/355) phase-engine game::layers::tests::dynamic_pt_lost_game_player_count_scales_past_one_player
+        PASS [   0.015s] ( 88/355) phase-engine game::layers::tests::dynamic_pt_uses_recipient_controller_hand_size
+        PASS [   0.067s] ( 89/355) phase-engine game::layers::tests::elenda_life_threshold_follows_current_controller_after_control_change
+        PASS [   0.066s] ( 90/355) phase-engine game::layers::tests::elenda_life_thresholds_follow_standard_starting_life
+        PASS [   0.072s] ( 91/355) phase-engine game::layers::tests::elenda_life_thresholds_follow_archenemy_and_current_controller
+        PASS [   0.023s] ( 92/355) phase-engine game::layers::tests::emblem_static_applies_to_matching_creatures
+        PASS [   0.023s] ( 93/355) phase-engine game::layers::tests::end_of_turn_prune_clears_until_end_of_turn_play_from_exile
+        PASS [   0.087s] ( 94/355) phase-engine game::layers::tests::elenda_life_thresholds_follow_two_headed_giant_team_life
+        PASS [   0.024s] ( 95/355) phase-engine game::layers::tests::end_of_turn_prune_preserves_other_durations
+        PASS [   0.024s] ( 96/355) phase-engine game::layers::tests::entered_second_anthem_applies_with_preexisting_generator
+        PASS [   0.023s] ( 97/355) phase-engine game::layers::tests::entered_second_anthem_is_dropped_on_end_of_pass_rebuild
+        PASS [   0.025s] ( 98/355) phase-engine game::layers::tests::entry_incremental_stays_incremental_for_a_copy_naming_a_pre_existing_object
+        PASS [   0.032s] ( 99/355) phase-engine game::layers::tests::entry_incremental_escalates_when_a_live_copy_payload_carries_a_static
+        PASS [   0.029s] (100/355) phase-engine game::layers::tests::entry_timestamp_matches_objectid_order_when_aligned
+        PASS [   0.022s] (101/355) phase-engine game::layers::tests::entry_timestamp_orders_same_sublayer_color_set_by_chronology
+        PASS [   0.021s] (102/355) phase-engine game::layers::tests::evaluate_enchanted_is_face_down_false_when_attached_face_up
+        PASS [   0.019s] (103/355) phase-engine game::layers::tests::evaluate_enchanted_is_face_down_false_when_unattached
+        PASS [   0.019s] (104/355) phase-engine game::layers::tests::evaluate_enchanted_is_face_down_true_when_attached_face_down
+        PASS [   0.022s] (105/355) phase-engine game::layers::tests::evaluate_source_in_zone_command_true_when_in_command_zone
+        PASS [   0.022s] (106/355) phase-engine game::layers::tests::evaluate_source_in_zone_or_disjunction_command_or_battlefield
+        PASS [   0.022s] (107/355) phase-engine game::layers::tests::evaluate_source_is_attacking_false_when_no_combat
+        PASS [   0.022s] (108/355) phase-engine game::layers::tests::evaluate_source_is_attacking_false_when_not_in_attackers
+        PASS [   0.019s] (109/355) phase-engine game::layers::tests::evaluate_source_is_attacking_true_when_in_attackers
+        PASS [   0.018s] (110/355) phase-engine game::layers::tests::evaluate_source_is_blocked_false_when_flag_unset
+        PASS [   0.018s] (111/355) phase-engine game::layers::tests::evaluate_source_is_blocked_true_when_sticky_flag_set
+        PASS [   0.016s] (112/355) phase-engine game::layers::tests::evaluate_source_is_blocking_false_when_not_blocking
+        PASS [   0.017s] (113/355) phase-engine game::layers::tests::evaluate_source_is_blocking_true_when_in_blocker_map
+        PASS [   0.014s] (114/355) phase-engine game::layers::tests::evaluate_source_is_tapped_false_when_untapped
+        PASS [   0.014s] (115/355) phase-engine game::layers::tests::evaluate_source_is_tapped_true_when_tapped
+        PASS [   0.014s] (116/355) phase-engine game::layers::tests::event_deadline_permission_survives_its_hosts_phase_out
+        PASS [   0.015s] (117/355) phase-engine game::layers::tests::exchange_control_sicks_both_permanents
+        PASS [   0.016s] (118/355) phase-engine game::layers::tests::expanded_grant_provider_replacement_gets_a_distinct_occurrence
+        PASS [   0.015s] (119/355) phase-engine game::layers::tests::face_down_reseed_does_not_drop_a_carried_shield
+        PASS [   0.014s] (120/355) phase-engine game::layers::tests::false_condition_anthem_does_not_modify_power_and_toughness
+        PASS [   0.014s] (121/355) phase-engine game::layers::tests::filter_routed_quantity_escalates
+        PASS [   0.012s] (122/355) phase-engine game::layers::tests::for_as_long_as_is_enforceable_only_on_an_exile_resident_grant
+        PASS [   0.014s] (123/355) phase-engine game::layers::tests::frogify_aura_replaces_subtypes_color_and_type
+        PASS [   0.013s] (124/355) phase-engine game::layers::tests::gather_includes_for_as_long_as_when_condition_true
+        PASS [   0.013s] (125/355) phase-engine game::layers::tests::gather_skips_for_as_long_as_when_condition_false
+        PASS [   0.013s] (126/355) phase-engine game::layers::tests::generic_control_a_commander_counts_stolen_opponent_commander
+        PASS [   0.015s] (127/355) phase-engine game::layers::tests::grant_occurrences_survive_full_and_incremental_flush_and_regrant_fresh
+        PASS [   0.015s] (128/355) phase-engine game::layers::tests::granted_activated_abilities_scan_per_distinct_controller
+        PASS [   0.015s] (129/355) phase-engine game::layers::tests::granted_activated_abilities_scan_providers_once_per_controller
+        PASS [   0.015s] (130/355) phase-engine game::layers::tests::granted_fabricate_installs_etb_trigger_on_recipient
+        PASS [   0.015s] (131/355) phase-engine game::layers::tests::granted_riot_static_derives_affected_filter_replacement_on_source
+        PASS [   0.017s] (132/355) phase-engine game::layers::tests::granted_static_condition_uses_its_recipient_controller_after_layer_two
+        PASS [   0.020s] (133/355) phase-engine game::layers::tests::granted_static_ability_applies_inner_scope_to_other_objects
+        PASS [   0.015s] (134/355) phase-engine game::layers::tests::granted_static_timestamp_is_max_of_host_and_recipient
+        PASS [   0.017s] (135/355) phase-engine game::layers::tests::granted_undying_with_complex_filter_fires_on_death
+        PASS [   0.014s] (136/355) phase-engine game::layers::tests::grist_source_zone_condition_is_not_population_dependent
+        PASS [   0.014s] (137/355) phase-engine game::layers::tests::grants_all_activated_abilities_of_cards_exiled_with_it
+        PASS [   0.018s] (138/355) phase-engine game::layers::tests::granted_undying_with_complex_filter_installs_trigger
+        PASS [   0.015s] (139/355) phase-engine game::layers::tests::hand_zone_static_grants_keyword_to_hand_card
+        PASS [   0.014s] (140/355) phase-engine game::layers::tests::has_counters_any_true_when_any_counter_type_present
+        PASS [   0.015s] (141/355) phase-engine game::layers::tests::has_counters_any_false_when_no_counters
+        PASS [   0.015s] (142/355) phase-engine game::layers::tests::has_counters_false_when_zero_loyalty
+        PASS [   0.013s] (143/355) phase-engine game::layers::tests::has_counters_p1p1_ten_or_more_threshold
+        PASS [   0.013s] (144/355) phase-engine game::layers::tests::has_keyword_remains_discriminant_only_for_generic_presence_queries
+        PASS [   0.014s] (145/355) phase-engine game::layers::tests::has_counters_true_when_loyalty_present
+        PASS [   0.015s] (146/355) phase-engine game::layers::tests::host_left_prune_revokes_only_the_departing_hosts_permissions
+        PASS [   0.015s] (147/355) phase-engine game::layers::tests::humility_does_not_end_a_resolution_created_shield
+        PASS [   0.018s] (148/355) phase-engine game::layers::tests::identity_affected_filter_scans_one_candidate_not_the_whole_battlefield
+        PASS [   0.019s] (149/355) phase-engine game::layers::tests::identity_affected_filter_still_respects_the_scanned_zone_population
+        PASS [   0.017s] (150/355) phase-engine game::layers::tests::identity_shortcut_declines_for_a_predicate_and_spans_non_battlefield_zones
+        PASS [   0.016s] (151/355) phase-engine game::layers::tests::impending_not_creature_participates_in_layer_timestamp_ordering
+        PASS [   0.015s] (152/355) phase-engine game::layers::tests::incarnation_anger_grants_haste_from_graveyard_when_mountain_controlled
+        PASS [   0.015s] (153/355) phase-engine game::layers::tests::incarnation_anger_on_battlefield_does_not_grant_haste
+        PASS [   0.014s] (154/355) phase-engine game::layers::tests::incarnation_anger_without_mountain_grants_no_haste
+        PASS [   0.015s] (155/355) phase-engine game::layers::tests::incremental_flush_refreshes_static_mode_presence
+        PASS [   0.015s] (156/355) phase-engine game::layers::tests::incremental_flush_skips_the_census_of_a_dynamic_count_reaching_no_recipient
+        PASS [   0.017s] (157/355) phase-engine game::layers::tests::incremental_flush_still_runs_the_census_of_a_dynamic_count_reaching_a_recipient
+        PASS [   0.018s] (158/355) phase-engine game::layers::tests::incremental_layer_pass_does_not_inherit_remove_all_abilities_suppression
+        PASS [   0.017s] (159/355) phase-engine game::layers::tests::incremental_no_copy_no_sticker_reuses_prepared_shared_gather
+        PASS [   0.015s] (160/355) phase-engine game::layers::tests::incremental_prepare_rebuilds_static_index_before_shared_gather
+        PASS [   0.017s] (161/355) phase-engine game::layers::tests::index_gather_matches_full_scan_set_and_order
+        PASS [   0.015s] (162/355) phase-engine game::layers::tests::layer_1b_overrides_copy_for_face_down_object
+        PASS [   0.031s] (163/355) phase-engine game::layers::tests::issue_1593_abomination_of_llanowar_runtime_counts_elves_and_graveyard
+        PASS [   0.016s] (164/355) phase-engine game::layers::tests::layer_zone_cache_keeps_filters_fresh_across_layers
+        PASS [   0.017s] (165/355) phase-engine game::layers::tests::layer_zone_cache_materializes_battlefield_once_per_pass
+        PASS [   0.050s] (166/355) phase-engine game::layers::tests::koth_emblem_grants_activated_ability_to_controlled_mountains
+        PASS [   0.016s] (167/355) phase-engine game::layers::tests::lieutenant_not_satisfied_by_stolen_opponent_commander
+        PASS [   0.015s] (168/355) phase-engine game::layers::tests::lieutenant_not_satisfied_when_own_commander_controlled_by_opponent
+        PASS [   0.017s] (169/355) phase-engine game::layers::tests::lieutenant_satisfied_by_own_controlled_commander
+        PASS [   0.017s] (170/355) phase-engine game::layers::tests::life_above_starting_reader_escalates
+        PASS [   0.016s] (171/355) phase-engine game::layers::tests::life_cda_escalates_and_derived_power_tracks_life
+        PASS [   0.017s] (172/355) phase-engine game::layers::tests::live_layer_gather_admits_characteristic_defining_static_from_hand
+        PASS [   0.022s] (173/355) phase-engine game::layers::tests::marvin_gains_differently_named_creature_abilities_only
+        PASS [   0.026s] (174/355) phase-engine game::layers::tests::locus_grants_craft_pile_activated_abilities
+        PASS [   0.016s] (175/355) phase-engine game::layers::tests::mirrorweave_onto_face_down_stays_2_2
+        PASS [   0.014s] (176/355) phase-engine game::layers::tests::modification_write_kinds_agree_with_their_layer
+        PASS [   0.015s] (177/355) phase-engine game::layers::tests::mutually_copying_permanents_reach_a_layer_one_fixed_point
+        PASS [   0.020s] (178/355) phase-engine game::layers::tests::muraganda_petroglyphs_buffs_only_abilityless_creatures_e2e
+        PASS [   0.012s] (179/355) phase-engine game::layers::tests::nested_filter_and_player_surfaces_route_to_life
+        PASS [   0.023s] (180/355) phase-engine game::layers::tests::omo_everything_counter_grants_all_land_and_creature_types
+        PASS [   0.020s] (181/355) phase-engine game::layers::tests::only_a_copy_layer_payload_buys_a_layer_one_discovery_generation
+        PASS [   0.032s] (182/355) phase-engine game::layers::tests::off_battlefield_provider_does_not_donate_activated_abilities
+        PASS [   0.019s] (183/355) phase-engine game::layers::tests::opponent_sees_hidden_2_2_not_copied_identity
+        PASS [   0.016s] (184/355) phase-engine game::layers::tests::painters_servant_or_filter_scans_off_battlefield_in_any_zone
+        PASS [   0.020s] (185/355) phase-engine game::layers::tests::parameterized_power_toughness_counters_apply_in_layer_7c
+        PASS [   0.014s] (186/355) phase-engine game::layers::tests::permanent_removed_during_eval_does_not_panic
+        PASS [   0.019s] (187/355) phase-engine game::layers::tests::per_turn_life_counter_gate_escalates
+        PASS [   0.016s] (188/355) phase-engine game::layers::tests::player_attribute_life_filter_escalates
+        PASS [   0.022s] (189/355) phase-engine game::layers::tests::plain_board_skips_and_stays_byte_identical
+        PASS [   0.015s] (190/355) phase-engine game::layers::tests::player_matching_routes_its_payloads_life_reads
+        PASS [   0.018s] (191/355) phase-engine game::layers::tests::presence_bound_permission_ends_when_its_host_phases_out
+        PASS [   0.023s] (192/355) phase-engine game::layers::tests::printed_and_runtime_granted_parameterized_lki_keywords_both_trigger
+        PASS [   0.015s] (193/355) phase-engine game::layers::tests::printed_static_condition_uses_controller_after_layer_two_in_one_pass
+        PASS [   0.012s] (194/355) phase-engine game::layers::tests::pt_dependency_detects_disjunctive_pt_filter_props
+        PASS [   0.019s] (195/355) phase-engine game::layers::tests::prototyped_permanent_keeps_secondary_characteristics_after_type_change
+        PASS [   0.020s] (196/355) phase-engine game::layers::tests::pt_counters_apply_before_switch_in_layer_seven
+        PASS [   0.014s] (197/355) phase-engine game::layers::tests::pt_modification_dependency_overrides_timestamp_in_modify_pt_layer
+        PASS [   0.018s] (198/355) phase-engine game::layers::tests::pt_modification_dependency_overrides_timestamp_in_set_pt_layer
+        PASS [   0.016s] (199/355) phase-engine game::layers::tests::quantity_ref_life_family_leaves_classified_directly
+        PASS [   0.015s] (200/355) phase-engine game::layers::tests::ragost_duplicate_grant_ability_dedups_to_single_ability
+        PASS [   0.017s] (201/355) phase-engine game::layers::tests::recipient_anchored_monarch_condition_binds_only_with_a_recipient
+        PASS [   0.018s] (202/355) phase-engine game::layers::tests::recipient_attacking_owner_target_false_when_no_combat
+        PASS [   0.017s] (203/355) phase-engine game::layers::tests::recipient_attacking_owner_target_false_when_no_recipient
+        PASS [   0.017s] (204/355) phase-engine game::layers::tests::recipient_attacking_owner_target_false_when_not_attacking
+        PASS [   0.015s] (205/355) phase-engine game::layers::tests::recipient_attacking_owner_target_or_planeswalker_matches_owner_controlled_pw
+        PASS [   0.018s] (206/355) phase-engine game::layers::tests::recipient_attacking_owner_target_owner_player_matches_owner
+        PASS [   0.017s] (207/355) phase-engine game::layers::tests::recipient_per_object_anthem_buffs_only_matching
+        PASS [   0.024s] (208/355) phase-engine game::layers::tests::recipient_controller_monarch_anthem_applies_per_recipient_in_continuous_mode
+        PASS [   0.023s] (209/355) phase-engine game::layers::tests::recipient_selfref_nonwall_no_defender
+        PASS [   0.021s] (210/355) phase-engine game::layers::tests::recipient_selfref_wall_keeps_defender
+        PASS [   0.020s] (211/355) phase-engine game::layers::tests::reconfigure_equipment_loses_creature_type_while_attached
+        PASS [   0.019s] (212/355) phase-engine game::layers::tests::remove_all_abilities_removes_basic_land_intrinsic_mana_ability
+        PASS [   0.014s] (213/355) phase-engine game::layers::tests::remove_keyword_undying_removes_synthesized_trigger
+        PASS [   0.021s] (214/355) phase-engine game::layers::tests::replacement_static_grant_source_gets_a_distinct_occurrence
+        PASS [   0.015s] (215/355) phase-engine game::layers::tests::restored_recipient_sourced_board_wide_static_escalates_incremental_flush
+        PASS [   0.020s] (216/355) phase-engine game::layers::tests::resolution_origin_replacement_survives_the_layer_reset_with_its_runtime_state
+        PASS [   0.017s] (217/355) phase-engine game::layers::tests::router_arms_route_life_reading_payloads
+        PASS [   0.015s] (218/355) phase-engine game::layers::tests::same_static_grantor_keeps_byte_identical_trigger_outputs_distinct
+        PASS [   0.020s] (219/355) phase-engine game::layers::tests::same_static_modifications_apply_in_written_order
+        PASS [   0.015s] (220/355) phase-engine game::layers::tests::saturating_counter_conversion_keeps_creature_alive
+        PASS [   0.014s] (221/355) phase-engine game::layers::tests::saturating_pt_prevents_overflow_death_cascade
+        PASS [   0.015s] (222/355) phase-engine game::layers::tests::scoped_monarch_static_condition_is_false_in_both_polarities_cr_725_5
+        PASS [   0.014s] (223/355) phase-engine game::layers::tests::set_basic_land_type_preserves_creature_subtypes
+        PASS [   0.021s] (224/355) phase-engine game::layers::tests::secret_arcade_additive_type_static_applies_across_battlefield_and_stack
+        PASS [   0.014s] (225/355) phase-engine game::layers::tests::set_basic_land_type_replaces_rules_text_with_intrinsic_mana_ability
+        PASS [   0.014s] (226/355) phase-engine game::layers::tests::set_basic_land_type_replaces_subtypes
+        PASS [   0.015s] (227/355) phase-engine game::layers::tests::set_card_types_land_strips_creature_and_creature_subtype
+        PASS [   0.013s] (228/355) phase-engine game::layers::tests::set_card_types_prunes_subtypes_not_matching_new_core_types
+        PASS [   0.014s] (229/355) phase-engine game::layers::tests::set_chosen_basic_land_type_reads_source_choice
+        PASS [   0.015s] (230/355) phase-engine game::layers::tests::set_pt_layer_orders_unconditional_setters_before_pt_threshold_filters
+        PASS [   0.022s] (231/355) phase-engine game::layers::tests::set_chosen_name_renames_equipped_creature_to_source_choice
+        PASS [   0.017s] (232/355) phase-engine game::layers::tests::shield_of_the_oversoul_color_conditional_on_multicolor_creature
+        PASS [   0.015s] (233/355) phase-engine game::layers::tests::song_style_aura_applies_to_host_when_attached_via_attach_to
+        PASS [   0.014s] (234/355) phase-engine game::layers::tests::song_style_set_card_types_and_basic_land_type_makes_nonland_a_forest
+        PASS [   0.013s] (235/355) phase-engine game::layers::tests::source_attached_to_creature_gates
+        PASS [   0.014s] (236/355) phase-engine game::layers::tests::source_is_enchanted_gates_on_attached_aura
+        PASS [   0.013s] (237/355) phase-engine game::layers::tests::source_is_saddled_gates_continuous_effect
+        PASS [   0.013s] (238/355) phase-engine game::layers::tests::source_is_tapped_false_when_source_off_battlefield
+        PASS [   0.013s] (239/355) phase-engine game::layers::tests::source_matches_filter_gates
+        PASS [   0.013s] (240/355) phase-engine game::layers::tests::specific_object_scan_zone_follows_the_objects_actual_zone
+        PASS [   0.014s] (241/355) phase-engine game::layers::tests::static_and_transient_color_interleave_by_true_timestamp
+        PASS [   0.078s] (242/355) phase-engine game::layers::tests::song_of_dryads_from_oracle_strips_host_triggers_and_statics
+        PASS [   0.015s] (243/355) phase-engine game::layers::tests::static_grant_retires_when_source_departs_through_zone_pipeline
+        PASS [   0.015s] (244/355) phase-engine game::layers::tests::static_grant_retires_when_source_owner_is_eliminated
+        PASS [   0.015s] (245/355) phase-engine game::layers::tests::static_mode_presence_equals_functioning_statics_fold
+        PASS [   0.024s] (246/355) phase-engine game::layers::tests::sticker_static_source_is_indexed_with_preexisting_generator
+        PASS [   0.016s] (247/355) phase-engine game::layers::tests::stickered_room_name_matches_between_full_and_incremental_layer_paths
+        PASS [   0.015s] (248/355) phase-engine game::layers::tests::strong_back_per_recipient_dynamic_boost_counts_only_attachments_on_recipient
+        PASS [   0.016s] (249/355) phase-engine game::layers::tests::strong_back_unrelated_enchantment_does_not_inflate_boost
+        PASS [   0.015s] (250/355) phase-engine game::layers::tests::test_aura_static_only_affects_enchanted_creature
+        PASS [   0.015s] (251/355) phase-engine game::layers::tests::test_changeling_cda_grants_all_creature_types
+        PASS [   0.015s] (252/355) phase-engine game::layers::tests::test_changeling_cda_sorts_before_non_cda_in_same_layer
+        PASS [   0.015s] (253/355) phase-engine game::layers::tests::test_chosen_basic_land_type_adds_subtype
+        PASS [   0.015s] (254/355) phase-engine game::layers::tests::test_chosen_basic_land_type_no_choice_is_noop
+        PASS [   0.014s] (255/355) phase-engine game::layers::tests::test_chosen_creature_type_adds_subtype
+        PASS [   0.015s] (256/355) phase-engine game::layers::tests::test_chosen_creature_type_sets_subtype
+        PASS [   0.016s] (257/355) phase-engine game::layers::tests::test_color_change_reverts_to_base_when_source_leaves
+        PASS [   0.015s] (258/355) phase-engine game::layers::tests::test_counter_pt_layer_7e
+        PASS [   0.015s] (259/355) phase-engine game::layers::tests::test_dependency_ordering_overrides_timestamp
+        PASS [   0.014s] (260/355) phase-engine game::layers::tests::test_granted_changeling_gets_all_creature_types_via_postfixup
+        PASS [   0.014s] (261/355) phase-engine game::layers::tests::test_keyword_filtered_lord_uses_source_controller
+        PASS [   0.015s] (262/355) phase-engine game::layers::tests::test_layer_order_type_before_pt
+        PASS [   0.013s] (263/355) phase-engine game::layers::tests::test_layers_dirty_flag_cleared
+        PASS [   0.014s] (264/355) phase-engine game::layers::tests::test_lord_buff_modifies_computed_not_base
+        PASS [   0.014s] (265/355) phase-engine game::layers::tests::test_multi_layer_effect_does_not_double_apply
+        PASS [   0.016s] (266/355) phase-engine game::layers::tests::test_remove_all_abilities_clears_all_computed_ability_buckets
+        PASS [   0.015s] (267/355) phase-engine game::layers::tests::test_remove_all_abilities_reverts_to_base_when_source_leaves
+        PASS [   0.014s] (268/355) phase-engine game::layers::tests::test_remove_chosen_keyword_strips_first_strike_from_target
+        PASS [   0.014s] (269/355) phase-engine game::layers::tests::test_remove_chosen_keyword_strips_only_chosen_landwalk_variant
+        PASS [   0.015s] (270/355) phase-engine game::layers::tests::test_remove_chosen_keyword_without_choice_is_noop
+        PASS [   0.015s] (271/355) phase-engine game::layers::tests::test_source_leaves_battlefield_effect_stops
+        PASS [   0.015s] (272/355) phase-engine game::layers::tests::test_tarmogoyf_cda_counts_card_types_in_graveyards
+        PASS [   0.015s] (273/355) phase-engine game::layers::tests::test_timestamp_ordering_within_layer
+        PASS [   0.016s] (274/355) phase-engine game::layers::tests::test_type_change_reverts_to_base_when_source_leaves
+        PASS [   0.013s] (275/355) phase-engine game::layers::tests::top_of_library_matches_reads_controller_library_top
+        PASS [   0.017s] (276/355) phase-engine game::layers::tests::top_of_library_static_reevaluated_after_mill_to_graveyard
+        PASS [   0.015s] (277/355) phase-engine game::layers::tests::top_of_library_static_reevaluated_after_put_on_top
+        PASS [   0.015s] (278/355) phase-engine game::layers::tests::top_of_library_static_reevaluated_after_shuffle
+        PASS [   0.016s] (279/355) phase-engine game::layers::tests::transient_combat_rule_filter_uses_captured_controller_after_source_is_stolen
+        PASS [   0.014s] (280/355) phase-engine game::layers::tests::transient_static_condition_keeps_its_captured_controller
+        PASS [   0.017s] (281/355) phase-engine game::layers::tests::transient_combat_rule_condition_stays_off_when_captured_controller_fails
+        PASS [   0.014s] (282/355) phase-engine game::layers::tests::until_end_of_next_turn_effect_armed_at_untap_expires_at_cleanup
+        PASS [   0.016s] (283/355) phase-engine game::layers::tests::two_ragosts_grant_food_ability_only_once
+        PASS [   0.017s] (284/355) phase-engine game::layers::tests::unconditional_aura_grant_applies_through_the_same_harness
+        PASS [   0.015s] (285/355) phase-engine game::layers::tests::until_end_of_next_turn_of_specific_player_arms_on_that_players_turn
+        PASS [   0.014s] (286/355) phase-engine game::layers::tests::until_end_of_next_turn_permission_armed_at_untap_expires_at_cleanup
+        PASS [   0.015s] (287/355) phase-engine game::layers::tests::until_next_untap_step_turn_agnostic_expires_at_any_players_untap_step
+        PASS [   0.013s] (288/355) phase-engine game::layers::tests::until_next_upkeep_effect_survives_untap_and_expires_at_controllers_upkeep
+        PASS [   0.014s] (289/355) phase-engine game::layers::tests::until_next_upkeep_play_permission_expires_at_the_grantees_upkeep
+        PASS [   0.014s] (290/355) phase-engine game::layers::tests::until_next_upkeep_turn_agnostic_expires_at_any_players_upkeep
+        PASS [   0.013s] (291/355) phase-engine game::layers::tests::until_object_controllers_next_untap_step_keys_on_the_affected_object
+        PASS [   0.013s] (292/355) phase-engine game::layers::tests::until_your_next_turn_prune_ignores_end_of_turn_duration
+        PASS [   0.015s] (293/355) phase-engine game::layers::tests::until_your_next_turn_prune_expires_for_grantee_only
+        PASS [   0.014s] (294/355) phase-engine game::layers::tests::urborg_adds_swamp_mana_ability_to_every_land
+        PASS [   0.014s] (295/355) phase-engine game::layers::tests::urborg_does_not_inject_mana_onto_non_land
+        PASS [   0.015s] (296/355) phase-engine game::layers::tests::vacant_monarch_static_condition_is_false_in_both_polarities_cr_725_5
+        PASS [   0.017s] (297/355) phase-engine game::layers::tests::whispersilk_compound_grants_shroud_through_layers
+        PASS [   0.013s] (298/355) phase-engine game::layers::tests::whose_turn_leaves_read_the_ability_holder_when_bound
+        PASS [   0.019s] (299/355) phase-engine game::layers::tests::witness_protection_applies_all_characteristics_and_reverts_when_removed
+        PASS [   0.014s] (300/355) phase-engine game::layers::tests::yavimaya_adds_forest_mana_ability_to_plains
+        PASS [   0.015s] (301/355) phase-engine game::layers::tests::you_control_creature_tied_for_greatest_toughness_condition_evaluates_table_wide
+        PASS [   0.013s] (302/355) phase-engine game::players::tests::aggregate_over_teams_dedups_a_shared_team
+        PASS [   0.013s] (303/355) phase-engine game::players::tests::aggregate_over_teams_empty_population_is_zero
+        PASS [   0.013s] (304/355) phase-engine game::players::tests::aggregate_over_teams_non_team_format_keeps_players_distinct
+        PASS [   0.014s] (305/355) phase-engine game::players::tests::apnap_order_from_none_defaults_to_active_player
+        PASS [   0.013s] (306/355) phase-engine game::players::tests::apnap_order_from_other_controller_refs_fall_back_to_apnap
+        PASS [   0.013s] (307/355) phase-engine game::players::tests::apnap_order_from_skips_eliminated_with_override
+        PASS [   0.013s] (308/355) phase-engine game::players::tests::apnap_order_from_starting_with_you_three_player_active_p2
+        PASS [   0.013s] (309/355) phase-engine game::players::tests::apnap_order_from_starting_with_you_uses_controller
+        PASS [   0.013s] (310/355) phase-engine game::players::tests::apnap_order_reverses_with_turn_direction
+        PASS [   0.013s] (311/355) phase-engine game::players::tests::apnap_order_six_player_commander
+        PASS [   0.014s] (312/355) phase-engine game::players::tests::apnap_order_skips_eliminated
+        PASS [   0.013s] (313/355) phase-engine game::players::tests::apnap_order_starts_from_active_player
+        PASS [   0.013s] (314/355) phase-engine game::players::tests::apnap_order_two_player_active_first
+        PASS [   0.012s] (315/355) phase-engine game::players::tests::archenemy_life_and_poison_are_individual_not_shared_by_side
+        PASS [   0.013s] (316/355) phase-engine game::players::tests::is_alive_returns_false_for_eliminated_player
+        PASS [   0.013s] (317/355) phase-engine game::players::tests::is_alive_returns_false_for_nonexistent_player
+        PASS [   0.013s] (318/355) phase-engine game::players::tests::is_alive_returns_true_for_living_player
+        PASS [   0.013s] (319/355) phase-engine game::players::tests::matches_relation_opponent_excludes_two_headed_giant_teammate
+        PASS [   0.014s] (320/355) phase-engine game::players::tests::nearest_opponent_equals_neighbor_in_free_for_all
+        PASS [   0.015s] (321/355) phase-engine game::players::tests::nearest_opponent_none_when_sole_survivor
+        PASS [   0.014s] (322/355) phase-engine game::players::tests::nearest_opponent_skips_teammate_in_two_headed_giant
+        PASS [   0.013s] (323/355) phase-engine game::players::tests::neighbor_left_is_next_right_is_previous
+        PASS [   0.013s] (324/355) phase-engine game::players::tests::next_player_in_turn_order_follows_direction
+        PASS [   0.016s] (325/355) phase-engine game::players::tests::new_two_hg_initializes_15_per_seat_30_team_total
+        PASS [   0.013s] (326/355) phase-engine game::players::tests::next_player_returns_next_in_seat_order
+        PASS [   0.013s] (327/355) phase-engine game::players::tests::next_player_returns_self_if_only_living
+        PASS [   0.013s] (328/355) phase-engine game::players::tests::next_player_skips_eliminated
+        PASS [   0.013s] (329/355) phase-engine game::players::tests::next_player_two_player_standard
+        PASS [   0.013s] (330/355) phase-engine game::players::tests::next_player_wraps_around
+        PASS [   0.013s] (331/355) phase-engine game::players::tests::opponents_returns_all_living_except_self
+        PASS [   0.014s] (332/355) phase-engine game::players::tests::opponents_skips_eliminated
+        PASS [   0.013s] (333/355) phase-engine game::players::tests::opponents_two_headed_giant_excludes_teammate
+        PASS [   0.014s] (334/355) phase-engine game::players::tests::opponents_two_player
+        PASS [   0.013s] (335/355) phase-engine game::players::tests::previous_player_returns_previous_in_seat_order
+        PASS [   0.013s] (336/355) phase-engine game::players::tests::previous_player_returns_self_if_only_living
+        PASS [   0.013s] (337/355) phase-engine game::players::tests::previous_player_skips_eliminated
+        PASS [   0.013s] (338/355) phase-engine game::players::tests::previous_player_two_player_standard
+        PASS [   0.013s] (339/355) phase-engine game::players::tests::previous_player_wraps_around
+        PASS [   0.014s] (340/355) phase-engine game::players::tests::specific_player_anchor_orders_from_the_snapshotted_player
+        PASS [   0.014s] (341/355) phase-engine game::players::tests::team_life_total_at_game_start_is_30_not_60
+        PASS [   0.013s] (342/355) phase-engine game::players::tests::team_life_total_non_team_format_is_full_starting_life
+        PASS [   0.013s] (343/355) phase-engine game::players::tests::team_poison_total_sums_living_teammates
+        PASS [   0.013s] (344/355) phase-engine game::players::tests::teammates_2hg_eliminated_teammate_not_returned
+        PASS [   0.013s] (345/355) phase-engine game::players::tests::teammates_2hg_player_0_has_teammate_1
+        PASS [   0.014s] (346/355) phase-engine game::players::tests::teammates_2hg_player_1_has_teammate_0
+        PASS [   0.013s] (347/355) phase-engine game::players::tests::teammates_2hg_player_2_has_teammate_3
+        PASS [   0.017s] (348/355) phase-engine game::players::tests::teammates_2hg_player_3_has_teammate_2
+        PASS [   0.014s] (349/355) phase-engine game::players::tests::teammates_empty_for_non_team_format
+        PASS [   0.012s] (350/355) phase-engine game::players::tests::turn_order_index_walks_backward_when_reversed
+        PASS [   0.014s] (351/355) phase-engine types::layers::tests::continuous_modification_layer_mapping
+        PASS [   0.012s] (352/355) phase-engine types::layers::tests::dependency_ordering_layers
+        PASS [   0.012s] (353/355) phase-engine types::layers::tests::layer_all_returns_eleven_variants
+        PASS [   0.012s] (354/355) phase-engine types::layers::tests::layer_ordering_is_correct
+        PASS [   3.961s] (355/355) phase-engine game::layers::tests::jaheira_grants_mana_ability_to_noncreature_tokens_you_control
+────────────
+     Summary [   4.762s] 355 tests run: 355 passed, 22312 skipped
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 1m 43s
+────────────
+ Nextest run ID e2bd4794-b8a8-4a3c-aa09-932d5ba60802 with nextest profile: default
+    Starting 4 tests across 1 binary (8563 tests skipped)
+        PASS [   2.268s] (1/4) phase-engine::integration loop_only_dependency_fallback::curse_on_another_player_leaves_the_loop_recipients_untouched
+        PASS [   2.312s] (2/4) phase-engine::integration loop_only_dependency_fallback::curse_newer_than_the_loop_applies_after_it
+        PASS [   2.378s] (3/4) phase-engine::integration loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+        PASS [   2.380s] (4/4) phase-engine::integration loop_only_dependency_fallback::loop_alone_applies_every_member
+────────────
+     Summary [   2.390s] 4 tests run: 4 passed, 8563 skipped
