@@ -158,7 +158,7 @@ fn deconstruction_hammer_sacrifice_hits_the_equipment_not_the_host() {
     let granted = &runner.state().objects[&host].abilities[idx];
     assert_eq!(
         granted.cost.as_ref().and_then(sacrifice_target),
-        Some(&TargetFilter::GrantingObject)
+        Some(&TargetFilter::GrantingObject { bound: None })
     );
     assert_eq!(
         granted.granting_object,
@@ -232,7 +232,7 @@ fn the_dominion_bracelet_exile_hits_the_bracelet_reduction_reads_the_host() {
     let def = granted_activated_def(THE_DOMINION_BRACELET, "The Dominion Bracelet");
     assert_eq!(
         def.cost.as_ref().and_then(exile_filter),
-        Some(&TargetFilter::GrantingObject),
+        Some(&TargetFilter::GrantingObject { bound: None }),
         "the Exile cost names the Bracelet (granter) → GrantingObject, not SelfRef"
     );
     let reduction = def
@@ -279,7 +279,7 @@ fn trusty_boomerang_return_bounces_the_equipment_not_the_host() {
         _ => None,
     })
     .expect("granted ability must carry a Bounce effect");
-    assert_eq!(bounce_target, TargetFilter::GrantingObject);
+    assert_eq!(bounce_target, TargetFilter::GrantingObject { bound: None });
     assert_eq!(
         runner.state().objects[&host].abilities[idx].granting_object,
         Some(ObjectIncarnationRef::from_object(
@@ -737,6 +737,23 @@ fn placeholder_never_leaks_into_any_description() {
     }
 }
 
+/// CR 201.5a: every class member's granter references sit where the typed binder reaches
+/// them, so the parse demotes none of its abilities.
+#[test]
+fn class_corpus_has_no_unreached_granter_reference() {
+    for &(oracle, name, types, subtypes) in CLASS_CORPUS {
+        let types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
+        let subtypes: Vec<String> = subtypes.iter().map(|s| s.to_string()).collect();
+        let parsed = parse_oracle_text(oracle, name, &[], &types, &subtypes);
+        let json = serde_json::to_string(&parsed).expect("ParsedAbilities serializes");
+        assert!(
+            json.contains("\"type\":\"GrantingObject"),
+            "reach-guard: {name}"
+        );
+        assert!(!json.contains("granter_reference_unreached"), "{name}");
+    }
+}
+
 /// CR 201.5a — NON-VACUITY PROOF for `placeholder_never_leaks_into_any_description`.
 ///
 /// A negative assertion is only worth what its ability to fail is worth. This
@@ -893,7 +910,7 @@ fn r4_counter_channel_targets_the_granter() {
             });
         assert_eq!(
             target,
-            &TargetFilter::GrantingObject,
+            &TargetFilter::GrantingObject { bound: None },
             "{name}: the PutCounter target names the granting equipment → GrantingObject"
         );
         // `serde_json`, not `format!("{:?}")`: `Debug` ESCAPES the raw private-use
@@ -1001,7 +1018,7 @@ fn hankyu_remove_all_cost_names_the_granter() {
     assert!(matches!(
         defs[0].effect.as_ref(),
         Effect::PutCounter {
-            target: TargetFilter::GrantingObject,
+            target: TargetFilter::GrantingObject { .. },
             ..
         }
     ));
@@ -1012,7 +1029,7 @@ fn hankyu_remove_all_cost_names_the_granter() {
             _ => None,
         })
         .expect("a remove-counter cost");
-    assert_eq!(remove, Some(TargetFilter::GrantingObject));
+    assert_eq!(remove, Some(TargetFilter::GrantingObject { bound: None }));
 }
 
 /// CR 201.5a: the granted "fight Grothama" fights the granting Grothama.
@@ -1024,7 +1041,9 @@ fn grothama_granted_fight_names_the_granter() {
         &["Creature"],
         &["Wurm"],
     ) {
-        Effect::Fight { target, .. } => assert_eq!(target, TargetFilter::GrantingObject),
+        Effect::Fight { target, .. } => {
+            assert_eq!(target, TargetFilter::GrantingObject { bound: None })
+        }
         other => panic!("expected Fight, got {other:?}"),
     }
 }
@@ -1036,7 +1055,7 @@ fn fishing_pole_tap_cost_names_the_granter() {
     assert!(matches!(
         def.effect.as_ref(),
         Effect::PutCounter {
-            target: TargetFilter::GrantingObject,
+            target: TargetFilter::GrantingObject { .. },
             ..
         }
     ));
@@ -1050,7 +1069,7 @@ fn fishing_pole_tap_cost_names_the_granter() {
             _ => None,
         })
         .expect("a tap effect cost");
-    assert_eq!(tap, TargetFilter::GrantingObject);
+    assert_eq!(tap, TargetFilter::GrantingObject { bound: None });
 }
 
 fn foo_bar_body_condition(body: &str) -> (AbilityDefinition, AbilityCondition) {
@@ -1060,7 +1079,7 @@ fn foo_bar_body_condition(body: &str) -> (AbilityDefinition, AbilityCondition) {
     assert!(matches!(
         sub.effect.as_ref(),
         Effect::Destroy {
-            target: TargetFilter::GrantingObject,
+            target: TargetFilter::GrantingObject { .. },
             ..
         }
     ));
@@ -1110,7 +1129,7 @@ fn heliods_punishment_parse_reads_the_granter() {
     assert!(matches!(
         def.effect.as_ref(),
         Effect::RemoveCounter {
-            target: TargetFilter::GrantingObject,
+            target: TargetFilter::GrantingObject { .. },
             ..
         }
     ));
@@ -1118,7 +1137,7 @@ fn heliods_punishment_parse_reads_the_granter() {
     assert!(matches!(
         sub.effect.as_ref(),
         Effect::Destroy {
-            target: TargetFilter::GrantingObject,
+            target: TargetFilter::GrantingObject { .. },
             ..
         }
     ));
@@ -2139,7 +2158,7 @@ mod concretizer_seams {
                 ..
             } => {
                 assert!(typed.properties.contains(&FilterProp::DistinctFrom {
-                    reference: Box::new(TargetFilter::GrantingObject),
+                    reference: Box::new(TargetFilter::GrantingObject { bound: None }),
                 }));
                 assert!(!typed.properties.contains(&FilterProp::Another));
             }
@@ -2239,7 +2258,7 @@ mod concretizer_seams {
             .map(|s| s.effect.as_mut())
         {
             Some(Effect::Attach { attachment, .. }) => {
-                assert_eq!(*attachment, TargetFilter::GrantingObject);
+                assert_eq!(*attachment, TargetFilter::GrantingObject { bound: None });
             }
             other => panic!("expected Attach, got {other:?}"),
         }
@@ -2276,7 +2295,7 @@ mod concretizer_seams {
                 }
             })
             .expect("the granted trigger is on the host");
-        assert_eq!(attachment, TargetFilter::GrantingObject);
+        assert_eq!(attachment, TargetFilter::GrantingObject { bound: None });
         assert_eq!(stamp, Some(incarnation(runner.state(), blight)));
         assert_ne!(blight, host);
     }
@@ -2971,7 +2990,7 @@ mod concretizer_seams {
         assert_eq!(
             targets,
             vec![(
-                TargetFilter::GrantingObject,
+                TargetFilter::GrantingObject { bound: None },
                 Some(incarnation(runner.state(), sp))
             )]
         );
@@ -3421,13 +3440,13 @@ mod granter_stamp {
             matches_target_filter(
                 st,
                 id,
-                &TargetFilter::GrantingObject,
+                &TargetFilter::GrantingObject { bound: None },
                 &FilterContext::from_ability(a),
             )
         };
 
         let targets = |st: &GameState, a: &ResolvedAbility| {
-            resolved_targets(a, &TargetFilter::GrantingObject, st)
+            resolved_targets(a, &TargetFilter::GrantingObject { bound: None }, st)
         };
         let gated_gain = |st: &GameState, a: &ResolvedAbility| {
             let mut st = st.clone();
@@ -4080,7 +4099,7 @@ mod granter_stamp {
         grant_replacement(
             &mut b,
             ReplacementDefinition::new(ReplacementEvent::Untap)
-                .valid_card(TargetFilter::GrantingObject),
+                .valid_card(TargetFilter::GrantingObject { bound: None }),
         );
         let (host, granters) = (b.host, b.granters.clone());
         assert_eq!(
@@ -4237,7 +4256,7 @@ mod granter_stamp {
     #[test]
     fn granted_assemble_replacement_applies_to_the_granters_assemble() {
         let doubling = ReplacementDefinition::new(ReplacementEvent::AssembleContraption)
-            .valid_card(TargetFilter::GrantingObject)
+            .valid_card(TargetFilter::GrantingObject { bound: None })
             .quantity_modification(QuantityModification::Times { factor: 2 });
         let mut b = board("{T}: Draw a card.", false);
         grant_replacement(&mut b, doubling.clone());
@@ -4588,7 +4607,7 @@ mod granter_stamp {
             TypedFilter::new(TypeFilter::Artifact)
                 .controller(ControllerRef::You)
                 .properties(vec![FilterProp::DistinctFrom {
-                    reference: Box::new(TargetFilter::GrantingObject),
+                    reference: Box::new(TargetFilter::GrantingObject { bound: None }),
                 }]),
         )
     }
@@ -5046,5 +5065,126 @@ mod granter_stamp {
         assert!(serde_json::to_string(&trigger.condition)
             .unwrap()
             .contains("GrantingObject"));
+    }
+
+    mod bound_granter {
+        use super::*;
+
+        const DRAW_BY_GRANTER: &str =
+            "{T}: Draw cards equal to the number of +1/+1 counters on Foo Bar.";
+        const GAIN_BY_GRANTER: &str =
+            "{T}: You gain life equal to the number of +1/+1 counters on Foo Bar.";
+
+        fn foo_bar_gaps(body: &str) -> Vec<String> {
+            let oracle = format!("Equipped creature has \"{body}\"");
+            let types = ["Artifact".to_string()];
+            let subtypes = ["Equipment".to_string()];
+            let parsed = engine::parser::oracle::parse_oracle_text(
+                &oracle,
+                "Foo Bar",
+                &[],
+                &types,
+                &subtypes,
+            );
+            engine::game::coverage::card_face_gaps(&CardFace {
+                name: "Foo Bar".to_string(),
+                oracle_text: Some(oracle),
+                abilities: parsed.abilities,
+                triggers: parsed.triggers,
+                static_abilities: parsed.statics,
+                replacements: parsed.replacements,
+                ..Default::default()
+            })
+        }
+
+        #[test]
+        fn unreached_granter_reference_is_unsupported_and_grants_nothing() {
+            let reached = board(GAIN_BY_GRANTER, false);
+            let st = reached.runner.state();
+            assert_eq!(
+                st.objects[&reached.host]
+                    .abilities
+                    .last()
+                    .and_then(|def| def.granting_object),
+                Some(ObjectIncarnationRef::from_object(
+                    &st.objects[&reached.granters[0]]
+                ))
+            );
+            assert_eq!(foo_bar_gaps(GAIN_BY_GRANTER), Vec::<String>::new());
+
+            assert_eq!(
+                foo_bar_gaps(DRAW_BY_GRANTER),
+                vec!["Effect:granter_reference_unreached".to_string()]
+            );
+            let unreached = board(DRAW_BY_GRANTER, false);
+            assert!(unreached.runner.state().objects[&unreached.host]
+                .abilities
+                .is_empty());
+        }
+
+        /// `(printed shape, core type)` of a grant whose body draws by the granter's counters.
+        const EVERY_PRINTED_KIND: &[(&str, &str)] = &[
+            ("Creatures you control have \"{T}: BODY\"", "Artifact"),
+            ("{T}: Target creature gains \"{T}: BODY\" until end of turn.", "Artifact"),
+            (
+                "At the beginning of your upkeep, target creature gains \"{T}: BODY\" until end of turn.",
+                "Artifact",
+            ),
+            (
+                "You may have Foo Bar enter as a copy of any creature on the battlefield, except it has \"{T}: BODY\"",
+                "Creature",
+            ),
+        ];
+
+        fn printed_kind_parse(shape: &str, core: &str, body: &str) -> (Vec<String>, String) {
+            let oracle = shape.replace("BODY", body);
+            let parsed = engine::parser::oracle::parse_oracle_text(
+                &oracle,
+                "Foo Bar",
+                &[],
+                &[core.to_string()],
+                &[],
+            );
+            let json = serde_json::to_string(&parsed).unwrap();
+            let gaps = engine::game::coverage::card_face_gaps(&CardFace {
+                name: "Foo Bar".to_string(),
+                oracle_text: Some(oracle),
+                abilities: parsed.abilities,
+                triggers: parsed.triggers,
+                static_abilities: parsed.statics,
+                replacements: parsed.replacements,
+                ..Default::default()
+            });
+            (gaps, json)
+        }
+
+        #[test]
+        fn every_printed_kind_with_an_unreached_reference_is_demoted_whole() {
+            const UNREACHED: &str = "Effect:granter_reference_unreached";
+            let mut wrong = Vec::new();
+            for &(shape, core) in EVERY_PRINTED_KIND {
+                let (gaps, json) = printed_kind_parse(
+                    shape,
+                    core,
+                    "You gain life equal to the number of charge counters on Foo Bar.",
+                );
+                if gaps.iter().any(|g| g == UNREACHED)
+                    || !json.contains("\"type\":\"GrantingObject")
+                {
+                    wrong.push(format!("reach-guard {shape}: {gaps:?}"));
+                }
+                let (gaps, json) = printed_kind_parse(
+                    shape,
+                    core,
+                    "Draw cards equal to the number of charge counters on Foo Bar.",
+                );
+                if !gaps.iter().any(|g| g == UNREACHED)
+                    || json.contains("\"type\":\"GrantingObject")
+                {
+                    wrong.push(format!("{shape}: {gaps:?}"));
+                }
+            }
+            assert_eq!(wrong, Vec::<String>::new());
+        }
     }
 }

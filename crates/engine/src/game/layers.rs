@@ -35,7 +35,10 @@ use crate::types::ability::{
     StaticCondition, StaticDefinition, TargetFilter, TriggerGrantProducerKey,
     TriggerProducerOrigin, TypedFilter,
 };
-use crate::types::ability_visit::{nodes_mut, DefinitionNodeMut};
+use crate::types::ability_visit::{
+    each_granter_duration_symbol_mut, each_granter_symbol, granter_symbols, granter_symbols_mut,
+    nodes_mut, DefinitionNode, DefinitionNodeMut,
+};
 use crate::types::attribution::EffectRef;
 use crate::types::card_type::{
     is_land_subtype, noncreature_subtype_set, CoreType, SubtypeSet, Supertype,
@@ -4376,7 +4379,7 @@ fn target_filter_reads_life_total(filter: &TargetFilter) -> bool {
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -6093,38 +6096,7 @@ fn derive_room_battlefield_names(state: &mut GameState, ids: &[ObjectId]) {
 /// path. Ability stickers ride the same existing sticker pass.
 fn finish_layer_one(state: &mut GameState, ids: &[ObjectId]) -> bool {
     derive_room_battlefield_names(state, ids);
-    let stickers_applied =
-        crate::game::stickers::apply_battlefield_name_and_ability_stickers(state, ids);
-    // CR 201.5a: the reseed and copy effects write live statics only in layer 1, so
-    // binding here reaches every later reader.
-    bind_live_static_granters(state, ids);
-    stickers_applied
-}
-
-/// CR 201.5a + CR 707.2: a live static stamped with its granter (a created token's static
-/// naming its creator, or a copy of one) names that object.
-fn bind_live_static_granters(state: &mut GameState, ids: &[ObjectId]) {
-    for &id in ids {
-        let Some(statics) = state
-            .objects
-            .get(&id)
-            .map(|obj| obj.static_definitions.clone())
-            .filter(|statics| statics.iter_all().any(|def| def.granting_object.is_some()))
-        else {
-            continue;
-        };
-        let bound = statics
-            .iter_all()
-            .cloned()
-            .map(|mut def| {
-                bind_static_granter(state, &mut def);
-                def
-            })
-            .collect();
-        if let Some(obj) = state.objects.get_mut(&id) {
-            obj.static_definitions = bound;
-        }
-    }
+    crate::game::stickers::apply_battlefield_name_and_ability_stickers(state, ids)
 }
 
 fn apply_layers_incremental(state: &mut GameState, prepared: PreparedIncrementalFlush) {
@@ -6910,12 +6882,14 @@ fn expand_granted_static_effects(
     }
     // CR 201.5a: the host static's object granted `inner`, so its by-name
     // references bind to that object.
-    let mut stamped = inner.clone();
-    if let Some(host) = state.objects.get(&host_source_id) {
-        stamp_static_granter(&mut stamped, ObjectIncarnationRef::from_object(host));
-    }
-    bind_static_granter(state, &mut stamped);
-    let inner = &stamped;
+    let inner: std::borrow::Cow<'_, StaticDefinition> = match state.objects.get(&host_source_id) {
+        Some(host) if references_granting_object(DefinitionNode::Static(inner)) => {
+            let mut stamped = inner.clone();
+            stamp_static_granter(&mut stamped, ObjectIncarnationRef::from_object(host));
+            std::borrow::Cow::Owned(stamped)
+        }
+        _ => std::borrow::Cow::Borrowed(inner),
+    };
     let inner_affected = inner.affected.clone().unwrap_or(TargetFilter::Any);
     let ctx = crate::game::filter::FilterContext::from_source(state, host_source_id);
     let mut out = Vec::new();
@@ -6977,238 +6951,43 @@ fn expand_granted_static_effects(
 }
 
 /// CR 201.5a: whether a granted body names its granter; only such a body is stamped.
-// Completeness comes from the types' Serialize impls; the typed alternative would be a hand-maintained field mirror.
-fn references_granting_object(body: &impl serde::Serialize) -> bool {
-    fn names_granter(value: &serde_json::Value) -> bool {
-        match value {
-            serde_json::Value::Object(map) => {
-                is_granter_symbol(value) || map.values().any(names_granter)
+fn references_granting_object(body: DefinitionNode<'_>) -> bool {
+    let mut names = false;
+    each_granter_symbol(body, &mut |symbol| {
+        names |= match symbol {
+            granter_symbols::Symbol::Filter(bound) => bound.is_none(),
+            granter_symbols::Symbol::Scope(scope) => {
+                matches!(scope, crate::types::ability::ObjectScope::GrantingObject)
             }
-            serde_json::Value::Array(items) => items.iter().any(names_granter),
-            serde_json::Value::Null
-            | serde_json::Value::Bool(_)
-            | serde_json::Value::Number(_)
-            | serde_json::Value::String(_) => false,
-        }
-    }
-    serde_json::to_value(body).is_ok_and(|value| names_granter(&value))
-}
-
-fn is_granter_symbol(value: &serde_json::Value) -> bool {
-    value.get("type").is_some_and(|tag| tag == "GrantingObject")
-}
-
-fn replace_granter_symbols(value: &mut serde_json::Value, bound: &serde_json::Value) -> bool {
-    if is_granter_symbol(value) {
-        *value = bound.clone();
-        return true;
-    }
-    match value {
-        serde_json::Value::Object(map) => map.values_mut().fold(false, |hit, inner| {
-            replace_granter_symbols(inner, bound) | hit
-        }),
-        serde_json::Value::Array(items) => items.iter_mut().fold(false, |hit, inner| {
-            replace_granter_symbols(inner, bound) | hit
-        }),
-        serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::String(_) => false,
-    }
-}
-
-/// RFC 6901 pointers to every granter symbol in `value`.
-fn granter_symbol_pointers(value: &serde_json::Value, path: String, out: &mut Vec<String>) {
-    if is_granter_symbol(value) {
-        out.push(path);
-        return;
-    }
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, inner) in map {
-                let key = key.replace('~', "~0").replace('/', "~1");
-                granter_symbol_pointers(inner, format!("{path}/{key}"), out);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for (index, inner) in items.iter().enumerate() {
-                granter_symbol_pointers(inner, format!("{path}/{index}"), out);
-            }
-        }
-        serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::String(_) => {}
-    }
-}
-
-/// CR 201.5a + CR 400.7: binds the granter symbols in `body` to `granter` — an `ObjectScope`
-/// position from any stamp, a filter position (which names only an id) only from a current one.
-// Completeness comes from Serialize, as in `references_granting_object`. The merged encoding
-// deserializes in either position; the scope-only encoding only in an `ObjectScope` one.
-fn bind_granter_symbols<T>(state: &GameState, body: &mut T, granter: ObjectIncarnationRef)
-where
-    T: serde::Serialize + serde::de::DeserializeOwned,
-{
-    let Ok(mut value) = serde_json::to_value(&*body) else {
-        return;
-    };
-    let (Ok(serde_json::Value::Object(mut bound)), Ok(serde_json::Value::Object(filter))) = (
-        serde_json::to_value(crate::types::ability::ObjectScope::SpecificObject {
-            object: granter,
-        }),
-        serde_json::to_value(TargetFilter::SpecificObject {
-            id: granter.object_id,
-        }),
-    ) else {
-        unreachable!("both SpecificObject forms serialize as tagged maps");
-    };
-    if granter.is_current(state) {
-        bound.extend(filter);
-        if replace_granter_symbols(&mut value, &serde_json::Value::Object(bound)) {
-            *body = serde_json::from_value(value)
-                .expect("a bound granter deserializes in filter and quantity positions alike");
-        }
-        return;
-    }
-    let scope = serde_json::Value::Object(bound);
-    let mut symbols = Vec::new();
-    granter_symbol_pointers(&value, String::new(), &mut symbols);
-    let mut rebound = false;
-    for pointer in &symbols {
-        let Some(slot) = value.pointer_mut(pointer) else {
-            continue;
         };
-        let symbol = std::mem::replace(slot, scope.clone());
-        if T::deserialize(&value).is_ok() {
-            rebound = true;
-        } else if let Some(slot) = value.pointer_mut(pointer) {
-            *slot = symbol;
-        }
-    }
-    if rebound {
-        *body = serde_json::from_value(value).expect("every kept rewrite deserialized");
+    });
+    names
+}
+
+/// CR 201.5a + CR 400.7 + CR 611.2b: binds the granter symbols in every `Duration` of
+/// `body` to `granter`, because no reader of a duration consults a granter stamp.
+pub(crate) fn bind_granter_durations(body: &mut AbilityDefinition, granter: ObjectIncarnationRef) {
+    each_granter_duration_symbol_mut(body, &mut granter_symbols_mut::bind(granter));
+}
+
+/// A static's own fields are read without its stamp, so they carry it.
+fn bind_static_granter(def: &mut StaticDefinition) {
+    if let Some(granter) = def.granting_object {
+        granter_symbols_mut::node_fields(
+            DefinitionNodeMut::Static(def),
+            &mut granter_symbols_mut::bind(granter),
+        );
     }
 }
 
-/// CR 201.5a + CR 400.7 + CR 611.2b: rewrites the granter symbols in every `Duration`
-/// inside `body` to `granter`, which reads exactly what the stamp reads, because no
-/// reader of a duration consults a granter stamp.
-// Completeness comes from Serialize, as in `references_granting_object`; a node is a
-// duration iff it deserializes as `Duration`, so no field or variant list is kept.
-pub(crate) fn bind_granter_durations<T>(body: &mut T, granter: ObjectIncarnationRef)
-where
-    T: serde::Serialize + serde::de::DeserializeOwned,
-{
-    let (Ok(mut value), Ok(scope)) = (
-        serde_json::to_value(&*body),
-        serde_json::to_value(crate::types::ability::ObjectScope::SpecificObject {
-            object: granter,
-        }),
-    ) else {
-        return;
-    };
-    if bind_duration_nodes(&mut value, &scope) {
-        if let Ok(bound) = serde_json::from_value(value) {
-            *body = bound;
-        }
+/// Only the matcher fields bind; the bodies a replacement runs read their stamp.
+fn bind_replacement_granter(def: &mut crate::types::ability::ReplacementDefinition) {
+    if let Some(granter) = def.granting_object {
+        granter_symbols_mut::node_fields(
+            DefinitionNodeMut::Replacement(def),
+            &mut granter_symbols_mut::bind(granter),
+        );
     }
-}
-
-fn bind_duration_nodes(value: &mut serde_json::Value, scope: &serde_json::Value) -> bool {
-    use serde::Deserialize;
-    if value.is_object() && Duration::deserialize(&*value).is_ok() {
-        let mut bound = value.clone();
-        // An `ObjectId` cannot name an incarnation, so a duration naming the granter in a
-        // filter position stays as it is.
-        let bindable =
-            replace_granter_symbols(&mut bound, scope) && Duration::deserialize(&bound).is_ok();
-        if bindable {
-            *value = bound;
-        }
-        return bindable;
-    }
-    match value {
-        serde_json::Value::Object(map) => map
-            .values_mut()
-            .fold(false, |hit, inner| bind_duration_nodes(inner, scope) | hit),
-        serde_json::Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |hit, inner| bind_duration_nodes(inner, scope) | hit),
-        serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::String(_) => false,
-    }
-}
-
-/// A modification that holds a definition node (a grant or a copy) is left to
-/// that node's own stamping and binding.
-fn bind_granter_in_modification(
-    state: &GameState,
-    modification: &mut ContinuousModification,
-    granter: ObjectIncarnationRef,
-) {
-    let holds_definition =
-        nodes_mut::visit_continuous_mod(modification, &mut |_| std::ops::ControlFlow::Break(()))
-            .is_break();
-    if !holds_definition {
-        bind_granter_symbols(state, modification, granter);
-    }
-}
-
-fn bind_static_granter(state: &GameState, def: &mut StaticDefinition) {
-    let Some(granter) = def.granting_object else {
-        return;
-    };
-    if let Some(affected) = def.affected.as_mut() {
-        bind_granter_symbols(state, affected, granter);
-    }
-    if let Some(condition) = def.condition.as_mut() {
-        bind_granter_symbols(state, condition, granter);
-    }
-    bind_granter_symbols(state, &mut def.mode, granter);
-    for modification in def.modifications.iter_mut() {
-        bind_granter_in_modification(state, modification, granter);
-    }
-}
-
-/// The execute and decline bodies and the tokens a replacement creates outlive the
-/// pass, so they keep the read-time stamp.
-fn bind_replacement_granter(
-    state: &GameState,
-    def: &mut crate::types::ability::ReplacementDefinition,
-) {
-    let Some(granter) = def.granting_object else {
-        return;
-    };
-    let latched = (
-        def.execute.take(),
-        def.runtime_execute.take(),
-        std::mem::take(&mut def.mode),
-        def.additional_token_spec.take(),
-        def.ensure_token_specs.take(),
-    );
-    bind_granter_symbols(state, def, granter);
-    (
-        def.execute,
-        def.runtime_execute,
-        def.mode,
-        def.additional_token_spec,
-        def.ensure_token_specs,
-    ) = latched;
-}
-
-fn bind_effect_granter(state: &GameState, effect: &mut ActiveContinuousEffect) {
-    let Some(granter) = effect.granter else {
-        return;
-    };
-    bind_granter_symbols(state, &mut effect.affected_filter, granter);
-    if let Some(condition) = effect.condition.as_mut() {
-        bind_granter_symbols(state, condition, granter);
-    }
-    bind_granter_symbols(state, &mut effect.mode, granter);
-    bind_granter_in_modification(state, &mut effect.modification, granter);
 }
 
 /// CR 201.5a + CR 613.1f: the stamping rule. Every definition node of a granted
@@ -7236,11 +7015,46 @@ fn stamp_granter(
     }
 }
 
+/// CR 201.5a: whether a grant's body names its granter.
+fn grant_names_granter(modification: &ContinuousModification) -> bool {
+    match modification {
+        ContinuousModification::GrantAbility { definition } => {
+            references_granting_object(DefinitionNode::Ability(definition))
+        }
+        ContinuousModification::GrantTrigger { trigger } => {
+            references_granting_object(DefinitionNode::Trigger(trigger))
+        }
+        ContinuousModification::GrantStaticAbility { definition } => {
+            references_granting_object(DefinitionNode::Static(definition))
+        }
+        ContinuousModification::GrantReplacement { replacement } => {
+            references_granting_object(DefinitionNode::Replacement(replacement))
+        }
+        _ => false,
+    }
+}
+
+/// CR 201.5a + CR 613.1f: stamps a grant's body with `granter`, binding the parts the
+/// layer system reads without the stamp.
+fn stamp_grant(modification: &mut ContinuousModification, granter: ObjectIncarnationRef) {
+    let _ = nodes_mut::visit_continuous_mod(modification, &mut stamp_granter(granter));
+    match modification {
+        ContinuousModification::GrantStaticAbility { definition } => {
+            bind_static_granter(definition)
+        }
+        ContinuousModification::GrantReplacement { replacement } => {
+            bind_replacement_granter(replacement)
+        }
+        _ => {}
+    }
+}
+
 /// CR 201.5a: the stamping rule for a static installed on an object other than
 /// `granter` — a granted static or a created token's static.
 pub(crate) fn stamp_static_granter(def: &mut StaticDefinition, granter: ObjectIncarnationRef) {
-    if references_granting_object(def) {
+    if references_granting_object(DefinitionNode::Static(def)) {
         let _ = nodes_mut::visit_static(def, &mut stamp_granter(granter));
+        bind_static_granter(def);
     }
 }
 
@@ -7637,7 +7451,7 @@ pub(crate) fn gather_transient_continuous_effects(
                     }),
                 ));
             }
-            let mut effect = ActiveContinuousEffect {
+            let effect = ActiveContinuousEffect {
                 source_id: tce.source_id,
                 controller: tce.controller,
                 def_index: None,
@@ -7657,7 +7471,6 @@ pub(crate) fn gather_transient_continuous_effects(
                 characteristic_defining: false,
                 granter: tce.granting_object,
             };
-            bind_effect_granter(state, &mut effect);
             effects.push(effect);
         }
     }
@@ -9250,36 +9063,10 @@ fn apply_continuous_effect_filtered(
         .map(ObjectIncarnationRef::from_object);
     // CR 201.5a: the body is identical for every recipient; stamp and bind it once, and only if one exists.
     let stamped_modification = granter
-        .filter(|_| {
-            !affected_ids.is_empty()
-                && match &effect.modification {
-                    ContinuousModification::GrantAbility { definition } => {
-                        references_granting_object(definition)
-                    }
-                    ContinuousModification::GrantTrigger { trigger } => {
-                        references_granting_object(trigger)
-                    }
-                    ContinuousModification::GrantStaticAbility { definition } => {
-                        references_granting_object(definition)
-                    }
-                    ContinuousModification::GrantReplacement { replacement } => {
-                        references_granting_object(replacement)
-                    }
-                    _ => false,
-                }
-        })
+        .filter(|_| !affected_ids.is_empty() && grant_names_granter(&effect.modification))
         .map(|granter| {
             let mut modification = effect.modification.clone();
-            let _ = nodes_mut::visit_continuous_mod(&mut modification, &mut stamp_granter(granter));
-            match &mut modification {
-                ContinuousModification::GrantStaticAbility { definition } => {
-                    bind_static_granter(state, definition)
-                }
-                ContinuousModification::GrantReplacement { replacement } => {
-                    bind_replacement_granter(state, replacement)
-                }
-                _ => {}
-            }
+            stamp_grant(&mut modification, granter);
             modification
         });
     let modification = stamped_modification
@@ -10349,11 +10136,11 @@ mod tests {
                 .iter_all()
                 .flat_map(|sd| sd.modifications.iter())
                 .filter_map(|m| match m {
-                    ContinuousModification::GrantAbility { definition } => {
-                        Some(references_granting_object(definition))
-                    }
+                    ContinuousModification::GrantAbility { definition } => Some(
+                        references_granting_object(DefinitionNode::Ability(definition)),
+                    ),
                     ContinuousModification::GrantTrigger { trigger } => {
-                        Some(references_granting_object(trigger))
+                        Some(references_granting_object(DefinitionNode::Trigger(trigger)))
                     }
                     _ => None,
                 })
@@ -10368,7 +10155,9 @@ mod tests {
             assert_eq!(grants(body), vec![true], "{body}");
         }
         assert_eq!(grants("{T}: Draw a card."), vec![false]);
-        assert!(!references_granting_object(&ragost_food_ability()));
+        assert!(!references_granting_object(DefinitionNode::Ability(
+            &ragost_food_ability()
+        )));
     }
 
     #[test]
@@ -10396,15 +10185,24 @@ mod tests {
         assert_eq!(trigger.execute.unwrap().granting_object, Some(granter));
 
         let nested = ReplacementDefinition::new(ReplacementEvent::Destroy);
-        assert!(!references_granting_object(&nested));
+        assert!(!references_granting_object(DefinitionNode::Replacement(
+            &nested
+        )));
         let mut body = AbilityDefinition::new(
             AbilityKind::Activated,
             Effect::AddTargetReplacement {
                 replacement: Box::new(nested),
-                target: TargetFilter::GrantingObject,
+                target: TargetFilter::Any,
             },
-        );
-        assert!(references_granting_object(&body));
+        )
+        .sub_ability(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Destroy {
+                target: TargetFilter::GrantingObject { bound: None },
+                cant_regenerate: false,
+            },
+        ));
+        assert!(references_granting_object(DefinitionNode::Ability(&body)));
         let _ = nodes_mut::visit_ability_def(&mut body, &mut stamp_granter(granter));
         let Effect::AddTargetReplacement { replacement, .. } = &*body.effect else {
             unreachable!()

@@ -7524,8 +7524,13 @@ pub enum TargetFilter {
     /// (the host creature). Emitted at parse time by the quote masker in
     /// `normalize_card_name_refs`. It is read against the granter incarnation
     /// stamped on the enclosing definition; unstamped, it resolves to the current
-    /// ability source, or inside a filter to no object.
-    GrantingObject,
+    /// ability source, or inside a filter to no object. `bound` pins the stamped
+    /// incarnation into the filter itself for carriers read without the stamp; it
+    /// matches only that incarnation (CR 400.7).
+    GrantingObject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bound: Option<ObjectIncarnationRef>,
+    },
     /// CR 702.95b: Resolves to the source object and the creature it is paired
     /// with. If the source is not paired, this matches no objects.
     SourceOrPaired,
@@ -8731,6 +8736,11 @@ impl PropertyAggregate {
 
     pub fn source(&self) -> &CardTypeSetSource {
         &self.source
+    }
+
+    /// Filter rewrites keep every member's kind, so the constructor's invariants hold.
+    pub(crate) fn source_mut(&mut self) -> &mut CardTypeSetSource {
+        &mut self.source
     }
 }
 
@@ -21370,7 +21380,7 @@ impl TargetFilter {
                 | TargetFilter::SpecificObject { .. }
                 // CR 201.5a + CR 115.10a: a granter named by a granted body is affected, never a
                 // declared target.
-                | TargetFilter::GrantingObject
+                | TargetFilter::GrantingObject { .. }
         )
     }
 

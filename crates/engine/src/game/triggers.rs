@@ -12086,7 +12086,7 @@ fn filter_binding_diverges(filter: &TargetFilter) -> bool {
         // the source's attachment / pairing.
         | TargetFilter::SelfRef
         | TargetFilter::OriginalSource
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceController
         | TargetFilter::Owner
         | TargetFilter::AttachedTo

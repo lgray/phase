@@ -396,7 +396,11 @@ pub fn parse_self_reference(input: &str) -> OracleResult<'_, TargetFilter> {
 /// [`parse_self_reference`] (effect-target channel) and
 /// [`parse_cost_self_reference`] (cost channel).
 pub fn parse_granting_object_ref(input: &str) -> OracleResult<'_, TargetFilter> {
-    value(TargetFilter::GrantingObject, tag(GRANTING_SELF_PLACEHOLDER)).parse(input)
+    value(
+        TargetFilter::GrantingObject { bound: None },
+        tag(GRANTING_SELF_PLACEHOLDER),
+    )
+    .parse(input)
 }
 
 /// CR 201.5 / CR 201.5a: Shared self-reference combinator for *cost* positions

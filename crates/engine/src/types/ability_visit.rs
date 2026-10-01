@@ -1098,3 +1098,425 @@ pub mod nodes_mut {
 
     define_walk!([mut]; [FnMut(DefinitionNodeMut<'_>) -> ControlFlow<()>]; skip_effects; visit_each_node; exclusive_iter);
 }
+
+macro_rules! visit_each_node_ref {
+    ($visit:ident, $kind:ident, $node:ident) => {
+        $visit(DefinitionNode::$kind(&*$node))?
+    };
+}
+
+/// A definition node surfaced by the shared node walk.
+pub enum DefinitionNode<'a> {
+    Ability(&'a AbilityDefinition),
+    Trigger(&'a TriggerDefinition),
+    Static(&'a StaticDefinition),
+    Replacement(&'a ReplacementDefinition),
+}
+
+/// The shared twin of [`nodes_mut`].
+pub mod nodes {
+    use super::*;
+
+    define_walk!([]; [FnMut(DefinitionNode<'_>) -> ControlFlow<()>]; skip_effects; visit_each_node_ref; shared_iter);
+}
+
+/// CR 201.5a: the positions in one definition node where a granter symbol is bound.
+///
+/// The parser can place a symbol elsewhere; every entry that parses masked text then refuses
+/// that definition (`parser::oracle::granter_reference_unreached`).
+macro_rules! define_granter_walk {
+    ([$($mut_:tt)?]; $Node:ident) => {
+use crate::types::ability::{
+    AbilityCondition, AbilityCost, ActivationRestriction, CardTypeSetSource,
+    ContinuousModification, Duration, Effect, FilterProp, ObjectScope, ParsedCondition,
+    PtValue, QuantityExpr, QuantityRef, ReplacementCondition, StaticCondition,
+    TargetFilter, TriggerCondition,
+};
+use crate::types::identifiers::ObjectIncarnationRef;
+use crate::types::statics::{BlockExceptionKind, StaticMode};
+use super::$Node;
+
+/// A granter symbol: the incarnation slot of a filter, or an object scope.
+pub(crate) enum Symbol<'a> {
+    Filter(&'a $($mut_)? Option<ObjectIncarnationRef>),
+    Scope(&'a $($mut_)? ObjectScope),
+}
+
+/// Visits the symbols in `node`'s own fields; nested definition nodes are not entered.
+pub(crate) fn node_fields(node: $Node<'_>, v: &mut impl FnMut(Symbol<'_>)) {
+    match node {
+        $Node::Ability(def) => {
+            effect(&$($mut_)? def.effect, v);
+            if let Some(cost) = &$($mut_)? def.cost {
+                ability_cost(cost, v);
+            }
+            if let Some(condition) = &$($mut_)? def.condition {
+                ability_condition(condition, v);
+            }
+            if let Some(d) = &$($mut_)? def.duration {
+                duration(d, v);
+            }
+            for restriction in &$($mut_)? def.activation_restrictions {
+                if let ActivationRestriction::RequiresCondition {
+                    condition: Some(ParsedCondition::QuantityComparison { lhs, rhs, .. }),
+                } = restriction
+                {
+                    quantity(lhs, v);
+                    quantity(rhs, v);
+                }
+            }
+        }
+        $Node::Trigger(trigger) => {
+            for f in [&$($mut_)? trigger.valid_card, &$($mut_)? trigger.valid_target, &$($mut_)? trigger.valid_source]
+                .into_iter()
+                .flatten()
+            {
+                filter(f, v);
+            }
+            if let Some(condition) = &$($mut_)? trigger.condition {
+                trigger_condition(condition, v);
+            }
+        }
+        $Node::Static(def) => {
+            if let Some(affected) = &$($mut_)? def.affected {
+                filter(affected, v);
+            }
+            if let Some(condition) = &$($mut_)? def.condition {
+                static_condition(condition, v);
+            }
+            static_mode(&$($mut_)? def.mode, v);
+            for m in &$($mut_)? def.modifications {
+                modification(m, v);
+            }
+        }
+        $Node::Replacement(def) => {
+            if let Some(f) = &$($mut_)? def.valid_card {
+                filter(f, v);
+            }
+            if let Some(condition) = &$($mut_)? def.condition {
+                replacement_condition(condition, v);
+            }
+        }
+    }
+}
+
+fn effect(e: &$($mut_)? Effect, v: &mut impl FnMut(Symbol<'_>)) {
+    match e {
+        Effect::Sacrifice { target, count, .. }
+        | Effect::PutCounter { target, count, .. }
+        | Effect::RemoveCounter { target, count, .. } => {
+            filter(target, v);
+            quantity(count, v);
+        }
+        Effect::ChangeZone { target, .. }
+        | Effect::Bounce { target, .. }
+        | Effect::Destroy { target, .. }
+        | Effect::Fight { target, .. }
+        | Effect::SetTapState { target, .. }
+        | Effect::Attach { attachment: target, .. } => filter(target, v),
+        Effect::DealDamage { amount, target, .. } => {
+            quantity(amount, v);
+            filter(target, v);
+        }
+        Effect::GainLife { amount, .. } => quantity(amount, v),
+        Effect::Pump { power, toughness, target, .. } => {
+            pt(power, v);
+            pt(toughness, v);
+            filter(target, v);
+        }
+        Effect::Token { power, toughness, .. } => {
+            pt(power, v);
+            pt(toughness, v);
+        }
+        Effect::Animate { power, toughness, .. } => {
+            for p in [power, toughness].into_iter().flatten() {
+                pt(p, v);
+            }
+        }
+        Effect::BecomeCopy { duration: Some(d), .. }
+        | Effect::CastFromZone { duration: Some(d), .. }
+        | Effect::GenericEffect { duration: Some(d), .. } => duration(d, v),
+        _ => {}
+    }
+}
+
+fn ability_cost(cost: &$($mut_)? AbilityCost, v: &mut impl FnMut(Symbol<'_>)) {
+    match cost {
+        AbilityCost::Sacrifice(sacrifice) => filter(&$($mut_)? sacrifice.target, v),
+        AbilityCost::Exile { filter: Some(f), .. }
+        | AbilityCost::RemoveCounter { target: Some(f), .. }
+        | AbilityCost::ReturnToHand { filter: Some(f), .. }
+        | AbilityCost::Reveal { filter: Some(f), .. } => filter(f, v),
+        AbilityCost::EffectCost { effect: e } => effect(e, v),
+        AbilityCost::Composite { costs } | AbilityCost::OneOf { costs } => {
+            for c in costs {
+                ability_cost(c, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ability_condition(condition: &$($mut_)? AbilityCondition, v: &mut impl FnMut(Symbol<'_>)) {
+    match condition {
+        AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
+            quantity(lhs, v);
+            quantity(rhs, v);
+        }
+        AbilityCondition::PreviousEffectAmount { rhs, .. } => quantity(rhs, v),
+        AbilityCondition::ConditionInstead { inner: c } | AbilityCondition::Not { condition: c } => {
+            ability_condition(c, v)
+        }
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            for c in conditions {
+                ability_condition(c, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn trigger_condition(condition: &$($mut_)? TriggerCondition, v: &mut impl FnMut(Symbol<'_>)) {
+    match condition {
+        TriggerCondition::ControlsType { filter: f } | TriggerCondition::ControlsNone { filter: f } => {
+            filter(f, v)
+        }
+        TriggerCondition::QuantityComparison { lhs, rhs, .. } => {
+            quantity(lhs, v);
+            quantity(rhs, v);
+        }
+        TriggerCondition::Not { condition: c } => trigger_condition(c, v),
+        TriggerCondition::And { conditions } | TriggerCondition::Or { conditions } => {
+            for c in conditions {
+                trigger_condition(c, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn static_condition(condition: &$($mut_)? StaticCondition, v: &mut impl FnMut(Symbol<'_>)) {
+    match condition {
+        StaticCondition::QuantityComparison { lhs, rhs, .. } => {
+            quantity(lhs, v);
+            quantity(rhs, v);
+        }
+        StaticCondition::IsTapped { scope } => object_scope(scope, v),
+        StaticCondition::Not { condition: c } => static_condition(c, v),
+        StaticCondition::And { conditions } | StaticCondition::Or { conditions } => {
+            for c in conditions {
+                static_condition(c, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replacement_condition(condition: &$($mut_)? ReplacementCondition, v: &mut impl FnMut(Symbol<'_>)) {
+    match condition {
+        ReplacementCondition::OnlyIfQuantity { lhs, rhs, .. }
+        | ReplacementCondition::UnlessQuantity { lhs, rhs, .. } => {
+            quantity(lhs, v);
+            quantity(rhs, v);
+        }
+        ReplacementCondition::UnlessControlsCountMatching { filter: f, .. } => filter(f, v),
+        ReplacementCondition::And { conditions } => {
+            for c in conditions {
+                replacement_condition(c, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn static_mode(mode: &$($mut_)? StaticMode, v: &mut impl FnMut(Symbol<'_>)) {
+    match mode {
+        StaticMode::CantBeBlockedBy { filter: f }
+        | StaticMode::CantBeBlockedExceptBy { kind: BlockExceptionKind::Quality(f) } => filter(f, v),
+        _ => {}
+    }
+}
+
+/// Only a modification's own values; a grant's definition is a node of its own.
+pub(crate) fn modification(m: &$($mut_)? ContinuousModification, v: &mut impl FnMut(Symbol<'_>)) {
+    match m {
+        ContinuousModification::SetDynamicPower { value }
+        | ContinuousModification::SetDynamicToughness { value }
+        | ContinuousModification::SetPowerDynamic { value }
+        | ContinuousModification::SetToughnessDynamic { value }
+        | ContinuousModification::AddDynamicPower { value }
+        | ContinuousModification::AddDynamicToughness { value } => quantity(value, v),
+        ContinuousModification::AddStaticMode { mode } => static_mode(mode, v),
+        _ => {}
+    }
+}
+
+fn duration(d: &$($mut_)? Duration, v: &mut impl FnMut(Symbol<'_>)) {
+    if let Duration::ForAsLongAs { condition } = d {
+        static_condition(condition, v);
+    }
+}
+
+pub(crate) fn filter(f: &$($mut_)? TargetFilter, v: &mut impl FnMut(Symbol<'_>)) {
+    match f {
+        TargetFilter::GrantingObject { bound } => v(Symbol::Filter(bound)),
+        TargetFilter::Typed(typed) => {
+            for prop in &$($mut_)? typed.properties {
+                match prop {
+                    FilterProp::DistinctFrom { reference } => filter(reference, v),
+                    FilterProp::Cmc { value, .. } | FilterProp::PtComparison { value, .. } => {
+                        quantity(value, v)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        TargetFilter::Not { filter: inner } => filter(inner, v),
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            for inner in filters {
+                filter(inner, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pt(p: &$($mut_)? PtValue, v: &mut impl FnMut(Symbol<'_>)) {
+    if let PtValue::Quantity(q) = p {
+        quantity(q, v);
+    }
+}
+
+fn quantity(q: &$($mut_)? QuantityExpr, v: &mut impl FnMut(Symbol<'_>)) {
+    match q {
+        QuantityExpr::Ref { qty } => quantity_ref(qty, v),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::UpTo { max: inner }
+        | QuantityExpr::Power { exponent: inner, .. } => quantity(inner, v),
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+            for inner in exprs {
+                quantity(inner, v);
+            }
+        }
+        QuantityExpr::Difference { left, right } => {
+            quantity(left, v);
+            quantity(right, v);
+        }
+        QuantityExpr::Fixed { .. } => {}
+    }
+}
+
+fn quantity_ref(r: &$($mut_)? QuantityRef, v: &mut impl FnMut(Symbol<'_>)) {
+    match r {
+        QuantityRef::CountersOn { scope, .. } => object_scope(scope, v),
+        QuantityRef::ObjectCount { filter: f } => filter(f, v),
+        QuantityRef::PropertyAggregate(aggregate) => {
+            if let CardTypeSetSource::Objects { filter: f } = define_granter_walk!(@source aggregate $($mut_)?) {
+                filter(f, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn object_scope(scope: &$($mut_)? ObjectScope, v: &mut impl FnMut(Symbol<'_>)) {
+    if matches!(scope, ObjectScope::GrantingObject) {
+        v(Symbol::Scope(scope));
+    }
+}
+    };
+    (@source $aggregate:ident) => { $aggregate.source() };
+    (@source $aggregate:ident mut) => { $aggregate.source_mut() };
+}
+
+/// Shared granter-symbol walk.
+pub(crate) mod granter_symbols {
+    define_granter_walk!([]; DefinitionNode);
+}
+
+/// Exclusive granter-symbol walk.
+pub(crate) mod granter_symbols_mut {
+    define_granter_walk!([mut]; DefinitionNodeMut);
+
+    /// Visits the symbols inside the durations of `node`'s own fields.
+    pub(crate) fn node_durations(node: DefinitionNodeMut<'_>, v: &mut impl FnMut(Symbol<'_>)) {
+        let DefinitionNodeMut::Ability(def) = node else {
+            return;
+        };
+        if let Some(d) = &mut def.duration {
+            duration(d, v);
+        }
+        if let Effect::BecomeCopy {
+            duration: Some(d), ..
+        }
+        | Effect::CastFromZone {
+            duration: Some(d), ..
+        }
+        | Effect::GenericEffect {
+            duration: Some(d), ..
+        } = &mut *def.effect
+        {
+            duration(d, v);
+        }
+    }
+
+    /// CR 201.5a + CR 400.7: binds a symbol to `granter` — a scope to that incarnation
+    /// whether current or not, a filter to match that incarnation and no later one.
+    pub(crate) fn bind(granter: ObjectIncarnationRef) -> impl FnMut(Symbol<'_>) {
+        move |symbol| match symbol {
+            Symbol::Filter(bound) => {
+                bound.get_or_insert(granter);
+            }
+            Symbol::Scope(scope) => *scope = ObjectScope::SpecificObject { object: granter },
+        }
+    }
+}
+
+/// Visits every granter symbol in `root` and the definition nodes nested in it.
+pub(crate) fn each_granter_symbol(
+    root: DefinitionNode<'_>,
+    v: &mut impl FnMut(granter_symbols::Symbol<'_>),
+) {
+    let mut on_node = |node: DefinitionNode<'_>| on_granter_node(node, v);
+    let _ = match root {
+        DefinitionNode::Ability(def) => nodes::visit_ability_def(def, &mut on_node),
+        DefinitionNode::Trigger(trigger) => nodes::visit_trigger(trigger, &mut on_node),
+        DefinitionNode::Static(def) => nodes::visit_static(def, &mut on_node),
+        DefinitionNode::Replacement(def) => nodes::visit_replacement(def, &mut on_node),
+    };
+}
+
+// `BecomeCopy` is a leaf of the node walk, but its extra modifications carry grants.
+fn on_granter_node(
+    node: DefinitionNode<'_>,
+    v: &mut impl FnMut(granter_symbols::Symbol<'_>),
+) -> ControlFlow<()> {
+    if let DefinitionNode::Ability(def) = &node {
+        if let Effect::BecomeCopy {
+            additional_modifications,
+            ..
+        } = &*def.effect
+        {
+            for modification in additional_modifications {
+                let _ =
+                    nodes::visit_continuous_mod(modification, &mut |n| on_granter_node(n, &mut *v));
+            }
+        }
+    }
+    granter_symbols::node_fields(node, v);
+    ControlFlow::Continue(())
+}
+
+/// Visits every granter symbol inside a duration of `def` or of a definition nested in it.
+pub(crate) fn each_granter_duration_symbol_mut(
+    def: &mut AbilityDefinition,
+    v: &mut impl FnMut(granter_symbols_mut::Symbol<'_>),
+) {
+    let _ = nodes_mut::visit_ability_def(def, &mut |node| {
+        granter_symbols_mut::node_durations(node, v);
+        ControlFlow::Continue(())
+    });
+}

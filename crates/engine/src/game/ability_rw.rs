@@ -1446,7 +1446,7 @@ fn scope_of(target: &TargetFilter, chain_root: Option<WriteScope>) -> WriteScope
         // CR 201.5a: a reference to the specific existing object that granted the
         // ability — a write to it lands on an external object, exactly like
         // `SpecificObject`.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SpecificObject { .. }
         | TargetFilter::SpecificPlayer { .. }
         | TargetFilter::PlayerWhoChoseLabel { .. }
@@ -2421,7 +2421,7 @@ fn legacy_target_filter(f: &TargetFilter) -> bool {
         | TargetFilter::StackAbility { .. }
         // CR 201.5a: the granting object is not one of the 12 frozen event-context
         // tags (mirrors `SpecificObject`).
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SpecificObject { .. }
         | TargetFilter::SpecificPlayer { .. }
         | TargetFilter::PlayerWhoChoseLabel { .. }
@@ -2649,7 +2649,7 @@ fn member_bound_target_filter(f: &TargetFilter) -> bool {
         // Classified fail-closed (maximal-conservative) on the member-bound axis: an
         // elided member-bound read is fail-OPEN (a false auto-order, CR 603.3b), so
         // a symbolic referent takes `true`, never `false`.
-        | TargetFilter::GrantingObject => true,
+        | TargetFilter::GrantingObject { .. } => true,
         TargetFilter::Not { filter } => member_bound_target_filter(filter),
         TargetFilter::And { filters } | TargetFilter::Or { filters } => {
             filters.iter().any(member_bound_target_filter)
@@ -7188,7 +7188,7 @@ fn rw_target_filter(x: &TargetFilter) -> RwProfile {
         // CR 201.5a: a bare object reference is a read-free selector (mirrors
         // `SpecificObject`); the member-bound bit is added by the trailing
         // `member_bound_target_filter` union below.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SpecificObject { .. }
         | TargetFilter::SpecificPlayer { .. }
         | TargetFilter::Neighbor { .. }

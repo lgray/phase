@@ -19806,7 +19806,10 @@ fn resolution_optional_payment_sacrifice_allowlist_fails_closed() {
     );
     for forbidden in [
         AbilityCost::Sacrifice(SacrificeCost::count(TargetFilter::SelfRef, 1)),
-        AbilityCost::Sacrifice(SacrificeCost::count(TargetFilter::GrantingObject, 1)),
+        AbilityCost::Sacrifice(SacrificeCost::count(
+            TargetFilter::GrantingObject { bound: None },
+            1,
+        )),
         AbilityCost::Sacrifice(SacrificeCost::count(TargetFilter::Any, 1)),
         AbilityCost::Sacrifice(SacrificeCost::count(typed.clone(), 0)),
         AbilityCost::Sacrifice(SacrificeCost::count(typed.clone(), u32::MAX)),

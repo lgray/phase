@@ -6533,7 +6533,7 @@ fn build_restriction_clause(
             | TargetFilter::SourceController
             | TargetFilter::ControllerAndControlledPermanents { .. }
             | TargetFilter::Opponent
-            | TargetFilter::GrantingObject
+            | TargetFilter::GrantingObject { .. }
             | TargetFilter::SourceOrPaired
             | TargetFilter::Not { .. }
             | TargetFilter::Or { .. }

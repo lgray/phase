@@ -2347,7 +2347,7 @@ pub(super) fn resolve_defined_or_targets(
     }
 
     // CR 201.5a + CR 400.7: a granter named by a granted body is its stamped incarnation.
-    if let Some(filter @ TargetFilter::GrantingObject) = target_spec {
+    if let Some(filter @ TargetFilter::GrantingObject { .. }) = target_spec {
         return crate::game::targeting::resolved_object_ids_for_filter(state, ability, filter);
     }
 

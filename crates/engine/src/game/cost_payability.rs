@@ -110,7 +110,7 @@ pub(crate) fn target_filter_has_x_mana_value_constraint(filter: &TargetFilter) -
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
         // CR 201.5a: a granter self-ref carries no pitch-bound X.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         // CR 608.2c: source-relative object ref carries no pitch-bound X.
         | TargetFilter::OriginalSource
         | TargetFilter::AllPlayers => false,
@@ -292,7 +292,7 @@ pub(crate) fn relax_x_mana_value_constraint(filter: &TargetFilter) -> TargetFilt
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
         // CR 201.5a: no pitch-bound X constraint to relax.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         // CR 608.2c: source-relative object ref — nothing to relax.
         | TargetFilter::OriginalSource
         | TargetFilter::AllPlayers => filter.clone(),
@@ -1002,7 +1002,7 @@ pub(super) fn exile_cost_effective_zone(zone: Option<Zone>, filter: Option<&Targ
     zone.unwrap_or_else(|| match filter {
         // CR 201.5a + CR 113.6: a zone-less cost naming its granter exiles the
         // granter, whose granting ability functions only on the battlefield.
-        Some(TargetFilter::GrantingObject) => Zone::Battlefield,
+        Some(TargetFilter::GrantingObject { .. }) => Zone::Battlefield,
         Some(f) if crate::game::filter::filter_implies_battlefield_permanent(f) => {
             Zone::Battlefield
         }
@@ -1214,7 +1214,7 @@ mod tests {
         let rows: [(&str, TargetFilter, Zone); 7] = [
             (
                 "the granter",
-                TargetFilter::GrantingObject,
+                TargetFilter::GrantingObject { bound: None },
                 Zone::Battlefield,
             ),
             (

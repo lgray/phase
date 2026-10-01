@@ -9923,7 +9923,7 @@ fn rebind_controller_scope(filter: &mut TargetFilter, from: ControllerRef, to: C
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -24268,7 +24268,12 @@ fn has_typed_target_widened(effect: &Effect) -> bool {
 fn prior_clause_granter_referent(clauses: &[ClauseIr]) -> Option<ObjectScope> {
     clauses
         .last()
-        .filter(|prev| prev.parsed.effect.target_filter() == Some(&TargetFilter::GrantingObject))
+        .filter(|prev| {
+            matches!(
+                prev.parsed.effect.target_filter(),
+                Some(TargetFilter::GrantingObject { .. })
+            )
+        })
         .map(|_| ObjectScope::GrantingObject)
 }
 

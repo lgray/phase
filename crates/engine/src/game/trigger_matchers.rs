@@ -901,7 +901,7 @@ pub(super) fn target_filter_matches_object(
         TargetFilter::Any
         | TargetFilter::SelfRef
         // CR 201.5a: a source-relative object ref; delegates like the other object refs.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::OriginalSource
         | TargetFilter::SourceOrPaired
         | TargetFilter::Typed(_)

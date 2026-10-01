@@ -2900,7 +2900,7 @@ fn matches_via_origin_scoped_branch(
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -23703,7 +23703,7 @@ pub(super) fn find_targeted_remove_counter_cost(
             counter_type,
             target: Some(target),
             selection,
-        } if !matches!(target, TargetFilter::GrantingObject) => {
+        } if !matches!(target, TargetFilter::GrantingObject { .. }) => {
             Some((*count, counter_type, target, *selection))
         }
         AbilityCost::Composite { costs } => {
@@ -28554,7 +28554,7 @@ fn target_filter_reads_chosen_target(filter: &TargetFilter, read: TargetRead) ->
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackSpell
         | TargetFilter::SpecificObject { .. }

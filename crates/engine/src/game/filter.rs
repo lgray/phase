@@ -215,7 +215,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
         // CR 201.5a: the stamped granter is one fixed object.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::AllPlayers => false,
     }
 }
@@ -487,7 +487,7 @@ pub(crate) fn target_filter_characteristic_reads_at(
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::Owner
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::AllPlayers => CharacteristicKinds::EMPTY,
     }
 }
@@ -876,7 +876,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
         // CR 201.5a: the stamped granter is one fixed object.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::AllPlayers => false,
     }
 }
@@ -1742,7 +1742,7 @@ pub(crate) fn filter_contains(filter: &TargetFilter, leaf: &dyn Fn(&TargetFilter
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -1993,7 +1993,7 @@ pub(crate) fn filter_contains_filter_prop(
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -2451,7 +2451,7 @@ fn rewrite_filter_props(
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::Opponent
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -5032,7 +5032,9 @@ fn filter_inner_for_object(
         // CR 400.3: Owner is a player-resolving filter (resolves to the owner of
         // source_id), meaningless as an object-matching predicate.
         TargetFilter::Owner => false,
-        TargetFilter::GrantingObject => is_stamped_granter(obj, granting_object),
+        TargetFilter::GrantingObject { bound } => {
+            is_stamped_granter(obj, bound.or(granting_object))
+        }
     }
 }
 
@@ -5350,7 +5352,7 @@ fn zone_change_filter_inner(
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
         // CR 201.5a: record matching does not bind the granter, so it fails closed.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::Owner => false,
     }
 }
@@ -5687,7 +5689,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource { .. }
         // CR 201.5a: record matching does not bind the granter, so it fails closed.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::Owner => false,
     }
 }
@@ -6011,7 +6013,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::ChosenDamageSource { .. }
         | TargetFilter::Named { .. }
         // CR 201.5a: spell matching does not bind the granter, so it fails closed.
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::Owner => false,
     }
 }
@@ -7776,8 +7778,8 @@ fn matches_filter_prop(
                         .iter()
                         .any(|t| matches!(t, TargetRef::Object(id) if *id == object_id))
                 })
-            } else if matches!(**reference, TargetFilter::GrantingObject) {
-                is_stamped_granter(obj, source.granting_object)
+            } else if let TargetFilter::GrantingObject { bound } = **reference {
+                is_stamped_granter(obj, bound.or(source.granting_object))
             } else {
                 crate::game::targeting::resolve_event_context_targets(state, reference, source.id)
                     .into_iter()

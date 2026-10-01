@@ -5596,7 +5596,7 @@ fn referent_exists_without_gated_action(
         TargetFilter::None
         | TargetFilter::ControllerAndControlledPermanents { .. }
         | TargetFilter::SelfRef
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::SourceOrPaired
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -11995,7 +11995,7 @@ fn ability_with_event_context_targets(
             if filter.is_context_ref() {
                 // CR 201.5a: only the ability carries the stamp that names its granter.
                 let target = match filter {
-                    TargetFilter::GrantingObject => {
+                    TargetFilter::GrantingObject { .. } => {
                         crate::game::targeting::resolved_targets(&pending, filter, state)
                             .into_iter()
                             .next()

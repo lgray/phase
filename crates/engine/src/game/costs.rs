@@ -1494,7 +1494,7 @@ fn pay_ability_cost_inner(
                     target,
                     scope: crate::types::ability::EffectScope::Single,
                     state: crate::types::ability::TapStateChange::Tap,
-                } if matches!(target, TargetFilter::GrantingObject)
+                } if matches!(target, TargetFilter::GrantingObject { .. })
                     || target.contains_source_attachment_host() =>
                 {
                     let ctx = FilterContext::from_source(state, source_id)
@@ -1699,14 +1699,14 @@ fn pay_ability_cost_inner(
             count,
             counter_type,
             target:
-                target @ (None | Some(TargetFilter::GrantingObject)),
+                target @ (None | Some(TargetFilter::GrantingObject { .. })),
             ..
         } => {
             // CR 201.5a + CR 602.2b + CR 601.2h: a fixed- or ALL-count cost naming the
             // granter involves no choice, so it is paid here like `~`.
             let payer = match target {
                 // CR 201.5a + CR 400.7: the granter stamped on the paying ability, while it is that object.
-                Some(TargetFilter::GrantingObject) => {
+                Some(TargetFilter::GrantingObject { .. }) => {
                     match scope
                         .granting_object(state, source_id)
                         .filter(|granter| granter.is_current(state))
@@ -3222,7 +3222,7 @@ mod tests {
             let cost = AbilityCost::RemoveCounter {
                 count: 1,
                 counter_type: CounterMatch::OfType(charge.clone()),
-                target: Some(TargetFilter::GrantingObject),
+                target: Some(TargetFilter::GrantingObject { bound: None }),
                 selection: Default::default(),
             };
             let mut stamp = ObjectIncarnationRef::from_object(&scenario.state.objects[&granter]);

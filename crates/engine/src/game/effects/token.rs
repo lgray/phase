@@ -3339,7 +3339,7 @@ fn classify_attach_host_authority(filter: &TargetFilter) -> AttachHostAuthority 
         // slot. It fails closed here until a host authority for the pair exists.
         TargetFilter::SourceOrPaired
         | TargetFilter::None
-        | TargetFilter::GrantingObject
+        | TargetFilter::GrantingObject { .. }
         | TargetFilter::CostPaidObject
         | TargetFilter::AmassedArmy
         | TargetFilter::ChosenCard
@@ -4470,13 +4470,27 @@ fn catalog_rules_text_abilities(
         .filter(|line| !line.is_empty())
     {
         let parsed_statics = crate::parser::oracle_static::parse_static_line_multi(line);
+        // CR 201.5a: a granter reference the walk cannot bind would read the token itself,
+        // so its line is refused as unparsed.
+        let unreached = |def: &StaticDefinition| {
+            crate::parser::oracle::granter_reference_unreached(
+                crate::types::ability_visit::DefinitionNode::Static(def),
+            )
+        };
+        let refused =
+            || crate::parser::oracle_util::render_granting_self_reference(line, card_name);
         if parsed_statics.is_empty() {
-            let parsed_modifications = crate::parser::oracle_static::classify_quoted_inner(line);
-            if parsed_modifications.is_empty() {
+            let carrier = StaticDefinition::continuous()
+                .modifications(crate::parser::oracle_static::classify_quoted_inner(line));
+            if carrier.modifications.is_empty() {
                 unparsed_lines.push(line.to_string());
+            } else if unreached(&carrier) {
+                unparsed_lines.push(refused());
             } else {
-                modifications.extend(parsed_modifications);
+                modifications.extend(carrier.modifications);
             }
+        } else if parsed_statics.iter().any(unreached) {
+            unparsed_lines.push(refused());
         } else {
             static_definitions.extend(
                 parsed_statics
@@ -9175,7 +9189,7 @@ mod tests {
         let granted = &runner.state().objects[&host].abilities[idx];
         assert_eq!(
             granted.cost.as_ref().and_then(sacrifice_target),
-            Some(&TargetFilter::GrantingObject)
+            Some(&TargetFilter::GrantingObject { bound: None })
         );
         assert_eq!(
             granted.granting_object,
@@ -9289,7 +9303,7 @@ mod tests {
             matches!(
                 *def.effect,
                 Effect::Sacrifice {
-                    target: TargetFilter::GrantingObject,
+                    target: TargetFilter::GrantingObject { .. },
                     ..
                 }
             )
@@ -9446,6 +9460,43 @@ mod tests {
              un-rendered `unparsed_lines` axis measurably safe. If this changed, \
              re-measure that axis rather than editing this expectation."
         );
+    }
+
+    /// CR 201.5a: a catalog body naming the token where the walk cannot bind it is refused.
+    #[test]
+    fn catalog_unreached_granter_reference_is_refused_as_unparsed() {
+        let rock = crate::game::token_presets::known_token_presets()
+            .iter()
+            .find(|preset| preset.body.display_name == "Rock")
+            .expect("the Rock preset");
+        let carries_symbol = |payload: &TokenAbilityMaterialization| {
+            serde_json::to_string(&(
+                &payload.static_definitions,
+                &payload.abilities,
+                &payload.trigger_definitions,
+                &payload.modifications,
+            ))
+            .unwrap()
+            .contains("\"type\":\"GrantingObject\"")
+        };
+        let printed = materialize_catalog_token_payload(rock);
+        assert!(printed.unparsed_rules_text_lines.is_empty());
+        assert!(
+            carries_symbol(&printed),
+            "reach-guard: Rock's sacrifice cost keeps its symbol"
+        );
+
+        // A static line, then a line only `classify_quoted_inner` parses.
+        for line in [
+            "Equipped creature has \"{T}: Draw cards equal to the number of +1/+1 counters on Rock.\"",
+            "{T}: Target creature gains \"{T}: Draw cards equal to the number of +1/+1 counters on Rock.\" until end of turn.",
+        ] {
+            let mut drawing = rock.clone();
+            drawing.rules_text = Some(format!("{line}\nEquip {{1}}"));
+            let refused = materialize_catalog_token_payload(&drawing);
+            assert_eq!(refused.unparsed_rules_text_lines, vec![line.to_string()]);
+            assert!(!carries_symbol(&refused), "{line}");
+        }
     }
 
     #[test]

@@ -1756,7 +1756,7 @@ fn subject_anchored_optional_actor(
             | TargetFilter::ControllerAndControlledPermanents { .. }
             | TargetFilter::Opponent
             | TargetFilter::SelfRef
-            | TargetFilter::GrantingObject
+            | TargetFilter::GrantingObject { .. }
             | TargetFilter::SourceOrPaired
             | TargetFilter::Typed(_)
             | TargetFilter::Not { .. }
@@ -1891,7 +1891,7 @@ fn subject_anchored_optional_actor(
             TargetFilter::None
             | TargetFilter::Any
             | TargetFilter::SelfRef
-            | TargetFilter::GrantingObject
+            | TargetFilter::GrantingObject { .. }
             | TargetFilter::SourceOrPaired
             | TargetFilter::Typed(_)
             | TargetFilter::StackAbility { .. }

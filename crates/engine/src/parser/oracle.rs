@@ -24,7 +24,9 @@ use crate::types::ability::{
     StaticDefinition, TapStateChange, TargetFilter, TriggerCondition, TriggerDefinition,
     TypeFilter, TypedFilter, UnloweredGuard, VoteSubject,
 };
-use crate::types::ability_visit::{visit_ability_def_scoped, ResolutionScope};
+use crate::types::ability_visit::{
+    each_granter_symbol, visit_ability_def_scoped, DefinitionNode, ResolutionScope,
+};
 use crate::types::card::DraftEffect;
 use crate::types::card_type::CoreType;
 use crate::types::format::DeckCopyLimit;
@@ -9137,6 +9139,7 @@ fn parse_oracle_pipeline(
     );
     // CR 608.2c + CR 614.1a + CR 614.6 + CR 615.5: settle every deferred guard verdict.
     resolve_unlowered_guards(&mut parsed);
+    demote_unreached_granter_references(&mut parsed);
     // The report-only stage clone is settled by the same pass, so no tree this function
     // hands out carries a live mark.
     if let Some(raw) = raw_lowered.as_mut() {
@@ -9285,6 +9288,78 @@ fn demote_unsupported_composite_counter_choice_costs(parsed: &mut ParsedAbilitie
                 Effect::unimplemented("counter_choice_cost_mixes_any_with_typed", &fragment);
         }
     }
+}
+
+/// CR 201.5a: a printed ability whose granter reference sits where `each_granter_symbol`
+/// cannot bind it would read the host, so it lowers to the unsupported residual.
+/// References are counted on the serialized tree because the walk cannot count the
+/// positions it misses.
+fn demote_unreached_granter_references(parsed: &mut ParsedAbilities) {
+    for def in &mut parsed.abilities {
+        if granter_reference_unreached(DefinitionNode::Ability(def)) {
+            *def = unreached_granter_residual(&def.description);
+        }
+    }
+    let demoted: Vec<AbilityDefinition> = parsed
+        .triggers
+        .extract_if(.., |def| {
+            granter_reference_unreached(DefinitionNode::Trigger(def))
+        })
+        .map(|def| unreached_granter_residual(&def.description))
+        .chain(
+            parsed
+                .statics
+                .extract_if(.., |def| {
+                    granter_reference_unreached(DefinitionNode::Static(def))
+                })
+                .map(|def| unreached_granter_residual(&def.description)),
+        )
+        .chain(
+            parsed
+                .replacements
+                .extract_if(.., |def| {
+                    granter_reference_unreached(DefinitionNode::Replacement(def))
+                })
+                .map(|def| unreached_granter_residual(&def.description)),
+        )
+        .collect();
+    parsed.abilities.extend(demoted);
+}
+
+/// CR 201.5a: whether `node` holds a granter reference that `each_granter_symbol` misses.
+pub(crate) fn granter_reference_unreached(node: DefinitionNode<'_>) -> bool {
+    let tree = match &node {
+        DefinitionNode::Ability(def) => serde_json::to_value(def),
+        DefinitionNode::Trigger(def) => serde_json::to_value(def),
+        DefinitionNode::Static(def) => serde_json::to_value(def),
+        DefinitionNode::Replacement(def) => serde_json::to_value(def),
+    };
+    let mut reached = 0;
+    each_granter_symbol(node, &mut |_| reached += 1);
+    !tree.is_ok_and(|tree| granter_reference_count(&tree) == reached)
+}
+
+fn granter_reference_count(tree: &serde_json::Value) -> usize {
+    match tree {
+        serde_json::Value::Object(map) => {
+            usize::from(map.get("type").is_some_and(|tag| tag == "GrantingObject"))
+                + map.values().map(granter_reference_count).sum::<usize>()
+        }
+        serde_json::Value::Array(items) => items.iter().map(granter_reference_count).sum(),
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => 0,
+    }
+}
+
+fn unreached_granter_residual(description: &Option<String>) -> AbilityDefinition {
+    let fragment = description.clone().unwrap_or_default();
+    AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::unimplemented("granter_reference_unreached", &fragment),
+    )
+    .description(fragment)
 }
 
 /// The decision node: `duration` and `effect` sit on the SAME

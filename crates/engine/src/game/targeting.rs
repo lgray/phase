@@ -890,14 +890,14 @@ pub fn resolved_targets(
     state: &GameState,
 ) -> Vec<TargetRef> {
     // CR 201.5a + CR 400.7: the stamped granter incarnation, and nothing once it has left.
-    if let (TargetFilter::GrantingObject, Some(granter)) =
-        (target_filter, ability.context.granting_object)
-    {
-        return granter
-            .is_current(state)
-            .then_some(TargetRef::Object(granter.object_id))
-            .into_iter()
-            .collect();
+    if let TargetFilter::GrantingObject { bound } = target_filter {
+        if let Some(granter) = bound.or(ability.context.granting_object) {
+            return granter
+                .is_current(state)
+                .then_some(TargetRef::Object(granter.object_id))
+                .into_iter()
+                .collect();
+        }
     }
     // CR 608.2c: SelfRef is the printed-name anaphor (`~`) — its referent is
     // the source object itself, never a chosen target. Must short-circuit
@@ -908,7 +908,7 @@ pub fn resolved_targets(
     // ability source.
     if matches!(
         target_filter,
-        TargetFilter::SelfRef | TargetFilter::GrantingObject
+        TargetFilter::SelfRef | TargetFilter::GrantingObject { .. }
     ) {
         // CR 400.7: A self-reference resolves to the exact source, except that
         // a departure trigger may follow its own immediate recorded event
@@ -916,7 +916,7 @@ pub fn resolved_targets(
         // new object and finds nothing.
         let source_is_current = match target_filter {
             TargetFilter::SelfRef => ability.self_ref_is_current(state),
-            TargetFilter::GrantingObject => ability.source_is_current(state),
+            TargetFilter::GrantingObject { .. } => ability.source_is_current(state),
             _ => unreachable!("self-reference branch only handles SelfRef or GrantingObject"),
         };
         return if source_is_current {
@@ -1326,7 +1326,7 @@ pub(crate) fn is_pure_event_context_filter(target_filter: &TargetFilter) -> bool
             // CR 201.5a + CR 115.10a: resolved from its bound id, never chosen.
             | TargetFilter::SpecificObject { .. }
             // CR 201.5a + CR 115.10a: resolved from the granter stamp, never chosen.
-            | TargetFilter::GrantingObject
+            | TargetFilter::GrantingObject { .. }
     )
 }
 
@@ -1435,7 +1435,7 @@ pub(crate) fn resolved_object_ids_for_filter_with_context(
             .then_some(ability.source_id)
             .into_iter()
             .collect(),
-        TargetFilter::GrantingObject => match ability.context.granting_object {
+        TargetFilter::GrantingObject { bound } => match bound.or(ability.context.granting_object) {
             Some(granter) => granter.is_current(state).then_some(granter.object_id),
             None => ability
                 .source_is_current(state)
@@ -6494,7 +6494,11 @@ mod tests {
         let granter = mk(&mut state, 2, "Granter");
         let mut ability = make_resolved_with_targets(vec![], host);
         let pool = |state: &GameState, ability: &crate::types::ability::ResolvedAbility| {
-            resolved_object_ids_for_filter(state, ability, &TargetFilter::GrantingObject)
+            resolved_object_ids_for_filter(
+                state,
+                ability,
+                &TargetFilter::GrantingObject { bound: None },
+            )
         };
         assert_eq!(pool(&state, &ability), vec![host]);
         ability.context.granting_object = Some(
