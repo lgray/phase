@@ -1,0 +1,38 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 10m 17s
+────────────
+ Nextest run ID 80068792-710d-4c3e-92a8-228d870da391 with nextest profile: default
+    Starting 1 test across 8 binaries (31331 tests skipped)
+        FAIL [   0.145s] (1/1) phase-engine game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+  stdout ───
+
+    running 1 test
+    test game::engine::tests::a_set_name_exception_survives_the_room_name_derivation ... FAILED
+
+    failures:
+
+    failures:
+        game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22673 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'game::engine::tests::a_set_name_exception_survives_the_room_name_derivation' (13795) panicked at crates/engine/src/game/engine_tests.rs:2642:5:
+    assertion `left == right` failed: CR 613.1a: the later ordinary copy resets the exception marker
+      left: "Wrong Turn"
+     right: "Bright Hall"
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::string::String, &str>
+       4: engine::game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+       5: engine::game::engine::tests::a_set_name_exception_survives_the_room_name_derivation::{closure#0}
+       6: <engine::game::engine::tests::a_set_name_exception_survives_the_room_name_derivation::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+────────────
+     Summary [   0.185s] 1 test run: 0 passed, 1 failed, 31331 skipped
+        FAIL [   0.145s] (1/1) phase-engine game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+error: test run failed

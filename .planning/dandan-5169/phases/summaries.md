@@ -15,3 +15,6 @@
 
 ## Phase 4 — PREREQ-0 swallow check
 - `parser/swallow_check.rs::effect_is_replacement_carrier` accepts `Effect::Counter { countered_spell_zone: Some(_), .. }`. Memory Lapse, Lapse of Certainty, Remand, Spell Crumple now supported; Hinder stays flagged.
+
+## Phase 4b — CR 613.8b loop-only dependency ordering (fix-first)
+- `layers.rs::order_with_dependencies` now orders EFFECTS (entries grouped by `ContinuousEffectGroupKey`, contiguous): SCCs (`tarjan_scc`) have intra-loop edges replaced by a timestamp-rank chain; lowest-rank Kahn over the rest. Loop members keep timestamp order, each still waits for its own outside dependencies; independent effects keep timestamp order. Tests: unit H/G rows, `tests/integration/loop_only_dependency_fallback.rs` (Curse of Conformity, March of the Machines, Prismatic Omen, Cloak and Dagger, Ultima).

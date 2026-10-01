@@ -34,3 +34,6 @@
 - Container restarted: Phase 4b executor, its build, and the Phase 6 planner were killed. Worktree kept 4b's partial edits (layers.rs, integration main.rs, new loop_only_dependency_fallback.rs); target/ partially survived (6.8 GB).
 - Lead relay re-test (after restart): `curl api.github.com/repos/phase-rs/phase/issues/5169` -> 403; `gh auth status` -> gh: command not found; `gh pr list --repo phase-rs/phase` -> gh: command not found. PR route remains closed; lead opens the PR from the saved body.
 - Phases accepted so far: 1, 2, 3, 4. Charter r4 + Phase 4b inserted (defective-reference route). Phase 5 plan clean (resynced to consume 4b).
+
+## J6 GitHub re-test after second restart (2026-10-01T11:57:10Z)
+- curl api.github.com issue 5169 -> 403; gh -> not installed. PR route still closed.

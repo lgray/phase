@@ -111,3 +111,5 @@
   3. Cost: 2 Sonnet dispatches.
   4. If declined: phase 11 stops; run stops before phase 11 (phases 1-4 accepted, 4b fixing).
   5. Prediction: next round behavior count 0 (< 1). Prior predictions this loop: none.
+- USER DECISION (direct, AskUserQuestion): approve this Phase 11 expansion and future loop-limit continuations when each finding is narrow with a concrete fix; log each in phase-fit.
+- Phase 4b exec r4 (chain intra-SCC members in rank order): red/green shown; 31320/31320 + clippy on exact committed bytes; candidate 91ad0dff. Impl review r3 (fresh): ACCEPT, 0 findings (200k-case python fuzz). PHASE 4b ACCEPTED (impl loop: r1 1, r2 1, r3 0).
