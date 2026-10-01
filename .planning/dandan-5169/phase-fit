@@ -82,3 +82,4 @@
 
 ## 14. Phase 7 (S5 Bo3 ceiling)
 - Plan r1 (claude-sonnet-5-5): REVISE — F4 behavior (rememberHostConfig stores effective type), F1–F3 text (offlineLocalPlay mock census; match_type_within private in engine.rs instead of out-of-charter match_config.rs; hook exported from HostSetup.tsx instead of out-of-charter hook file). Design round 1. Revision r2 -> review r2: APPROVE, notes N1–N3 (lint warnings count, draft_session entry, PR-description notes). Phase 7 plan CLEAN (9 grouped paths, all within charter).
+- Phase 4b plan r2 (fresh reviewer): ACCEPT, 0 behavior; T1/T2 text applied by applier (orchestrator verified diff); N1 advisory -> executor constraint (singleton mutation check for G2/E1). Plan clean; effect-level nodes keyed by ContinuousEffectGroupKey. Executor round 2 dispatched (design round 1 was the r1 stop-and-return).
