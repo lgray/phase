@@ -7854,90 +7854,48 @@ fn effect_nodes(sorted: &[&ActiveContinuousEffect], state: &GameState) -> Vec<Ve
     nodes
 }
 
-/// CR 613.8b: an effect waits until just after every effect it depends on; effects in a
-/// dependency loop ignore that rule among themselves and apply in timestamp order.
-///
-/// Nodes are indexed by timestamp rank; `dependents[j]` lists the nodes that depend on `j`
-/// and `in_degree[i]` counts the unapplied effects `i` depends on.
+/// CR 613.8b: an effect waits until just after the effects it depends on, except that
+/// effects in a dependency loop apply in timestamp order; nodes are indexed by timestamp rank,
+/// `dependents[j]` lists the nodes depending on `j` and `in_degree[i]` counts `i`'s dependencies.
 fn dependency_application_order(
     mut dependents: Vec<Vec<usize>>,
     mut in_degree: Vec<usize>,
 ) -> Vec<usize> {
     let len = in_degree.len();
+    let mut graph: DiGraph<(), ()> = DiGraph::with_capacity(len, 0);
+    let nodes: Vec<NodeIndex> = (0..len).map(|_| graph.add_node(())).collect();
+    for (provider, targets) in dependents.iter().enumerate() {
+        for &dependent in targets {
+            graph.add_edge(nodes[provider], nodes[dependent], ());
+        }
+    }
+    let mut component_of = vec![0usize; len];
+    for (component, members) in tarjan_scc(&graph).iter().enumerate() {
+        for member in members {
+            component_of[member.index()] = component;
+        }
+    }
+    // A dependency inside a loop is ignored, so loop members rank like independent effects.
+    for (provider, targets) in dependents.iter_mut().enumerate() {
+        targets.retain(|&dependent| {
+            let inside = component_of[provider] == component_of[dependent];
+            if inside {
+                in_degree[dependent] -= 1;
+            }
+            !inside
+        });
+    }
+
     let mut ordered = Vec::with_capacity(len);
     let mut processed = vec![false; len];
-
-    while ordered.len() < len {
-        let Some(next) = (0..len).find(|&idx| !processed[idx] && in_degree[idx] == 0) else {
-            // Every unprocessed node waits on another, so the remaining graph has a loop.
-            // Only the loop's own edges are ignored; effects that depend on the loop keep
-            // their in-degree and still wait for the members they depend on.
-            let members = earliest_source_loop(&dependents, &processed);
-            debug_assert!(members.len() > 1, "a stalled source component is a loop");
-            for &member in &members {
-                let (inside, outside): (Vec<usize>, Vec<usize>) = dependents[member]
-                    .iter()
-                    .partition(|dependent| members.contains(dependent));
-                for dependent in inside {
-                    in_degree[dependent] -= 1;
-                }
-                dependents[member] = outside;
-            }
-            continue;
-        };
-
+    while let Some(next) = (0..len).find(|&idx| !processed[idx] && in_degree[idx] == 0) {
         processed[next] = true;
         ordered.push(next);
         for &dependent in &dependents[next] {
             in_degree[dependent] -= 1;
         }
     }
-
     ordered
-}
-
-/// The unprocessed strongly connected component with no dependency from outside itself
-/// whose lowest-ranked member ranks lowest.
-fn earliest_source_loop(dependents: &[Vec<usize>], processed: &[bool]) -> Vec<usize> {
-    let mut graph: DiGraph<(), ()> = DiGraph::with_capacity(dependents.len(), 0);
-    let nodes: Vec<NodeIndex> = dependents.iter().map(|_| graph.add_node(())).collect();
-    for (from, targets) in dependents.iter().enumerate() {
-        if processed[from] {
-            continue;
-        }
-        for &to in targets.iter().filter(|&&to| !processed[to]) {
-            graph.add_edge(nodes[from], nodes[to], ());
-        }
-    }
-
-    let components = tarjan_scc(&graph);
-    let mut component_of = vec![0usize; dependents.len()];
-    for (component, members) in components.iter().enumerate() {
-        for member in members {
-            component_of[member.index()] = component;
-        }
-    }
-    let mut has_outside_dependency = vec![false; components.len()];
-    for (from, targets) in dependents.iter().enumerate() {
-        if processed[from] {
-            continue;
-        }
-        for &to in targets.iter().filter(|&&to| !processed[to]) {
-            if component_of[from] != component_of[to] {
-                has_outside_dependency[component_of[to]] = true;
-            }
-        }
-    }
-
-    components
-        .iter()
-        .enumerate()
-        .filter(|(component, members)| {
-            !has_outside_dependency[*component] && members.iter().any(|m| !processed[m.index()])
-        })
-        .map(|(_, members)| members.iter().map(|m| m.index()).collect::<Vec<usize>>())
-        .min_by_key(|members| members.iter().copied().min())
-        .expect("an unprocessed, non-empty graph condenses to at least one source component")
 }
 
 pub(crate) fn order_active_continuous_effects(
@@ -22084,11 +22042,19 @@ mod tests {
             order_of(4, &[(0, 1), (1, 0), (2, 3), (3, 2), (2, 0)]),
             vec![0, 1, 2, 3]
         );
-        // Independent loops {0, 3} and {1, 2} order by lowest member rank.
+        // Independent loops {0, 3} and {1, 2} still apply in timestamp order.
         assert_eq!(
             order_of(4, &[(0, 3), (3, 0), (1, 2), (2, 1)]),
-            vec![0, 3, 1, 2]
+            vec![0, 1, 2, 3]
         );
+    }
+
+    #[test]
+    fn dependency_order_independent_effects_keep_timestamp_order_around_a_loop() {
+        // Node 2 is newer than the loop {0, 1} and depends on nothing.
+        assert_eq!(order_of(3, &[(0, 1), (1, 0)]), vec![0, 1, 2]);
+        // Node 0 is older than the loop {1, 2} and node 3 is newer; both are independent.
+        assert_eq!(order_of(4, &[(1, 2), (2, 1)]), vec![0, 1, 2, 3]);
     }
 
     #[test]
