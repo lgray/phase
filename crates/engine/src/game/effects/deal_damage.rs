@@ -1914,7 +1914,13 @@ pub fn resolve_all(
     // CR 120.3: Collect matching player IDs when the effect also targets players.
     // The player set is part of the same damage event as the object set.
     let matching_players: Vec<PlayerId> = match player_filter {
-        Some(pf) => collect_matching_players(state, pf, ability.controller, ability.source_id),
+        Some(pf) => collect_matching_players(
+            state,
+            pf,
+            ability.controller,
+            ability.source_id,
+            ability.context.granting_object,
+        ),
         None => Vec::new(),
     };
 
@@ -2010,6 +2016,7 @@ fn collect_matching_players(
     player_filter: PlayerFilter,
     source_controller: PlayerId,
     source_id: crate::types::identifiers::ObjectId,
+    granting_object: Option<crate::types::identifiers::ObjectIncarnationRef>,
 ) -> Vec<PlayerId> {
     state
         .players
@@ -2209,6 +2216,8 @@ fn collect_matching_players(
                             source_controller,
                             crate::game::quantity::QuantityContext {
                                 scoped_player: Some(p.id),
+                                // CR 201.5a: a granted body's threshold names its granter.
+                                granting_object,
                                 ..crate::game::quantity::QuantityContext::new(source_id)
                             },
                         );

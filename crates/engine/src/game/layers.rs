@@ -2340,8 +2340,8 @@ fn evaluate_condition_inner(
         // remains tapped" case — Zygon Infiltrator), bound at resolution time to
         // the copy target via `duration_subject` and surfaced here as the
         // `context.recipient`. `Recipient` resolves identically. `Source` is spelled
-        // `SourceIsTapped` and never reaches this arm; the remaining scopes are
-        // never produced for a duration tap condition, so they fail safely.
+        // `SourceIsTapped` and never reaches this arm. A granter scope bound to its
+        // `SpecificObject` incarnation is evaluated; the remaining scopes fail safely.
         StaticCondition::IsTapped { scope } => match scope {
             crate::types::ability::ObjectScope::Source => {
                 eval_source_is_tapped_on_battlefield(state, source_id)
@@ -2361,8 +2361,13 @@ fn evaluate_condition_inner(
             | crate::types::ability::ObjectScope::AmassedArmy
             | crate::types::ability::ObjectScope::ChainRootTarget
             | crate::types::ability::ObjectScope::GrantingObject
-            | crate::types::ability::ObjectScope::SpecificObject { .. }
             | crate::types::ability::ObjectScope::BatchSource => false,
+            // CR 110.5d + CR 400.7: the bound object is tapped only while it is that same
+            // incarnation on the battlefield.
+            crate::types::ability::ObjectScope::SpecificObject { object } => {
+                object.is_current(state)
+                    && eval_source_is_tapped_on_battlefield(state, object.object_id)
+            }
         },
         // CR 702.171b + CR 110.5d: off-battlefield permanents have no saddled designation.
         StaticCondition::SourceIsSaddled => state.objects.get(&source_id).is_some_and(|obj| {

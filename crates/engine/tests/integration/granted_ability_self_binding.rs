@@ -5069,6 +5069,104 @@ mod granter_stamp {
 
     mod bound_granter {
         use super::*;
+        use engine::types::ability::{PlayerFilter, PlayerRelation, PlayerScope};
+
+        fn set_tapped(b: &mut Board, id: ObjectId, tapped: bool) {
+            let st = b.runner.state_mut();
+            st.objects.get_mut(&id).unwrap().tapped = tapped;
+            relayer(st);
+        }
+
+        fn granter_tapped() -> StaticCondition {
+            StaticCondition::IsTapped {
+                scope: ObjectScope::GrantingObject,
+            }
+        }
+
+        fn tap_gated_board(condition: StaticCondition) -> Board {
+            transient_board(StaticDefinition::continuous().modifications(vec![
+                ContinuousModification::GrantStaticAbility {
+                    definition: Box::new(
+                        StaticDefinition::continuous()
+                            .affected(TargetFilter::SelfRef)
+                            .modifications(vec![
+                                ContinuousModification::AddPower { value: 2 },
+                                ContinuousModification::AddToughness { value: 2 },
+                            ])
+                            .condition(condition),
+                    ),
+                },
+            ]))
+        }
+
+        #[test]
+        fn tap_gate_reads_the_current_granter() {
+            let mut b = tap_gated_board(granter_tapped());
+            let fb = b.granters[0];
+            assert_eq!(power(&b), 3);
+            set_tapped(&mut b, fb, true);
+            assert_eq!(power(&b), 5);
+        }
+
+        #[test]
+        fn tap_gate_ignores_a_blinked_granter() {
+            let mut b = tap_gated_board(granter_tapped());
+            let fb = b.granters[0];
+            blink(&mut b, fb);
+            set_tapped(&mut b, fb, true);
+            assert_eq!(power(&b), 3);
+        }
+
+        #[test]
+        fn untapped_gate_reads_the_current_granter() {
+            let mut b = tap_gated_board(StaticCondition::Not {
+                condition: Box::new(granter_tapped()),
+            });
+            let fb = b.granters[0];
+            assert_eq!(power(&b), 5);
+            set_tapped(&mut b, fb, true);
+            assert_eq!(power(&b), 3);
+        }
+
+        #[test]
+        fn damage_all_player_threshold_reads_the_stamped_granter() {
+            let mut scenario = GameScenario::new();
+            let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+            let fb = scenario.add_creature(P0, "Foo Bar", 4, 4).id();
+            scenario.with_counter(fb, CounterType::Plus1Plus1, 3);
+            scenario.with_counter(host, CounterType::Plus1Plus1, 1);
+            let mut state = scenario.build().state().clone();
+            relayer(&mut state);
+            state.players[1].life = 2;
+            let stamp = ObjectIncarnationRef::from_object(&state.objects[&fb]);
+            let effect = Effect::DamageAll {
+                amount: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::None,
+                player_filter: Some(PlayerFilter::PlayerAttribute {
+                    relation: PlayerRelation::All,
+                    attr: Box::new(QuantityRef::LifeTotal {
+                        player: PlayerScope::ScopedPlayer,
+                    }),
+                    comparator: Comparator::LE,
+                    value: Box::new(QuantityExpr::Ref {
+                        qty: QuantityRef::CountersOn {
+                            scope: ObjectScope::GrantingObject,
+                            counter_type: Some(CounterType::Plus1Plus1),
+                        },
+                    }),
+                }),
+                damage_source: None,
+            };
+            let lives = |granter: Option<ObjectIncarnationRef>| {
+                let mut st = state.clone();
+                let mut a = ResolvedAbility::new(effect.clone(), vec![], host, P0);
+                a.context.granting_object = granter;
+                resolve_ability_chain(&mut st, &a, &mut Vec::new(), 0).unwrap();
+                (st.players[0].life, st.players[1].life)
+            };
+            assert_eq!(lives(Some(stamp)), (20, 1));
+            assert_eq!(lives(None), (20, 2));
+        }
 
         const DRAW_BY_GRANTER: &str =
             "{T}: Draw cards equal to the number of +1/+1 counters on Foo Bar.";
