@@ -1,1 +1,350 @@
    Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 13m 26s
+────────────
+ Nextest run ID c944948c-2f7a-4b4e-9e60-95dfd6590f4a with nextest profile: default
+    Starting 343 tests across 1 binary (22341 tests skipped)
+        PASS [   0.028s] (  1/343) phase-engine ai_support::copy::tests::generic_clone_text_has_no_mana_ceiling
+        PASS [   0.030s] (  2/343) phase-engine ai_support::candidates::tests::sideboard_context_submits_current_lists
+        PASS [   0.037s] (  3/343) phase-engine ai_support::context::tests::build_decision_context_canonicalizes_candidate_action_order
+        PASS [   0.046s] (  4/343) phase-engine analysis::resource::tests::fodder_cover_heterogeneous_activation_context_rejects
+        PASS [   0.027s] (  5/343) phase-engine database::search::tests::text_matches_name_only
+        PASS [   0.023s] (  6/343) phase-engine database::synthesis::station_synthesis_tests::station_creature_shift_ignores_reminder_text_absence
+        PASS [   0.030s] (  7/343) phase-engine database::search::tests::text_matches_oracle_text_and_ranks_name_hits_first
+        PASS [   0.019s] (  8/343) phase-engine game::ability_scan::tests::event_context_axis_discriminates
+        PASS [   0.019s] (  9/343) phase-engine game::ability_utils::tests::build_target_slots_keeps_or_filter_with_non_context_branch_targeted
+        PASS [   0.022s] ( 10/343) phase-engine game::ability_utils::tests::flatten_specified_targets_in_chain_keeps_root_context_ref_snapshot
+        PASS [   0.025s] ( 11/343) phase-engine game::ability_utils::tests::parent_target_controller_falls_back_to_effect_context_object
+        PASS [   0.019s] ( 12/343) phase-engine game::ability_utils::tests::total_mana_value_constraint_resolves_event_context_amount_from_die_result
+        PASS [   0.019s] ( 13/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_combat_and_battle_relative_properties_keep_the_opponent_axis
+        PASS [   0.027s] ( 14/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_attachment_name_and_library_properties_use_payer_context
+        PASS [   0.031s] ( 15/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_counter_history_and_dynamic_threshold_follow_cost_payer
+        PASS [   0.019s] ( 16/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_helper_binds_payer_after_stolen_source_exits
+        PASS [   0.024s] ( 17/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_defending_player_reference_keeps_its_combat_authority
+        PASS [   0.021s] ( 18/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_helper_keeps_payer_when_token_source_ceases_to_exist
+        PASS [   0.088s] ( 19/343) phase-engine game::ability_utils::tests::ents_fury_oracle_text_path_collects_two_target_slots
+        PASS [   0.022s] ( 20/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_helper_preserves_explicit_player_and_ability_references
+        PASS [   0.019s] ( 21/343) phase-engine game::coverage::tests::commander_permission_text_does_not_count_as_runtime_gap
+        PASS [   0.017s] ( 22/343) phase-engine game::coverage::tests::source_defined_pt_rules_text_does_not_count_as_unparsed_token_rules_gap
+        PASS [   0.019s] ( 23/343) phase-engine game::coverage::tests::unsupported_partial_token_gap_label_keeps_unrelated_rules_text_as_partial_fidelity
+        PASS [   0.025s] ( 24/343) phase-engine game::coverage::tests::test_audit_graveyard_recursion_text_guard_is_conjunctive
+        PASS [   0.059s] ( 25/343) phase-engine game::casting::sacrifice_cost_context_identity_tests::direct_mana_leg_and_none_entries_pay_both_selected_costs
+        PASS [   0.063s] ( 26/343) phase-engine game::casting::tests::exsanguinate_oracle_text_drains_each_opponent_and_gains_controller
+        PASS [   0.021s] ( 27/343) phase-engine game::dungeon::tests::room_text_matches_printed_oracle_text
+        PASS [   0.021s] ( 28/343) phase-engine game::effects::add_target_replacement::tests::any_replacement_without_forwarded_context_uses_declared_targets
+        PASS [   0.021s] ( 29/343) phase-engine game::effects::add_target_replacement::tests::empty_forwarded_result_context_does_not_fall_back_to_declared_targets
+        PASS [   0.022s] ( 30/343) phase-engine game::effects::add_target_replacement::tests::forwarded_result_context_binds_an_any_replacement_to_the_moved_object
+        PASS [   0.021s] ( 31/343) phase-engine game::effects::additional_phase::tests::additional_phase_count_from_event_context_amount_pushes_n_phases
+        PASS [   0.024s] ( 32/343) phase-engine game::effects::add_target_replacement::tests::stale_forwarded_result_context_does_not_bind_a_replacement
+        PASS [   0.024s] ( 33/343) phase-engine game::effects::change_zone::tests::change_zone_all_records_moved_count_for_event_context_amount
+        PASS [   0.019s] ( 34/343) phase-engine game::effects::choose::tests::land_nonland_guess_carries_source_context_without_persisting
+        PASS [   0.023s] ( 35/343) phase-engine game::effects::change_zone::tests::targeted_multi_change_zone_records_moved_count_for_event_context_amount
+        PASS [   0.021s] ( 36/343) phase-engine game::effects::counters::tests::parse_counter_type_oracle_text_forms
+        PASS [   0.023s] ( 37/343) phase-engine game::effects::deal_damage::tests::damage_record_keeps_the_context_source_incarnation
+        PASS [   0.023s] ( 38/343) phase-engine game::effects::dig::tests::dig_choice_marks_optional_context_from_kept_selection
+        PASS [   0.022s] ( 39/343) phase-engine game::effects::dig::tests::dig_choice_marks_optional_context_from_nonempty_selection
+        PASS [   0.022s] ( 40/343) phase-engine game::effects::effect::tests::forwarded_result_context_concretizes_reanimator_enchant_target
+        PASS [   0.027s] ( 41/343) phase-engine game::effects::double::tests::double_counters_context_ref_recipient_does_not_sweep_battlefield
+        PASS [   0.021s] ( 42/343) phase-engine game::effects::effect::tests::forwarded_result_context_does_not_skip_cost_paid_object_binding
+        PASS [   0.019s] ( 43/343) phase-engine game::effects::effect::tests::forwarded_result_context_rejects_a_new_object_incarnation
+        PASS [   0.025s] ( 44/343) phase-engine game::effects::effect::tests::snapshot_replaces_event_context_amount_with_die_result
+        PASS [   0.022s] ( 45/343) phase-engine game::effects::mana::tests::context_ref_recipient_with_real_count_source_reads_the_count_slot
+        PASS [   0.023s] ( 46/343) phase-engine game::effects::gift_delivery::tests::gift_card_uses_source_object_recipient_when_context_is_absent
+        PASS [   0.025s] ( 47/343) phase-engine game::effects::mana::tests::produce_event_context_amount_of_one_color
+        PASS [   0.020s] ( 48/343) phase-engine game::effects::sacrifice::tests::cost_paid_object_sacrifice_effect_context_rung_departed_is_a_no_op
+        PASS [   0.021s] ( 49/343) phase-engine game::effects::manifest::tests::manifest_parent_target_controller_falls_back_to_effect_context_object
+        PASS [   0.022s] ( 50/343) phase-engine game::effects::tests::damaged_object_context_ignores_player_damage
+        PASS [   0.022s] ( 51/343) phase-engine game::effects::tests::damaged_object_context_ignores_multi_target_damage
+        PASS [   0.027s] ( 52/343) phase-engine game::effects::sacrifice::tests::cost_paid_object_sacrifice_effect_context_rung_present_is_sacrificed
+        PASS [   0.020s] ( 53/343) phase-engine game::effects::tests::damaged_object_context_reads_single_object_damage
+        PASS [   0.019s] ( 54/343) phase-engine game::effects::tests::effect_parent_ref_slots_surfaces_context_ref_unattach_all_attachment
+        PASS [   0.025s] ( 55/343) phase-engine game::effects::tests::discard_hand_then_draw_event_context_amount_without_player_scope
+        PASS [   0.026s] ( 56/343) phase-engine game::effects::tests::empty_forward_result_pruning_replaces_a_stale_context_before_an_any_rider
+        PASS [   0.022s] ( 57/343) phase-engine game::effects::tests::evaluate_controller_controlled_as_cast_reads_spell_context_snapshot
+        PASS [   0.034s] ( 58/343) phase-engine game::effects::tests::empty_forward_result_replaces_a_stale_context_before_an_any_rider
+        PASS [   0.140s] ( 59/343) phase-engine game::effects::effect::tests::snapshot_panics_on_event_context_amount_without_source_event
+        PASS [   0.019s] ( 60/343) phase-engine game::effects::tests::moved_object_context_ignores_ambiguous_multiple_zone_changes
+        PASS [   0.018s] ( 61/343) phase-engine game::effects::tests::moved_object_context_reads_single_zone_change_record
+        PASS [   0.026s] ( 62/343) phase-engine game::effects::tests::revealed_has_card_type_context_uses_event_snapshot_across_incarnations
+        PASS [   0.026s] ( 63/343) phase-engine game::effects::tests::revealed_object_context_ignores_multi_card_reveal
+        PASS [   0.029s] ( 64/343) phase-engine game::effects::tests::revealed_object_context_ignores_two_reveal_events
+        PASS [   0.041s] ( 65/343) phase-engine game::effects::tests::revealed_object_context_reads_single_revealed_card
+        PASS [   0.046s] ( 66/343) phase-engine game::effects::tests::sacrifice_effect_context_feeds_non_interactive_downstream_quantities
+        PASS [   0.049s] ( 67/343) phase-engine game::effects::tests::scoped_zero_count_producer_prevents_scalar_event_context_fallback
+        PASS [   0.045s] ( 68/343) phase-engine game::effects::tests::skipped_empty_forward_result_attach_replaces_a_stale_context_before_an_any_rider
+        PASS [   0.037s] ( 69/343) phase-engine game::effects::token::attach_host_authority_tests::context_references_never_classify_as_a_selected_target
+        PASS [   0.028s] ( 70/343) phase-engine game::effects::token::attach_host_authority_tests::selected_target_filters_are_never_context_refs
+        PASS [   0.027s] ( 71/343) phase-engine game::effects::token::tests::predefined_lander_rules_text_present
+        PASS [   0.075s] ( 72/343) phase-engine game::effects::token::tests::catalog_rules_text_abilities_never_leaks_the_placeholder
+        PASS [   0.065s] ( 73/343) phase-engine game::engine_replacement::tests::phase0_g4_general_drain_loses_event_context_across_pausing_draw_resume
+        PASS [   0.112s] ( 74/343) phase-engine game::effects::token::tests::catalog_rules_text_routes_all_ability_kinds
+        PASS [   0.021s] ( 75/343) phase-engine game::filter::tests::filter_context_bare_resolves_x_to_zero_per_cr_107_2
+        PASS [   0.104s] ( 76/343) phase-engine game::engine::exile_return_tests::white_auracite_real_oracle_text_returns_exiled_card
+        PASS [   0.049s] ( 77/343) phase-engine game::engine_replacement::tests::post_replacement_identical_scry_prompt_resumes_context_tail_once
+        PASS [   0.024s] ( 78/343) phase-engine game::filter::tests::filter_context_from_ability_resolves_x_in_cmc_le
+        PASS [   0.020s] ( 79/343) phase-engine game::filter::tests::filter_context_from_ability_resolves_x_in_counters_ge
+        PASS [   0.019s] ( 80/343) phase-engine game::filter::tests::parent_target_shares_quality_resolves_via_effect_context_snapshot
+        PASS [   0.020s] ( 81/343) phase-engine game::filter::tests::filter_context_from_ability_resolves_x_in_power_le
+        PASS [   0.021s] ( 82/343) phase-engine game::game_object::tests::zone_change_snapshot_keeps_exact_trigger_source_context_in_sync
+        PASS [   0.019s] ( 83/343) phase-engine game::layers::tests::text_word_chain_orders_by_dependency_not_timestamp
+        PASS [   0.021s] ( 84/343) phase-engine game::layers::tests::set_basic_land_type_replaces_rules_text_with_intrinsic_mana_ability
+        PASS [   0.024s] ( 85/343) phase-engine game::layers::tests::text_word_substitutions_depend_only_on_one_recipient_and_one_word_class
+        PASS [   0.021s] ( 86/343) phase-engine game::log::tests::context_free_exile_departure_stays_named
+        PASS [   0.020s] ( 87/343) phase-engine game::log::tests::cursor_uses_pregame_context_then_turn_and_phase_boundaries
+        PASS [   0.022s] ( 88/343) phase-engine game::log::tests::explicit_and_skip_mulligan_starts_reset_context_without_a_contest
+        PASS [   0.021s] ( 89/343) phase-engine game::log::tests::start_game_log_entries_reset_hostile_context_before_turn_one
+        PASS [   0.020s] ( 90/343) phase-engine game::quantity::tests::chain_root_target_scope_and_context_field_round_trip
+        PASS [   0.021s] ( 91/343) phase-engine game::quantity::tests::cost_paid_object_fallback_reads_effect_context_before_trigger_source
+        PASS [   0.035s] ( 92/343) phase-engine game::payment_transaction::tests::staged_payment_restores_trigger_context_after_serde_roundtrip
+        PASS [   0.042s] ( 93/343) phase-engine game::match_flow::tests::choose_play_draw_logs_new_game_context_not_the_previous_game
+        PASS [   0.020s] ( 94/343) phase-engine game::quantity::tests::event_context_amount_suppressed_inside_reflexive_scope_falls_through_to_last_effect_count
+        PASS [   0.019s] ( 95/343) phase-engine game::quantity::tests::event_context_amount_suppressed_inside_reflexive_scope_ignores_enclosing_match_count
+        PASS [   0.021s] ( 96/343) phase-engine game::quantity::tests::event_context_player_count_counts_distinct_damaged_opponents_from_batch
+        PASS [   0.019s] ( 97/343) phase-engine game::quantity::tests::resolve_event_context_amount_falls_through_when_match_count_none
+        PASS [   0.023s] ( 98/343) phase-engine game::quantity::tests::resolve_event_context_amount_falls_through_when_no_die_result
+        PASS [   0.023s] ( 99/343) phase-engine game::quantity::tests::resolve_event_context_amount_from_damage
+        PASS [   0.020s] (100/343) phase-engine game::quantity::tests::resolve_event_context_amount_match_count_takes_precedence_over_event
+        PASS [   0.034s] (101/343) phase-engine game::quantity::tests::resolve_event_context_amount_match_count_outranks_die_result
+        PASS [   0.026s] (102/343) phase-engine game::quantity::tests::resolve_event_context_amount_prefers_die_result_over_event
+        PASS [   0.034s] (103/343) phase-engine game::quantity::tests::resolve_event_context_amount_none_returns_zero
+        PASS [   0.023s] (104/343) phase-engine game::quantity::tests::resolve_event_context_amount_prefers_scoped_player_count_over_scalar_event
+        PASS [   0.026s] (105/343) phase-engine game::quantity::tests::resolve_event_context_amount_uses_trigger_match_count_when_set
+        PASS [   0.026s] (106/343) phase-engine game::quantity::tests::resolve_event_context_source_power_cost_paid_object_fallback
+        PASS [   0.027s] (107/343) phase-engine game::quantity::tests::resolve_event_context_source_power_live_object
+        PASS [   0.025s] (108/343) phase-engine game::quantity::tests::resolve_event_context_source_power_lki_fallback
+        PASS [   0.019s] (109/343) phase-engine game::quantity::tests::resolve_event_context_source_power_no_context_returns_zero
+        PASS [   0.025s] (110/343) phase-engine game::quantity::tests::resolve_object_mana_value_anaphoric_reads_effect_context_object
+        PASS [   0.025s] (111/343) phase-engine game::quantity::tests::resolve_object_pt_demonstrative_prefers_effect_context_over_cost_paid
+        PASS [   0.019s] (112/343) phase-engine game::quantity::tests::resolve_quantity_counters_on_event_source_uses_legacy_cache_only_when_context_absent
+        PASS [   0.027s] (113/343) phase-engine game::quantity::tests::resolve_object_mana_value_cost_paid_falls_back_to_effect_context_object
+        PASS [   0.021s] (114/343) phase-engine game::quantity::tests::try_resolve_source_quantity_distinguishes_zero_from_missing_context_and_nested_filter_x
+        PASS [   0.020s] (115/343) phase-engine game::replacement::tests::draw_replacement_uses_event_context_amount_with_offset
+        PASS [   0.021s] (116/343) phase-engine game::replacement::tests::mill_replacement_uses_event_context_amount_multiplier
+        PASS [   0.031s] (117/343) phase-engine game::scenario::tests::from_oracle_text_color_derived
+        PASS [   0.024s] (118/343) phase-engine game::scenario::tests::from_oracle_text_counters_survive
+        PASS [   0.036s] (119/343) phase-engine game::scenario::tests::from_oracle_text_convenience_creature_on_battlefield
+        PASS [   0.022s] (120/343) phase-engine game::scenario::tests::from_oracle_text_empty_string
+        PASS [   0.039s] (121/343) phase-engine game::scenario::tests::from_oracle_text_convenience_spell_to_hand
+        PASS [   0.021s] (122/343) phase-engine game::scenario::tests::from_oracle_text_preserves_identity
+        PASS [   0.023s] (123/343) phase-engine game::scenario::tests::from_oracle_text_keywords
+        PASS [   0.026s] (124/343) phase-engine game::scenario::tests::from_oracle_text_recovers_repeated_myriad_instances
+        PASS [   0.024s] (125/343) phase-engine game::scenario::tests::from_oracle_text_static
+        PASS [   0.038s] (126/343) phase-engine game::scenario::tests::from_oracle_text_spell_effect
+        PASS [   0.025s] (127/343) phase-engine game::scenario::tests::from_oracle_text_with_keywords_multi_keyword_line
+        PASS [   0.023s] (128/343) phase-engine game::stack::tests::batch_resolve::recipient_context_population_condition_always_escalates_and_matches_full
+        PASS [   0.022s] (129/343) phase-engine game::stack::tests::trigger_event_context_becomes_target_controller
+        PASS [   0.110s] (130/343) phase-engine game::scenario::tests::from_oracle_text_ixhel_carries_poison_scoped_trigger
+        PASS [   0.021s] (131/343) phase-engine game::stack::tests::trigger_event_context_no_event_returns_none
+        PASS [   0.022s] (132/343) phase-engine game::targeting::tests::resolve_player_for_context_ref_uses_zone_change_controller_not_ability_controller
+        PASS [   0.089s] (133/343) phase-engine game::scenario::tests::from_oracle_text_trigger
+        PASS [   0.019s] (134/343) phase-engine game::targeting::tests::resolved_targets_event_context_ignores_non_matching_chosen_targets
+        PASS [   0.020s] (135/343) phase-engine game::targeting::tests::resolved_targets_event_context_resolves_from_combat_state
+        PASS [   0.020s] (136/343) phase-engine game::targeting::tests::source_controller_trigger_context_uses_live_then_lki_provenance
+        PASS [   0.020s] (137/343) phase-engine game::text_substitution::tests::color_word_rewrites_words_but_not_mana_symbols
+        PASS [   0.020s] (138/343) phase-engine game::text_substitution::tests::land_word_rewrites_type_positions_but_not_names
+        PASS [   0.021s] (139/343) phase-engine game::text_substitution::tests::nothing_to_change_and_unclassified_positions_are_left_alone
+        PASS [   0.023s] (140/343) phase-engine game::triggers::dedup_regression_tests::auto_accepted_optional_context_ref_effect_reaches_stack
+        PASS [   0.024s] (141/343) phase-engine game::triggers::dedup_regression_tests::order_triggers_distinct_event_context_still_prompt
+        PASS [   0.020s] (142/343) phase-engine game::triggers::dedup_regression_tests::order_triggers_event_context_ability_still_prompts_on_distinct_events
+        PASS [   0.023s] (143/343) phase-engine game::triggers::tests::batched_attack_context_filters_attacked_target_type
+        PASS [   0.023s] (144/343) phase-engine game::triggers::tests::batched_discard_trigger_context_matches_second_discarded_card_type
+        PASS [   0.073s] (145/343) phase-engine game::triggers::dedup_regression_tests::ezio_verbatim_oracle_text_does_not_eliminate_damaged_player_above_10_life
+        PASS [   0.026s] (146/343) phase-engine game::triggers::tests::build_triggered_ability_stamps_trigger_source_context_for_token_dies_trigger
+        PASS [   0.019s] (147/343) phase-engine game::triggers::tests::exact_trigger_source_context_survives_same_id_reincarnation_across_condition_filter_quantity_and_ledger
+        PASS [   0.085s] (148/343) phase-engine game::triggers::dedup_regression_tests::ezio_verbatim_oracle_text_eliminates_damaged_player_when_optional_paid
+        PASS [   0.019s] (149/343) phase-engine game::triggers::tests::seed_event_context_parent_targets_binds_a_milled_card
+        PASS [   0.022s] (150/343) phase-engine game::triggers::tests::seed_event_context_parent_targets_binds_zone_changed_object
+        PASS [   0.018s] (151/343) phase-engine game::triggers::tests::seed_event_context_parent_targets_overwrites_source_only_fallback
+        PASS [   0.020s] (152/343) phase-engine game::visibility::tests::context_free_zone_change_keeps_hidden_search_snapshots_aligned
+        PASS [   0.022s] (153/343) phase-engine game::visibility::tests::trigger_target_selection_event_context_redacts_by_trigger_controller
+        PASS [   0.017s] (154/343) phase-engine parser::oracle::tests::draft_effect_from_oracle_text_recognizes_additional_pick
+        PASS [   0.019s] (155/343) phase-engine parser::oracle::tests::forest_reminder_text_only
+        PASS [   0.020s] (156/343) phase-engine parser::oracle::tests::oracle_text_allows_commander_uses_commander_permission_parser
+        PASS [   0.027s] (157/343) phase-engine parser::oracle::tests::keyword_line_with_reminder_text_is_still_routed
+        PASS [   0.060s] (158/343) phase-engine parser::oracle::tests::boast_text_only_cost_parses_as_activated
+        PASS [   0.041s] (159/343) phase-engine parser::oracle::tests::oracle_text_mixing_any_and_typed_counter_choice_costs_parses_to_demoted_ability
+        PASS [   0.042s] (160/343) phase-engine parser::oracle_attraction::tests::parse_oracle_text_includes_visit_trigger_for_attraction_subtype
+        PASS [   0.020s] (161/343) phase-engine parser::oracle_cost::tests::cost_reduction_dynamic_x_damage_dealt_bare_binds_event_context_amount
+        PASS [   0.036s] (162/343) phase-engine parser::oracle_attraction::tests::parse_oracle_text_open_an_attraction
+        PASS [   0.060s] (163/343) phase-engine parser::oracle::tests::tempest_hawk_oracle_text_produces_no_unimplemented_static
+        PASS [   0.021s] (164/343) phase-engine parser::oracle_cost::tests::parse_or_separated_mana_costs_trailing_text_rejected
+        PASS [   0.019s] (165/343) phase-engine parser::oracle_effect::conditions::tests::source_pt_comparison_text_is_exactly_only
+        PASS [   0.019s] (166/343) phase-engine parser::oracle_effect::conditions::tests::target_type_membership_pronoun_it_declined_when_text_contains_card
+        PASS [   0.024s] (167/343) phase-engine parser::oracle_effect::counter::tests::counter_equal_to_the_result_binds_event_context_amount
+        PASS [   0.022s] (168/343) phase-engine parser::oracle_effect::counter::tests::put_a_number_of_counters_equal_to_the_result_binds_event_context_amount
+        PASS [   0.023s] (169/343) phase-engine parser::oracle_effect::counter::tests::put_counter_on_it_equal_to_the_result_binds_event_context_amount
+        PASS [   0.024s] (170/343) phase-engine parser::oracle_effect::counter::tests::put_counter_other_than_that_creature_excludes_context_object
+        PASS [   0.018s] (171/343) phase-engine parser::oracle_effect::imperative::tests::choose_one_of_the_exiled_cards_with_cost_context_is_cost_paid_bound
+        PASS [   0.020s] (172/343) phase-engine parser::oracle_effect::imperative::tests::choose_one_of_the_exiled_cards_without_cost_context_is_not_claimed
+        PASS [   0.023s] (173/343) phase-engine parser::oracle_effect::imperative::tests::combat_insert_anchors_on_the_phase_its_text_names
+        PASS [   0.032s] (174/343) phase-engine parser::oracle_effect::imperative::tests::parse_oracle_text_aerial_toastmaster_activation_assembles_a_contraption
+        PASS [   0.045s] (175/343) phase-engine parser::oracle_effect::imperative::tests::parse_oracle_text_triggered_it_assembles_for_each_contraption
+        PASS [   0.023s] (176/343) phase-engine parser::oracle_effect::lower::where_x_tests::where_x_is_the_result_binds_event_context_amount
+        PASS [   0.044s] (177/343) phase-engine parser::oracle_effect::imperative::tests::parse_oracle_text_triggered_reassembles_that_player_controls
+        PASS [   0.019s] (178/343) phase-engine parser::oracle_effect::mana::tests::filter_land_trailing_text_rejects_parse
+        PASS [   0.019s] (179/343) phase-engine parser::oracle_effect::search::tests::search_that_players_library_without_context_does_not_surface_player_target
+        PASS [   0.028s] (180/343) phase-engine parser::oracle_effect::mana::tests::shares_type_with_it_in_trigger_context_uses_triggering_source
+        PASS [   0.021s] (181/343) phase-engine parser::oracle_effect::search::tests::search_up_to_that_many_emits_event_context_back_reference
+        PASS [   0.020s] (182/343) phase-engine parser::oracle_effect::snapshot_tests::crafty_cutpurse_oracle_text_parses_to_token_controller_redirect
+        PASS [   0.018s] (183/343) phase-engine parser::oracle_effect::snapshot_tests::non_balance_text_is_not_intercepted
+        PASS [   0.021s] (184/343) phase-engine parser::oracle_effect::subject::tests::parse_subject_that_attacking_player_trigger_context_is_triggering_player
+        PASS [   0.020s] (185/343) phase-engine parser::oracle_effect::subject::tests::parse_subject_that_player_trigger_context_honors_parent_target_controller_scope
+        PASS [   0.130s] (186/343) phase-engine parser::oracle_effect::imperative::tests::desperate_gambit_shipped_text_threads_chosen_damage_source_both_branches
+        PASS [   0.021s] (187/343) phase-engine parser::oracle_effect::subject::tests::parse_subject_that_player_trigger_context_is_triggering_player
+        PASS [   0.037s] (188/343) phase-engine parser::oracle_effect::tests::activation_count_partial_text_returns_none
+        PASS [   0.082s] (189/343) phase-engine parser::oracle_effect::subject::tests::outer_assigned_names_are_text_changes_but_quoted_named_is_opaque
+        PASS [   0.062s] (190/343) phase-engine parser::oracle_effect::tests::a_delayed_payload_with_an_event_context_anaphor_lifts_the_may_and_drops_the_stamp
+        PASS [   0.030s] (191/343) phase-engine parser::oracle_effect::tests::effect_add_that_much_colored_mana_uses_event_context_amount
+        PASS [   0.073s] (192/343) phase-engine parser::oracle_effect::tests::defender_segment_with_trailing_text_is_refused_by_the_shared_all_consuming_policy
+        PASS [   0.035s] (193/343) phase-engine parser::oracle_effect::tests::gate_a_requires_chain_context_head_and_reader
+        PASS [   0.050s] (194/343) phase-engine parser::oracle_effect::tests::exile_pile_shuffle_cloak_remains_with_context_only
+        PASS [   0.019s] (195/343) phase-engine parser::oracle_effect::tests::parse_condition_text_cast_during_main_phase
+        PASS [   0.029s] (196/343) phase-engine parser::oracle_effect::tests::nth_resolution_partial_text_returns_none
+        PASS [   0.020s] (197/343) phase-engine parser::oracle_effect::tests::parse_condition_text_life_greater_than_starting
+        PASS [   0.022s] (198/343) phase-engine parser::oracle_effect::tests::parse_condition_text_non_comparison_returns_none
+        PASS [   0.019s] (199/343) phase-engine parser::oracle_effect::tests::parse_condition_text_paid_x_threshold
+        PASS [   0.035s] (200/343) phase-engine parser::oracle_effect::tests::standalone_protection_bypass_isolates_outer_context_except_parent_target
+        PASS [   0.028s] (201/343) phase-engine parser::oracle_effect::tests::that_player_skips_next_untap_step_uses_context_target
+        PASS [   0.143s] (202/343) phase-engine parser::oracle_effect::tests::molten_psyche_full_oracle_text_has_scoped_shuffle_and_recipient_damage
+        PASS [   0.018s] (203/343) phase-engine parser::oracle_effect::tests::trailing_effect_text_after_redirect_is_not_swallowed
+        PASS [   0.018s] (204/343) phase-engine parser::oracle_effect::tests::try_split_damage_compound_event_context_no_compound
+        PASS [   0.031s] (205/343) phase-engine parser::oracle_effect::tests::try_split_damage_compound_event_context_oath_of_kaya
+        PASS [   0.145s] (206/343) phase-engine parser::oracle_effect::tests::ram_through_real_oracle_text_has_no_unimplemented_excess
+        PASS [   0.024s] (207/343) phase-engine parser::oracle_effect::tests::unrelated_remains_exiled_text_cannot_extend_permission_duration
+        PASS [   0.031s] (208/343) phase-engine parser::oracle_effect::tests::try_split_damage_compound_event_context_torch_the_tower
+        PASS [   0.339s] (209/343) phase-engine parser::oracle_effect::tests::effect_emblem_trigger_with_subject_predicate_text_stays_emblem
+        PASS [   0.063s] (210/343) phase-engine parser::oracle_effect::text_change::tests::crystal_spray_lowers_to_both_domains_until_end_of_turn_then_draws
+        PASS [   0.163s] (211/343) phase-engine parser::oracle_effect::tests::trigger_context_damage_to_that_permanent_or_player_uses_event_target_without_slot
+        PASS [   0.076s] (212/343) phase-engine parser::oracle_effect::text_change::tests::keyworded_and_modal_class_members_parse_completely
+        PASS [   0.031s] (213/343) phase-engine parser::oracle_effect::text_change::tests::magical_hack_lowers_to_a_land_pair_prompt_and_a_permanent_install
+        PASS [   0.034s] (214/343) phase-engine parser::oracle_effect::text_change::tests::mind_bend_targets_permanents_only
+        PASS [   0.048s] (215/343) phase-engine parser::oracle_effect::token::kazar_token_landfall_tests::catalog_landfall_rules_text_classifies_as_grant_trigger
+        PASS [   0.061s] (216/343) phase-engine parser::oracle_ir::snapshot_tests::edge_case_reminder_text_only
+        PASS [   0.144s] (217/343) phase-engine parser::oracle_effect::text_change::tests::other_word_classes_stay_unimplemented
+        PASS [   0.034s] (218/343) phase-engine parser::oracle_keyword::tests::parse_oracle_text_bombur_gentle_dreamer_storied_and_conditional_cant_untap
+        PASS [   0.070s] (219/343) phase-engine parser::oracle_ir::snapshot_tests::roll_text_without_typed_roll_die_does_not_consume_result_rows
+        PASS [   0.028s] (220/343) phase-engine parser::oracle_keyword::tests::parse_oracle_text_extracts_cascade_for_canonical_cards
+        PASS [   0.022s] (221/343) phase-engine parser::oracle_nom::condition::tests::attached_subject_combat_state_leaves_hostile_trailing_text_for_caller
+        PASS [   0.233s] (222/343) phase-engine parser::oracle_effect::token::tests::token_count_equal_to_the_result_is_event_context_amount
+        PASS [   0.240s] (223/343) phase-engine parser::oracle_effect::token::tests::quoted_named_text_does_not_override_token_name
+        PASS [   0.051s] (224/343) phase-engine parser::oracle_nom::condition::tests::it_attacked_this_turn_is_not_bound_context_free
+        PASS [   0.023s] (225/343) phase-engine parser::oracle_nom::quantity::tests::context_free_quantity_grammar_never_yields_a_chosen_number_extremum
+        PASS [   0.019s] (226/343) phase-engine parser::oracle_nom::quantity::tests::for_each_opponent_dealt_damage_is_event_context_player_count
+        PASS [   0.040s] (227/343) phase-engine parser::oracle_nom::condition::tests::test_bare_it_entered_this_turn_not_matched_context_free
+        PASS [   0.020s] (228/343) phase-engine parser::oracle_nom::target::tests::test_parse_event_context_ref
+        PASS [   0.030s] (229/343) phase-engine parser::oracle_nom::quantity::tests::test_parse_event_context_refs
+        PASS [   0.024s] (230/343) phase-engine parser::oracle_quantity::tests::card_drawn_this_way_uses_event_context_amount
+        PASS [   0.021s] (231/343) phase-engine parser::oracle_quantity::tests::event_context_difference_between_trigger_creatures_power_and_toughness
+        PASS [   0.154s] (232/343) phase-engine parser::oracle_keyword::tests::parse_oracle_text_extracts_storied_without_mtgjson_keyword_metadata
+        PASS [   0.021s] (233/343) phase-engine parser::oracle_quantity::tests::event_context_milled_card_mana_value
+        PASS [   0.027s] (234/343) phase-engine parser::oracle_quantity::tests::event_context_pt_difference_does_not_claim_recipient_surfaces
+        PASS [   0.018s] (235/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_destroyed_creature_power
+        PASS [   0.022s] (236/343) phase-engine parser::oracle_quantity::tests::parse_event_context_life_gained_this_turn
+        PASS [   0.021s] (237/343) phase-engine parser::oracle_quantity::tests::parse_event_context_life_lost_this_turn
+        PASS [   0.019s] (238/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_discarded_creature_power
+        PASS [   0.019s] (239/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_legendary_creature_supertype_composition
+        PASS [   0.021s] (240/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_exiled_card_mana_value
+        PASS [   0.023s] (241/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_discovered_card_mana_value
+        PASS [   0.019s] (242/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_milled_card_mana_value
+        PASS [   0.023s] (243/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_rejects_an_opponent_prefix
+        PASS [   0.026s] (244/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_participle_requires_word_boundary
+        PASS [   0.025s] (245/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_rejects_player
+        PASS [   0.023s] (246/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_rejects_plural_type
+        PASS [   0.018s] (247/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_sacrificed_artifact_mana_value
+        PASS [   0.021s] (248/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_rejects_target
+        PASS [   0.024s] (249/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_sacrificed_creature_power
+        PASS [   0.023s] (250/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_sacrificed_creature_toughness
+        PASS [   0.019s] (251/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_sacrificed_token_power
+        PASS [   0.020s] (252/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_sacrificed_enchantment_mana_value
+        PASS [   0.020s] (253/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_that_battle_mana_value_demonstrative
+        PASS [   0.023s] (254/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_that_card_mana_value_demonstrative
+        PASS [   0.021s] (255/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_that_permanent_power_demonstrative
+        PASS [   0.021s] (256/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_that_creature_toughness_demonstrative
+        PASS [   0.024s] (257/343) phase-engine parser::oracle_quantity::tests::parse_event_context_possessive_unknown_type_returns_none
+        PASS [   0.027s] (258/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_commander_mana_value
+        PASS [   0.024s] (259/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_excess_damage_this_way_reads_the_excess_channel
+        PASS [   0.028s] (260/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_does_not_consume_context_scoped_object_count
+        PASS [   0.021s] (261/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_greatest_discarded_this_way_reports_max
+        PASS [   0.019s] (262/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_its_power
+        PASS [   0.023s] (263/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_its_mana_value
+        PASS [   0.018s] (264/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_its_power_plus_toughness
+        PASS [   0.026s] (265/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_its_toughness
+        PASS [   0.018s] (266/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_opponents_dealt_damage_counts_event_players
+        PASS [   0.022s] (267/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_life_lost_this_turn
+        PASS [   0.025s] (268/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_life_gained_this_turn
+        PASS [   0.023s] (269/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_previous_effect_this_way_variants
+        PASS [   0.019s] (270/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_spell_mana_value
+        PASS [   0.020s] (271/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_that_many_cards_minus_one
+        PASS [   0.029s] (272/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_superlative_free_discard_phrases_are_unchanged
+        PASS [   0.021s] (273/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_that_much
+        PASS [   0.020s] (274/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_that_much_life_minus_two
+        PASS [   0.019s] (275/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_that_much_life_plus_one
+        PASS [   0.023s] (276/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_that_much_plus_one_bare
+        PASS [   0.025s] (277/343) phase-engine parser::oracle_quantity::tests::parse_event_context_quantity_unrecognized_returns_none
+        PASS [   0.026s] (278/343) phase-engine parser::oracle_replacement::snapshot_tests::awe_strike_full_text_is_not_a_static_line
+        PASS [   0.025s] (279/343) phase-engine parser::oracle_replacement::tests::redirection_spine_rejects_trailing_text_after_the_clause
+        PASS [   0.031s] (280/343) phase-engine parser::oracle_static::tests::card_text_omnath_locus_of_mana_green_retention
+        PASS [   0.020s] (281/343) phase-engine parser::oracle_static::tests::cast_free_rejects_text_without_without_paying
+        PASS [   0.058s] (282/343) phase-engine parser::oracle_static::tests::boarded_window_full_text_has_no_swallowed_clause_regression
+        PASS [   0.037s] (283/343) phase-engine parser::oracle_static::tests::cast_this_way_cost_reduction_without_flashback_context_has_no_variant_gate
+        PASS [   0.083s] (284/343) phase-engine parser::oracle_static::tests::card_text_the_last_agni_kai_full_printed_text
+        PASS [   0.019s] (285/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_minus_x_over_0_without_where_clause_defaults_to_cost_x_paid
+        PASS [   0.134s] (286/343) phase-engine parser::oracle_replacement::tests::parses_chains_full_text_gates_draw_and_mill_on_discard_outcome
+        PASS [   0.063s] (287/343) phase-engine parser::oracle_static::tests::combat_tax_damage_dealt_this_way_does_not_bind_event_context_amount
+        PASS [   0.021s] (288/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_minus_x_over_minus_x_without_where_clause_defaults_both_to_cost_x_paid
+        PASS [   0.019s] (289/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_plus_0_over_plus_x_without_where_clause_defaults_to_cost_x_paid
+        PASS [   0.022s] (290/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_mixed_dynamic_power_fixed_toughness
+        PASS [   0.021s] (291/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_x_over_0_without_where_clause_defaults_to_cost_x_paid
+        PASS [   0.019s] (292/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_x_over_x_without_where_clause_defaults_both_to_cost_x_paid
+        PASS [   0.031s] (293/343) phase-engine parser::oracle_static::tests::dynamic_pt_in_text_x_over_0_with_where_clause_still_uses_where_clause
+        PASS [   0.022s] (294/343) phase-engine parser::oracle_static::tests::dynamic_x_clause_damage_dealt_bare_binds_event_context_amount
+        PASS [   0.019s] (295/343) phase-engine parser::oracle_static::tests::parse_fixed_pt_in_text_accepts_copula
+        PASS [   0.031s] (296/343) phase-engine parser::oracle_static::tests::life_and_limb_real_text_dual_subject_animation
+        PASS [   0.025s] (297/343) phase-engine parser::oracle_static::tests::parse_fixed_pt_in_text_rejects_keyword_and_counter
+        PASS [   0.027s] (298/343) phase-engine parser::oracle_static::tests::static_unrelated_text_not_must_attack
+        PASS [   0.019s] (299/343) phase-engine parser::oracle_target::tests::event_context_ref_preserves_remainder
+        PASS [   0.021s] (300/343) phase-engine parser::oracle_target::tests::parse_event_context_defending_player
+        PASS [   0.026s] (301/343) phase-engine parser::oracle_target::tests::parse_event_context_defending_player_prefix
+        PASS [   0.025s] (302/343) phase-engine parser::oracle_target::tests::parse_event_context_returns_none_for_non_event
+        PASS [   0.019s] (303/343) phase-engine parser::oracle_target::tests::parse_event_context_that_permanent
+        PASS [   0.020s] (304/343) phase-engine parser::oracle_target::tests::parse_event_context_that_permanent_or_player_declines
+        PASS [   0.024s] (305/343) phase-engine parser::oracle_target::tests::parse_event_context_that_player
+        PASS [   0.024s] (306/343) phase-engine parser::oracle_target::tests::parse_event_context_that_spells_controller
+        PASS [   0.027s] (307/343) phase-engine parser::oracle_target::tests::parse_event_context_that_source
+        PASS [   0.026s] (308/343) phase-engine parser::oracle_target::tests::parse_event_context_that_spells_owner
+        PASS [   0.032s] (309/343) phase-engine parser::oracle_target::tests::the_exiled_card_with_exile_cost_context_produces_cost_paid_object
+        PASS [   0.035s] (310/343) phase-engine parser::oracle_target::tests::unrecognized_bare_text_stays_any
+        PASS [   0.030s] (311/343) phase-engine parser::oracle_trigger::tests::source_zone_contraction_is_context_gated
+        PASS [   0.065s] (312/343) phase-engine parser::oracle_trigger::tests::parse_odric_current_errata_text_gates_all_thirteen_keywords
+        PASS [   0.027s] (313/343) phase-engine parser::oracle_util::tests::strip_reminder_text_basic
+        PASS [   0.076s] (314/343) phase-engine parser::oracle_trigger::tests::synthetic_sentence_separated_mass_move_damage_keeps_event_context_amount
+        PASS [   0.019s] (315/343) phase-engine parser::oracle_util::tests::strip_reminder_text_nested
+        PASS [   0.021s] (316/343) phase-engine parser::oracle_util::tests::text_pair_em_dash
+        PASS [   0.028s] (317/343) phase-engine parser::oracle_util::tests::strip_reminder_text_no_parens
+        PASS [   0.101s] (318/343) phase-engine parser::oracle_trigger::tests::whole_event_threshold_effect_does_not_read_event_context_amount
+        PASS [   0.020s] (319/343) phase-engine parser::oracle_util::tests::text_pair_rsplit_around_last_occurrence
+        PASS [   0.019s] (320/343) phase-engine parser::oracle_util::tests::text_pair_split_around_first_occurrence
+        PASS [   0.019s] (321/343) phase-engine parser::oracle_util::tests::text_pair_split_around_multibyte
+        PASS [   0.021s] (322/343) phase-engine parser::oracle_util::tests::text_pair_split_around_not_found
+        PASS [   0.020s] (323/343) phase-engine parser::oracle_util::tests::text_pair_split_around_preserves_case
+        PASS [   0.022s] (324/343) phase-engine parser::oracle_util::tests::text_pair_split_at
+        PASS [   0.021s] (325/343) phase-engine parser::oracle_util::tests::text_pair_strip_after_finds_needle
+        PASS [   0.020s] (326/343) phase-engine parser::oracle_util::tests::text_pair_strip_after_is_case_insensitive
+        PASS [   0.020s] (327/343) phase-engine parser::oracle_util::tests::text_pair_strip_after_preserves_original_case
+        PASS [   0.018s] (328/343) phase-engine parser::oracle_util::tests::text_pair_strip_prefix
+        PASS [   0.019s] (329/343) phase-engine parser::oracle_util::tests::text_pair_strip_after_returns_none_on_miss
+        PASS [   0.020s] (330/343) phase-engine parser::oracle_util::tests::text_pair_strip_suffix
+        PASS [   0.022s] (331/343) phase-engine parser::oracle_util::tests::text_pair_trim_start
+        PASS [   0.022s] (332/343) phase-engine parser::swallow_check::tests::dig_if_you_do_exemption_is_text_scoped
+        PASS [   0.021s] (333/343) phase-engine parser::swallow_check::tests::enters_modified_if_exemption_is_text_scoped
+        PASS [   0.020s] (334/343) phase-engine parser::swallow_check::tests::plotted_grant_linkage_exemption_is_text_scoped
+        PASS [   0.022s] (335/343) phase-engine parser::swallow_check::tests::recorded_unrecognized_text_discharges_only_the_markers_it_contains
+        PASS [   0.020s] (336/343) phase-engine types::ability::chain_description_backfill_tests::backfill_with_no_head_text_is_a_no_op
+        PASS [   0.278s] (337/343) phase-engine parser::oracle_trigger::enchanted_player_controls_tests::cast_trigger_without_pip_qualifier_keeps_event_context_count
+        PASS [   0.021s] (338/343) phase-engine types::ability::tests::attach_target_bindings_keep_spell_context_construction_and_wire_shape_stable
+        PASS [   0.019s] (339/343) phase-engine types::game_state::tests::loop_action_context_migrates_pre_rename_flat_recast_shape
+        PASS [   0.030s] (340/343) phase-engine types::game_state::tests::connive_reentry_keeps_paired_drain_for_promoted_context_continuation
+        PASS [   0.024s] (341/343) phase-engine types::game_state::tests::resolving_trigger_context_captures_plural_events_without_singular_event
+        PASS [   0.021s] (342/343) phase-engine types::game_state::tests::yields_require_exact_source_context_for_card_identity
+        PASS [   0.032s] (343/343) phase-engine types::resolution::tests::resolution_state_wire_keeps_choose_from_zone_context_with_its_continuation
+────────────
+     Summary [   2.963s] 343 tests run: 343 passed, 22341 skipped

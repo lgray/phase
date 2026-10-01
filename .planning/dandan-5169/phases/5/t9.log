@@ -1,0 +1,8 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 2m 01s
+────────────
+ Nextest run ID 2ca0099b-06e5-4435-8278-1da0e1e61f0c with nextest profile: default
+    Starting 1 test across 1 binary (8590 tests skipped)
+        PASS [   3.405s] (1/1) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+────────────
+     Summary [   3.417s] 1 test run: 1 passed, 8590 skipped

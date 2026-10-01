@@ -125,3 +125,9 @@
 ## 21. Phase 14 (S4c dealer + S6)
 - Plan r1: F1/F2 behavior (action-fold skipped; parked tail order), F3 machinery (serde census row -> test-forced scope addition), F4 machinery (mulligan.rs extraction -> DROPPED by ruling), F5/F6 text. Design round 1; revision r2 (self-found S1–S5).
 - Phase 14 r2 review: APPROVE; N1 text applied by orchestrator (frame-push wording; old 1->0, new 1); N2 recorded (no corpus card affected). Plan CLEAN. Scope additions (batch): deterministic_game_state_serde.rs (test-forced).
+
+## 22. Phase 15 (Day's Undoing)
+- Plan r1: F1 behavior (Draw re-tag breaks Phase 14 gate) + F2 text. Revision. r2 review: F1 text (fixture count 7 -> 5) applied by orchestrator (old 1->0, new 1). Plan CLEAN; no charter scope additions; no protocol bump.
+
+## 23. Phase 16 (frontend shared piles)
+- Plan r1: DerivedViews.shared_piles + client resolvePileSeat display routing; bump 98->99/80->81. Review r1: 0 behavior; F1 machinery (delete ZoneViewer seat gate; engine already provides delve actions), F2/F3 text — applied by applier (orchestrator-verified). Loop closed; plan CLEAN. Scope additions (batch): 7 protocol pins (Standing rule), ZoneViewer.tsx, client test files (gameStateView.test.ts forced; ZoneViewer.test.tsx, castable-hook test, AnimationOverlay anchor test, GamePage.sharedPiles test).
