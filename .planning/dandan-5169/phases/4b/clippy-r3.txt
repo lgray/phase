@@ -1,0 +1,3 @@
+    Checking phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `dev` profile [unoptimized] target(s) in 14m 47s
+done

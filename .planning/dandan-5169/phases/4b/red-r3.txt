@@ -1,0 +1,68 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 10m 48s
+────────────
+ Nextest run ID a3f4d169-985a-4331-a689-0c04bc65081a with nextest profile: default
+    Starting 2 tests across 8 binaries (31327 tests skipped)
+        FAIL [   0.132s] (1/2) phase-engine game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop
+  stdout ───
+
+    running 1 test
+    test game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop ... FAILED
+
+    failures:
+
+    failures:
+        game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22670 filtered out; finished in 0.11s
+
+  stderr ───
+
+    thread 'game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop' (16094) panicked at crates/engine/src/game/layers.rs:22097:9:
+    assertion `left == right` failed
+      left: [2, 0, 1]
+     right: [0, 1, 2]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::vec::Vec<usize>, alloc::vec::Vec<usize>>
+       4: engine::game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop
+       5: engine::game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop::{closure#0}
+       6: <engine::game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   2.860s] (2/2) phase-engine::integration loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members
+  stdout ───
+
+    running 1 test
+    test loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members ... FAILED
+
+    failures:
+
+    failures:
+        loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8567 filtered out; finished in 2.82s
+
+  stderr ───
+
+    thread 'loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members' (16093) panicked at crates/engine/tests/integration/loop_only_dependency_fallback.rs:219:5:
+    assertion `left == right` failed
+      left: 5
+     right: 0
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<usize, usize>
+       4: integration::loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members
+       5: integration::loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members::{closure#0}
+       6: <integration::loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+────────────
+     Summary [   2.898s] 2 tests run: 0 passed, 2 failed, 31327 skipped
+        FAIL [   0.132s] (1/2) phase-engine game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop
+        FAIL [   2.860s] (2/2) phase-engine::integration loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members
+error: test run failed
