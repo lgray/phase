@@ -1129,17 +1129,21 @@ macro_rules! define_granter_walk {
 use crate::types::ability::{
     AbilityCondition, AbilityCost, ActivationRestriction, CardTypeSetSource,
     ContinuousModification, Duration, Effect, FilterProp, ObjectScope, ParsedCondition,
-    PtValue, QuantityExpr, QuantityRef, ReplacementCondition, StaticCondition,
+    PlayerFilter, PtValue, QuantityExpr, QuantityRef, ReplacementCondition, StaticCondition,
     TargetFilter, TriggerCondition,
 };
 use crate::types::identifiers::ObjectIncarnationRef;
 use crate::types::statics::{BlockExceptionKind, StaticMode};
 use super::$Node;
 
-/// A granter symbol: the incarnation slot of a filter, or an object scope.
+/// A granter symbol: the incarnation slot of a filter, an object scope, or the caster
+/// player filter.
 pub(crate) enum Symbol<'a> {
     Filter(&'a $($mut_)? Option<ObjectIncarnationRef>),
     Scope(&'a $($mut_)? ObjectScope),
+    // The shared walk only counts this variant; it never reads the filter.
+    #[allow(dead_code)]
+    Caster(&'a $($mut_)? TargetFilter),
 }
 
 /// Visits the symbols in `node`'s own fields; nested definition nodes are not entered.
@@ -1358,6 +1362,11 @@ fn duration(d: &$($mut_)? Duration, v: &mut impl FnMut(Symbol<'_>)) {
 }
 
 pub(crate) fn filter(f: &$($mut_)? TargetFilter, v: &mut impl FnMut(Symbol<'_>)) {
+    // Checked before the `match`: an arm there would still borrow `f` while handing it off.
+    if matches!(f, TargetFilter::PlayerMatching { player } if **player == PlayerFilter::GrantingObjectCaster) {
+        v(Symbol::Caster(f));
+        return;
+    }
     match f {
         TargetFilter::GrantingObject { bound } => v(Symbol::Filter(bound)),
         TargetFilter::Typed(typed) => {
@@ -1471,6 +1480,7 @@ pub(crate) mod granter_symbols_mut {
                 bound.get_or_insert(granter);
             }
             Symbol::Scope(scope) => *scope = ObjectScope::SpecificObject { object: granter },
+            Symbol::Caster(_) => {}
         }
     }
 }

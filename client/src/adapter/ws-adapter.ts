@@ -211,7 +211,8 @@ export class NativeEngineVersionMismatchError extends Error {
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
  * 95 — CR 201.5a granter binding: ObjectScope gains GrantingObject and
- *      SpecificObject, and ability, trigger, static, replacement, spell and
+ *      SpecificObject, TargetFilter.GrantingObject gains `bound`, PlayerFilter
+ *      gains GrantingObjectCaster, and ability, trigger, static, replacement, spell and
  *      trigger-source contexts gain the `granting_object` stamp. A v94 peer
  *      cannot deserialize the new state. P2P moves in lockstep to wire 77.
  * 94 — SpellContext.creation_lookback_event carries the battlefield departure a

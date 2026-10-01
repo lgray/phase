@@ -107,7 +107,8 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *
  * Bumps to date:
  *  77 — GameState carries the CR 201.5a granter binding (ObjectScope
- *       GrantingObject / SpecificObject and the granting_object stamps).
+ *       GrantingObject / SpecificObject, TargetFilter GrantingObject.bound,
+ *       PlayerFilter GrantingObjectCaster and the granting_object stamps).
  *       Bumped with full-game protocol 95 so first contact rejects the skew.
  *  76 — game_setup and state_update carry GameState, whose delayed triggered
  *       abilities now serialize SpellContext.creation_lookback_event and whose

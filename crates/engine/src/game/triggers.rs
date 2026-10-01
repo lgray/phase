@@ -12451,10 +12451,11 @@ fn count_scope_binding_diverges(scope: &crate::types::ability::CountScope) -> bo
 fn player_filter_binding_diverges(player: &PlayerFilter) -> bool {
     match player {
         PlayerFilter::AllExcept { exclude } => player_filter_binding_diverges(exclude),
-        // CR 109.4 + CR 115.1: the anchor lives on the resolving ability
-        // (`targets` / `chosen_players`).
+        // CR 109.4 + CR 115.1 + CR 601.2a: the anchor lives on the resolving ability
+        // (`targets` / `chosen_players` / `cast_occurrence`).
         PlayerFilter::ParentObjectTargetController
         | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::GrantingObjectCaster
         | PlayerFilter::ChosenPlayer { .. }
         // CR 608.2c: ledgers a RESOLUTION publishes — the zone-change and action
         // "this way" lists, the CR 701.38 vote ballots, the tracked sets, and
@@ -14856,10 +14857,12 @@ fn evaluate_trigger_condition_with_source(
             | PlayerFilter::VotedFor { .. }
             | PlayerFilter::OwnersOfCardsExiledBySource
             | PlayerFilter::ParentObjectTargetController
-            // CR 108.3 + CR 608.2c: parent-target-owner and resolution-scoped
-            // chosen-player anchors are effect-resolution references, not
-            // turn-binding predicates — no "whose turn" semantic. Fail-closed.
+            // CR 108.3 + CR 601.2a + CR 608.2c: parent-target-owner, granter-caster
+            // and resolution-scoped chosen-player anchors are effect-resolution
+            // references, not turn-binding predicates — no "whose turn" semantic.
+            // Fail-closed.
             | PlayerFilter::ParentObjectTargetOwner
+            | PlayerFilter::GrantingObjectCaster
             | PlayerFilter::ChosenPlayer { .. }
             // CR 102.1: a controls-a-permanent population predicate is
             // set-valued — it has no single-player "whose turn" semantic.

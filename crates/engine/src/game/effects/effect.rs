@@ -265,7 +265,16 @@ fn install_transient(
     // CR 201.5a + CR 400.7 + CR 113.7: a grant names the object whose ability resolved, as
     // it was then; a resolving spell is still on the stack (CR 608.2n).
     if let Some(granter) = ability.source_ref(state) {
-        crate::game::layers::latch_grants(&mut modifications, granter);
+        crate::game::layers::latch_grants(
+            &mut modifications,
+            granter,
+            // CR 601.2i + CR 707.10: the caster is fixed when the spell became cast; a copy
+            // that was not cast has none.
+            ability
+                .cast_occurrence
+                .as_ref()
+                .map(|occurrence| occurrence.caster),
+        );
     }
     state.add_transient_continuous_effect_inner(
         ability.source_id,

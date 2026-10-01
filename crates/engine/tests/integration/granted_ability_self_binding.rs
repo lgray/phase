@@ -563,6 +563,10 @@ beginning of your upkeep, destroy this creature. Reveal cards from the top of yo
 you reveal a creature card. Put that card onto the battlefield and attach Shifting Shadow to it, \
 then put all other cards revealed this way on the bottom of your library in a random order.\"";
 
+const HELLISH_REBUKE: &str = "Until end of turn, permanents your opponents control gain \"When \
+this permanent deals damage to the player who cast Hellish Rebuke, sacrifice this permanent. You \
+lose 2 life.\"";
+
 /// `(oracle text, printed name, core types, subtypes)` for the exported class
 /// members.
 const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
@@ -680,6 +684,7 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
         &["Enchantment"],
         &["Aura"],
     ),
+    (HELLISH_REBUKE, "Hellish Rebuke", &["Instant"], &[]),
 ];
 
 /// CR 201.5a: no raw U+E0002 may survive into ANY string reachable from
@@ -5388,5 +5393,157 @@ mod granter_stamp {
             }
             assert_eq!(wrong, Vec::<String>::new());
         }
+    }
+}
+
+/// CR 601.2a + CR 201.5a: "the player who cast <granter>" is latched to the spell's caster when
+/// the grant is installed; a copy that was not cast has no caster (CR 707.10).
+mod granted_caster_reference {
+    use super::*;
+    use engine::game::scenario::GameRunner;
+    use engine::types::ability::{PlayerFilter, TargetRef};
+    use engine::types::actions::GameAction;
+    use engine::types::game_state::WaitingFor;
+    use engine::types::mana::ManaCost;
+    use engine::types::player::PlayerId;
+
+    const TWINCAST: &str =
+        "Copy target instant or sorcery spell. You may choose new targets for the copy.";
+    const PINGER: &str = "{T}: This creature deals 1 damage to any target.";
+
+    fn granted_recipient(oracle: &str) -> (Option<TargetFilter>, String) {
+        let parsed =
+            parse_oracle_text(oracle, "Hellish Rebuke", &[], &["Instant".to_string()], &[]);
+        let json = serde_json::to_string(&parsed).expect("ParsedAbilities serializes");
+        let recipient = parsed
+            .abilities
+            .iter()
+            .find_map(|ability| match &*ability.effect {
+                Effect::GenericEffect {
+                    static_abilities, ..
+                } => static_abilities
+                    .iter()
+                    .flat_map(|s| &s.modifications)
+                    .find_map(|m| match m {
+                        ContinuousModification::GrantTrigger { trigger } => {
+                            Some(trigger.valid_target.clone())
+                        }
+                        _ => None,
+                    }),
+                _ => None,
+            })
+            .expect("reach-guard: the spell grants a trigger");
+        (recipient, json)
+    }
+
+    #[test]
+    fn caster_reference_parses_as_the_granted_triggers_recipient() {
+        let (recipient, json) = granted_recipient(HELLISH_REBUKE);
+        assert_eq!(
+            recipient,
+            Some(TargetFilter::PlayerMatching {
+                player: Box::new(PlayerFilter::GrantingObjectCaster),
+            })
+        );
+        assert!(!json.contains("Unimplemented"), "{json}");
+        assert!(!json.contains(PLACEHOLDER), "{json}");
+
+        let pronoun = HELLISH_REBUKE.replace("who cast Hellish Rebuke", "who cast it");
+        let (recipient, json) = granted_recipient(&pronoun);
+        assert_eq!(recipient, None);
+        assert!(!json.contains("GrantingObjectCaster"));
+
+        let any_player = HELLISH_REBUKE.replace("the player who cast Hellish Rebuke", "a player");
+        assert_eq!(granted_recipient(&any_player).0, Some(TargetFilter::Player));
+    }
+
+    fn rebuke_board() -> (GameRunner, [ObjectId; 2], ObjectId, ObjectId) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let pingers = [
+            scenario
+                .add_creature_from_oracle(P1, "Pinger A", 1, 1, PINGER)
+                .id(),
+            scenario
+                .add_creature_from_oracle(P1, "Pinger B", 1, 1, PINGER)
+                .id(),
+        ];
+        let rebuke = scenario
+            .add_spell_to_hand_from_oracle(P0, "Hellish Rebuke", true, HELLISH_REBUKE)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        let twincast = scenario
+            .add_spell_to_hand_from_oracle(P0, "Twincast", true, TWINCAST)
+            .with_mana_cost(ManaCost::zero())
+            .id();
+        (scenario.build(), pingers, rebuke, twincast)
+    }
+
+    /// P1 activates `pinger` at `player` and only that activation resolves.
+    fn ping(runner: &mut GameRunner, pinger: ObjectId, player: PlayerId) {
+        if matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0) {
+            runner.act(GameAction::PassPriority).expect("P0 passes");
+        }
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: pinger,
+                ability_index: 0,
+            })
+            .expect("the pinger activates");
+        while matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ) {
+            runner
+                .act(GameAction::ChooseTarget {
+                    target: Some(TargetRef::Player(player)),
+                })
+                .expect("the player is a legal target");
+        }
+        runner.resolve_top();
+    }
+
+    fn zone(runner: &GameRunner, id: ObjectId) -> Zone {
+        runner.state().objects[&id].zone
+    }
+
+    #[test]
+    fn granted_trigger_fires_only_on_damage_to_the_caster() {
+        let (mut runner, [pinger, _], rebuke, _) = rebuke_board();
+        runner.cast(rebuke).resolve();
+        ping(&mut runner, pinger, P0);
+        runner.advance_until_stack_empty();
+        assert_eq!(zone(&runner, pinger), Zone::Graveyard, "reach-guard");
+        assert_eq!(runner.state().players[1].life, 18);
+
+        let (mut runner, [pinger, _], rebuke, _) = rebuke_board();
+        runner.cast(rebuke).resolve();
+        ping(&mut runner, pinger, P1);
+        runner.advance_until_stack_empty();
+        assert_eq!(zone(&runner, pinger), Zone::Battlefield);
+        assert_eq!(runner.state().players[1].life, 19);
+    }
+
+    #[test]
+    fn uncast_copy_grants_a_trigger_that_never_fires() {
+        let (mut runner, [first, second], rebuke, twincast) = rebuke_board();
+        runner
+            .cast(rebuke)
+            .commit()
+            .cast(twincast)
+            .target_object(rebuke)
+            .commit();
+        // Resolves Twincast and its copy of Hellish Rebuke; the original stays on the stack.
+        runner.resolve_top();
+        assert_eq!(zone(&runner, rebuke), Zone::Stack);
+        ping(&mut runner, first, P0);
+        assert_eq!(zone(&runner, first), Zone::Battlefield);
+        assert_eq!(runner.state().players[1].life, 20);
+
+        runner.advance_until_stack_empty();
+        ping(&mut runner, second, P0);
+        runner.advance_until_stack_empty();
+        assert_eq!(zone(&runner, second), Zone::Graveyard, "reach-guard");
+        assert_eq!(runner.state().players[1].life, 18);
     }
 }

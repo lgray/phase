@@ -267,6 +267,8 @@ pub(crate) fn players_for_filter(
         PlayerFilter::ParentObjectTargetOwner => parent_object_target_owner_player(state, ability)
             .into_iter()
             .collect(),
+        // CR 201.5a: an unlatched caster names nobody.
+        PlayerFilter::GrantingObjectCaster => Vec::new(),
         // CR 608.2c + CR 109.4: the resolution-scoped chosen player at `index`.
         PlayerFilter::ChosenPlayer { index } => ability
             .chosen_players

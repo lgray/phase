@@ -3703,7 +3703,8 @@ fn player_filter_reads_zone(filter: &PlayerFilter, zone: Zone) -> bool {
         | PlayerFilter::VotedFor { .. }
         | PlayerFilter::ParentObjectTargetController
         | PlayerFilter::ChosenPlayer { .. }
-        | PlayerFilter::ParentObjectTargetOwner => false,
+        | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::GrantingObjectCaster => false,
     }
 }
 
@@ -4218,7 +4219,8 @@ fn player_filter_reads_life(pf: &PlayerFilter) -> bool {
         | PlayerFilter::VotedFor { .. }
         | PlayerFilter::ParentObjectTargetController
         | PlayerFilter::ChosenPlayer { .. }
-        | PlayerFilter::ParentObjectTargetOwner => false,
+        | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::GrantingObjectCaster => false,
     }
 }
 
@@ -6964,6 +6966,7 @@ fn references_granting_object(body: DefinitionNode<'_>) -> bool {
             granter_symbols::Symbol::Scope(scope) => {
                 matches!(scope, crate::types::ability::ObjectScope::GrantingObject)
             }
+            granter_symbols::Symbol::Caster(_) => false,
         };
     });
     names
@@ -7054,15 +7057,27 @@ fn stamp_grant(modification: &mut ContinuousModification, granter: ObjectIncarna
     }
 }
 
-/// CR 201.5a: latches a resolving ability's grants to its source as it was then.
+/// CR 201.5a: latches a resolving ability's grants to its source as it was then, and
+/// "the player who cast <granter>" to its caster (CR 601.2a), or to nobody.
 pub(crate) fn latch_grants(
     modifications: &mut [ContinuousModification],
     granter: ObjectIncarnationRef,
+    caster: Option<PlayerId>,
 ) {
+    let lowered = caster.map_or(TargetFilter::None, |id| TargetFilter::SpecificPlayer { id });
     for modification in modifications.iter_mut() {
         if grant_names_granter(modification) {
             stamp_grant(modification, granter);
         }
+        // Not gated on `grant_names_granter`: a caster-only body names no granter object.
+        let _ = nodes_mut::visit_continuous_mod(modification, &mut |node| {
+            granter_symbols_mut::node_fields(node, &mut |symbol| {
+                if let granter_symbols_mut::Symbol::Caster(f) = symbol {
+                    *f = lowered.clone();
+                }
+            });
+            std::ops::ControlFlow::Continue(())
+        });
     }
 }
 

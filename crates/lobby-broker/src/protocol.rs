@@ -61,7 +61,8 @@ pub struct TournamentRequestId(pub u64);
 /// can be refused. See 24.
 ///
 /// 95 — CR 201.5a granter binding: `ObjectScope::GrantingObject` and
-///      `ObjectScope::SpecificObject`, plus the `granting_object` stamp on
+///      `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
+///      `PlayerFilter::GrantingObjectCaster`, plus the `granting_object` stamp on
 ///      `AbilityDefinition`, `TriggerDefinition`, `StaticDefinition`,
 ///      `ReplacementDefinition`, `SpellContext` and `TriggerSourceContext`.
 ///      A v94 peer cannot deserialize the new state. P2P moves to wire 77.

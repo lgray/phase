@@ -6446,6 +6446,7 @@ fn strip_performed_action_this_way_clause(
         | PlayerFilter::PlayerAttribute { .. }
         | PlayerFilter::ChosenPlayer { .. }
         | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::GrantingObjectCaster
         | PlayerFilter::TrackedSetPossessor { .. } => return None,
     };
     let (remainder, action) =

@@ -3319,7 +3319,8 @@ mod tests {
     }
 
     /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
-    /// `ObjectScope::SpecificObject` and the `granting_object` stamp; v94 state
+    /// `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
+    /// `PlayerFilter::GrantingObjectCaster` and the `granting_object` stamp; v94 state
     /// cannot decode as v95 state, so it must be refused before state delivery.
     /// `SpellContext.creation_lookback_event` and `TriggerSourceContext.mana_cost`
     /// are new in serialized full-game state (CR 603.7 + CR 603.10a + CR 608.2h,

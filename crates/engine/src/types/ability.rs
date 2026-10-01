@@ -10959,6 +10959,9 @@ pub enum PlayerFilter {
     /// player facing the choice is the owner of the targeted permanent named in
     /// the prior clause, not the ability controller.
     ParentObjectTargetOwner,
+    /// CR 601.2a + CR 201.5a: the player who cast the granting object; lowered to
+    /// `TargetFilter::SpecificPlayer` when the grant is latched.
+    GrantingObjectCaster,
     /// CR 608.2c + CR 608.2h + CR 109.4 + CR 102.2: Each player matching
     /// `relation` who possessed — per `possession` — at least one member of the
     /// most recent tracked object set matching `filter`, restricted to members

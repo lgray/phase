@@ -4694,7 +4694,7 @@ fn scan_player_filter(x: &PlayerFilter, mode: ScanMode) -> Axes {
             acc
         }
         PlayerFilter::ChosenPlayer { index: _ } => Axes::NONE,
-        PlayerFilter::ParentObjectTargetOwner => Axes {
+        PlayerFilter::ParentObjectTargetOwner | PlayerFilter::GrantingObjectCaster => Axes {
             event: true,
             sibling: false,
             projected: false,

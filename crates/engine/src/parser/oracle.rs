@@ -9342,8 +9342,10 @@ pub(crate) fn granter_reference_unreached(node: DefinitionNode<'_>) -> bool {
 fn granter_reference_count(tree: &serde_json::Value) -> usize {
     match tree {
         serde_json::Value::Object(map) => {
-            usize::from(map.get("type").is_some_and(|tag| tag == "GrantingObject"))
-                + map.values().map(granter_reference_count).sum::<usize>()
+            usize::from(
+                map.get("type")
+                    .is_some_and(|tag| tag == "GrantingObject" || tag == "GrantingObjectCaster"),
+            ) + map.values().map(granter_reference_count).sum::<usize>()
         }
         serde_json::Value::Array(items) => items.iter().map(granter_reference_count).sum(),
         serde_json::Value::Null

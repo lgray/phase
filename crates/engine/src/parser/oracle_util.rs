@@ -2332,6 +2332,7 @@ const GRANTER_SELF_REF_VERB_PREFIXES: &[&str] = &[
     "attach ",        // Attach object ("attach <name> to …")
     "tap ",           // Tap cost ("tap <name>")
     "other than ",    // DistinctFrom exclusion ("an artifact other than <name>")
+    "who cast ",      // Caster reference ("the player who cast <name>")
 ];
 // Refused positions, which stay `~`:
 // - `by `: a damage source ("dealt … by <name>").
