@@ -104,15 +104,58 @@ pub(super) fn try_parse_text_change_clause(tp: TextPair<'_>) -> Option<ParsedEff
 mod tests {
     use super::*;
     use crate::parser::parse_oracle_text;
-    use crate::types::ability::TypeFilter;
+    use crate::types::ability::{AbilityCost, TypeFilter};
 
     fn parse(name: &str, text: &str, keywords: &[&str]) -> Vec<AbilityDefinition> {
         let keywords: Vec<String> = keywords.iter().map(|k| (*k).to_string()).collect();
         parse_oracle_text(text, name, &keywords, &["Instant".to_string()], &[]).abilities
     }
 
+    /// True when `def` or any node chained from it satisfies `pred`.
+    fn node_matches(def: &AbilityDefinition, pred: &impl Fn(&AbilityDefinition) -> bool) -> bool {
+        pred(def)
+            || def
+                .sub_ability
+                .as_deref()
+                .is_some_and(|d| node_matches(d, pred))
+            || def
+                .else_ability
+                .as_deref()
+                .is_some_and(|d| node_matches(d, pred))
+            || def.mode_abilities.iter().any(|d| node_matches(d, pred))
+    }
+
+    fn any_node(
+        abilities: &[AbilityDefinition],
+        pred: &impl Fn(&AbilityDefinition) -> bool,
+    ) -> bool {
+        abilities.iter().any(|def| node_matches(def, pred))
+    }
+
     fn has_unimplemented(abilities: &[AbilityDefinition]) -> bool {
-        format!("{abilities:?}").contains("Unimplemented")
+        any_node(abilities, &|def| {
+            matches!(def.effect.as_ref(), Effect::Unimplemented { .. })
+                || def
+                    .cost
+                    .as_ref()
+                    .is_some_and(AbilityCost::contains_unimplemented)
+        })
+    }
+
+    fn has_word_substitution(abilities: &[AbilityDefinition]) -> bool {
+        any_node(abilities, &|def| {
+            let Effect::GenericEffect {
+                static_abilities, ..
+            } = def.effect.as_ref()
+            else {
+                return false;
+            };
+            static_abilities.iter().any(|s| {
+                s.modifications
+                    .iter()
+                    .any(|m| matches!(m, ContinuousModification::SubstituteTextWord { .. }))
+            })
+        })
     }
 
     /// The chain every text change lowers to: the word prompt, then the install.
@@ -260,9 +303,8 @@ mod tests {
             ),
         ] {
             let abilities = parse(name, text, keywords);
-            let debug = format!("{abilities:?}");
-            assert!(debug.contains("SubstituteTextWord"), "{name}: reach-guard");
-            assert!(!has_unimplemented(&abilities), "{name}: {debug}");
+            assert!(has_word_substitution(&abilities), "{name}: reach-guard");
+            assert!(!has_unimplemented(&abilities), "{name}: {abilities:?}");
         }
     }
 
@@ -286,7 +328,7 @@ mod tests {
             let abilities = parse(name, text, &[]);
             assert!(has_unimplemented(&abilities), "{name} must stay unimplemented");
             assert!(
-                !format!("{abilities:?}").contains("SubstituteTextWord"),
+                !has_word_substitution(&abilities),
                 "{name} must not lower to a word substitution"
             );
         }
