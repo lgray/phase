@@ -4643,6 +4643,9 @@ async fn handle_socket(
         }
     }
 
+    // The peer's TCP close must not wait on the cleanup's lock acquisitions below.
+    drop(socket);
+
     // Socket closed -- handle disconnect
     info!(
         game = ?identity.game_code,
@@ -16994,6 +16997,30 @@ mod issue_4548_full_create_tests {
         .await;
         server.abort();
         assert!(result.is_ok(), "timed out");
+    }
+
+    #[tokio::test]
+    async fn a_client_close_ends_the_socket_before_the_disconnect_cleanup() {
+        let (url, server, _temp_dir, app_state) = spawn_full_mode_server().await;
+        let mut socket = connect_and_hello(url).await;
+        let lobby_guard = app_state.lobby.lock().await;
+        socket
+            .send(WsMessage::Close(Some(CloseFrame {
+                code: CloseCode::Normal,
+                reason: "".into(),
+            })))
+            .await
+            .expect("send close");
+        let ended = tokio::time::timeout(Duration::from_secs(1), async {
+            while socket.next().await.is_some() {}
+        })
+        .await;
+        drop(lobby_guard);
+        server.abort();
+        assert!(
+            ended.is_ok(),
+            "socket stayed open while cleanup waited on the lobby lock"
+        );
     }
 
     // ── Draft pods under the listing authority ─────────────────────────────
