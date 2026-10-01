@@ -1,0 +1,21 @@
+# Phase 13 plan review, round 2 (phase-plan mode, rev 2, phase-fit context declared)
+
+Reviewer model: claude-sonnet-5-5. No cargo run; reads and grep only.
+
+**Verdict: ACCEPT. No blocking findings. F1, F2, N1, N2 closed. One non-blocking note (N3).**
+
+## Closure of r1
+
+- **F1 closed (behavior).** Re-measured at HEAD: `engine.rs:2023`/`:9402` call `remember_public_reveals` once at the end of `apply`; it loops over `CardsRevealed.card_ids` and calls `resolve_and_apply_information(.., Public, UntilZoneChange, Reveal)` plus `remember_card_identities(all players, ..)` on the current objects (`engine.rs:8202-8252`). `resolve_and_apply_information` returns `Ok(None)` when no occurrence is collected (`game_state.rs:26357` region, `occurrences.is_empty()`), and `remember_card_identities` iterates the id slice, so an empty `card_ids` publishes nothing. `CardsRevealed.card_ids` is `#[serde(default)]` (`events.rs:1422-1426`), so an empty list is a valid wire value. Consumer sweep re-read and confirmed no edit is needed: `log.rs:1338` renders `card_names` only; `derived_views.rs:3082` is inside `trigger_event_display` (fn at `:3044`; callers are only the trigger-event `filter_map` at `:3040` and its tests), unreachable pregame; `visibility.rs:2996-3008` filters ids and keeps names, a no-op on an empty list; `public_state.rs:542`, `trigger_matchers.rs:1097`, `targeting.rs:2227` are pass-through `{ .. }` arms; `trigger_index.rs:672` only keys `Revealed` (no battlefield pregame); `client` consumers are only `AnimationOverlay.tsx:776-783` (guards `cardNames.length === 0`) and `revealFanCards.ts` (id/name length mismatch takes the name branch, slot keys negative), plus the `types.ts:3374` mirror with `card_ids?` optional. The V3 information-state assertion is revert-failing (emit ids -> `public_revealed_cards`/`viewer_knows_card_identity` true), is paired with a Regular-close control and a positive control that proves the probe can see a leak, and carries the redeal-landing probe note. Draws do not call `remember_card_identities` (grep of all call sites: effects `manifest_dread`, `scoped_library_search`, `dig`, `reveal_hand`, and the `engine.rs` boundary hook only), so the owner's own new hand is not wrongly flagged as known.
+- **F2 closed (text).** Liveness paragraph and ledger now carry the computed 13.8% figure and the safety-net framing.
+- **N1, N2 closed.** Section 0 carries both (readings 1 and 2).
+
+## Fresh review
+
+Premise (brief line 33, settled decision 1), repeatable reading, computed availability (visibility does not redact `MulliganDecision`; owner-scoped candidates), the `MulliganDeclarationKind` seam, the close ordering (reveal loop, returns, one shuffle per container, deal, per-kind count; Phase 12's `advance_after_decision` case 3 runs the close after the arm, so a FreeReveal that is the last declaration closes the round correctly), AI ladder, interaction arm, protocol 96/78 to 97/79 bump and its scope-addition class, locale table, sizing (1 unit, T2 fires on 14, T1 fails, LOC overage disclosed) and the verification matrix all hold. No defect found with measured evidence.
+
+## N3 [note, non-blocking, text] V3 names accessors that an integration test cannot call
+
+Old string (V3, information state): "`state.information_active(Public, UntilZoneChange, ObjectIncarnationRef::from_object(obj))` is false and no player's remembered identities contain the id (the accessor `remember_card_identities` writes to; executor names it from `game_state.rs:8122`)".
+Measured: `information_active` is a private `fn` (`game_state.rs:26513`) and `product_knowledge_state` is `pub(crate)` (`:21200`), so `crates/engine/tests/integration/` cannot use either. Public equivalents exist: the field `public_revealed_cards` (`pub`, `:21186`) and `pub fn viewer_knows_card_identity(viewer, card_id)` (`:8158`).
+Replacement: "`!state.public_revealed_cards.contains(&id)` and, for every player, `!state.viewer_knows_card_identity(player, id)` for every id of P1's 7 old hand cards (public accessors; `information_active` and `remember_card_identities` are crate-private)". The positive control's `information_active` true reads as `public_revealed_cards.contains(&id)`. Executor can apply this without a plan revision; no scope change (reads of existing `pub` items).

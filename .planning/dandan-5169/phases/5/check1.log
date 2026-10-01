@@ -43,3 +43,5 @@
     Checking tracing-subscriber v0.3.23
     Checking mimalloc v0.1.52
     Checking insta v1.47.2
+    Checking phase-ai v0.97.0 (/home/user/phase/crates/phase-ai)
+    Finished `dev` profile [unoptimized] target(s) in 9m 18s
