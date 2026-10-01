@@ -3320,8 +3320,16 @@ mod tests {
 
     /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
     /// `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
-    /// `PlayerFilter::GrantingObjectCaster` and the `granting_object` stamp; v94 state
-    /// cannot decode as v95 state, so it must be refused before state delivery.
+    /// `PlayerFilter::GrantingObjectCaster` and the `granting_object` stamp; v97 state
+    /// cannot decode as v98 state, so it must be refused before state delivery.
+    /// `ResolvedAbility.target_reads` and `AbilityDefinition.target_reads`
+    /// (`TargetReadOrigin`, CR 115.1 + CR 608.2c) are serialized; a v96 peer
+    /// would default the field and rebuild a target slot the rules do not
+    /// announce, so it must be refused before it receives v97 state.
+    /// `FilterProp::Unblocked` is reshaped to `FilterProp::BlockStatus { status:
+    /// AttackerBlockStatus }` (CR 509.1h); a v94 peer cannot parse the new
+    /// `"BlockStatus"` tag carried in `GameState` ability definitions, so it must
+    /// be refused before it receives v95 state.
     /// `SpellContext.creation_lookback_event` and `TriggerSourceContext.mana_cost`
     /// are new in serialized full-game state (CR 603.7 + CR 603.10a + CR 608.2h,
     /// CR 707.2); a v93 peer would drop both and resolve a phase-delayed
@@ -3360,8 +3368,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_95_for_granter_binding() {
-        assert_eq!(PROTOCOL_VERSION, 95);
+    fn protocol_version_is_98_for_granter_binding() {
+        assert_eq!(PROTOCOL_VERSION, 98);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3372,7 +3380,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_95_for_granter_binding` stays
+    /// `protocol_version_is_98_for_granter_binding` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

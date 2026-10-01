@@ -12,10 +12,10 @@ use crate::game::quantity::{
     resolve_quantity_with_ctx, resolve_quantity_with_targets, QuantityContext,
 };
 use crate::types::ability::{
-    CardTypeSetSource, CastManaSpentMetric, ChoiceValue, ChosenAttribute, CombatRelation,
-    CombatRelationSubject, ControllerRef, CountScope, FilterProp, Parity, ParitySource,
-    PlayerFilter, PtStat, PtValueScope, QuantityExpr, QuantityRef, ResolvedAbility, SharedQuality,
-    SharedQualityRelation, TargetFilter, TargetRef, TypeFilter, TypedFilter,
+    AttackerBlockStatus, CardTypeSetSource, CastManaSpentMetric, ChoiceValue, ChosenAttribute,
+    CombatRelation, CombatRelationSubject, ControllerRef, CountScope, FilterProp, Parity,
+    ParitySource, PlayerFilter, PtStat, PtValueScope, QuantityExpr, QuantityRef, ResolvedAbility,
+    SharedQuality, SharedQualityRelation, TargetFilter, TargetRef, TypeFilter, TypedFilter,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::{CoreType, Supertype};
@@ -285,7 +285,7 @@ fn filter_prop_uses_object_population(prop: &FilterProp) -> bool {
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -746,7 +746,7 @@ fn filter_prop_characteristic_reads_at(prop: &FilterProp, depth: u32) -> Charact
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -958,7 +958,7 @@ fn entered_object_perturbs_filter_prop(
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -1831,7 +1831,7 @@ pub(crate) fn filter_prop_contains(
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -2082,7 +2082,7 @@ fn filter_prop_contains_filter_prop(
             | FilterProp::Blocking
             | FilterProp::BlockingSource
             | FilterProp::CombatRelation { .. }
-            | FilterProp::Unblocked
+            | FilterProp::BlockStatus { .. }
             | FilterProp::AttackingAlone
             | FilterProp::BlockingAlone
             | FilterProp::Tapped
@@ -2315,6 +2315,7 @@ fn quantity_ref_contains_filter_prop(
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::NameStickerLetterCount { .. }
         | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
@@ -2543,7 +2544,7 @@ fn rewrite_filter_prop(
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -2787,6 +2788,7 @@ fn rewrite_quantity_ref_filter_props(
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::NameStickerLetterCount { .. }
         | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
@@ -6314,7 +6316,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -7096,9 +7098,11 @@ fn matches_filter_prop(
             *subject,
             source,
         ),
-        // CR 509.1h: Unblocked = attacking creature that was never assigned blockers.
-        // unblocked_attackers checks the permanent `blocked` flag, not the current blocker list.
-        FilterProp::Unblocked => combat::unblocked_attackers(state).contains(&object_id),
+        // CR 509.1h: blocked/unblocked reads the permanent `blocked` flag, not the
+        // current blocker list, so a blocked attacker stays blocked after its blockers leave.
+        FilterProp::BlockStatus { status } => {
+            combat::attacker_block_status(state, object_id) == Some(*status)
+        }
         // CR 506.5: sole attacker / sole blocker against live combat. Look-back
         // callers route through the zone-change snapshot arm instead.
         FilterProp::AttackingAlone => combat::attacking_alone(state, object_id),
@@ -8312,9 +8316,15 @@ fn zone_change_record_matches_property(
                 })
             }
         },
-        FilterProp::Unblocked => {
-            record.combat_status.attacking && !record.combat_status.blocked
-        }
+        // CR 509.1h: blocked/unblocked as of the zone change.
+        FilterProp::BlockStatus { status } => match status {
+            AttackerBlockStatus::Blocked => {
+                record.combat_status.attacking && record.combat_status.blocked
+            }
+            AttackerBlockStatus::Unblocked => {
+                record.combat_status.attacking && !record.combat_status.blocked
+            }
+        },
         // CR 506.5 + CR 603.10a: sole-attacker / sole-blocker status as of the
         // zone change, captured by `capture_combat_status` before combat removal.
         FilterProp::AttackingAlone => record.combat_status.attacking_alone,
@@ -17233,7 +17243,9 @@ mod tests {
             &source_ctx,
         ));
         assert!(zone_change_record_matches_property(
-            &FilterProp::Unblocked,
+            &FilterProp::BlockStatus {
+                status: AttackerBlockStatus::Unblocked,
+            },
             &state,
             &attacking_record,
             &source_ctx,
@@ -18649,7 +18661,7 @@ mod characteristic_read_classification_tests {
             | FilterProp::Blocking
             | FilterProp::BlockingSource
             | FilterProp::CombatRelation { .. }
-            | FilterProp::Unblocked
+            | FilterProp::BlockStatus { .. }
             | FilterProp::AttackingAlone
             | FilterProp::BlockingAlone
             | FilterProp::Tapped

@@ -20,16 +20,16 @@ use crate::parser::oracle_util::normalize_card_name_refs;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityUseTally,
     ActivationRestriction, AdditionalCost, AggregateFunction, AttackSubject, AttackedYouScope,
-    CardTypeSetSource, ChoiceType, CoinFlipResult, CombatHistoryScope, CommanderOwnership,
-    Comparator, ContinuousModification, ControllerRef, CountScope, CounterKindChooser,
-    CounterKindDomain, CounterSourceRider, DelayedTriggerCondition, DieRollModifier, DoublePTMode,
-    Duration, EachDamageRecipient, Effect, EffectOutcomeSignal, EffectScope, FilterProp,
-    ForEachCategoryAction, GameRestriction, LibraryPosition, ManaProduction,
-    MassLibraryShuffleMode, ObjectProperty, ObjectScope, ObjectSelectionCardinality,
-    ObjectSelectionEligibility, ParsedCondition, PerpetualModification, PlayerFilter,
-    PlayerRelation, PlayerScope, PtStat, PtValue, PtValueScope, QuantityExpr, QuantityRef,
-    ReplacementCondition, ReplacementDefinition, ReplacementMode, SeatDirection, SharedQuality,
-    SharedQualityRelation, SpeedDelta, SpellCastingOption, SpellCastingOptionKind,
+    AttackerBlockStatus, CardTypeSetSource, ChoiceType, CoinFlipResult, CombatHistoryScope,
+    CommanderOwnership, Comparator, ContinuousModification, ControllerRef, CountScope,
+    CounterKindChooser, CounterKindDomain, CounterSourceRider, DelayedTriggerCondition,
+    DieRollModifier, DoublePTMode, Duration, EachDamageRecipient, Effect, EffectOutcomeSignal,
+    EffectScope, FilterProp, ForEachCategoryAction, GameRestriction, LetterQuery, LibraryPosition,
+    ManaProduction, MassLibraryShuffleMode, NameStickerSet, ObjectProperty, ObjectScope,
+    ObjectSelectionCardinality, ObjectSelectionEligibility, ParsedCondition, PerpetualModification,
+    PlayerFilter, PlayerRelation, PlayerScope, PtStat, PtValue, PtValueScope, QuantityExpr,
+    QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode, SeatDirection,
+    SharedQuality, SharedQualityRelation, SpeedDelta, SpellCastingOption, SpellCastingOptionKind,
     SpellStackToGraveyardReplacement, StackAbilityKind, StaticCondition, StaticDefinition,
     TapStateChange, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
 };
@@ -866,7 +866,13 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::Blocking => parts.push("blocking".into()),
             FilterProp::BlockingSource => parts.push("blocking source".into()),
             FilterProp::CombatRelation { .. } => parts.push("combat related".into()),
-            FilterProp::Unblocked => parts.push("unblocked".into()),
+            FilterProp::BlockStatus { status } => parts.push(
+                match status {
+                    AttackerBlockStatus::Blocked => "blocked",
+                    AttackerBlockStatus::Unblocked => "unblocked",
+                }
+                .into(),
+            ),
             FilterProp::AttackingAlone => parts.push("attacking alone".into()),
             FilterProp::BlockingAlone => parts.push("blocking alone".into()),
             FilterProp::Tapped => parts.push("tapped".into()),
@@ -1503,6 +1509,36 @@ fn fmt_player_scope(scope: &PlayerScope) -> String {
     }
 }
 
+/// CR 123.6d + CR 123.6e: "unique vowels on that sticker", "letter 'o' in name
+/// stickers on self".
+fn fmt_name_sticker_letter_count(stickers: &NameStickerSet, letters: &LetterQuery) -> String {
+    let statistic = match letters {
+        LetterQuery::UniqueVowels => "unique vowels".to_string(),
+        LetterQuery::Letter { letter } => format!("letter '{letter}'"),
+    };
+    let set = match stickers {
+        NameStickerSet::ThatSticker => "on that sticker",
+        NameStickerSet::OnObject { scope } => match scope {
+            ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
+                "in name stickers on self"
+            }
+            ObjectScope::Target => "in name stickers on target",
+            ObjectScope::Recipient => "in name stickers on recipient",
+            ObjectScope::EventSource => "in name stickers on event source",
+            ObjectScope::EventTarget => "in name stickers on event target",
+            ObjectScope::CostPaidObject => "in name stickers on cost-paid object",
+            ObjectScope::OtherRevealedCard => "in name stickers on other revealed card",
+            ObjectScope::OwnedLinkedExileCard => "in name stickers on owned linked-exiled card",
+            ObjectScope::AmassedArmy => "in name stickers on amassed Army",
+            ObjectScope::BatchSource => "in name stickers on batch source",
+            ObjectScope::ChainRootTarget => "in name stickers on chain-root target",
+            ObjectScope::GrantingObject => "in name stickers on granting object",
+            ObjectScope::SpecificObject { .. } => "in name stickers on bound object",
+        },
+    };
+    format!("{statistic} {set}")
+}
+
 fn fmt_quantity_ref(qty: &QuantityRef) -> String {
     match qty {
         QuantityRef::HandSize { player } => {
@@ -1718,6 +1754,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             ObjectScope::GrantingObject => "words in granting object's name".into(),
             ObjectScope::SpecificObject { .. } => "words in bound object's name".into(),
         },
+        QuantityRef::NameStickerLetterCount { stickers, letters } => {
+            fmt_name_sticker_letter_count(stickers, letters)
+        }
         QuantityRef::ManaSymbolsInManaCost { scope, color } => {
             let scope_str = match scope {
                 ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => "self",
@@ -3720,12 +3759,19 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::PreventDamage {
             amount,
             target,
+            recipient_scope,
             scope,
             damage_source_filter,
             ..
         } => {
             d.push(("amount".into(), format!("{amount:?}")));
-            d.push(("target".into(), fmt_target(target)));
+            // CR 115.10a: a declared recipient is a `target`; an untargeted
+            // population is a `filter` (mirrors `ForceAttack`'s subject key).
+            let recipient_key = match recipient_scope {
+                EffectScope::Single => "target",
+                EffectScope::All => "filter",
+            };
+            d.push((recipient_key.into(), fmt_target(target)));
             d.push(("scope".into(), format!("{scope:?}")));
             // CR 615 + CR 614.1a: the source-restriction qualifier (#5492). Omitting
             // it made a change from unqualified `ChosenDamageSource` to
@@ -9928,6 +9974,45 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
             ObjectScope::GrantingObject => ("GrantingObjectObjectNameWordCount", Unhandled),
             ObjectScope::SpecificObject { .. } => ("SpecificObjectObjectNameWordCount", Handled),
         },
+        // CR 608.2c: `game/quantity.rs` reads the resolution's placed-sticker record.
+        QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::ThatSticker,
+            letters: _,
+        } => ("ThatStickerNameStickerLetterCount", Handled),
+        // CR 123.6d: `game/quantity.rs` reads the live object `object_for_scope`
+        // returns.
+        QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        } => match scope {
+            ObjectScope::Source => ("SourceNameStickerLetterCount", Handled),
+            ObjectScope::Target => ("TargetNameStickerLetterCount", Handled),
+            ObjectScope::Recipient => ("RecipientNameStickerLetterCount", Handled),
+            ObjectScope::EventSource => ("EventSourceNameStickerLetterCount", Handled),
+            ObjectScope::EventTarget => ("EventTargetNameStickerLetterCount", Handled),
+            ObjectScope::BatchSource => ("BatchSourceNameStickerLetterCount", Handled),
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::CostPaidObject => ("CostPaidObjectNameStickerLetterCount", Unhandled),
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::Anaphoric => ("AnaphoricNameStickerLetterCount", Unhandled),
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::Demonstrative => ("DemonstrativeNameStickerLetterCount", Unhandled),
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::OtherRevealedCard => {
+                ("OtherRevealedCardNameStickerLetterCount", Unhandled)
+            }
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::OwnedLinkedExileCard => {
+                ("OwnedLinkedExileCardNameStickerLetterCount", Unhandled)
+            }
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::AmassedArmy => ("AmassedArmyNameStickerLetterCount", Unhandled),
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::ChainRootTarget => ("ChainRootTargetNameStickerLetterCount", Unhandled),
+            // `object_for_scope` has no referent for this scope → fail-closed 0.
+            ObjectScope::GrantingObject => ("GrantingObjectNameStickerLetterCount", Unhandled),
+            ObjectScope::SpecificObject { .. } => ("SpecificObjectNameStickerLetterCount", Handled),
+        },
         QuantityRef::ObjectTypelineComponentCount { scope } => match scope {
             ObjectScope::Source | ObjectScope::Anaphoric | ObjectScope::Demonstrative => {
                 ("SourceObjectTypelineComponentCount", Handled)
@@ -14369,6 +14454,7 @@ mod tests {
                 amount: PreventionAmount::All,
                 amount_dynamic: None,
                 target: TargetFilter::Any,
+                recipient_scope: EffectScope::Single,
                 scope: PreventionScope::AllDamage,
                 damage_source_filter: dsf,
                 prevention_duration: None,
@@ -14389,6 +14475,33 @@ mod tests {
                 .any(|k| k == "damage_source_filter"),
             "an absent damage_source_filter must not appear",
         );
+    }
+
+    /// CR 115.10a: the parse-diff signature keys a declared recipient as
+    /// `target` and an untargeted population as `filter`, so a Single -> All
+    /// reclassification is visible to `coverage-parse-diff`.
+    #[test]
+    fn prevent_damage_signature_keys_recipient_by_scope() {
+        let keys = |recipient_scope: EffectScope| -> Vec<String> {
+            effect_details(&Effect::PreventDamage {
+                amount: PreventionAmount::All,
+                amount_dynamic: None,
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                recipient_scope,
+                scope: PreventionScope::AllDamage,
+                damage_source_filter: None,
+                prevention_duration: None,
+            })
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+        };
+        let single = keys(EffectScope::Single);
+        assert!(single.iter().any(|k| k == "target"));
+        assert!(!single.iter().any(|k| k == "filter"));
+        let all = keys(EffectScope::All);
+        assert!(all.iter().any(|k| k == "filter"));
+        assert!(!all.iter().any(|k| k == "target"));
     }
 
     #[test]
@@ -14517,6 +14630,7 @@ mod tests {
                 amount: PreventionAmount::All,
                 amount_dynamic: None,
                 target: TargetFilter::Any,
+                recipient_scope: EffectScope::Single,
                 scope: PreventionScope::AllDamage,
                 damage_source_filter: Some(TargetFilter::ChosenDamageSource { filter: None }),
                 prevention_duration: None,
@@ -18814,6 +18928,7 @@ have been revealed, Aggressive Detective deals 2 damage to each opponent.";
                     amount: PreventionAmount::All,
                     amount_dynamic: None,
                     target: TargetFilter::Any,
+                    recipient_scope: EffectScope::Single,
                     scope: PreventionScope::AllDamage,
                     damage_source_filter: None,
                     prevention_duration: None,

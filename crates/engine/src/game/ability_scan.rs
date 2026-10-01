@@ -95,11 +95,11 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AttachCardinality, AttachSelection,
     CardTypeSetSource, ContinuousModification, ControllerRef, CountScope, DelayedTriggerCondition,
     Duration, EachDamageRecipient, Effect, EffectScope, FilterProp, ForEachCategoryAction,
-    GuessSubject, KeeperConstraint, ManaProduction, ModalChoice, MultiTargetSpec, ObjectScope,
-    PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
-    RepeatContinuation, ReplacementCondition, ResolvedAbility, StaticCondition, TargetFilter,
-    TrackedAnaphorSource, TriggerCondition, TriggerConstraint, TriggerDefinition, TypedFilter,
-    UnlessPayModifier, ZoneChangeClause, ZoneChoiceCandidateSource,
+    GuessSubject, KeeperConstraint, ManaProduction, ModalChoice, MultiTargetSpec, NameStickerSet,
+    ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
+    ReciprocalZoneChoiceRole, RepeatContinuation, ReplacementCondition, ResolvedAbility,
+    StaticCondition, TargetFilter, TrackedAnaphorSource, TriggerCondition, TriggerConstraint,
+    TriggerDefinition, TypedFilter, UnlessPayModifier, ZoneChangeClause, ZoneChoiceCandidateSource,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::keywords::{DisguiseCost, Keyword};
@@ -288,8 +288,9 @@ fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
         chosen_players: _,               // concrete chosen player ids
         replacement_applied: _,          // replacement provenance set, no dynamic read
         sub_link: _,                     // SubAbilityLink kind tag
-        sibling_condition: _,            // SiblingCondition replication marker, no dynamic read
-        distribute: _, // announcement unit tag/string, no resolution-time dynamic read
+        target_reads: _, // TargetReadOrigin tag; `Target` reads are classified on condition/effect
+        sibling_condition: _, // SiblingCondition replication marker, no dynamic read
+        distribute: _,   // announcement unit tag/string, no resolution-time dynamic read
         parent_target_missing_reason: _, // seam flag
         activation_cost_reduction: _,
         activation_record: _,
@@ -1505,6 +1506,11 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             prevention_duration,
             amount: _,
             scope: _,
+            // CR 615.1 + CR 115.10a: static targeted-vs-mass discriminant; a mass
+            // prevention shield does no resolution-time board enumeration (it is
+            // matched per damage event), so it stays in the relaxed group like
+            // `ForceAttack`.
+            recipient_scope: _,
         } => {
             let mut acc = Axes::NONE;
             if let Some(x) = amount_dynamic {
@@ -2314,6 +2320,20 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             acc = acc.or(scan_object_scope(scope));
             acc
         }
+        // CR 123.6d + CR 123.6e: the scoped object's name stickers; a sibling
+        // `PutSticker` can change the stickers read.
+        QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        } => {
+            let mut acc = Axes {
+                event: false,
+                sibling: true,
+                projected: false,
+            };
+            acc = acc.or(scan_object_scope(scope));
+            acc
+        }
         QuantityRef::ObjectTypelineComponentCount { scope, .. } => {
             let mut acc = Axes {
                 event: false,
@@ -2409,6 +2429,12 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             acc
         }
         QuantityRef::ExiledFromHandThisResolution => Axes::NONE,
+        // CR 608.2c: the sticker this resolution's put-a-sticker instruction
+        // placed — a resolution-local record, like the ref above.
+        QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::ThatSticker,
+            letters: _,
+        } => Axes::NONE,
         // CR 608.2c + CR 608.2i: every channel and every aggregate reads
         // resolution-local state — `last_effect_amount` /
         // `last_effect_excess_amount` / `last_effect_counts_by_player` /
@@ -4415,7 +4441,7 @@ fn scan_filter_prop(x: &FilterProp, mode: ScanMode) -> Axes {
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -5100,6 +5126,7 @@ fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
         forward_result: _,
         target_selection_mode: _,
         sub_link: _,
+        target_reads: _, // TargetReadOrigin tag; `Target` reads are classified on condition/effect
         iteration_kind_binding: _,
         sibling_condition: _,
         // Parser scratch, not runtime state: `parse_oracle_pipeline` settles every

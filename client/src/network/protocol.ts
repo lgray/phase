@@ -106,10 +106,21 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
- *  77 — GameState carries the CR 201.5a granter binding (ObjectScope
+ *  80 — GameState carries the CR 201.5a granter binding (ObjectScope
  *       GrantingObject / SpecificObject, TargetFilter GrantingObject.bound,
  *       PlayerFilter GrantingObjectCaster and the granting_object stamps).
- *       Bumped with full-game protocol 95 so first contact rejects the skew.
+ *       Bumped with full-game protocol 98 so first contact rejects the skew.
+ *  79 — game_setup and state_update carry GameState, whose stack abilities now
+ *       serialize ResolvedAbility.target_reads (TargetReadOrigin): a
+ *       ParentAnnouncement instruction reads the object its parent announced
+ *       and announces no target of its own. A v78 peer would default the field
+ *       and rebuild a target slot, so first contact rejects the skew. Bumped in
+ *       lockstep with full-game protocol 97.
+ *  77 — game_setup and state_update carry GameState, whose ability definitions
+ *       now carry FilterProp.BlockStatus { status } in place of the unit
+ *       FilterProp.Unblocked (CR 509.1h). A v76 peer cannot parse the new
+ *       "BlockStatus" tag, so first contact rejects the skew. Bumped in
+ *       lockstep with full-game protocol 95.
  *  76 — game_setup and state_update carry GameState, whose delayed triggered
  *       abilities now serialize SpellContext.creation_lookback_event and whose
  *       trigger source contexts serialize TriggerSourceContext.mana_cost. A v75
@@ -494,7 +505,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 77 as const;
+export const WIRE_PROTOCOL_VERSION = 80 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

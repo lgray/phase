@@ -27,7 +27,7 @@ use super::super::oracle_util::{parse_comparison_suffix, parse_subtype, TextPair
 #[cfg(test)]
 use super::parse_effect_chain;
 use super::sequence::parse_dig_from_among;
-use super::{scan_contains_phrase, ParseContext};
+use super::{parse_effect_clause_inner, scan_contains_phrase, ParseContext};
 use crate::parser::oracle_ir::ast::{parsed_clause, ContinuationAst};
 use crate::parser::oracle_ir::context::TriggerZoneChangeProvenance;
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
@@ -2933,6 +2933,82 @@ pub(super) fn strip_player_property_superlative_conditional(
     )
 }
 
+/// Outcome of [`strip_target_comparative_pt_conditional`].
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ComparativePtGate {
+    /// The clause is not an "if that creature has greater|less <stat> than ~," gate.
+    NotOwned,
+    /// The gate parsed and its "that creature" anaphor has a target referent.
+    Parsed {
+        condition: Box<AbilityCondition>,
+        body: String,
+    },
+    /// The gate parsed, but no earlier clause declares the object target the
+    /// anaphor would read — fail closed rather than bind a guess.
+    Unbound,
+}
+
+/// CR 208.1 + CR 608.2c + CR 608.2h: Strip a leading "if that creature|permanent
+/// has greater|less <stat> than ~, " gate and bridge it to a clause-level
+/// `AbilityCondition::QuantityCheck` comparing the TARGET's stat with the
+/// source's (Conformer Shuriken: "tap target creature defending player
+/// controls. If that creature has greater power than this creature, put a
+/// number of +1/+1 counters on this creature equal to the difference."). The
+/// typed comparison is what lets the clause-level difference bind in
+/// `parse_effect_chain_ir` resolve "the difference" to its two operands.
+///
+/// "that creature" reads `ObjectScope::Target` — the object target an earlier
+/// clause of the same ability declared (the same slot `TargetHasKeywordInstead`
+/// reads for the sibling "if that creature has <keyword>" gate).
+/// `antecedent_is_target` says whether the immediately preceding clause announced
+/// that target as its single object target (the gate's producer); the caller
+/// then marks the gated clause's `Target` reads as that announcement
+/// (`TargetReadOrigin::ParentAnnouncement`). Without one the gate is `Unbound`
+/// and the caller fails closed.
+pub(super) fn strip_target_comparative_pt_conditional(
+    text: &str,
+    antecedent_is_target: bool,
+) -> ComparativePtGate {
+    let lower = text.to_lowercase();
+    type E<'a> = OracleError<'a>;
+    let parsed = nom_on_lower(text, &lower, |i| {
+        let (i, _) = tag::<_, _, E>("if ").parse(i)?;
+        let (i, _) = alt((tag::<_, _, E>("that creature "), tag("that permanent "))).parse(i)?;
+        let (i, condition) =
+            nom_condition::parse_has_comparative_pt_vs_source(i, ObjectScope::Target)?;
+        let (i, _) = tag::<_, _, E>(", ").parse(i)?;
+        Ok((i, condition))
+    });
+    let Some((static_condition, body)) = parsed else {
+        return ComparativePtGate::NotOwned;
+    };
+    if !antecedent_is_target {
+        return ComparativePtGate::Unbound;
+    }
+    match static_condition_to_ability_condition(&static_condition, &mut ParseContext::default()) {
+        Some(condition) => ComparativePtGate::Parsed {
+            condition: Box::new(condition),
+            body: body.trim().to_string(),
+        },
+        None => ComparativePtGate::NotOwned,
+    }
+}
+
+/// Outcome of [`strip_target_keyword_instead`].
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum KeywordConditionStrip {
+    /// The clause is not an "if that creature|permanent has <words>," gate.
+    NotOwned,
+    /// The gate names a real keyword.
+    Parsed {
+        condition: Box<AbilityCondition>,
+        body: String,
+    },
+    /// The gate's words are not a keyword (`Keyword::Unknown`): a counter,
+    /// power/toughness threshold, or other predicate this stripper cannot type.
+    UnknownKeyword,
+}
+
 /// CR 608.2c + CR 122.1b: Parse "if that creature has <keyword>[ and ~ doesn't], <effect>".
 ///
 /// The optional " and ~ doesn't" conjunct (Super-Adaptoid: "If that creature
@@ -2946,12 +3022,9 @@ pub(super) fn strip_player_property_superlative_conditional(
 /// evergreen keywords and parameterized-but-bare keywords (Toxic) are
 /// recognized — and the prose "and ~ doesn't" tail is never folded into the
 /// keyword name (a bare `split_once(", ")` captured "haste and ~ doesn't" as
-/// one `Unknown` keyword). Unrecognized phrases stay `Keyword::Unknown` (see
-/// the inline note at the `from_str` call), preserving the pre-existing inert
-/// rider for target-gated counter/P-T "instead" cards that have no keyword to
-/// mirror. Building block for the whole "if that creature has KW [and ~
-/// doesn't], …" class, not a single card.
-pub(super) fn strip_target_keyword_instead(text: &str) -> (Option<AbilityCondition>, String) {
+/// one `Unknown` keyword). Building block for the whole "if that creature has
+/// KW [and ~ doesn't], …" class, not a single card.
+pub(super) fn strip_target_keyword_instead(text: &str) -> KeywordConditionStrip {
     let lower = text.to_lowercase();
     type E<'a> = OracleError<'a>;
     let parsed = nom_on_lower(text, &lower, |i| {
@@ -2971,16 +3044,16 @@ pub(super) fn strip_target_keyword_instead(text: &str) -> (Option<AbilityConditi
         .parse(i)?;
         // CR 122.1b: `Keyword::from_str` is infallible — an unrecognized phrase
         // (a counter or power/toughness gate such as "a +1/+1 counter on it" or
-        // "power 4 or greater") becomes `Keyword::Unknown`, leaving a
-        // semantically-inert `TargetHasKeywordInstead { Unknown }` rider. That
-        // mirrors pre-existing engine behavior for the target-gated "instead"
-        // cards in that class (Bring Low, Strider, Urdnan), which have no real
-        // keyword to mirror. Rejecting `Unknown` here would silently un-support
-        // that unrelated class — out of scope for the Super-Adaptoid keyword
-        // mirror, which only needs real keywords ("haste", captured before
-        // " and ~ doesn't"). Honest counter/P-T gate support is deferred to its
-        // own change.
-        let keyword = Keyword::from_str(keyword_str).unwrap();
+        // "power 4 or greater") becomes `Keyword::Unknown`. The runtime check
+        // for this gate is `has_keyword`, which such prose can never satisfy,
+        // so an `Unknown` gate would be silently inert while reading as
+        // supported. No condition is built for it; once the rest of the gate
+        // grammar matches, the caller receives `UnknownKeyword` and fails the
+        // clause closed (Bring Low, Strider, Urdnan) instead.
+        let keyword = match Keyword::from_str(keyword_str).unwrap() {
+            Keyword::Unknown(_) => None,
+            keyword => Some(keyword),
+        };
         // Optional " and ~ doesn't" lack conjunct (Super-Adaptoid class). `~` is
         // the normalized card name; the bare anaphora forms cover un-normalized
         // text.
@@ -2998,22 +3071,27 @@ pub(super) fn strip_target_keyword_instead(text: &str) -> (Option<AbilityConditi
         .map(|(rest, matched)| (rest, matched.is_some()))?;
         // Connective ", " (optionally "; ") separates condition from the effect.
         let (i, _) = alt((tag(", "), tag("; "))).parse(i)?;
-        let condition = if source_lacks {
-            AbilityCondition::And {
-                conditions: vec![
-                    AbilityCondition::TargetHasKeywordInstead {
-                        keyword: keyword.clone(),
-                    },
-                    AbilityCondition::SourceLacksKeyword { keyword },
-                ],
+        let condition = keyword.map(|keyword| {
+            if source_lacks {
+                AbilityCondition::And {
+                    conditions: vec![
+                        AbilityCondition::TargetHasKeywordInstead {
+                            keyword: keyword.clone(),
+                        },
+                        AbilityCondition::SourceLacksKeyword { keyword },
+                    ],
+                }
+            } else {
+                AbilityCondition::TargetHasKeywordInstead { keyword }
             }
-        } else {
-            AbilityCondition::TargetHasKeywordInstead { keyword }
-        };
+        });
         Ok((i, condition))
     });
     let Some((condition, body)) = parsed else {
-        return (None, text.to_string());
+        return KeywordConditionStrip::NotOwned;
+    };
+    let Some(condition) = condition else {
+        return KeywordConditionStrip::UnknownKeyword;
     };
     let body = body.trim();
     // Structural cleanup of the already-extracted effect body (drop the
@@ -3022,7 +3100,10 @@ pub(super) fn strip_target_keyword_instead(text: &str) -> (Option<AbilityConditi
     let body = body.strip_suffix(" instead.").unwrap_or(body); // allow-noncombinator: effect-body suffix cleanup
     let body = body.strip_suffix(" instead").unwrap_or(body); // allow-noncombinator: effect-body suffix cleanup
     let body = body.strip_prefix("it ").unwrap_or(body); // allow-noncombinator: effect-body pronoun cleanup
-    (Some(condition), body.to_string())
+    KeywordConditionStrip::Parsed {
+        condition: Box::new(condition),
+        body: body.to_string(),
+    }
 }
 
 fn parse_counter_threshold(text: &str) -> Option<(Comparator, i32, Option<CounterType>, usize)> {
@@ -3300,10 +3381,10 @@ pub(super) fn strip_counter_conditional(
     // creature"/"that permanent"/"that card" is deliberately NOT offered in the
     // leading position. A sentence-initial "If that creature has … counter …,
     // [source] deals N … instead" belongs to the target-gated *replacement*
-    // class (Bring Low, Strider, Urdnan), whose honest counter/P-T gating is
-    // deferred to the inert `strip_target_keyword_instead` rider (see the CR
+    // class (Bring Low, Strider, Urdnan), whose counter/P-T gate is not a
+    // keyword, so `strip_target_keyword_instead` fails it closed (see the CR
     // 122.1b note there). Offering the demonstrative here would GATE OUT that
-    // deferral and over-accept those cards into a false-green additive
+    // owner and over-accept those cards into a false-green additive
     // `DealDamage` sibling (the "instead" is a replacement, not additive).
     // CR 115.1's demonstrative-as-target is honored only in the trailing form
     // below, where the leading-space needle can't collide with that class.
@@ -3754,8 +3835,29 @@ fn parse_mana_value_threshold(text: &str) -> Option<(Comparator, i32)> {
     Some((comparator, n as i32))
 }
 
-fn find_last_top_level_if(text: &str) -> Option<usize> {
-    let mut last_pos = None;
+/// CR 608.2c: Start of the trailing condition clause. Normally the last
+/// top-level " if "; when that " if " continues an " or if " chain ("…if it's a
+/// creature or if {G}{W} was spent to cast this spell"), the clause begins at the
+/// chain's FIRST " if " so `parse_or_if_disjunction` sees every disjunct instead
+/// of the effect text swallowing the leading ones.
+fn find_trailing_condition_start(text: &str) -> Option<usize> {
+    let mut positions = top_level_if_positions(text);
+    let mut start = positions.pop()?;
+    while let Some(previous) = positions.pop() {
+        let continues_or_if_chain = start
+            .checked_sub(" or".len())
+            .and_then(|or_pos| text.get(or_pos..))
+            .is_some_and(|tail| tag::<_, _, OracleError<'_>>(" or if ").parse(tail).is_ok());
+        if !continues_or_if_chain {
+            break;
+        }
+        start = previous;
+    }
+    Some(start)
+}
+
+fn top_level_if_positions(text: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
     let mut paren_depth = 0u32;
     let mut in_quotes = false;
 
@@ -3765,12 +3867,12 @@ fn find_last_top_level_if(text: &str) -> Option<usize> {
             '(' if !in_quotes => paren_depth += 1,
             ')' if !in_quotes => paren_depth = paren_depth.saturating_sub(1),
             _ if !in_quotes && paren_depth == 0 && text[index..].starts_with(" if ") => {
-                last_pos = Some(index);
+                positions.push(index);
             }
             _ => {}
         }
     }
-    last_pos
+    positions
 }
 
 /// CR 603.4 + CR 608.2h: Condition-text prefixes that cannot be re-homed onto
@@ -3903,7 +4005,7 @@ pub(super) fn strip_suffix_conditional(
     ctx: &mut ParseContext,
 ) -> (Option<AbilityCondition>, String) {
     let lower = text.to_lowercase();
-    let Some(if_pos) = find_last_top_level_if(&lower) else {
+    let Some(if_pos) = find_trailing_condition_start(&lower) else {
         return (None, text.to_string());
     };
 
@@ -4024,10 +4126,37 @@ pub(super) fn strip_suffix_conditional(
         .or_else(|| parse_condition_text_in(condition_core, ctx))
         .or_else(|| parse_control_count_as_ability_condition(condition_core))
     {
+        // CR 608.2c + CR 109.2: in an " or if " chain on a targeting effect, a
+        // bare "it's a <type>" disjunct describes the effect's target, not a
+        // revealed card (`RevealedHasCardType` would never see the target).
+        let condition = match condition {
+            AbilityCondition::Or { conditions }
+                if effect_has_declared_target(effect_prefix, ctx) =>
+            {
+                AbilityCondition::Or {
+                    conditions: conditions
+                        .into_iter()
+                        .map(|c| card_type_condition_as_target_match(&c).unwrap_or(c))
+                        .collect(),
+                }
+            }
+            other => other,
+        };
         return (Some(condition), effect_text);
     }
 
     (None, text.to_string())
+}
+
+/// CR 115.1: True when the effect text lowers to an effect whose typed target
+/// filter is a player-chosen target (not a context reference or the untyped
+/// `Any` fallback). Parses on a throwaway context so the caller's is untouched.
+fn effect_has_declared_target(effect_text: &str, ctx: &ParseContext) -> bool {
+    let clause = parse_effect_clause_inner(effect_text, &mut ctx.clone_throwaway());
+    clause
+        .effect
+        .target_filter()
+        .is_some_and(|filter| !filter.is_context_ref() && !matches!(filter, TargetFilter::Any))
 }
 
 pub(super) fn parse_quantity_comparison(text: &str) -> Option<(Comparator, QuantityExpr)> {
@@ -6304,6 +6433,15 @@ fn parse_target_cast_variant_paid_condition_text(text: &str) -> Option<AbilityCo
     parsed
 }
 
+/// One disjunct of an " or if " chain. Beyond the shared dispatcher it accepts
+/// the target-anaphoric "it's a <type>" gate and the symbolic "{G}{W} was spent
+/// to cast this spell" gate, which the effect-suffix path owns.
+fn parse_or_if_disjunct(text: &str, ctx: &mut ParseContext) -> Option<AbilityCondition> {
+    try_nom_condition_as_ability_condition(text, ctx)
+        .or_else(|| parse_its_a_type_condition(text, ctx))
+        .or_else(|| parse_condition_text(text))
+}
+
 /// CR 608.2c: Parse an " or if "-connected disjunction of condition clauses into
 /// `AbilityCondition::Or`. Each disjunct is a full condition (the connective
 /// re-introduces "if"), so the clause is split on every " or if " boundary and
@@ -6328,19 +6466,13 @@ fn parse_or_if_disjunction(text: &str, ctx: &mut ParseContext) -> Option<Ability
     // The first split doubles as the guard: no " or if " connective means this is
     // not a disjunction, so the single-arm dispatchers should handle the clause.
     let (first_disjunct, mut remaining) = split_on_or_if(lower.as_str())?;
-    let mut conditions = vec![try_nom_condition_as_ability_condition(
-        first_disjunct.trim(),
-        ctx,
-    )?];
+    let mut conditions = vec![parse_or_if_disjunct(first_disjunct.trim(), ctx)?];
     loop {
         let (disjunct, rest) = match split_on_or_if(remaining) {
             Some((disjunct, rest)) => (disjunct, Some(rest)),
             None => (remaining, None),
         };
-        conditions.push(try_nom_condition_as_ability_condition(
-            disjunct.trim(),
-            ctx,
-        )?);
+        conditions.push(parse_or_if_disjunct(disjunct.trim(), ctx)?);
         match rest {
             Some(r) => remaining = r,
             None => break,
@@ -8994,14 +9126,55 @@ mod tests {
         // Unknown variant would make the rider silently dead (Hexgold Slash,
         // Compleat Devotion, Porcelain Zealot). Building-block test, not card-name
         // hardcoded.
-        let (cond, body) = strip_target_keyword_instead("If that creature has toxic, draw a card.");
+        let strip = strip_target_keyword_instead("If that creature has toxic, draw a card.");
+        let KeywordConditionStrip::Parsed { condition, body } = strip else {
+            panic!("toxic gate must parse, got {strip:?}");
+        };
         assert!(matches!(
-            cond,
-            Some(AbilityCondition::TargetHasKeywordInstead {
+            *condition,
+            AbilityCondition::TargetHasKeywordInstead {
                 keyword: Keyword::Toxic(_)
-            })
+            }
         ));
         assert_eq!(body, "draw a card.");
+    }
+
+    /// CR 608.2c: a non-keyword "has" predicate (a counter or P/T threshold)
+    /// must not ship as an inert `TargetHasKeywordInstead{Unknown}` gate; the
+    /// stripper reports it so the chunk loop can fail the clause closed.
+    #[test]
+    fn strip_target_keyword_instead_refuses_unknown_keyword_gates() {
+        for text in [
+            "If that creature has a +1/+1 counter on it, ~ deals 5 damage to it instead.",
+            "If that creature has power 4 or greater, it gains first strike until end of turn.",
+        ] {
+            let strip = strip_target_keyword_instead(text);
+            assert!(
+                matches!(strip, KeywordConditionStrip::UnknownKeyword),
+                "{text}: got {strip:?}"
+            );
+        }
+
+        // A real keyword with the lack conjunct still parses into both gates.
+        let text = "If that creature has haste and ~ doesn't, put a haste counter on ~.";
+        let strip = strip_target_keyword_instead(text);
+        let KeywordConditionStrip::Parsed { condition, body } = strip else {
+            panic!("{text}: haste gate must parse, got {strip:?}");
+        };
+        assert_eq!(
+            *condition,
+            AbilityCondition::And {
+                conditions: vec![
+                    AbilityCondition::TargetHasKeywordInstead {
+                        keyword: Keyword::Haste,
+                    },
+                    AbilityCondition::SourceLacksKeyword {
+                        keyword: Keyword::Haste,
+                    },
+                ],
+            }
+        );
+        assert_eq!(body, "put a haste counter on ~.");
     }
 
     /// CR 505.1 + CR 102.1: resolution-time "it is[n't] your [phase]" gate routes
@@ -9177,6 +9350,41 @@ mod tests {
         );
         assert!(parse_source_pt_comparison_condition_text("its power is 2 or less").is_none());
         assert!(parse_source_pt_comparison_condition_text("its power is 2 or greater").is_none());
+    }
+
+    /// CR 608.2c: a trailing "if <A> or if <B>" chain keeps EVERY disjunct — the
+    /// leading target-type gate is not left behind in the effect text.
+    #[test]
+    fn trailing_or_if_chain_keeps_leading_disjunct() {
+        for (text, expected_effect) in [
+            (
+                "Destroy target nonland permanent if it's a creature or if {G}{W} was spent to cast this spell.",
+                "Destroy target nonland permanent",
+            ),
+            (
+                "Exile target permanent if it's an artifact or if {R} was spent to cast this spell.",
+                "Exile target permanent",
+            ),
+        ] {
+            let mut ctx = ParseContext::default();
+            let (cond, effect) = strip_suffix_conditional(text, &mut ctx);
+            let Some(AbilityCondition::Or { conditions }) = cond else {
+                panic!("expected Or disjunction for {text:?}, got {cond:?}");
+            };
+            assert_eq!(
+                effect, expected_effect,
+                "effect text must be stripped of the condition chain"
+            );
+            assert_eq!(conditions.len(), 2);
+            assert!(matches!(
+                &conditions[0],
+                AbilityCondition::TargetMatchesFilter { .. }
+            ));
+            assert!(matches!(
+                &conditions[1],
+                AbilityCondition::ManaColorSpent { .. } | AbilityCondition::And { .. }
+            ));
+        }
     }
 
     /// CR 608.2c: the " or if " disjunction (Reptilian Recruiter) lowers to

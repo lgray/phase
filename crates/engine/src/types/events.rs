@@ -655,7 +655,7 @@ impl EventObjectSnapshot {
             // ---- embedded combat role; candidate membership never re-read ----
             FilterProp::Attacking { .. }
             | FilterProp::Blocking
-            | FilterProp::Unblocked
+            | FilterProp::BlockStatus { .. }
             | FilterProp::AttackingAlone
             | FilterProp::BlockingAlone
             | FilterProp::CombatRelation { .. } => Supported,
@@ -1264,6 +1264,13 @@ pub enum GameEvent {
     },
     CreatureDestroyed {
         object_id: ObjectId,
+        /// CR 701.8a: the object whose destroy instruction destroyed it (the
+        /// resolving spell or ability's source); `None` for a state-based
+        /// destruction from lethal or deathtouch damage (CR 704.5g / CR 704.5h).
+        /// `#[serde(default)]` keeps events from peers that predate the field
+        /// readable.
+        #[serde(default)]
+        source_id: Option<ObjectId>,
     },
     PermanentSacrificed {
         object_id: ObjectId,

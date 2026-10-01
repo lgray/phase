@@ -16,8 +16,8 @@ use crate::types::ability::{
     CounterKindDomain, DetachedRemainder, Duration, EachDamageRecipient, Effect, EffectError,
     EffectKind, EffectOutcomeSignal, EffectResolutionResult, EffectScope, FilterProp,
     ForEachCategoryAction, ForwardedResultContext, ManaProduction, MassLibraryShuffleMode,
-    ObjectSelectionCardinality, OpponentMayScope, PlayerFilter, PlayerRelation, PlayerScope,
-    PossessionAxis, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
+    NameStickerSet, ObjectSelectionCardinality, OpponentMayScope, PlayerFilter, PlayerRelation,
+    PlayerScope, PossessionAxis, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
     RepeatContinuation, ResolvedAbility, RevealUntilDisposition, SacrificeCost,
     SacrificeRequirement, SharedQuality, SharedQualityRelation, SiblingCondition, StaticDefinition,
     SubAbilityLink, TapStateChange, TargetChoiceTiming, TargetDamageSourceBinding, TargetFilter,
@@ -1687,12 +1687,16 @@ pub(crate) fn resume_resolution_frames(state: &mut GameState, events: &mut Vec<G
                 }
             }
             // CR 608.2c + CR 614.12a + CR 615.5: Retiring a paused replacement
-            // dispatch can expose the next ordinary continuation. Drain that
-            // exact continuation before priority; if it is the remaining
-            // Attach operation, its own completion boundary owns the printed
-            // tail. A typed Attach-choice owner remains action-owned.
-            if retired_paused_dispatch
-                && matches!(state.waiting_for, WaitingFor::Priority { .. })
+            // dispatch, or removing an exhausted frame after a nested child
+            // already retired its dispatch, can expose the next ordinary
+            // continuation. Drain that exact continuation before priority; if
+            // it is the remaining Attach operation, its own completion boundary
+            // owns the printed tail. A typed Attach-choice owner remains
+            // action-owned.
+            if matches!(
+                state.resolution_stack.last(),
+                Some(ResolutionFrame::AbilityContinuation(_))
+            ) && matches!(state.waiting_for, WaitingFor::Priority { .. })
                 && state
                     .active_ability_continuation()
                     .is_some_and(|continuation| continuation.attachment_choice.is_none())
@@ -4132,6 +4136,7 @@ pub(crate) fn should_propagate_parent_targets(
 pub(crate) fn can_inherit_parent_targets(sub: &ResolvedAbility) -> bool {
     sub.targets.is_empty()
         && sub.reads_chosen_group.is_none()
+        && !has_resolution_owned_zone_choice(sub)
         && (sub.target_choice_timing != TargetChoiceTiming::Resolution
             // CR 608.2c: a resolution-time instruction can still consume an
             // object selected by its parent. `ParentTarget` is not a fresh
@@ -4156,11 +4161,18 @@ pub(crate) fn can_inherit_parent_targets(sub: &ResolvedAbility) -> bool {
 /// (Worldsoul's Rage), while context references such as Beseech the Mirror's
 /// exile-linked card remain bound continuations rather than fresh choices.
 fn has_resolution_owned_zone_choice(sub: &ResolvedAbility) -> bool {
-    if sub.target_choice_timing != TargetChoiceTiming::Resolution {
-        return false;
-    }
-    let Effect::ChangeZone { origin, target, .. } = &sub.effect else {
-        return false;
+    let (target, origin) = match &sub.effect {
+        Effect::ChangeZone { origin, target, .. }
+            if sub.target_choice_timing == TargetChoiceTiming::Resolution =>
+        {
+            (target, *origin)
+        }
+        Effect::PutAtLibraryPosition { target, .. }
+            if matches!(target.extract_in_zone(), Some(Zone::Hand | Zone::Library)) =>
+        {
+            (target, target.extract_in_zone())
+        }
+        _ => return false,
     };
     let selection_zones = origin.map_or_else(|| target.extract_zones(), |zone| vec![zone]);
     !selection_zones.is_empty()
@@ -4603,7 +4615,11 @@ pub(crate) fn condition_survives_false_parent_gate(condition: &AbilityCondition)
 ///   is true" — Kathril / Mutable Pupa). That is a structural marker on the sub
 ///   (`SiblingCondition::ReplicatedOrBranch`) rather than a condition, and it
 ///   only means "independent OR-branch" on a `SequentialSibling` link, so BOTH
-///   conjuncts are part of the test.
+///   conjuncts are part of the test. The parser also stamps it on a clause gated
+///   on the mana spent to cast the spell that directly follows another such
+///   clause (CR 601.2h + CR 608.2c: "A if {R} was spent …, and B if {G} was
+///   spent …"), whose gate reads the spell's payment rather than the previous
+///   clause.
 ///
 /// Two consumers, which is why this is factored out rather than spelled twice:
 /// `resolve_ability_chain` (below) on its condition-false path, and
@@ -4878,6 +4894,9 @@ fn instruction_outlives_declined_gate(
         target_constraints,
         multi_target,
         force_block_attacker,
+        // Reads the object an earlier instruction announced, so it can name a
+        // gated result: only the default origin is unbound.
+        target_reads,
         // Walked by the caller.
         sub_ability: _,
         sub_link: _,
@@ -4951,7 +4970,8 @@ fn instruction_outlives_declined_gate(
         && target_chooser.is_none()
         && target_constraints.is_empty()
         && multi_target.is_none()
-        && force_block_attacker.is_none();
+        && force_block_attacker.is_none()
+        && *target_reads == crate::types::ability::TargetReadOrigin::OwnAnnouncement;
     unbound
         && duration
             .as_ref()
@@ -5798,6 +5818,7 @@ fn quantity_ref_counts_population_matching(
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::NameStickerLetterCount { .. }
         | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
@@ -6863,6 +6884,10 @@ fn quantity_ref_references_demonstrative(qty: &QuantityRef) -> bool {
         | QuantityRef::CountersOn { scope, .. }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. } => scope,
         _ => return false,
@@ -8966,7 +8991,7 @@ fn affected_objects_from_events(
         Effect::Destroy { .. } | Effect::DestroyAll { .. } => events
             .iter()
             .filter_map(|event| match event {
-                GameEvent::CreatureDestroyed { object_id } => Some(*object_id),
+                GameEvent::CreatureDestroyed { object_id, .. } => Some(*object_id),
                 _ => None,
             })
             .collect(),
@@ -10964,6 +10989,23 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
             target: TargetFilter::ParentTarget,
             ..
         } => ability.parent_target_missing_reason.is_some(),
+        // CR 608.2d: "The player can’t choose an option that’s illegal or impossible".
+        // An optional placement from a private zone (e.g. Fire Prophecy / Volcanic Spite:
+        // "You may put a card from your hand on the bottom of your library. If
+        // you do, draw a card.") is impossible when the player has no eligible
+        // cards in that zone and must select a positive exact count. Zero
+        // cards remains a legal choice for zero-count and up-to placements.
+        Effect::PutAtLibraryPosition { target, count, .. } => {
+            if matches!(target, TargetFilter::ParentTarget)
+                && ability.parent_target_missing_reason.is_some()
+            {
+                return true;
+            }
+            !count.is_up_to()
+                && crate::game::quantity::resolve_quantity_with_targets(state, count, ability) > 0
+                && put_on_top::private_zone_selection(state, ability, target)
+                    .is_some_and(|(_, _, mut eligible)| eligible.next().is_none())
+        }
         Effect::CastFromZone {
             mode,
             target,
@@ -14429,6 +14471,9 @@ fn reset_top_level_resolution_state(state: &mut GameState) {
     // CR 608.2d: same reasoning, one axis over — a new top-level
     // resolution cannot inherit a prior resolution's announced colour.
     state.chosen_color_this_resolution = None;
+    // CR 608.2c: "that sticker" names a sticker this resolution's own PutSticker
+    // instruction placed; a new top-level resolution cannot inherit a prior one's.
+    state.placed_sticker_this_resolution = None;
     // CR 401.5 + CR 608.2c + CR 609.3 + issue #4950: Defense in depth —
     // `apply_parent_chain_context` already consumes this at the very next
     // parent->child hand-off after a Dig/ChooseFromZone/RevealHand sets
@@ -15632,6 +15677,7 @@ fn resolve_chain_body(
                 cardinality: Some(ObjectSelectionCardinality::Exactly { .. }),
                 ..
             }
+            | Effect::PutAtLibraryPosition { .. }
     );
     if optional_is_infeasible && auto_decline_infeasible_optional {
         return resolve_optional_effect_decision(
@@ -16682,7 +16728,13 @@ fn resolve_chain_body(
         } = event
         {
             state.player_actions_this_way.insert((*player_id, *action));
-            record_player_action_this_turn(state, *player_id, *action);
+            // Draw completions record their turn-ledger entry at the single event
+            // emission site in `draw.rs`; overlapping nested chain windows may
+            // still see that event for the resolution-local set, but must not
+            // append it to the Vec more than once.
+            if *action != PlayerActionKind::Draw {
+                record_player_action_this_turn(state, *player_id, *action);
+            }
         }
     }
 
@@ -18399,9 +18451,9 @@ fn resolve_chain_body(
     Ok(())
 }
 
-/// `resolve_chain_body` records, through this helper, each `PlayerPerformedAction`
-/// emitted inside its window; any other caller must run outside every chain
-/// window.
+/// Append one completed player action to the turn ledger. Draw frames call this
+/// at the same point they publish their `PlayerPerformedAction`; other event kinds
+/// use their single chain or completion recorder.
 pub(crate) fn record_player_action_this_turn(
     state: &mut GameState,
     player: PlayerId,
@@ -18902,7 +18954,7 @@ pub(crate) fn evaluate_condition(
                     .current_trigger_event
                     .as_ref()
                     .and_then(|event| match event {
-                        GameEvent::CreatureDestroyed { object_id }
+                        GameEvent::CreatureDestroyed { object_id, .. }
                         | GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
                         _ => None,
                     })
@@ -20351,6 +20403,65 @@ mod tests {
 
     fn effect_from_json(json: &str) -> Effect {
         serde_json::from_str(json).expect("test effect shape must deserialize")
+    }
+
+    /// CR 608.2d: choosing zero is legal for zero-count and up-to placements,
+    /// while an exact positive placement needs an eligible card.
+    #[test]
+    fn optional_private_zone_placement_preserves_zero_selection_choices() {
+        for zone in [Zone::Hand, Zone::Library] {
+            for count in [
+                QuantityExpr::Fixed { value: 0 },
+                QuantityExpr::up_to(QuantityExpr::Fixed { value: 1 }),
+                QuantityExpr::Fixed { value: 1 },
+            ] {
+                let mut state = GameState::new_two_player(42);
+                let source = create_object(
+                    &mut state,
+                    CardId(900),
+                    PlayerId(0),
+                    "Placement Source".to_string(),
+                    Zone::Battlefield,
+                );
+                let permits_zero =
+                    count.is_up_to() || matches!(count, QuantityExpr::Fixed { value: 0 });
+                let mut ability = ResolvedAbility::new(
+                    Effect::PutAtLibraryPosition {
+                        target: TargetFilter::Typed(
+                            TypedFilter::new(TypeFilter::Card)
+                                .properties(vec![FilterProp::InZone { zone }]),
+                        ),
+                        count,
+                        position: crate::types::ability::LibraryPosition::Bottom,
+                    },
+                    vec![],
+                    source,
+                    PlayerId(0),
+                );
+                ability.optional = true;
+                assert!(state.players[0].hand.is_empty());
+                assert!(state.players[0].library.is_empty());
+
+                resolve_ability_chain(&mut state, &ability, &mut Vec::new(), 0)
+                    .expect("empty private-zone placement must resolve or offer its legal choice");
+                assert_eq!(
+                    matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+                    permits_zero,
+                    "only a positive exact count is impossible with an empty {zone:?}"
+                );
+                if permits_zero {
+                    crate::game::engine::apply_as_current(
+                        &mut state,
+                        crate::types::actions::GameAction::DecideOptionalEffect { accept: true },
+                    )
+                    .expect("accepting a zero-card placement must succeed");
+                }
+                assert!(state.active_optional_effect_frame().is_none());
+                assert!(state.players[0].hand.is_empty());
+                assert!(state.players[0].library.is_empty());
+                assert_eq!(state.objects[&source].zone, Zone::Battlefield);
+            }
+        }
     }
 
     #[test]

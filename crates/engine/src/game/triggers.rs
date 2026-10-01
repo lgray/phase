@@ -9,11 +9,11 @@ use crate::types::ability::{
     BounceSelection, CardTypeSetSource, CastManaSpentMetric, ChosenAttribute, CommanderOwnership,
     ControllerRef, CopyRetargetPermission, DamageAmountScope, DamageAmountThreshold,
     DamageKindFilter, DelayedTriggerCondition, DurationEvent, Effect, FilterProp, ModalChoice,
-    ObjectScope, OriginConstraint, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
-    RenownSubject, ResolvedAbility, SacrificeCost, StaticCondition, TargetFilter, TargetRef,
-    TributeOutcome, TriggerCondition, TriggerConstraint, TriggerDefinition,
-    TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerEntry, TriggerGrantProducerKey,
-    TypeFilter, TypedFilter,
+    NameStickerSet, ObjectScope, OriginConstraint, PlayerFilter, PlayerScope, PtValue,
+    QuantityExpr, QuantityRef, RenownSubject, ResolvedAbility, SacrificeCost, StaticCondition,
+    TargetFilter, TargetRef, TributeOutcome, TriggerCondition, TriggerConstraint,
+    TriggerDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerEntry,
+    TriggerGrantProducerKey, TypeFilter, TypedFilter,
 };
 #[cfg(test)]
 use crate::types::ability::{EffectScope, TapStateChange};
@@ -11745,6 +11745,10 @@ fn quantity_ref_binding_diverges(qty: &QuantityRef) -> bool {
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. } => {
             object_scope_unbound_at_fire_time(*scope)
@@ -11842,6 +11846,10 @@ fn quantity_ref_binding_diverges(qty: &QuantityRef) -> bool {
         | QuantityRef::TrackedSetSize
         | QuantityRef::FilteredTrackedSetSize { .. }
         | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::ThatSticker,
+            letters: _,
+        }
         | QuantityRef::PreviousEffectAmount { .. }
         | QuantityRef::PreviousEffectCount
         | QuantityRef::TimesCostPaidThisResolution
@@ -12385,7 +12393,7 @@ fn filter_prop_binding_diverges(prop: &FilterProp) -> bool {
         | FilterProp::SharesCreatureTypeWithCommander
         // CR 506 + CR 508 + CR 509: live combat state.
         | FilterProp::Blocking
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::HasHasteOrControlledSinceTurnBegan
@@ -14528,7 +14536,7 @@ fn evaluate_trigger_condition_with_source(
             // CreatureDestroyed and ZoneChanged (dies = battlefield→graveyard)
             // carry the dying creature — other event shapes are not valid here.
             let dying_creature = trigger_event.and_then(|e| match e {
-                GameEvent::CreatureDestroyed { object_id } => Some(*object_id),
+                GameEvent::CreatureDestroyed { object_id, .. } => Some(*object_id),
                 GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
                 _ => None,
             });
@@ -14551,7 +14559,7 @@ fn evaluate_trigger_condition_with_source(
         // whose source satisfies the filter (Spider you controlled, etc.).
         TriggerCondition::DealtDamageThisTurnBySource { source } => {
             let dying_creature = trigger_event.and_then(|e| match e {
-                GameEvent::CreatureDestroyed { object_id } => Some(*object_id),
+                GameEvent::CreatureDestroyed { object_id, .. } => Some(*object_id),
                 GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
                 _ => None,
             });
@@ -16047,6 +16055,10 @@ fn quantity_ref_refs_cost_paid_object(qty: &QuantityRef) -> bool {
         | QuantityRef::ObjectManaValue { scope }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. }
         | QuantityRef::CountersOn { scope, .. } => matches!(scope, ObjectScope::CostPaidObject),
@@ -16133,6 +16145,11 @@ fn quantity_ref_refs_cost_paid_object(qty: &QuantityRef) -> bool {
         | QuantityRef::BasicLandTypeCount { .. }
         | QuantityRef::TrackedSetSize
         | QuantityRef::ExiledFromHandThisResolution
+        // CR 608.2c: the resolution's placed-sticker record, not an object.
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::ThatSticker,
+            letters: _,
+        }
         | QuantityRef::PreviousEffectAmount { .. }
         | QuantityRef::PreviousEffectCount
         | QuantityRef::LifeLostThisTurn { .. }
@@ -29726,6 +29743,7 @@ pub mod tests {
         let condition = TriggerCondition::DealtDamageBySourceThisTurn;
         let event = GameEvent::CreatureDestroyed {
             object_id: dying_creature,
+            source_id: None,
         };
 
         // Matching source + matching dying creature → true
@@ -29750,6 +29768,7 @@ pub mod tests {
         // Non-matching dying creature → false
         let wrong_event = GameEvent::CreatureDestroyed {
             object_id: ObjectId(88),
+            source_id: None,
         };
         assert!(!check_trigger_condition(
             &state,
@@ -29805,6 +29824,7 @@ pub mod tests {
         });
         let other_only_event = GameEvent::CreatureDestroyed {
             object_id: other_only_victim,
+            source_id: None,
         };
         assert!(!check_trigger_condition(
             &state,
@@ -29856,6 +29876,7 @@ pub mod tests {
         let condition = TriggerCondition::DealtDamageBySourceThisTurn;
         let event = GameEvent::CreatureDestroyed {
             object_id: dying_creature,
+            source_id: None,
         };
 
         // Same incarnation still on the battlefield → the record is its own → true.
@@ -29950,7 +29971,10 @@ pub mod tests {
         ));
 
         // A non-tap event → false (only PermanentTapped carries the subject).
-        let non_tap = GameEvent::CreatureDestroyed { object_id: tapped };
+        let non_tap = GameEvent::CreatureDestroyed {
+            object_id: tapped,
+            source_id: None,
+        };
         assert!(!check_trigger_condition(
             &state,
             &condition,
@@ -30242,7 +30266,10 @@ pub mod tests {
                     .controller(ControllerRef::You),
             ),
         };
-        let event = GameEvent::CreatureDestroyed { object_id: victim };
+        let event = GameEvent::CreatureDestroyed {
+            object_id: victim,
+            source_id: None,
+        };
 
         assert!(check_trigger_condition(
             &state,
@@ -30254,6 +30281,7 @@ pub mod tests {
 
         let wrong_victim = GameEvent::CreatureDestroyed {
             object_id: ObjectId(99),
+            source_id: None,
         };
         assert!(!check_trigger_condition(
             &state,
