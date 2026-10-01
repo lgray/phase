@@ -1,1 +1,113 @@
    Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 10m 33s
+────────────
+ Nextest run ID c3e86493-8eee-4ecb-a5bc-d462c2dd18b6 with nextest profile: default
+    Starting 17 tests across 8 binaries (31312 tests skipped)
+        PASS [   0.017s] ( 1/17) phase-engine game::effects::copy_exception::tests::dynamic_pt_copy_exception_prunes_corresponding_cda_axes
+        FAIL [   0.146s] ( 2/17) phase-engine game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering
+  stdout ───
+
+    running 1 test
+    test game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering ... FAILED
+
+    failures:
+
+    failures:
+        game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22670 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering' (28167) panicked at crates/engine/src/game/layers.rs:22196:9:
+    assertion `left == right` failed: the exception applies with its own copy, before the later copy
+      left: [(Some(1), 0), (Some(2), 0), (Some(1), 1)]
+     right: [(Some(1), 0), (Some(1), 1), (Some(2), 0)]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::vec::Vec<(core::option::Option<u64>, usize)>, alloc::vec::Vec<(core::option::Option<u64>, usize)>>
+       4: engine::game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering
+       5: engine::game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering::{closure#0}
+       6: <engine::game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   0.131s] ( 3/17) phase-engine::integration machine_gods_effigy_copy_exception::color_and_type_replacement_exception_prunes_cdas_for_later_copies
+        FAIL [   0.154s] ( 4/17) phase-engine game::layers::tests::effect_nodes_group_entries_by_effect_identity
+  stdout ───
+
+    running 1 test
+    test game::layers::tests::effect_nodes_group_entries_by_effect_identity ... FAILED
+
+    failures:
+
+    failures:
+        game::layers::tests::effect_nodes_group_entries_by_effect_identity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22670 filtered out; finished in 0.13s
+
+  stderr ───
+
+    thread 'game::layers::tests::effect_nodes_group_entries_by_effect_identity' (28165) panicked at crates/engine/src/game/layers.rs:22135:9:
+    assertion `left == right` failed
+      left: [[0], [1], [2]]
+     right: [[0, 1], [2]]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::vec::Vec<alloc::vec::Vec<usize>>, alloc::vec::Vec<alloc::vec::Vec<usize>>>
+       4: engine::game::layers::tests::effect_nodes_group_entries_by_effect_identity
+       5: engine::game::layers::tests::effect_nodes_group_entries_by_effect_identity::{closure#0}
+       6: <engine::game::layers::tests::effect_nodes_group_entries_by_effect_identity::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   0.183s] ( 5/17) phase-engine game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+  stdout ───
+
+    running 1 test
+    test game::engine::tests::a_set_name_exception_survives_the_room_name_derivation ... FAILED
+
+    failures:
+
+    failures:
+        game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22670 filtered out; finished in 0.16s
+
+  stderr ───
+
+    thread 'game::engine::tests::a_set_name_exception_survives_the_room_name_derivation' (28166) panicked at crates/engine/src/game/engine_tests.rs:2642:5:
+    assertion `left == right` failed: CR 613.1a: the later ordinary copy resets the exception marker
+      left: "Wrong Turn"
+     right: "Bright Hall"
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::string::String, &str>
+       4: engine::game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+       5: engine::game::engine::tests::a_set_name_exception_survives_the_room_name_derivation::{closure#0}
+       6: <engine::game::engine::tests::a_set_name_exception_survives_the_room_name_derivation::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   0.088s] ( 6/17) phase-engine::integration machine_gods_effigy_copy_exception::copy_exception_type_modes_remain_distinct
+        PASS [   0.099s] ( 7/17) phase-engine::integration machine_gods_effigy_copy_exception::croaking_counterpart_copy_token_prunes_devoid_beside_unknown_cda
+        PASS [   0.023s] ( 8/17) phase-engine::integration machine_gods_effigy_copy_exception::lazotep_convert_color_exception_does_not_copy_devoid_cda
+        PASS [   0.093s] ( 9/17) phase-engine::integration machine_gods_effigy_copy_exception::effigy_copies_selected_donor_as_a_noncreature_artifact_with_blue_mana
+        PASS [   0.020s] (10/17) phase-engine::integration machine_gods_effigy_copy_exception::resolution_time_copy_exceptions_survive_layered_fallback_without_leaking_riders
+        PASS [   0.155s] (11/17) phase-engine::integration machine_gods_effigy_copy_exception::copy_artifact_snapshots_effigys_complete_type_replacement
+        PASS [   0.069s] (12/17) phase-engine::integration machine_gods_effigy_copy_exception::mixed_copy_exception_prunes_cda_through_stack_resolution
+        PASS [   0.030s] (13/17) phase-engine::integration machine_gods_effigy_copy_exception::unclassifiable_cda_does_not_preserve_an_independent_overridden_cda
+        PASS [   0.022s] (14/17) phase-engine::integration machine_gods_effigy_copy_exception::unsupported_copy_exception_rider_keeps_preceding_subtype_out_of_later_copy
+        PASS [   0.127s] (15/17) phase-engine::integration machine_gods_effigy_copy_exception::saw_in_half_copy_tokens_prune_dynamic_pt_cda
+        PASS [   0.099s] (16/17) phase-engine::integration yenna_aura_token_copy::non_liminal_copy_reads_the_entrant_after_its_copy_exceptions
+        PASS [   0.154s] (17/17) phase-engine::integration machine_gods_effigy_copy_exception::scarab_god_copy_token_prunes_changeling_type_cda
+────────────
+     Summary [   0.469s] 17 tests run: 14 passed, 3 failed, 31312 skipped
+        FAIL [   0.146s] ( 2/17) phase-engine game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering
+        FAIL [   0.154s] ( 4/17) phase-engine game::layers::tests::effect_nodes_group_entries_by_effect_identity
+        FAIL [   0.183s] ( 5/17) phase-engine game::engine::tests::a_set_name_exception_survives_the_room_name_derivation
+error: test run failed
+done

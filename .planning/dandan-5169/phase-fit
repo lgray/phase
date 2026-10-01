@@ -94,3 +94,7 @@
 ## 16. Phase 9 (S2b-2)
 - Plan r1 (claude-sonnet-5-5): 1 unit, 10 paths; requested charter amendment (determinize.rs to Phase 17). Ruling: charter binding (another charter revision would be design round 5); plan's own fallback taken (mechanical swap now, observable row DEFERRED(phase 17)); reviewer judges correctness.
 - Phase 9 r2 review: 0 behavior; F3 text applied by orchestrator (CR 108.3 -> CR 400.3 routing citation; old 1->0, new 1). N1 (pool skew between Phase 11 and 17, distribution not leak) and N2 (stale unknown_slots doc comment) passed to the executor as constraints. Phase 9 plan CLEAN (11 paths).
+
+## 17. Phase 10 (S2c)
+- Plan r1 (claude-sonnet-5-5): REJECT — F1 behavior (collapse keyed on obj.zone hits live sacrifice/destroy matchers: 79 supported 'whenever you sacrifice' cards would fire on the opponent's sacrifice); F2 text (Master's Councillors power); N1–N3. PlayerCount dedup accepted in Phase 10 quantity.rs scope (Phase 8 hand-off). Design round 1; revision dispatched.
+- Phase 10 r2 review: 0 behavior; F3 (record-door boundary: Veteran Ghoulcaller stays owner-based, stated as a known boundary) and F4 (V15 pinned to filter.rs mod tests) applied by applier, orchestrator-verified diff; N4/N5 -> executor constraints. Phase 10 plan CLEAN (2 units, 5 paths).
