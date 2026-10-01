@@ -1,19 +1,18 @@
-//! Regression for issue #3993: Cancelling during delve mana payment must return
-//! delved graveyard cards from exile instead of leaving them stranded.
+//! Regression for issue #3993: cancelling during delve mana payment leaves the
+//! delved graveyard cards where they were.
 //!
-//! CR 601.2i: If the player is unable or unwilling to complete a cast, the
-//! process is reversed and any choices made (including delve exiles) are undone.
+//! CR 601.2h + CR 733.1: the delve exile is paid with the total cost, so a
+//! cancelled cast has no exile to undo.
 //!
 //! https://github.com/phase-rs/phase/issues/3993
 
 use engine::ai_support::legal_actions_full;
-use engine::game::scenario::{GameRunner, GameScenario, P0};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::{
     CastPermissionConstraint, CastingPermission, Comparator, ExileGrantCostProvenance, PlayerScope,
-    QuantityExpr, QuantityRef,
+    QuantityExpr, QuantityRef, TargetRef,
 };
 use engine::types::actions::GameAction;
-use engine::types::card_type::CoreType;
 use engine::types::game_state::{CastPaymentMode, ConvokeMode, ShardChoice, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -80,8 +79,8 @@ fn issue_3993_cancel_during_delve_payment_returns_graveyard_cards() {
             .expect("delve graveyard card");
         assert_eq!(
             runner.state().objects[&gy_id].zone,
-            Zone::Exile,
-            "delved card should be exiled before cancel"
+            Zone::Graveyard,
+            "CR 601.2h: a delve selection exiles nothing before the cost is paid"
         );
     }
 
@@ -210,97 +209,6 @@ fn cruise_in_hand(
     (scenario.build(), cruise, ids, lands)
 }
 
-#[test]
-fn cancel_delve_restores_graveyard_order_after_signet_activation() {
-    let (mut runner, cruise, ids, lands) = cruise_in_hand(&["Lightning Bolt", "Shock"], true);
-    let (forest, signet) = lands.expect("signet fixture");
-    cast_manual(&mut runner, cruise);
-
-    let (_, _, grouped) = legal_actions_full(runner.state());
-    let selection = grouped
-        .get(&forest)
-        .into_iter()
-        .flatten()
-        .find_map(|action| match action {
-            GameAction::TapLandForMana { selection } => Some(selection.clone()),
-            _ => None,
-        })
-        .expect("engine offers a Forest tap");
-    runner
-        .act(GameAction::TapLandForMana { selection })
-        .expect("tap Forest");
-    delve(&mut runner, ids[0]);
-    delve(&mut runner, ids[1]);
-    runner
-        .act(GameAction::ActivateAbility {
-            source_id: signet,
-            ability_index: 0,
-        })
-        .expect("activate Dimir Signet");
-
-    let marker_sources: Vec<ObjectId> = runner.state().players[P0.0 as usize]
-        .mana_pool
-        .mana
-        .iter()
-        .filter(|unit| unit.is_convoke_payment())
-        .map(|unit| unit.source_id)
-        .collect();
-    assert_eq!(
-        marker_sources,
-        [ids[1], ids[0]],
-        "Signet activation must have reordered the delve markers"
-    );
-
-    runner.act(GameAction::CancelCast).expect("cancel cast");
-    assert_cancel_restored(&runner, cruise, Zone::Hand, &["Lightning Bolt", "Shock"]);
-}
-
-#[test]
-fn cancel_delve_restores_graveyard_order_around_undelved_card() {
-    let (mut runner, cruise, ids, _) =
-        cruise_in_hand(&["Lightning Bolt", "Island", "Shock"], false);
-    cast_manual(&mut runner, cruise);
-    delve(&mut runner, ids[0]);
-    delve(&mut runner, ids[2]);
-    for id in [ids[0], ids[2]] {
-        assert_eq!(runner.state().objects[&id].zone, Zone::Exile);
-    }
-
-    runner.act(GameAction::CancelCast).expect("cancel cast");
-    assert_cancel_restored(
-        &runner,
-        cruise,
-        Zone::Hand,
-        &["Lightning Bolt", "Island", "Shock"],
-    );
-}
-
-/// CR 733.1 + CR 700.11: an undone delve exile puts no permanent card into the
-/// graveyard, so the player has not descended.
-#[test]
-fn cancel_delve_of_permanent_card_does_not_mark_descended() {
-    let (mut runner, cruise, ids, _) = cruise_in_hand(&["Grizzly Bears", "Shock"], false);
-    runner
-        .state_mut()
-        .objects
-        .get_mut(&ids[0])
-        .unwrap()
-        .card_types
-        .core_types
-        .push(CoreType::Creature);
-    cast_manual(&mut runner, cruise);
-    delve(&mut runner, ids[0]);
-    assert_eq!(runner.state().objects[&ids[0]].zone, Zone::Exile);
-    assert!(!runner.state().players[P0.0 as usize].descended_this_turn);
-    let rows = runner.state().zone_changes_this_turn.len();
-
-    runner.act(GameAction::CancelCast).expect("cancel cast");
-
-    assert_cancel_restored(&runner, cruise, Zone::Hand, &["Grizzly Bears", "Shock"]);
-    assert!(!runner.state().players[P0.0 as usize].descended_this_turn);
-    assert_eq!(runner.state().zone_changes_this_turn.len(), rows);
-}
-
 /// Treasure Cruise in exile castable only while its mana value is at most the
 /// graveyard size, so delving the graveyard away fails the finalize re-check.
 fn cruise_in_exile(constraint_value: QuantityExpr) -> (GameRunner, ObjectId, Vec<ObjectId>) {
@@ -347,43 +255,6 @@ fn cruise_in_exile(constraint_value: QuantityExpr) -> (GameRunner, ObjectId, Vec
 }
 
 #[test]
-fn cancel_after_rejected_finalize_keeps_delve_record_and_restores_order() {
-    let (mut runner, cruise, ids) = cruise_in_exile(QuantityExpr::Ref {
-        qty: QuantityRef::GraveyardSize {
-            player: PlayerScope::Controller,
-        },
-    });
-    cast_manual(&mut runner, cruise);
-    delve(&mut runner, ids[0]);
-    delve(&mut runner, ids[2]);
-
-    runner
-        .act(GameAction::PassPriority)
-        .expect_err("finalize re-check rejects the shrunken graveyard");
-    for id in [ids[0], ids[2]] {
-        assert_eq!(runner.state().objects[&id].zone, Zone::Exile);
-    }
-    assert_eq!(delve_marker_count(&runner), 2);
-    assert_eq!(
-        runner
-            .state()
-            .pending_cast
-            .as_ref()
-            .and_then(|pending| pending.delve.as_ref())
-            .map(|delve| delve.cards.len()),
-        Some(2)
-    );
-
-    runner.act(GameAction::CancelCast).expect("cancel cast");
-    assert_cancel_restored(
-        &runner,
-        cruise,
-        Zone::Exile,
-        &["Lightning Bolt", "Island", "Shock"],
-    );
-}
-
-#[test]
 fn rejected_finalize_control_fixed_constraint_casts() {
     let (mut runner, cruise, ids) = cruise_in_exile(QuantityExpr::Fixed { value: 8 });
     cast_manual(&mut runner, cruise);
@@ -400,14 +271,205 @@ const DELVE_DIVIDED_X_ORACLE: &str =
     "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\n\
 ~ deals X damage divided as you choose among any number of targets.";
 
-/// CR 733.1: cancelling at the post-payment distribution (opened only because
-/// X = 0 leaves the pool empty at target selection) must undo the delve exile.
-fn cancel_delve_at_post_payment_distribution(shard: ManaCostShard) {
+#[test]
+fn rejected_finalize_keeps_selection_and_cancel_moves_nothing() {
+    let (mut runner, cruise, ids) = cruise_in_exile(QuantityExpr::Ref {
+        qty: QuantityRef::GraveyardSize {
+            player: PlayerScope::Controller,
+        },
+    });
+    cast_manual(&mut runner, cruise);
+    delve(&mut runner, ids[0]);
+    delve(&mut runner, ids[2]);
+
+    runner
+        .act(GameAction::PassPriority)
+        .expect_err("finalize re-check rejects the cast");
+    assert_eq!(
+        runner
+            .state()
+            .pending_cast
+            .as_ref()
+            .map(|p| p.delved_cards.len()),
+        Some(2)
+    );
+    assert_eq!(delve_marker_count(&runner), 2);
+
+    runner.act(GameAction::CancelCast).expect("cancel cast");
+    assert_cancel_restored(
+        &runner,
+        cruise,
+        Zone::Exile,
+        &["Lightning Bolt", "Island", "Shock"],
+    );
+}
+
+/// CR 702.66a: a selected card whose marker pays no generic mana is not exiled.
+#[test]
+fn commit_exiles_only_selected_cards_that_paid_generic_mana() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let spell = scenario
-        .add_spell_to_hand_from_oracle(P0, "Delve Volley", false, DELVE_DIVIDED_X_ORACLE)
-        .from_oracle_text_with_keywords(&["Delve"], DELVE_DIVIDED_X_ORACLE)
+        .add_spell_to_hand(P0, "Delve One", true)
+        .with_mana_cost(ManaCost::generic(1))
+        .with_keyword(engine::types::keywords::Keyword::Delve)
+        .id();
+    let [a, b] = ["Delve Fuel A", "Delve Fuel B"]
+        .map(|name| scenario.add_spell_to_graveyard(P0, name, true).id());
+    let mut runner = scenario.build();
+    cast_manual(&mut runner, spell);
+    delve(&mut runner, a);
+    delve(&mut runner, b);
+    assert_eq!(delve_marker_count(&runner), 2);
+
+    runner.act(GameAction::PassPriority).expect("commit");
+
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Stack);
+    let exiled: Vec<ObjectId> = [a, b]
+        .into_iter()
+        .filter(|id| runner.state().objects[id].zone == Zone::Exile)
+        .collect();
+    assert_eq!(exiled.len(), 1, "one generic mana, one exiled card");
+    assert_eq!(graveyard_names(&runner).len(), 1);
+    assert_eq!(delve_marker_count(&runner), 0);
+    assert_eq!(
+        runner.state().cards_exiled_with_source_this_turn[&spell],
+        exiled
+    );
+}
+
+#[test]
+fn cancel_after_signet_activation_leaves_selected_fuel_in_graveyard() {
+    let (mut runner, cruise, ids, lands) = cruise_in_hand(&["Lightning Bolt", "Shock"], true);
+    let (forest, signet) = lands.expect("signet fixture");
+    cast_manual(&mut runner, cruise);
+
+    let (_, _, grouped) = legal_actions_full(runner.state());
+    let selection = grouped
+        .get(&forest)
+        .into_iter()
+        .flatten()
+        .find_map(|action| match action {
+            GameAction::TapLandForMana { selection } => Some(selection.clone()),
+            _ => None,
+        })
+        .expect("engine offers a Forest tap");
+    runner
+        .act(GameAction::TapLandForMana { selection })
+        .expect("tap Forest");
+    delve(&mut runner, ids[0]);
+    delve(&mut runner, ids[1]);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: signet,
+            ability_index: 0,
+        })
+        .expect("activate Dimir Signet");
+
+    let marker_sources: Vec<ObjectId> = runner.state().players[P0.0 as usize]
+        .mana_pool
+        .mana
+        .iter()
+        .filter(|unit| unit.is_convoke_payment())
+        .map(|unit| unit.source_id)
+        .collect();
+    assert_eq!(
+        marker_sources,
+        [ids[1], ids[0]],
+        "Signet activation must have reordered the delve markers"
+    );
+
+    assert_eq!(graveyard_names(&runner), ["Lightning Bolt", "Shock"]);
+
+    runner.act(GameAction::CancelCast).expect("cancel cast");
+    assert_cancel_restored(&runner, cruise, Zone::Hand, &["Lightning Bolt", "Shock"]);
+}
+
+/// CR 601.2h: selecting non-adjacent fuel moves nothing, so the graveyard order
+/// is the pre-cast order at every step and after the cancel.
+#[test]
+fn selecting_non_adjacent_fuel_keeps_graveyard_order_through_cancel() {
+    let (mut runner, cruise, ids, _) =
+        cruise_in_hand(&["Lightning Bolt", "Island", "Shock"], false);
+    cast_manual(&mut runner, cruise);
+    delve(&mut runner, ids[0]);
+    delve(&mut runner, ids[2]);
+    for id in [ids[0], ids[2]] {
+        assert_eq!(runner.state().objects[&id].zone, Zone::Graveyard);
+    }
+    assert_eq!(
+        graveyard_names(&runner),
+        ["Lightning Bolt", "Island", "Shock"]
+    );
+
+    runner.act(GameAction::CancelCast).expect("cancel cast");
+    assert_cancel_restored(
+        &runner,
+        cruise,
+        Zone::Hand,
+        &["Lightning Bolt", "Island", "Shock"],
+    );
+}
+
+/// CR 601.2h: a selection that left the graveyard before the cost is paid cannot pay.
+#[test]
+fn commit_rejects_selection_that_left_the_graveyard() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand(P0, "Delve One", true)
+        .with_mana_cost(ManaCost::generic(1))
+        .with_keyword(engine::types::keywords::Keyword::Delve)
+        .id();
+    let fuel = scenario.add_spell_to_graveyard(P0, "Delve Fuel", true).id();
+    let mut runner = scenario.build();
+    cast_manual(&mut runner, spell);
+    delve(&mut runner, fuel);
+    let mut events = Vec::new();
+    engine::game::zone_pipeline::move_object_for_test(
+        runner.state_mut(),
+        engine::game::zone_pipeline::ZoneMoveRequest::effect(fuel, Zone::Exile, fuel),
+        &mut events,
+    );
+
+    let error = runner
+        .act(GameAction::PassPriority)
+        .expect_err("the selected card is no longer in the graveyard");
+    assert!(format!("{error:?}").contains("no longer in your graveyard"));
+    assert!(runner.state().pending_cast.is_some());
+    assert_eq!(runner.state().objects[&spell].zone, Zone::Hand);
+
+    runner.act(GameAction::CancelCast).expect("cancel cast");
+    assert_eq!(delve_marker_count(&runner), 0);
+    assert_eq!(runner.state().objects[&fuel].zone, Zone::Exile);
+}
+
+const DELVE_EVEN_SPLIT_ORACLE: &str =
+    "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\n\
+~ deals X damage divided evenly, rounded down, among any number of targets.";
+
+struct DistributionWitness {
+    runner: GameRunner,
+    spell: ObjectId,
+    gy: Vec<ObjectId>,
+    victims: Vec<ObjectId>,
+    rows_before_cast: usize,
+}
+
+/// `{X}{shard}{1}` delve spell cast with X = 0 and the first `delved` graveyard cards
+/// selected, ready for the post-payment step; `[Lightning Bolt, Island, Shock]` is the
+/// graveyard.
+fn delve_volley_payment(
+    oracle: &str,
+    shard: ManaCostShard,
+    victims: usize,
+    delved: usize,
+) -> DistributionWitness {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Delve Volley", false, oracle)
+        .from_oracle_text_with_keywords(&["Delve"], oracle)
         .with_mana_cost(ManaCost::Cost {
             shards: vec![ManaCostShard::X, shard],
             generic: 1,
@@ -417,54 +479,159 @@ fn cancel_delve_at_post_payment_distribution(shard: ManaCostShard) {
         .iter()
         .map(|name| scenario.add_spell_to_graveyard(P0, name, true).id())
         .collect();
+    let victims: Vec<ObjectId> = (0..victims)
+        .map(|i| scenario.add_creature(P1, &format!("Victim {i}"), 3, 3).id())
+        .collect();
     scenario.with_mana_pool(P0, mana_pool(0, 1));
     let mut runner = scenario.build();
+    let rows_before_cast = runner.state().zone_changes_this_turn.len();
 
     cast_manual(&mut runner, spell);
     runner
         .act(GameAction::ChooseX { value: 0 })
         .expect("announce X = 0");
-    delve(&mut runner, gy[0]);
-    runner
-        .act(GameAction::PassPriority)
-        .expect("finish payment");
-    let phyrexian_prompted = matches!(
-        runner.state().waiting_for,
-        WaitingFor::PhyrexianPayment { .. }
-    );
-    assert_eq!(phyrexian_prompted, shard == ManaCostShard::PhyrexianRed);
-    if phyrexian_prompted {
-        runner
-            .act(GameAction::SubmitPhyrexianChoices {
-                choices: vec![ShardChoice::PayMana],
-            })
-            .expect("pay the Phyrexian shard with mana");
+    for &fuel in &gy[..delved] {
+        delve(&mut runner, fuel);
     }
-    assert!(
-        matches!(
-            runner.state().waiting_for,
-            WaitingFor::DistributeAmong { .. }
-        ),
-        "payment must end at the post-payment distribution, got {:?}",
-        runner.state().waiting_for
-    );
-    assert_eq!(runner.state().objects[&gy[0]].zone, Zone::Exile);
-
-    runner.act(GameAction::CancelCast).expect("cancel cast");
-    assert_cancel_restored(
-        &runner,
+    DistributionWitness {
+        runner,
         spell,
+        gy,
+        victims,
+        rows_before_cast,
+    }
+}
+
+impl DistributionWitness {
+    fn pass(&mut self, shard: ManaCostShard) {
+        self.runner
+            .act(GameAction::PassPriority)
+            .expect("finish payment");
+        let phyrexian_prompted = matches!(
+            self.runner.state().waiting_for,
+            WaitingFor::PhyrexianPayment { .. }
+        );
+        assert_eq!(phyrexian_prompted, shard == ManaCostShard::PhyrexianRed);
+        if phyrexian_prompted {
+            self.runner
+                .act(GameAction::SubmitPhyrexianChoices {
+                    choices: vec![ShardChoice::PayMana],
+                })
+                .expect("pay the Phyrexian shard with mana");
+        }
+    }
+
+    fn at_prompt(shard: ManaCostShard) -> Self {
+        let mut witness = delve_volley_payment(DELVE_DIVIDED_X_ORACLE, shard, 0, 2);
+        witness.pass(shard);
+        assert!(
+            matches!(
+                witness.runner.state().waiting_for,
+                WaitingFor::DistributeAmong { .. }
+            ),
+            "payment must end at the post-payment distribution, got {:?}",
+            witness.runner.state().waiting_for
+        );
+        witness
+    }
+}
+
+/// CR 601.2h + CR 733.1: the post-payment distribution (opened only because X = 0
+/// leaves the pool empty at target selection) precedes the delve exile, so a cancel
+/// there restores the graveyard order and moves nothing.
+fn delve_fuel_stays_until_post_payment_distribution_cancels(shard: ManaCostShard) {
+    let mut witness = DistributionWitness::at_prompt(shard);
+    for fuel in &witness.gy[..2] {
+        assert_eq!(witness.runner.state().objects[fuel].zone, Zone::Graveyard);
+    }
+    assert_eq!(delve_marker_count(&witness.runner), 0);
+
+    witness
+        .runner
+        .act(GameAction::CancelCast)
+        .expect("cancel cast");
+
+    assert_cancel_restored(
+        &witness.runner,
+        witness.spell,
         Zone::Hand,
         &["Lightning Bolt", "Island", "Shock"],
     );
+    assert_eq!(
+        witness.runner.state().zone_changes_this_turn.len(),
+        witness.rows_before_cast
+    );
+    assert!(witness.runner.state().exile_links.is_empty());
+}
+
+/// CR 601.2h + CR 702.66a: completing the distribution exiles only the selected
+/// card whose marker paid the one generic mana.
+fn delve_fuel_exiles_when_post_payment_distribution_completes(shard: ManaCostShard) {
+    let mut witness = DistributionWitness::at_prompt(shard);
+
+    witness
+        .runner
+        .act(GameAction::DistributeAmong {
+            distribution: vec![],
+        })
+        .expect("empty division for X = 0");
+
+    let exiled: Vec<ObjectId> = witness.gy[..2]
+        .iter()
+        .copied()
+        .filter(|id| witness.runner.state().objects[id].zone == Zone::Exile)
+        .collect();
+    assert_eq!(exiled.len(), 1, "one generic mana, one exiled card");
+    assert_eq!(graveyard_names(&witness.runner).len(), 2);
+    assert_eq!(delve_marker_count(&witness.runner), 0);
+    assert_eq!(
+        witness.runner.state().cards_exiled_with_source_this_turn[&witness.spell],
+        exiled
+    );
 }
 
 #[test]
-fn cancel_delve_at_post_payment_distribution_restores_graveyard() {
-    cancel_delve_at_post_payment_distribution(ManaCostShard::Red);
+fn delve_fuel_stays_until_post_payment_distribution_paid_with_mana() {
+    delve_fuel_stays_until_post_payment_distribution_cancels(ManaCostShard::Red);
+    delve_fuel_exiles_when_post_payment_distribution_completes(ManaCostShard::Red);
 }
 
 #[test]
-fn cancel_delve_at_post_payment_distribution_after_phyrexian_choice_restores_graveyard() {
-    cancel_delve_at_post_payment_distribution(ManaCostShard::PhyrexianRed);
+fn delve_fuel_stays_until_post_payment_distribution_after_phyrexian_choice() {
+    delve_fuel_stays_until_post_payment_distribution_cancels(ManaCostShard::PhyrexianRed);
+    delve_fuel_exiles_when_post_payment_distribution_completes(ManaCostShard::PhyrexianRed);
+}
+
+/// CR 601.2d + CR 601.2h: an even split needs no prompt, so the delve exile is
+/// paid by the same commit that puts the spell on the stack. The ability holds its
+/// targets already, which is the only shape that skips the post-payment prompt.
+#[test]
+fn even_split_damage_commit_exiles_delve_fuel_and_casts() {
+    let mut witness = delve_volley_payment(DELVE_EVEN_SPLIT_ORACLE, ManaCostShard::Red, 2, 1);
+    witness
+        .runner
+        .state_mut()
+        .pending_cast
+        .as_mut()
+        .expect("payment window")
+        .ability
+        .targets = witness
+        .victims
+        .iter()
+        .copied()
+        .map(TargetRef::Object)
+        .collect();
+
+    witness
+        .runner
+        .act(GameAction::PassPriority)
+        .expect("finish payment");
+
+    let fuel = witness.gy[0];
+    assert_eq!(
+        witness.runner.state().objects[&witness.spell].zone,
+        Zone::Stack
+    );
+    assert_eq!(witness.runner.state().objects[&fuel].zone, Zone::Exile);
+    assert_eq!(delve_marker_count(&witness.runner), 0);
 }

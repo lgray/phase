@@ -1817,81 +1817,6 @@ pub(crate) fn record_and_emit_entry_from_no_zone(
     Some(record)
 }
 
-/// Per-move ledgers `move_to_zone` writes for one object, captured so an undone move can put them back.
-struct MoveLedgers {
-    object_id: ObjectId,
-    owner: PlayerId,
-    zone_changes: usize,
-    battlefield_entries: usize,
-    descended: bool,
-    lki_cache: Option<crate::types::game_state::LKISnapshot>,
-    lki_by_incarnation: Option<im::HashMap<u64, crate::types::game_state::LKISnapshot>>,
-    lki_copiable_values: Option<crate::types::ability::CopiableValues>,
-    linked_exile_lki: Option<Vec<crate::types::game_state::LinkedExileSnapshot>>,
-}
-
-impl MoveLedgers {
-    fn capture(state: &GameState, object_id: ObjectId) -> Self {
-        let owner = state.objects[&object_id].owner;
-        Self {
-            object_id,
-            owner,
-            zone_changes: state.zone_changes_this_turn.len(),
-            battlefield_entries: state.battlefield_entries_this_turn.len(),
-            descended: state
-                .players
-                .iter()
-                .find(|p| p.id == owner)
-                .is_some_and(|p| p.descended_this_turn),
-            lki_cache: state.lki_cache.get(&object_id).cloned(),
-            lki_by_incarnation: state.lki_by_incarnation.get(&object_id).cloned(),
-            lki_copiable_values: state.lki_copiable_values.get(&object_id).cloned(),
-            linked_exile_lki: state.linked_exile_lki.get(&object_id).cloned(),
-        }
-    }
-
-    fn restore(self, state: &mut GameState) {
-        let id = self.object_id;
-        state.zone_changes_this_turn.truncate(self.zone_changes);
-        state
-            .battlefield_entries_this_turn
-            .truncate(self.battlefield_entries);
-        if let Some(player) = state.players.iter_mut().find(|p| p.id == self.owner) {
-            player.descended_this_turn = self.descended;
-        }
-        macro_rules! put_back {
-            ($map:expr, $prior:expr) => {
-                match $prior {
-                    Some(value) => {
-                        $map.insert(id, value);
-                    }
-                    None => {
-                        $map.remove(&id);
-                    }
-                }
-            };
-        }
-        put_back!(state.lki_cache, self.lki_cache);
-        put_back!(state.lki_by_incarnation, self.lki_by_incarnation);
-        put_back!(state.lki_copiable_values, self.lki_copiable_values);
-        put_back!(state.linked_exile_lki, self.linked_exile_lki);
-    }
-}
-
-/// CR 601.2 + CR 733.1: Undo one move of an incomplete action. It uses the raw
-/// mover, not the replacement pipeline, and leaves no record of the move: no
-/// events, no zone-change or battlefield-entry history, no descend mark
-/// (CR 700.11), no LKI. Neither endpoint may be a Library: the library
-/// knowledge stamp is not captured.
-pub(crate) fn restore_after_rollback(state: &mut GameState, object_id: ObjectId, to: Zone) {
-    let ledgers = MoveLedgers::capture(state, object_id);
-    move_to_zone(state, object_id, to, &mut Vec::new());
-    ledgers.restore(state);
-    // CR 601.2 + CR 733.1: full layers reconciliation regardless of the mark
-    // `move_to_zone` picked; an undone action is rare, not gameplay-hot.
-    crate::game::layers::mark_layers_full(state);
-}
-
 /// CR 603.10a: Record that every member of `group` left the battlefield in the
 /// SAME simultaneous event, so leaves-the-battlefield / dies observers that are
 /// themselves in the group observe each other via last-known information (the
@@ -2359,24 +2284,6 @@ pub(crate) fn random_top_slot_index(
 ) -> usize {
     let upper = top_n.min(slots_after_insert).max(1);
     rng.random_range(0..upper)
-}
-
-/// CR 404.2: Sort `player`'s graveyard into `order`; cards absent from `order`
-/// (arrived since it was taken) stay on top in their current relative order.
-pub(crate) fn restore_graveyard_order(state: &mut GameState, player: PlayerId, order: &[ObjectId]) {
-    let player_state = state
-        .players
-        .iter_mut()
-        .find(|candidate| candidate.id == player)
-        .expect("player exists");
-    let mut pile: Vec<ObjectId> = player_state.graveyard.iter().copied().collect();
-    pile.sort_by_key(|id| {
-        order
-            .iter()
-            .position(|ordered| ordered == id)
-            .unwrap_or(usize::MAX)
-    });
-    player_state.graveyard = pile.into_iter().collect();
 }
 
 /// Move an object to a specific index in its owner's library.
@@ -4014,24 +3921,6 @@ mod tests {
             state.players[0].library.iter().copied().collect::<Vec<_>>(),
             [second, third, first]
         );
-    }
-
-    #[test]
-    fn restore_graveyard_order_sorts_members_and_keeps_arrivals_on_top() {
-        let mut state = setup();
-        let [a, b, c, x, y] = [1, 2, 3, 4, 5].map(|n| {
-            create_object(
-                &mut state,
-                CardId(n),
-                PlayerId(0),
-                format!("Card {n}"),
-                Zone::Graveyard,
-            )
-        });
-        let absent = ObjectId(9999);
-        restore_graveyard_order(&mut state, PlayerId(0), &[absent, c, a, b]);
-        let graveyard: Vec<_> = state.players[0].graveyard.iter().copied().collect();
-        assert_eq!(graveyard, [c, a, b, x, y]);
     }
 
     #[test]
@@ -5747,112 +5636,5 @@ mod tests {
             }),
             "SBA zone movement must still publish the unattach event for triggers"
         );
-    }
-
-    /// pod-lab loop-3 Q5, row 5: `restore_after_rollback` targeting the
-    /// battlefield must still force a full layers re-evaluation
-    /// unconditionally — CR 601.2 + CR 733.1, reversing an incomplete action
-    /// is rare (not gameplay-hot) and can leave board state in a shape the
-    /// entry-only incremental-flush safety classifier was never designed to
-    /// reason about, so there is no perf case for trusting `move_to_zone`'s
-    /// own (now axis-gated) internal decision here. Today's only production
-    /// caller targets Graveyard, not Battlefield, so this exercises the
-    /// function's general contract directly rather than replaying an
-    /// existing call site.
-    #[test]
-    fn restore_after_rollback_to_battlefield_marks_full() {
-        let mut state = setup();
-        let id = create_object(
-            &mut state,
-            CardId(1),
-            PlayerId(0),
-            "Rolled Back Spell".to_string(),
-            Zone::Stack,
-        );
-        state.layers_dirty = crate::types::game_state::LayersDirty::Clean;
-
-        let (rows, entries) = (
-            state.zone_changes_this_turn.len(),
-            state.battlefield_entries_this_turn.len(),
-        );
-
-        restore_after_rollback(&mut state, id, Zone::Battlefield);
-
-        assert_eq!(state.zone_changes_this_turn.len(), rows);
-        assert_eq!(state.battlefield_entries_this_turn.len(), entries);
-        assert_eq!(state.objects[&id].zone, Zone::Battlefield);
-        assert!(
-            matches!(
-                state.layers_dirty,
-                crate::types::game_state::LayersDirty::Full
-            ),
-            "restore_after_rollback targeting the battlefield must \
-             unconditionally force a full re-evaluation, got {:?}",
-            state.layers_dirty
-        );
-    }
-
-    #[test]
-    fn restore_after_rollback_records_no_history_and_keeps_prior_lki() {
-        let mut state = setup();
-        let make = |state: &mut GameState, card: u64, zone: Zone| {
-            let id = create_object(state, CardId(card), PlayerId(0), format!("C{card}"), zone);
-            state
-                .objects
-                .get_mut(&id)
-                .unwrap()
-                .card_types
-                .core_types
-                .push(CoreType::Creature);
-            id
-        };
-        let earlier = make(&mut state, 1, Zone::Battlefield);
-        move_to_zone(&mut state, earlier, Zone::Graveyard, &mut Vec::new());
-        state.players[0].descended_this_turn = false;
-        let id = make(&mut state, 2, Zone::Battlefield);
-        let exiled = make(&mut state, 3, Zone::Exile);
-        crate::game::exile_links::push_tracked_by_source(&mut state, exiled, id);
-
-        // Seed every per-object LKI map with a sentinel the undo move would overwrite.
-        let mut template = state.clone();
-        move_to_zone(&mut template, id, Zone::Graveyard, &mut Vec::new());
-        let mut lki = template.lki_cache[&id].clone();
-        lki.name = "Sentinel".to_string();
-        let mut copiable = template.lki_copiable_values[&id].clone();
-        copiable.name = "Sentinel".to_string();
-        let sentinel_link = crate::types::game_state::LinkedExileSnapshot {
-            exiled_id: ObjectId(999),
-            owner: PlayerId(0),
-            mana_value: 0,
-        };
-        let incarnation = state.objects[&id].incarnation;
-        state.lki_cache.insert(id, lki.clone());
-        state
-            .lki_by_incarnation
-            .insert(id, im::HashMap::unit(incarnation, lki));
-        state.lki_copiable_values.insert(id, copiable);
-        state
-            .linked_exile_lki
-            .insert(id, vec![sentinel_link.clone()]);
-        let rows = state.zone_changes_this_turn.len();
-        let entries = state.battlefield_entries_this_turn.len();
-
-        restore_after_rollback(&mut state, id, Zone::Graveyard);
-
-        assert_eq!(state.objects[&id].zone, Zone::Graveyard);
-        assert_eq!(state.zone_changes_this_turn.len(), rows);
-        assert_eq!(state.battlefield_entries_this_turn.len(), entries);
-        assert!(!state.players[0].descended_this_turn);
-        assert_eq!(state.lki_cache[&id].name, "Sentinel");
-        assert_eq!(state.lki_by_incarnation[&id][&incarnation].name, "Sentinel");
-        assert_eq!(state.lki_copiable_values[&id].name, "Sentinel");
-        assert_eq!(state.linked_exile_lki[&id], vec![sentinel_link]);
-
-        // An object with no prior LKI gets none from the undo.
-        let fresh = make(&mut state, 4, Zone::Battlefield);
-        restore_after_rollback(&mut state, fresh, Zone::Graveyard);
-        assert!(!state.lki_cache.contains_key(&fresh));
-        assert!(!state.lki_by_incarnation.contains_key(&fresh));
-        assert!(!state.lki_copiable_values.contains_key(&fresh));
     }
 }

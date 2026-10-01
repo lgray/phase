@@ -19671,6 +19671,10 @@ fn delve_exiles_graveyard_card_for_generic() {
     )
     .expect("delving a graveyard card is legal");
 
+    // CR 601.2h: selecting pays nothing; the card leaves with the total cost.
+    assert_eq!(state.objects.get(&gy).unwrap().zone, Zone::Graveyard);
+
+    apply_as_current(&mut state, GameAction::PassPriority).expect("commit the payment");
     // CR 702.66a: the delved card is exiled.
     assert_eq!(
         state.objects.get(&gy).unwrap().zone,
@@ -19706,6 +19710,7 @@ fn delve_records_exiled_with_casting_spell() {
         },
     )
     .expect("delving a graveyard card is legal");
+    apply_as_current(&mut state, GameAction::PassPriority).expect("commit the payment");
 
     assert!(
         state
@@ -19717,7 +19722,7 @@ fn delve_records_exiled_with_casting_spell() {
 }
 
 #[test]
-fn delve_cancel_cast_returns_exiled_cards_to_graveyard() {
+fn delve_cancel_cast_leaves_selected_cards_in_graveyard() {
     use super::super::engine::apply_as_current;
     let mut state = setup_game_at_main_phase();
     let obj_id = make_delve_spell(&mut state);
@@ -24055,6 +24060,47 @@ fn cancel_cast_uses_stamped_convoked_creatures_when_pending_snapshot_is_empty() 
         .convoked_creatures
         .is_empty());
     assert!(state.players[0].mana_pool.mana.is_empty());
+}
+
+#[test]
+fn terminal_cancel_with_fresh_pending_cast_drops_delve_markers() {
+    let mut state = setup_game_at_main_phase();
+    let fuel = create_object(
+        &mut state,
+        CardId(71),
+        PlayerId(0),
+        "Delve Fuel".to_string(),
+        Zone::Graveyard,
+    );
+    let spell = create_object(
+        &mut state,
+        CardId(72),
+        PlayerId(0),
+        "Delve Spell".to_string(),
+        Zone::Hand,
+    );
+    state.players[0]
+        .mana_pool
+        .add(ManaUnit::convoke_payment(ManaType::Colorless, fuel));
+    let pending = PendingCast::new(
+        spell,
+        CardId(72),
+        ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            spell,
+            PlayerId(0),
+        ),
+        ManaCost::generic(1),
+    );
+
+    handle_cancel_cast(&mut state, &pending, &mut Vec::new());
+
+    assert!(state.players[0].mana_pool.mana.is_empty());
+    assert_eq!(state.objects[&fuel].zone, Zone::Graveyard);
 }
 
 #[test]

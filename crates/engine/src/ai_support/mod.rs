@@ -236,7 +236,9 @@ pub(crate) fn structurally_valid_tap_for_convoke_payment(
     };
 
     match mode {
-        ConvokeMode::Delve => obj.is_delve_eligible(*player) && *mana_type == ManaType::Colorless,
+        ConvokeMode::Delve => {
+            state.is_delve_selectable(*player, *object_id) && *mana_type == ManaType::Colorless
+        }
         ConvokeMode::Convoke => {
             if !obj.is_convoke_eligible(*player) {
                 return false;

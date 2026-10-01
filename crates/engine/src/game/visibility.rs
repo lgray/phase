@@ -1206,7 +1206,6 @@ fn redact_activation_records(filtered: &mut GameState) {
             PendingCostMoveResume::WardSacrificePayment { .. }
             | PendingCostMoveResume::ReplacementMayCost { .. }
             | PendingCostMoveResume::Foretell { .. }
-            | PendingCostMoveResume::DelveManaPayment { .. }
             | PendingCostMoveResume::UnlessBouncePayment { .. }
             | PendingCostMoveResume::ManaAbilityPayment { .. }
             | PendingCostMoveResume::CounterAdditionUnlessPayment { .. }
@@ -3951,7 +3950,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -8103,9 +8102,16 @@ mod tests {
                 cost: ManaCost::generic(1),
                 turn_foretold: 7,
             },
-            PendingCostMoveResume::DelveManaPayment {
+            PendingCostMoveResume::Cast {
                 player: PlayerId(0),
-                fuel_id: hidden,
+                pending: Some(dummy_pending_cast(hidden, CardId(70_003), PlayerId(0))),
+                chosen: vec![hidden],
+                paused_at_index: 0,
+                destination: Zone::Exile,
+                completion: PendingCostMoveCompletion::FinalizeDelvedCast {
+                    phyrexian_choices: None,
+                    pre_payment_checks: None,
+                },
             },
             PendingCostMoveResume::SacrificeForCost {
                 player: PlayerId(0),

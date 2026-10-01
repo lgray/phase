@@ -2159,8 +2159,8 @@ fn mana_payment_direct_actions(
     );
     if has_delve {
         actions.extend(state.objects.values().filter_map(|object| {
-            object
-                .is_delve_eligible(player)
+            state
+                .is_delve_selectable(player, object.id)
                 .then_some(GameAction::TapForConvoke {
                     object_id: object.id,
                     mana_type: ManaType::Colorless,

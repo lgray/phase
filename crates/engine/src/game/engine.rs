@@ -16,12 +16,12 @@ use crate::types::events::{BendingType, ContestRound, GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActionResult, AssistState, AutoMayChoice, AutoPassMode, AutoPassRequest, CastOfferKind,
     CastingVariant, ConvokeMode, CostResume, GameState, LandPlayRecord, LoopDetectionMode,
-    ManaAbilityResume, MayTriggerAutoChoiceKey, PayCostKind, PendingCostMoveResume,
-    PendingCounterPostAction, PendingEffectResolved, PersistedRestoreError, PriorityPassingMode,
-    ResolveAllConsentParticipant, ResolveAllConsentRun, ResolveAllPrioritySnapshot, RetargetScope,
-    RetargetSlotAddress, StackEntry, StackEntryKind, StackResolutionAutoPassOverlay,
-    StackResolutionBudget, StackResolutionEntryFence, StackResolutionPolicy,
-    StackResolutionSession, WaitingFor,
+    ManaAbilityResume, MayTriggerAutoChoiceKey, PayCostKind, PendingCostMoveCompletion,
+    PendingCostMoveResume, PendingCounterPostAction, PendingEffectResolved, PersistedRestoreError,
+    PriorityPassingMode, ResolveAllConsentParticipant, ResolveAllConsentRun,
+    ResolveAllPrioritySnapshot, RetargetScope, RetargetSlotAddress, StackEntry, StackEntryKind,
+    StackResolutionAutoPassOverlay, StackResolutionBudget, StackResolutionEntryFence,
+    StackResolutionPolicy, StackResolutionSession, WaitingFor,
 };
 use crate::types::identifiers::{CardId, DelayedTriggerOrigin, ObjectId, ObjectIncarnationRef};
 use crate::types::match_config::MatchType;
@@ -77,7 +77,7 @@ use super::transform;
 use super::triggers;
 use super::turn_control;
 use super::turns;
-use super::zone_pipeline::{self, ZoneMoveRequest, ZoneMoveResult};
+
 #[cfg(test)]
 use super::zones;
 
@@ -8474,7 +8474,6 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::ReplacementMayCost { .. }
                     | PendingCostMoveResume::CollectEvidencePayment { .. }
                     | PendingCostMoveResume::UnlessBouncePayment { .. }
-                    | PendingCostMoveResume::DelveManaPayment { .. }
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
                     | PendingCostMoveResume::ActivationMillPayment { .. }
                     | PendingCostMoveResume::LoyaltyActivation { .. }
@@ -8500,7 +8499,6 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::Foretell { .. }
                     | PendingCostMoveResume::CollectEvidencePayment { .. }
                     | PendingCostMoveResume::UnlessBouncePayment { .. }
-                    | PendingCostMoveResume::DelveManaPayment { .. }
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
                     | PendingCostMoveResume::ActivationMillPayment { .. }
                     | PendingCostMoveResume::LoyaltyActivation { .. }
@@ -8511,8 +8509,10 @@ pub(crate) fn drain_pending_cost_move_resume(
         CostMoveDrainBoundary::PriorityBoundary => matches!(
             state.pending_cost_move_resume,
             Some(
-                PendingCostMoveResume::DelveManaPayment { .. }
-                    | PendingCostMoveResume::ManaAbilityPayment { .. }
+                PendingCostMoveResume::Cast {
+                    completion: PendingCostMoveCompletion::FinalizeDelvedCast { .. },
+                    ..
+                } | PendingCostMoveResume::ManaAbilityPayment { .. }
             )
         ),
     };
@@ -8557,11 +8557,6 @@ pub(crate) fn drain_pending_cost_move_resume(
         Some(PendingCostMoveResume::UnlessBouncePayment { .. })
     ) {
         engine_payment_choices::resume_unless_bounce_cost_move(state, events)?
-    } else if matches!(
-        state.pending_cost_move_resume,
-        Some(PendingCostMoveResume::DelveManaPayment { .. })
-    ) {
-        resume_delve_mana_payment(state)
     } else if matches!(
         state.pending_cost_move_resume,
         Some(PendingCostMoveResume::ManaAbilityPayment { .. })
@@ -8911,40 +8906,6 @@ fn drain_pending_deferred_life_cost_resume(
         state.pending_deferred_life_cost_resume = Some(resume_for_restore);
     }
     result
-}
-
-/// CR 702.66a: Finish one Delve payment after its graveyard-to-exile cost move
-/// was delivered or fully replaced. The move's `TrackBySource` delivery tail
-/// records only cards actually delivered to exile; this typed root restores the
-/// exact Delve payment prompt and its one-generic cost reduction without
-/// finalizing the pending cast.
-pub(super) fn resume_delve_mana_payment(state: &mut GameState) -> WaitingFor {
-    let Some(PendingCostMoveResume::DelveManaPayment { player, fuel_id }) =
-        state.pending_cost_move_resume.take()
-    else {
-        unreachable!("delve cost-move resume requires its typed continuation")
-    };
-    // CR 118.3a: The generic-only marker is consumed by the shared mana-payment
-    // finalizer and cannot be pinned or spent on a colored cost.
-    let _ = state.add_mana_to_pool(
-        player,
-        crate::types::mana::ManaUnit::convoke_payment(
-            crate::types::mana::ManaType::Colorless,
-            fuel_id,
-        ),
-    );
-    let convoke_mode = state.pending_cast.as_ref().and_then(|pending| {
-        super::casting::spell_tap_payment_mode_for(
-            state,
-            player,
-            pending.object_id,
-            pending.casting_variant == CastingVariant::Fuse,
-        )
-    });
-    WaitingFor::ManaPayment {
-        player,
-        convoke_mode: convoke_mode.or(Some(ConvokeMode::Delve)),
-    }
 }
 
 /// Decision emitted by the auto-pass loop's per-iteration check.
@@ -13642,7 +13603,7 @@ fn apply_non_priority_pass_action(
                 object_id,
                 mana_type,
             },
-        ) if state.objects.get(&object_id).is_some_and(|object| object.is_delve_eligible(*player))
+        ) if state.is_delve_selectable(*player, object_id)
             && state.pending_cast.as_ref().is_some_and(|pending| {
                 super::casting::spell_has_delve_payment_for(
                     state,
@@ -13657,40 +13618,30 @@ fn apply_non_priority_pass_action(
                     "Delve can only pay generic mana".to_string(),
                 ));
             }
-            let graveyard_before: Vec<ObjectId> = state
-                .players
-                .iter()
-                .find(|candidate| candidate.id == player)
-                .map(|candidate| candidate.graveyard.iter().copied().collect())
-                .unwrap_or_default();
+            // CR 601.2h: the card stays in the graveyard; it is exiled when the
+            // total cost is paid. The marker stands in for the generic mana it pays.
             let pending = state.pending_cast.as_mut().ok_or_else(|| {
                 EngineError::InvalidAction("No pending cast for delve".to_string())
             })?;
-            let spell_id = pending.object_id;
-            pending
-                .delve
-                .get_or_insert_with(|| crate::types::game_state::DelvePayments {
-                    player,
-                    graveyard_before,
-                    cards: Vec::new(),
-                })
-                .cards
-                .push(object_id);
-            state.pending_cost_move_resume = Some(PendingCostMoveResume::DelveManaPayment {
+            pending.delved_cards.push(object_id);
+            let _ = state.add_mana_to_pool(
                 player,
-                fuel_id: object_id,
+                crate::types::mana::ManaUnit::convoke_payment(
+                    crate::types::mana::ManaType::Colorless,
+                    object_id,
+                ),
+            );
+            let convoke_mode = state.pending_cast.as_ref().and_then(|pending| {
+                super::casting::spell_tap_payment_mode_for(
+                    state,
+                    player,
+                    pending.object_id,
+                    pending.casting_variant == CastingVariant::Fuse,
+                )
             });
-            match zone_pipeline::move_object(
-                state,
-                ZoneMoveRequest::cost(object_id, Zone::Exile, spell_id)
-                    .track_exiled_by_source(),
-                &mut events,
-            ) {
-                ZoneMoveResult::Done => resume_delve_mana_payment(state),
-                ZoneMoveResult::NeedsChoice(_) => state.waiting_for.clone(),
-                ZoneMoveResult::NeedsAuraAttachmentChoice => {
-                    unreachable!("a delve cost move to exile cannot require an Aura attachment")
-                }
+            WaitingFor::ManaPayment {
+                player,
+                convoke_mode: convoke_mode.or(Some(ConvokeMode::Delve)),
             }
         }
         // CR 702.51a / Waterbend: Tap a creature or artifact to pay mana.
@@ -15432,17 +15383,32 @@ fn apply_non_priority_pass_action(
                     // `DistributeAmong` action would then fall through to the
                     // resolution-time continuation branch below instead of being cleanly
                     // rejected.
+                    let mut pending = pending;
                     let pending_for_restore = pending.clone();
-                    let ability = pending.ability.clone();
-                    let cost = pending.cost.clone();
-                    match casting_costs::finish_pending_cast_cost_or_pay(
+                    // CR 601.2h + CR 702.66a: the delve exile is paid with the rest of the
+                    // total cost, after the division is announced.
+                    let paid = casting_costs::pay_delve_after_distribution(
                         state,
                         p,
-                        *pending,
-                        *ability,
-                        cost,
+                        &mut pending,
                         &mut events,
-                    ) {
+                    )
+                    .and_then(|parked| match parked {
+                        Some(waiting_for) => Ok(waiting_for),
+                        None => {
+                            let ability = pending.ability.clone();
+                            let cost = pending.cost.clone();
+                            casting_costs::finish_pending_cast_cost_or_pay(
+                                state,
+                                p,
+                                *pending,
+                                *ability,
+                                cost,
+                                &mut events,
+                            )
+                        }
+                    });
+                    match paid {
                         Ok(waiting_for) => waiting_for,
                         Err(err) => {
                             state.pending_cast = Some(pending_for_restore);
@@ -26021,7 +25987,7 @@ mod cost_move_drain_priority_boundary_tests {
 
     /// `engine_payment_choices::resume_counter_addition_unless_payment` maps
     /// `CostMoveDrainBoundary::PriorityBoundary` to `unreachable!`, and nothing but
-    /// this eligibility table makes that true: it admits only `DelveManaPayment` and
+    /// this eligibility table makes that true: it admits only a Delve-commit `Cast` and
     /// `ManaAbilityPayment` at that boundary. Nothing else in the crate pinned that
     /// premise, so widening the table would leave the suite green and abort a live
     /// session instead.

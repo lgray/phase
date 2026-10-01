@@ -18,10 +18,11 @@ use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActivationResidual, ActivationTargetSelection, AssistState, CastOccurrence, CastPaymentMode,
     CastingPermissionIndex, CastingVariant, ConvokeMode, CostResume, CounterCostChoice,
-    CounterRemoveChoice, DeferredSacrificeSelection, DistributionUnit, GameState,
-    ManaAbilityCostParent, ManaAbilityResume, PayCostKind, PendingCast, PendingCostMoveCompletion,
-    PendingCostMoveResume, PendingDiscardForCostResume, PendingSacrificeCostCompletion,
-    SpellCostSource, StackEntry, StackEntryKind, StackPaidSnapshot, WaitingFor,
+    CounterRemoveChoice, DeferredSacrificeSelection, DistributionUnit, FinalizePrePaymentChecks,
+    GameState, ManaAbilityCostParent, ManaAbilityResume, PayCostKind, PendingCast,
+    PendingCostMoveCompletion, PendingCostMoveResume, PendingDiscardForCostResume,
+    PendingSacrificeCostCompletion, SpellCostSource, StackEntry, StackEntryKind, StackPaidSnapshot,
+    WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId, ObjectIncarnationRef};
 use crate::types::keywords::{GiftKind, Keyword};
@@ -2517,6 +2518,66 @@ fn park_cost_payment_triggers_if_paused(
     }
 }
 
+/// CR 601.2h + CR 616.1: Move `chosen[start_at_index..]` through the zone pipeline as
+/// cost moves. A move that parks for a replacement choice leaves the typed `Cast` root
+/// holding `pending` and `completion`, parks the span's already-raised cost triggers,
+/// and returns the live prompt; `None` means every move settled.
+#[allow(clippy::too_many_arguments)]
+fn move_cost_objects(
+    state: &mut GameState,
+    player: PlayerId,
+    pending: &PendingCast,
+    chosen: &[ObjectId],
+    start_at_index: usize,
+    destination: Zone,
+    completion: &PendingCostMoveCompletion,
+    cost_event_start: usize,
+    events: &mut Vec<GameEvent>,
+) -> Option<WaitingFor> {
+    for (index, &object_id) in chosen.iter().enumerate().skip(start_at_index) {
+        let mut request = ZoneMoveRequest::cost(object_id, destination, pending.object_id);
+        // CR 406.6: the delve exile is the casting spell's own cost, so a delivered
+        // card is linked to that spell.
+        if matches!(
+            completion,
+            PendingCostMoveCompletion::FinalizeDelvedCast { .. }
+        ) {
+            request = request.track_exiled_by_source();
+        }
+        match zone_pipeline::move_object(state, request, events) {
+            ZoneMoveResult::Done => {}
+            ZoneMoveResult::NeedsChoice(choice_player) => {
+                state.pending_cost_move_resume = Some(PendingCostMoveResume::Cast {
+                    player,
+                    pending: Some(Box::new(pending.clone())),
+                    chosen: chosen.to_vec(),
+                    paused_at_index: index,
+                    destination,
+                    completion: completion.clone(),
+                });
+                // A delivered move can surface its own post-effect prompt; only a live
+                // CR 616.1 ordering choice is synthesized here.
+                if state.pending_replacement.is_some() {
+                    super::casting::pause_cost_payment_for_replacement_choice(state, choice_player);
+                }
+                let waiting_for = state.waiting_for.clone();
+                park_cost_payment_triggers_if_paused(
+                    state,
+                    events,
+                    cost_event_start,
+                    events.len(),
+                    &waiting_for,
+                );
+                return Some(waiting_for);
+            }
+            ZoneMoveResult::NeedsAuraAttachmentChoice => {
+                unreachable!("a cost move to Hand or Exile cannot require an Aura attachment")
+            }
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish_cost_object_moves(
     state: &mut GameState,
@@ -2530,37 +2591,18 @@ fn finish_cost_object_moves(
     park_events_after_completion: bool,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    for (index, &object_id) in chosen.iter().enumerate().skip(start_at_index) {
-        match zone_pipeline::move_object(
-            state,
-            ZoneMoveRequest::cost(object_id, destination, pending.object_id),
-            events,
-        ) {
-            ZoneMoveResult::Done => {}
-            ZoneMoveResult::NeedsChoice(choice_player) => {
-                state.pending_cost_move_resume = Some(PendingCostMoveResume::Cast {
-                    player,
-                    pending: Some(Box::new(pending)),
-                    chosen,
-                    paused_at_index: index,
-                    destination,
-                    completion,
-                });
-                super::casting::pause_cost_payment_for_replacement_choice(state, choice_player);
-                let waiting_for = state.waiting_for.clone();
-                park_cost_payment_triggers_if_paused(
-                    state,
-                    events,
-                    cost_event_start,
-                    events.len(),
-                    &waiting_for,
-                );
-                return Ok(waiting_for);
-            }
-            ZoneMoveResult::NeedsAuraAttachmentChoice => {
-                unreachable!("a cost move to Hand or Exile cannot require an Aura attachment")
-            }
-        }
+    if let Some(waiting_for) = move_cost_objects(
+        state,
+        player,
+        &pending,
+        &chosen,
+        start_at_index,
+        destination,
+        &completion,
+        cost_event_start,
+        events,
+    ) {
+        return Ok(waiting_for);
     }
 
     // CR 400.7j + CR 400.7 + CR 608.2k + CR 608.2h: Every cost object move above is now
@@ -2672,6 +2714,34 @@ fn finish_cost_object_moves(
                 }),
                 Some(actual_mana_spent),
                 ReturnedCreatureCostMove::Delivered,
+                Some(&deferred_life_resume_pending),
+                events,
+            )?
+        }
+        PendingCostMoveCompletion::FinalizeDelvedCast {
+            phyrexian_choices,
+            pre_payment_checks,
+        } => {
+            let actual_mana_spent = pending
+                .prepaid_actual_mana_spent
+                .unwrap_or_else(|| recorded_mana_spent_to_cast(state, pending.object_id));
+            let deferred_life_resume_pending = pending.clone();
+            finalize_cast_with_phyrexian_choices_inner(
+                state,
+                player,
+                pending.object_id,
+                pending.card_id,
+                *pending.ability,
+                &pending.cost,
+                pending.casting_variant,
+                pending.casting_permission_index,
+                pending.cast_timing_permission,
+                pending.origin_zone,
+                phyrexian_choices.as_deref(),
+                None,
+                pre_payment_checks.map(|checks| *checks),
+                Some(actual_mana_spent),
+                ReturnedCreatureCostMove::Pending,
                 Some(&deferred_life_resume_pending),
                 events,
             )?
@@ -3232,6 +3302,103 @@ fn pay_deferred_spell_sacrifices_at_commit(
         &crate::game::zones::departed_subset(state, &departed_ids),
     );
     Ok(Some((cost_event_start, events.len())))
+}
+
+/// CR 601.2h: a delve selection is payable only while each card is still in its
+/// owner's graveyard; a mana ability may have exiled one since it was selected.
+fn validate_delve_selection_at_commit(
+    state: &GameState,
+    player: PlayerId,
+    pending: &PendingCast,
+) -> Result<(), EngineError> {
+    if pending.delved_cards.iter().all(|id| {
+        state
+            .objects
+            .get(id)
+            .is_some_and(|obj| obj.is_delve_eligible(player))
+    }) {
+        Ok(())
+    } else {
+        Err(EngineError::ActionNotAllowed(
+            "A delved card is no longer in your graveyard".to_string(),
+        ))
+    }
+}
+
+/// CR 702.66a: drop the markers no generic mana consumed and narrow
+/// `pending.delved_cards` to the cards whose marker paid.
+fn settle_delve_markers(
+    state: &mut GameState,
+    player: PlayerId,
+    pending: &mut PendingCast,
+) -> Result<(), EngineError> {
+    if pending.delved_cards.is_empty() {
+        return Ok(());
+    }
+    let selected = std::mem::take(&mut pending.delved_cards);
+    let Some(pool) = state.players.iter_mut().find(|p| p.id == player) else {
+        return Ok(());
+    };
+    let unspent: Vec<ObjectId> = pool
+        .mana_pool
+        .mana
+        .iter()
+        .filter(|unit| unit.is_convoke_payment() && selected.contains(&unit.source_id))
+        .map(|unit| unit.source_id)
+        .collect();
+    pool.mana_pool
+        .mana
+        .retain(|unit| !(unit.is_convoke_payment() && unspent.contains(&unit.source_id)));
+    pending.delved_cards = selected
+        .into_iter()
+        .filter(|id| !unspent.contains(id))
+        .collect();
+    validate_delve_selection_at_commit(state, player, pending)
+}
+
+/// CR 601.2h: the post-payment division is announced before the total cost is
+/// paid, so the delve exile runs when that division completes.
+pub(super) fn pay_delve_after_distribution(
+    state: &mut GameState,
+    player: PlayerId,
+    pending: &mut PendingCast,
+    events: &mut Vec<GameEvent>,
+) -> Result<Option<WaitingFor>, EngineError> {
+    let spent = recorded_mana_spent_to_cast(state, pending.object_id);
+    let completion = PendingCostMoveCompletion::FinalizeDelvedCast {
+        phyrexian_choices: None,
+        pre_payment_checks: None,
+    };
+    pay_delve_at_commit(state, player, pending, spent, completion, events)
+}
+
+/// CR 601.2h + CR 702.66a: pay the delve part of the total cost. Each card whose
+/// marker the mana payment consumed is exiled through the cost-move authority; an
+/// exile that parks leaves a `Cast` root that re-enters the finalizer.
+fn pay_delve_at_commit(
+    state: &mut GameState,
+    player: PlayerId,
+    pending: &mut PendingCast,
+    actual_mana_spent: u32,
+    completion: PendingCostMoveCompletion,
+    events: &mut Vec<GameEvent>,
+) -> Result<Option<WaitingFor>, EngineError> {
+    settle_delve_markers(state, player, pending)?;
+    let spent = std::mem::take(&mut pending.delved_cards);
+    let mut parked = pending.clone();
+    parked.cost = ManaCost::NoCost;
+    parked.prepaid_actual_mana_spent = Some(actual_mana_spent);
+    Ok(move_cost_objects(
+        state,
+        player,
+        &parked,
+        &spent,
+        0,
+        Zone::Exile,
+        &completion,
+        events.len(),
+        events,
+    ))
 }
 
 fn park_deferred_cost_triggers_if_paused(
@@ -11253,15 +11420,6 @@ pub(super) fn pay_and_push_adventure(
 ///
 /// Shared by `pay_and_push_adventure` (normal casting) and the
 /// `(ManaPayment, PassPriority)` handler (after interactive mana payment).
-#[derive(Clone, Debug)]
-struct FinalizePrePaymentChecks {
-    early_waiting_for: Option<WaitingFor>,
-    cascade_cast_transformed: bool,
-    resolution_success_waiting_for: Option<WaitingFor>,
-    cast_this_way_etb_counter: Option<crate::types::counter::CounterType>,
-    cast_this_way_enters_mods: Vec<crate::types::ability::ContinuousModification>,
-}
-
 #[allow(clippy::too_many_arguments)]
 fn finalize_cast_pre_payment_checks(
     state: &mut GameState,
@@ -11595,6 +11753,35 @@ fn finalize_cast_with_phyrexian_choices_inner(
                     });
                 return Ok(state.waiting_for.clone());
             }
+        }
+    }
+
+    // CR 601.2h + CR 702.66a: the delve exile is part of the same total-cost payment.
+    if let Some(mut pending) = deferred_life_resume_pending
+        .filter(|pending| !pending.delved_cards.is_empty())
+        .cloned()
+    {
+        let actual_mana_spent = prepaid_actual_mana_spent
+            .unwrap_or_else(|| recorded_mana_spent_to_cast(state, object_id));
+        let completion = PendingCostMoveCompletion::FinalizeDelvedCast {
+            phyrexian_choices: phyrexian_choices.map(<[_]>::to_vec),
+            pre_payment_checks: Some(Box::new(FinalizePrePaymentChecks {
+                early_waiting_for: None,
+                cascade_cast_transformed,
+                resolution_success_waiting_for: resolution_success_waiting_for.clone(),
+                cast_this_way_etb_counter: cast_this_way_etb_counter.clone(),
+                cast_this_way_enters_mods: cast_this_way_enters_mods.clone(),
+            })),
+        };
+        if let Some(waiting_for) = pay_delve_at_commit(
+            state,
+            player,
+            &mut pending,
+            actual_mana_spent,
+            completion,
+            events,
+        )? {
+            return Ok(waiting_for);
         }
     }
 
@@ -15229,6 +15416,7 @@ fn finalize_mana_payment_with_resume(
             return Ok(waiting_for);
         }
 
+        validate_delve_selection_at_commit(state, player, &pending)?;
         // CR 601.2f: snapshot the pool BEFORE `pay_spell_mana_before_deferred_sacrifice`
         // spends it. The distribute branch below infers X from `pool_before - pool_after`,
         // and on the deferred-sacrifice route the mana is already gone by then, so reading
@@ -15448,6 +15636,7 @@ fn finalize_mana_payment_with_resume(
                 .ability
                 .chosen_x
                 .unwrap_or_else(|| total_paid.saturating_sub(non_x_cost));
+            settle_delve_markers(state, player, &mut pending)?;
 
             // CR 601.2c + CR 601.2d: Divide only among the distributing effect's own targets.
             let targets = super::ability_utils::distribution_targets(&pending.ability);
@@ -15463,7 +15652,7 @@ fn finalize_mana_payment_with_resume(
             pending_resumed.casting_permission_index = pending.casting_permission_index;
             pending_resumed.origin_zone = pending.origin_zone;
             pending_resumed.convoked_creatures = pending.convoked_creatures.clone();
-            pending_resumed.delve = pending.delve.clone();
+            pending_resumed.delved_cards = pending.delved_cards.clone();
 
             // CR 601.2d: "divided evenly, rounded down" — EvenSplitDamage bypasses
             // interactive distribution. Remainder is intentionally lost per Oracle text.
@@ -15741,6 +15930,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
             return Ok(waiting_for);
         }
 
+        validate_delve_selection_at_commit(state, player, &pending)?;
         // CR 601.2f: snapshot the pool BEFORE `pay_spell_mana_before_deferred_sacrifice`
         // spends it. The distribute branch below infers X from `pool_before - pool_after`,
         // and on the deferred-sacrifice route the mana is already gone by then, so reading
@@ -15941,6 +16131,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
                 .ability
                 .chosen_x
                 .unwrap_or_else(|| total_paid.saturating_sub(non_x_cost));
+            settle_delve_markers(state, player, &mut pending)?;
 
             // CR 601.2c + CR 601.2d: Divide only among the distributing effect's own targets.
             let targets = super::ability_utils::distribution_targets(&pending.ability);
@@ -15954,7 +16145,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
             pending_resumed.casting_permission_index = pending.casting_permission_index;
             pending_resumed.origin_zone = pending.origin_zone;
             pending_resumed.convoked_creatures = pending.convoked_creatures.clone();
-            pending_resumed.delve = pending.delve.clone();
+            pending_resumed.delved_cards = pending.delved_cards.clone();
 
             if unit == DistributionUnit::EvenSplitDamage && !targets.is_empty() {
                 let num = targets.len() as u32;
@@ -17252,7 +17443,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -23541,7 +23732,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -23684,7 +23875,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -23796,7 +23987,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -23897,7 +24088,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -24031,7 +24222,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
-            delve: None,
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,

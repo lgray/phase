@@ -22185,17 +22185,16 @@ fn cleanup_unused_convoke_payments(
         obj.convoked_creatures = spent_convoked_sources;
     }
 
-    for object_id in unused_sources {
-        if let Some(obj) = state.objects.get_mut(&object_id) {
+    for object_id in &unused_sources {
+        if let Some(obj) = state.objects.get_mut(object_id) {
             obj.tapped = false;
         }
     }
 
     if let Some(player_data) = state.players.iter_mut().find(|p| p.id == player) {
-        player_data
-            .mana_pool
-            .mana
-            .retain(|unit| !unit.is_convoke_payment());
+        player_data.mana_pool.mana.retain(|unit| {
+            !(unit.is_convoke_payment() && unused_sources.contains(&unit.source_id))
+        });
     }
 }
 
@@ -27485,42 +27484,13 @@ pub fn handle_cancel_cast(
             obj.tapped = false;
         }
     }
-    // CR 733.1: undo each delve payment; the graveyard is then put back in its pre-cast order (CR 404.2).
-    let delve_cards: &[ObjectId] = pending
-        .delve
-        .as_ref()
-        .map_or(&[], |delve| delve.cards.as_slice());
-    if let Some(delve) = &pending.delve {
-        for &card in &delve.cards {
-            match state.objects.get(&card).map(|obj| obj.zone) {
-                // CR 733.1: actions that moved cards to a library are not reversed.
-                None | Some(Zone::Library | Zone::Graveyard) => {}
-                Some(_) => super::zones::restore_after_rollback(state, card, Zone::Graveyard),
-            }
-        }
-        super::zones::restore_graveyard_order(state, delve.player, &delve.graveyard_before);
-    }
-    if !delve_cards.is_empty() {
-        state.exile_links.retain(|link| {
-            !(link.source_id == pending.object_id && delve_cards.contains(&link.exiled_id))
-        });
-        if let Some(exiled) = state
-            .cards_exiled_with_source_this_turn
-            .get_mut(&pending.object_id)
-        {
-            exiled.retain(|id| !delve_cards.contains(id));
-            if exiled.is_empty() {
-                state
-                    .cards_exiled_with_source_this_turn
-                    .remove(&pending.object_id);
-            }
-        }
-    }
+    // CR 733.1: a cancel drops the cast's delve and convoke markers; a terminal
+    // cancel passes a fresh `PendingCast`, so drop them all.
     for player in &mut state.players {
-        player.mana_pool.mana.retain(|unit| {
-            !(unit.is_convoke_payment() && convoked_creatures.contains(&unit.source_id))
-                && !(unit.is_convoke_payment() && delve_cards.contains(&unit.source_id))
-        });
+        player
+            .mana_pool
+            .mana
+            .retain(|unit| !unit.is_convoke_payment());
     }
     if let Some(obj) = state.objects.get_mut(&pending.object_id) {
         obj.convoked_creatures.clear();
