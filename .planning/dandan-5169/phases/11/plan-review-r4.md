@@ -1,0 +1,25 @@
+# Phase 11 plan review, round 4 (phase-plan mode)
+
+Reviewer model: claude-sonnet-5-5. Plan reviewed: `phases/11/plan.md` (rev 4), whole plan, against the charter Phase 11 entry and code at HEAD. No cargo run; every claim below rests on a read, grep, or a python walk over `client/public/card-data.json`.
+
+## Verdict: ACCEPT. 0 blocking findings. Residual (3.4 (6) / V9(d)) adjudicated as an acceptable residual.
+
+## r3 closure check
+
+- r3 F1 (unconditional performer on the generic Dig kept map): closed. 3.2 adds `ZoneMoveRequest::hand_taker` (gates on the request's own `to`, which exists as `ZoneMoveRequest.to`, `zone_pipeline.rs:197`); 3.4 uses it at the kept map, `dig.rs` put-all and `seek.rs`; plain `.performed_by` only where the destination is constant Hand (draw, `draw_n`, explore); step 5 re-greps that no `.performed_by` sits on a destination-generic request. V4b (real Gonti, Dig to Exile) asserts `exiled_by` equals the base value measured in step 1, in Dandan and Standard, paired with V4's Hand rebind; M6 deletes the gate and is red (`Some(P1)` vs base `None`). Corpus count re-measured: 20 cards / 22 Dig-to-Exile effects (both numbers in circulation are right).
+- r3 text note (V6 mana): closed; the V6 row now reads draw on an earlier turn, cast with two of four Islands, two kept for Unsubstantiate.
+
+## Residual adjudication: a Hand-requested, taker-carrying move redirected to Exile by a `Moved` replacement records `exiled_by = Some(taker)`
+
+Verdict: acceptable residual. No real card behavior changes. Evidence:
+
+1. Reachability in the corpus is zero. Python walk over `card-data.json` for every `Moved` replacement with `destination_zone` Hand or absent whose definition mentions exile: 0 hits. All 72 `Moved` definitions that exile have `destination_zone: Graveyard` (Rest in Peace class, "would die"), which a Hand-bound move never matches. Oracle-text scan for "would (be) put/return/draw ... hand ... instead": 5 cards (Blood Scrivener, Forbidden Crypt, Phial of Galadriel, The Grand Calcutron, Words of Wind), none redirects to Exile.
+2. The cards that do exile "instead of drawing" (Uba Mask, Asmodeus the Archfiend, Eruth, Shared Fate) are `event: Draw` / `draw_scope: IndividualDraw` replacements. They fire at the Draw stage before `ZoneMoveRequest::draw` is built (`zone_pipeline.rs` Draw-cause arm seeds `applied` from that outer pass), and their exile runs through their own producer (`ExileTop` / `ChangeZone` effect: `exile_top.rs:113` already supplies `.performed_by(actor)`). So these never reach the seam's Hand-requested-then-redirected case; their `exiled_by` is unchanged by this phase.
+3. Base value: for draw, dig kept map, seek and explore the base request has `performed_by = None`, so a redirected card ends with `exiled_by == None` at HEAD. For `ChangeZone` (the only Hand producer that already supplies a performer, `Some(ability.controller)` at four sites, unedited) a Hand-requested move redirected to Exile ALREADY records `Some(controller)` at HEAD through the same arm, so the residual is only the draw/dig/seek/explore subset, and it equals the behavior ChangeZone already has.
+4. Inert even if reached: `exiled_by` is read for behavior only through `own_exiles_of` (`casting.rs:4996-5002`), which filters a pool built from the source-keyed exile links / `cards_exiled_with_source_this_turn`; a redirected draw/dig card carries no `track_exiled_by_source`, so it is not in any such pool. The other reader is state equality.
+5. CR: CR 614.6 (grepped): the replaced event never happens, a modified event occurs instead; CR 406.6 / 607.2a/b tie "exiled with" to the source's own exile instruction or replacement. No CR text names an "exiling player" distinct from the instruction's performer; the engine's `record_exiling_player` doc (`exile_links.rs:420`) defines it as the resolving instruction's acting player, which for a modified event is the performer of the replaced instruction. The recorded value is consistent with that definition.
+6. A gate to remove it would need a second carrier or a requested-vs-final flag on the pending request (serialized shape change), disproportionate for an unreachable case. Pinning the value in V9(d) so a later gate change is a visible diff is sound.
+
+## Whole-plan pass (no new defects)
+
+Re-read: carrier plumbing (draw arm copies `performed_by`, `zone_pipeline.rs:957-962`; `PendingDrawDelivery.player` exists, `game_state.rs:23266`, so `pending.player` is the drawer); seam gates (axis, final `to`, origin both-seats-same-container, taker != owner); install/replay design and validator; Attraction-redirect filter; producer table vs the charter's stated limit; Sizing arithmetic (3+3+1+2+1+3+7+2 = 22; 19 without the three test paths; T1 fails, T2 fires, no decomposition); protocol bump files (7) and numbering after Phase 5; V1-V11 each have revert-failing mutation plus paired positive; unestablished items are labelled as executor probes. No unmet charter claim, no out-of-scope edit beyond the orchestrator-admitted `engine_resolution_choices.rs` kept map.

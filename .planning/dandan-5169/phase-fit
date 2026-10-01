@@ -113,3 +113,5 @@
   5. Prediction: next round behavior count 0 (< 1). Prior predictions this loop: none.
 - USER DECISION (direct, AskUserQuestion): approve this Phase 11 expansion and future loop-limit continuations when each finding is narrow with a concrete fix; log each in phase-fit.
 - Phase 4b exec r4 (chain intra-SCC members in rank order): red/green shown; 31320/31320 + clippy on exact committed bytes; candidate 91ad0dff. Impl review r3 (fresh): ACCEPT, 0 findings (200k-case python fuzz). PHASE 4b ACCEPTED (impl loop: r1 1, r2 1, r3 0).
+- Phase 5 scope frozen: 31 paths (phases/5/scope.nul; regenerated data files excluded). Executor r1 dispatched from 91ad0dff. Phase 11 plan revision r3 (user-approved continuation) dispatched.
+- Phase 11 plan r4 review: ACCEPT, 0 findings; prediction (0 behavior) MET. Residual (Hand move redirected to Exile records exiled_by=taker) measured inert: 0 corpus cards redirect a Hand-bound move to Exile; matches ChangeZone's existing behavior; CR 614.6. Phase 11 plan CLEAN.
