@@ -1,9 +1,8 @@
    Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 12m 57s
+    Finished `test` profile [unoptimized] target(s) in 6m 26s
 ────────────
- Nextest run ID 5d8fd758-3579-465c-9269-c8f31438753d with nextest profile: default
-    Starting 1 test across 1 binary (22658 tests skipped)
-        PASS [   0.028s] (1/1) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+ Nextest run ID a160ea15-e3c4-4540-9840-ecdc121829f1 with nextest profile: default
+    Starting 1 test across 1 binary (8591 tests skipped)
+        PASS [   2.795s] (1/1) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
 ────────────
-     Summary [   0.056s] 1 test run: 1 passed, 22658 skipped
-DONE
+     Summary [   2.807s] 1 test run: 1 passed, 8591 skipped

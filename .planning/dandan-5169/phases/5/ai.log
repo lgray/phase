@@ -1,0 +1,61 @@
+   Compiling libc v0.2.186
+   Compiling tracing-core v0.1.36
+   Compiling regex-syntax v0.8.10
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.9.5
+   Compiling rand_chacha v0.9.0
+   Compiling tracing v0.1.44
+   Compiling regex-automata v0.4.14
+   Compiling lazy_static v1.5.0
+   Compiling log v0.4.29
+   Compiling tracing-log v0.2.0
+   Compiling sharded-slab v0.1.7
+   Compiling libmimalloc-sys v0.1.49
+   Compiling rand v0.9.4
+   Compiling matchers v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+   Compiling tracing-subscriber v0.3.23
+   Compiling mimalloc v0.1.52
+   Compiling phase-ai v0.97.0 (/home/user/phase/crates/phase-ai)
+    Finished `test` profile [unoptimized] target(s) in 5m 56s
+────────────
+ Nextest run ID 570b8dbb-b1bb-4390-b0a6-6abfe7f9b37a with nextest profile: default
+    Starting 34 tests across 26 binaries (2824 tests skipped)
+        PASS [   0.016s] ( 1/34) phase-ai features::tests::devotion::detects_god_gate_and_threshold
+        PASS [   0.017s] ( 2/34) phase-ai features::tests::devotion::chosen_color_payoff_uses_deck_densest_color
+        PASS [   0.019s] ( 3/34) phase-ai features::tests::devotion::detects_dynamic_pt_payoff
+        PASS [   0.020s] ( 4/34) phase-ai config::tests::policy_penalties_load_pre_devotion_artifact
+        PASS [   0.015s] ( 5/34) phase-ai features::tests::devotion::distinct_thresholds_are_all_retained
+        PASS [   0.018s] ( 6/34) phase-ai features::tests::devotion::detects_scaling_drain_payoff
+        PASS [   0.015s] ( 7/34) phase-ai features::tests::devotion::dual_color_god_xenagos_red_green
+        PASS [   0.016s] ( 8/34) phase-ai features::tests::devotion::dual_color_god_retains_the_whole_color_set
+        PASS [   0.013s] ( 9/34) phase-ai features::tests::devotion::hybrid_pips_count_once_for_a_combined_set
+        PASS [   0.017s] (10/34) phase-ai features::tests::devotion::empty_deck_produces_defaults
+        PASS [   0.014s] (11/34) phase-ai features::tests::devotion::lone_payoff_in_offcolor_deck_below_floor
+        PASS [   0.018s] (12/34) phase-ai features::tests::devotion::instant_pips_do_not_count_toward_devotion
+        PASS [   0.015s] (13/34) phase-ai features::tests::devotion::nykthos_mana_production_is_a_payoff
+        PASS [   0.015s] (14/34) phase-ai features::tests::devotion::pips_without_payoff_collapse
+        PASS [   0.018s] (15/34) phase-ai features::tests::devotion::mono_black_devotion_hits_calibration_floor
+        PASS [   0.019s] (16/34) phase-ai features::tests::devotion::primary_color_follows_pip_density_among_payoff_colors
+        PASS [   0.013s] (17/34) phase-ai features::tests::devotion::vanilla_deck_not_registered
+        PASS [   0.016s] (18/34) phase-ai policies::tests::devotion::activation_opts_in_above_floor
+        PASS [   0.016s] (19/34) phase-ai policies::tests::devotion::activation_opts_out_below_floor
+        PASS [   0.015s] (20/34) phase-ai policies::tests::devotion::verdict_below_threshold_without_crossing_is_pip_progress
+        PASS [   0.015s] (21/34) phase-ai policies::tests::devotion::verdict_crossing_two_thresholds_activates_both
+        PASS [   0.015s] (22/34) phase-ai policies::tests::devotion::verdict_dual_color_god_crosses_on_combined_devotion
+        PASS [   0.019s] (23/34) phase-ai policies::tests::devotion::verdict_crossing_lower_threshold_activates_that_god
+        PASS [   0.016s] (24/34) phase-ai policies::tests::devotion::verdict_dual_color_god_xenagos_red_green
+        PASS [   0.014s] (25/34) phase-ai policies::tests::devotion::verdict_god_activation_when_cast_crosses_threshold
+        PASS [   0.015s] (26/34) phase-ai policies::tests::devotion::verdict_off_color_cast_is_neutral
+        PASS [   0.018s] (27/34) phase-ai policies::tests::devotion::verdict_instant_is_neutral
+        PASS [   0.015s] (28/34) phase-ai policies::tests::devotion::verdict_scores_pips_added_when_no_threshold
+        PASS [   0.014s] (29/34) phase-ai policies::x_reference::pump_x_tests::pump_all_references_x
+        PASS [   0.012s] (30/34) phase-ai policies::x_reference::pump_x_tests::pump_with_negated_quantity_x_references_x
+        PASS [   0.012s] (31/34) phase-ai policies::x_reference::pump_x_tests::pump_with_non_x_variable_does_not_reference_x
+        PASS [   0.013s] (32/34) phase-ai policies::x_reference::pump_x_tests::pump_with_positive_x_references_x
+        PASS [   0.013s] (33/34) phase-ai policies::x_reference::tests::previous_amount_detection_carries_its_rationale_without_a_cr_tag
+        PASS [   0.049s] (34/34) phase-ai policies::x_reference::pump_x_tests::pump_with_negative_x_references_x
+────────────
+     Summary [   0.167s] 34 tests run: 34 passed, 2824 skipped

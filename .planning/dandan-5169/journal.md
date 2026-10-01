@@ -41,3 +41,6 @@
 ## J7 PARKED (2026-10-01 ~14:00Z) — USER park order via team-lead
 - Phase 5 executor stopped mid-verification (a full suite still remained, more than 30 min). Its uncommitted edit set was saved as wip/phase5-on-91ad0dff88426ed6d983e8e060d67cd0a030c926.patch (28 tracked files plus 3 new files) and is unverified.
 - feat/dandan-format stays at 91ad0dff (Phase 4b accepted). Plans for 6–16 are clean; the Phase 17 plan is written but not reviewed. The charter scope-addition batch for 12/14/16/17 is pending (USER-authorized). RESUME.md is at the dandan-run-state root.
+
+## J8 Phase 5 finished, PARKED (USER park amendment)
+- Phase 5 resumed from the stopped executor's tree, completed, reviewed (r1 approve + text/test fix, completion gate fix for check-parser-combinators, r2 approve) and accepted at 772c18d1. feat/dandan-format pushed. No WIP patch remains.

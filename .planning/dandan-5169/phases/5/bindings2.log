@@ -1,0 +1,3 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `dev` profile [unoptimized] target(s) in 4m 48s
+     Running `target/debug/interaction-bindings --check`

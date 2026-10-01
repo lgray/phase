@@ -1,0 +1,23 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 13m 39s
+────────────
+ Nextest run ID 379fa46f-c5ff-4b3d-b995-08600cff4efd with nextest profile: default
+    Starting 2 tests across 8 binaries (31364 tests skipped)
+       START [         ] (1/2) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+
+running 1 test
+test parser::oracle::tests::render_net_effect_carrier_census ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22684 filtered out; finished in 0.05s
+
+        PASS [   0.068s] (1/2) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+       START [         ] (2/2) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+
+running 1 test
+test text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8590 filtered out; finished in 26.82s
+
+        PASS [  26.902s] (2/2) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+────────────
+     Summary [  27.008s] 2 tests run: 2 passed, 31364 skipped

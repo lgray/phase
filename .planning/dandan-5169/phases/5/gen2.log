@@ -1,0 +1,56 @@
+=== Card Data Generation ===
+Ensuring MTGJSON token set files...
+Token sets: downloaded 0, skipped 336, failed 0
+Generating card data from MTGJSON via Oracle text parser...
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `tool` profile [optimized] target(s) in 14m 50s
+Generating token preset catalog from MTGJSON set files...
+2917 generated presets; 0 overlay rows applied (0 shadowed), 0 superseded
+Generated 2917 token presets at crates/engine/data/known-tokens.toml.tmp.LcxoNb
+Skipped write of 408 creature subtypes to crates/engine/data/oracle-subtypes.json (unchanged)
+[2m2026-10-01T14:11:26.556417Z[0m [32m INFO[0m [2moracle_gen[0m[2m:[0m Scanned 336 set files, 28369 cards with rarity data
+Localized sidecars written: 6 locales (de:30092 es:29286 fr:30083 it:29473 ja:29993 pt:24748)
+Card names written: 35810 names
+Total cards: 35059
+Faces indexed: 35864
+Cards with unimplemented effects: 2794
+Fully implemented: 32265/35059 (92.0%)
+Validating card-data against current engine schema...
+OK: 35864 cards parsed from client/public/card-data.json.tmp
+Promoted client/public/card-data.json and client/public/card-names.json
+Wrote content-addressed client/public/card-data-0c6e10ab508e02d5.json
+Generating card coverage data...
+Wrote parser warning patterns to client/public/parser-warning-patterns.json.tmp
+Coverage: 32068/35864 cards supported (89.4%)
+  brawl legal: 15682/16708 fully supported (93.9%)
+  commander legal: 30623/32950 fully supported (92.9%)
+  duel legal: 30499/32754 fully supported (93.1%)
+  historic legal: 15634/16660 fully supported (93.8%)
+  legacy legal: 30534/32793 fully supported (93.1%)
+  modern legal: 22329/23472 fully supported (95.1%)
+  oathbreaker legal: 30567/32823 fully supported (93.1%)
+  pauper legal: 10739/11017 fully supported (97.5%)
+  paupercommander legal: 10714/11047 fully supported (97.0%)
+  pioneer legal: 15031/15747 fully supported (95.5%)
+  premodern legal: 4947/5383 fully supported (91.9%)
+  standard legal: 5295/5429 fully supported (97.5%)
+  standardbrawl legal: 5310/5444 fully supported (97.5%)
+  timeless legal: 15714/16741 fully supported (93.9%)
+  vintage legal: 30550/32811 fully supported (93.1%)
+
+Parse warnings: 890 warnings across 3 categories
+  ignored-remainder — 2 warnings (2 cards)
+  swallowed-clause — 835 warnings (755 cards)
+  target-fallback — 53 warnings (48 cards)
+Promoted client/public/coverage-data.json, client/public/coverage-summary.json, and client/public/parser-warning-patterns.json
+Generated client/public/card-data-meta.json
+Projected 871 sets to client/public/set-list.json.tmp (125444 bytes)
+Promoted client/public/set-list.json
+Wrote 1381 decks to client/public/decks.json.tmp (3754507 bytes; 735 fully playable, 646 partially playable, 1684 dropped as non-decks (<40 cards), 0 read errors)
+Promoted client/public/decks.json
+Generated client/public/card-data.json (95M, ~35810 cards)
+Generated client/public/card-names.json (672K)
+
+real	16m43.414s
+user	29m33.603s
+sys	1m5.873s

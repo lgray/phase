@@ -11,13 +11,12 @@ All paths below are relative to a checkout root (`$REPO`). No absolute path is a
 | Item | Value |
 |---|---|
 | Run base (`BASE_SHA`) | `b9ba93609631d6d4bfab7169c00a9e57cec58ae0` (upstream/main at run start) |
-| `feat/dandan-format` head | `91ad0dff88426ed6d983e8e060d67cd0a030c926` (Phase 4b accepted) |
-| upstream/main at park | `b2d35b6e` (39 commits past BASE_SHA) |
+| `feat/dandan-format` head | `772c18d1d3b99bac61557f42d790b4eea63efda2` (Phase 5 accepted) |
+| upstream/main at park | `c15470b9` (46 commits past BASE_SHA) |
 
 **Resume step 0:**
-1. Merge upstream/main into `feat/dandan-format`. Never rebase it: the branch is pushed. Re-run the Phase 1–4b checks on the merge.
-2. Re-apply the Phase 5 WIP patch against the head named in its file name.
-3. If upstream touched the same files, re-measure Phase 5's base claims before continuing.
+1. Merge upstream/main into `feat/dandan-format`. Never rebase it: the branch is pushed.
+2. Re-run the accepted phases' checks on the merge: the full `phase-engine` suite, workspace clippy and the gates.
 
 To restore the records into a checkout:
 
@@ -40,7 +39,7 @@ The charter is `.planning/dandan-5169/phase-charter`, revision r5 plus a seam fi
 | 3 | AI force-keep re-gate | ACCEPTED | `06554d0e` |
 | 4 | PREREQ-0 Memory Lapse swallow check | ACCEPTED | `67cd221e` |
 | 4b | Fix-first: CR 613.8b loop-only dependency ordering (defective-reference route) | ACCEPTED | `c7dfc79e`, `695933e5`, `91ad0dff` |
-| 5 | CR 612 text-changing primitive | PLAN CLEAN; IMPLEMENTATION IN PROGRESS (WIP patch, unverified) | `phases/5/plan.md`; `wip/phase5-on-91ad0dff….patch` |
+| 5 | CR 612 text-changing primitive | ACCEPTED | `eccc407e`, `029b93dc`, `772c18d1` |
 | 6 | S2a canonical-seat storage + pool resolver | PLAN CLEAN (amended for the engine_resolution_choices reads; re-reviewed r3) | `phases/6/plan.md` |
 | 7 | S5 best-of-three ceiling | PLAN CLEAN | `phases/7/plan.md` |
 | 8 | S2b-1 read sweep `game/` | PLAN CLEAN | `phases/8/plan.md` |
@@ -59,13 +58,7 @@ Every plan for Phases 6–17 was written against code that does not yet contain 
 ## 3. Exact next steps
 
 1. **Merge upstream** (see §1).
-2. **Phase 5, implementation round 1 (resume).**
-   - From the post-merge head, apply the WIP patch:
-     `git apply --check .planning/dandan-5169/wip/phase5-on-91ad0dff88426ed6d983e8e060d67cd0a030c926.patch`, then `git apply` it.
-   - If the merge touched those files, apply it on `91ad0dff` in a scratch worktree and port the changes by hand.
-   - The patch is an executor's unfinished, unverified edit set. Its last note was "edits: layers.rs intrinsic-ability authority, text_substitution rewiring, and test fixes". Treat it as a starting point. A fresh executor must re-verify everything in `phases/5/plan.md`: red/green, probe gates, workspace clippy, the full `phase-engine` suite, the protocol check, the bindings check, the parser gates and the fixture re-slice report.
-   - Scope is `phases/5/scope.txt` (31 paths).
-   - Commit only after the checks pass. Then run the Step-6 implementation review and the parser-output measurement (regenerate card data and diff `client/public/card-data.json` against a base copy).
+2. **No WIP patch remains.** Phase 5 was finished and accepted before parking.
 3. **Charter revision batch (USER-authorized).** Before Phase 12, run one charter-mode planner plus a whole-charter review that adds:
    - Phase 12: `crates/engine/src/game/elimination.rs` (`prune_mulligan_pending`, compiler-forced plus behaviour), `client/src/adapter/types.ts` (mirror), and the Phase 6 and Phase 11 Dandan integration test files (lone-Mulligan rows need the other seat's Keep).
    - Phase 14: `crates/engine/tests/integration/deterministic_game_state_serde.rs` (test-forced census row).

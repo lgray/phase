@@ -1,0 +1,10 @@
+## clone
+        FAIL [   0.136s] (1/1) phase-engine game::effects::effect::tests::text_word_latch_consumes_the_answer
+    test game::effects::effect::tests::text_word_latch_consumes_the_answer ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22684 filtered out; finished in 0.11s
+     Summary [   0.185s] 1 test run: 0 passed, 1 failed, 31365 skipped
+        FAIL [   0.136s] (1/1) phase-engine game::effects::effect::tests::text_word_latch_consumes_the_answer
+error: test run failed
+## none
+        PASS [   0.021s] (1/1) phase-engine game::effects::effect::tests::text_word_latch_consumes_the_answer
+     Summary [   0.076s] 1 test run: 1 passed, 31365 skipped

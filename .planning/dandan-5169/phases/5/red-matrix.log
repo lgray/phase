@@ -1,0 +1,61 @@
+##### RED=prepass
+        FAIL [   3.037s] (17/35) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        FAIL [   3.133s] (18/35) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        FAIL [   3.160s] (33/35) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        FAIL [   3.191s] (16/35) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        FAIL [   3.200s] (24/35) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        FAIL [   3.251s] (30/35) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        FAIL [   3.252s] (20/35) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        FAIL [   3.269s] (14/35) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        FAIL [   3.273s] (21/35) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        FAIL [   3.318s] (22/35) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        FAIL [   3.344s] (26/35) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        FAIL [   3.402s] (13/35) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        FAIL [   3.442s] (23/35) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        FAIL [   3.501s] (25/35) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+     Summary [  19.401s] 35 tests run: 21 passed, 14 failed, 31330 skipped
+##### RED=restamp
+        FAIL [   3.030s] (28/35) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        FAIL [   3.337s] (35/35) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        FAIL [   3.440s] (34/35) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+     Summary [  19.101s] 35 tests run: 32 passed, 3 failed, 31330 skipped
+##### RED=carrier
+        FAIL [   0.165s] (10/35) phase-engine game::text_substitution::tests::color_word_rewrites_words_but_not_mana_symbols
+        FAIL [   3.392s] (26/35) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+     Summary [  19.315s] 35 tests run: 33 passed, 2 failed, 31330 skipped
+##### RED=escalate
+        FAIL [   3.314s] (22/35) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        FAIL [   3.437s] (33/35) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+     Summary [  19.395s] 35 tests run: 33 passed, 2 failed, 31330 skipped
+##### RED=depends
+        FAIL [   0.149s] ( 7/35) phase-engine game::layers::tests::text_word_substitutions_depend_only_on_one_recipient_and_one_word_class
+        FAIL [   0.151s] ( 8/35) phase-engine game::layers::tests::text_word_chain_orders_by_dependency_not_timestamp
+        FAIL [   3.058s] (12/35) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        FAIL [   3.189s] (13/35) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        FAIL [   3.307s] (14/35) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+     Summary [  18.720s] 35 tests run: 30 passed, 5 failed, 31330 skipped
+##### RED=latch
+        FAIL [   2.947s] (33/35) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        FAIL [   2.986s] (26/35) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        FAIL [   3.001s] (25/35) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        FAIL [   3.010s] (18/35) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        FAIL [   3.017s] (24/35) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        FAIL [   3.035s] (22/35) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        FAIL [   3.048s] (17/35) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        FAIL [   3.053s] (16/35) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        FAIL [   3.127s] (23/35) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        FAIL [   3.138s] (20/35) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        FAIL [   3.143s] (14/35) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        FAIL [   3.143s] (31/35) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        FAIL [   3.165s] (34/35) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        FAIL [   3.179s] (13/35) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        FAIL [   3.335s] (35/35) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+     Summary [  18.537s] 35 tests run: 20 passed, 15 failed, 31330 skipped
+##### RED=clone
+     Summary [  19.203s] 35 tests run: 35 passed, 31330 skipped
+##### RED=parser
+        FAIL [   0.149s] ( 7/35) phase-engine parser::oracle_effect::text_change::tests::keyworded_and_modal_class_members_parse_completely
+        FAIL [   0.189s] ( 8/35) phase-engine parser::oracle_effect::text_change::tests::crystal_spray_lowers_to_both_domains_until_end_of_turn_then_draws
+        FAIL [   0.199s] ( 9/35) phase-engine parser::oracle_effect::text_change::tests::magical_hack_lowers_to_a_land_pair_prompt_and_a_permanent_install
+        FAIL [   0.215s] (11/35) phase-engine parser::oracle_effect::text_change::tests::mind_bend_targets_permanents_only
+     Summary [  18.693s] 35 tests run: 31 passed, 4 failed, 31330 skipped

@@ -1,0 +1,15 @@
+supported flips vs run base: 13
+  ('Alter Reality', False, True)
+  ('Crystal Spray', False, True)
+  ('Glamerdye', False, True)
+  ('Lapse of Certainty', False, True)
+  ('Magical Hack', False, True)
+  ('Memory Lapse', False, True)
+  ('Mind Bend', False, True)
+  ('Remand', False, True)
+  ('Sleight of Mind', False, True)
+  ('Spectral Shift', False, True)
+  ('Spell Crumple', False, True)
+  ('Trait Doctoring', False, True)
+  ('Whim of Volrath', False, True)
+card-data entries differing vs run base: 13

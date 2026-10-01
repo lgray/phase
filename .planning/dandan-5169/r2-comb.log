@@ -1,0 +1,32 @@
+Gate G PASS (router/grant architecture: strict router vs permissive grant boundary intact)
+Gate A: scanned 112 file(s) under crates/engine/src/parser (working tree vs d6d28370c09242182488cac72e16e5a84941885f).
+ERROR: New parser code violates the nom-combinator mandate.
+
+The parser mandate (CLAUDE.md) requires nom combinators for ALL parsing
+dispatch. Copy-paste-ready patterns for every common shape are in:
+
+    crates/engine/src/parser/oracle_nom/PATTERNS.md
+
+(A) String-method dispatch — use combinators instead:
+    .strip_prefix / .trim_start_matches  -> Pattern 1 (optional fixed prefix)
+    .strip_suffix / .trim_end_matches    -> Pattern 2 or 3 (suffix / trailing)
+    .contains / .starts_with / .ends_with -> Pattern 7 (integrate into parse)
+    .split_once / .rsplit_once / .splitn -> Pattern 6 (delimiter split)
+    .split("...")                        -> Pattern 6 (delimiter split)
+    .find("...") / .rfind("...")         -> Pattern 5 (word-boundary scan)
+
+Forbidden in added lines (diff vs d6d28370c09242182488cac72e16e5a84941885f):
+
+  crates/engine/src/parser/oracle_effect/text_change.rs:
+            format!("{abilities:?}").contains("Unimplemented")
+                assert!(debug.contains("SubstituteTextWord"), "{name}: reach-guard");
+                    !format!("{abilities:?}").contains("SubstituteTextWord"),
+
+If a use is genuinely structural (not parsing dispatch) — e.g. TextPair
+dual-string stripping, punctuation cleanup on pre-tokenized chunks, or
+word-boundary scanning — annotate the line with:
+
+    // allow-noncombinator: <one-line reason>
+
+See PATTERNS.md section 9 for the criteria on legitimate escape-hatch use.
+

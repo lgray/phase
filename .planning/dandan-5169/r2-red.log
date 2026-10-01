@@ -1,48 +1,38 @@
    Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 8m 32s
+    Finished `test` profile [unoptimized] target(s) in 6m 34s
 ────────────
- Nextest run ID 9df939dc-94be-4ef1-9a92-af739aeb9f4d with nextest profile: default
-    Starting 1 test across 1 binary (22658 tests skipped)
-        FAIL [   0.356s] (1/1) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+ Nextest run ID 6f5207b1-a7cd-4e31-83bc-7df3801a8055 with nextest profile: default
+    Starting 1 test across 1 binary (8591 tests skipped)
+        FAIL [   3.187s] (1/1) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
   stdout ───
 
     running 1 test
-    test game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths ... FAILED
+    test text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns ... FAILED
 
     failures:
 
     failures:
-        game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+        text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22658 filtered out; finished in 0.32s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8591 filtered out; finished in 3.15s
 
   stderr ───
 
-    thread 'game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths' (12114) panicked at crates/engine/src/game/deck_validation.rs:9058:13:
-    assertion `left == right` failed: summary_only=false: ["Not Dandân legal: Not Standard (not legal)"]
-      left: Some(false)
-     right: Some(true)
+    thread 'text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns' (8400) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:213:5:
+    assertion `left == right` failed: CR 400.7: the returned permanent is a new object with its printed Swampwalk
+      left: ["Plains"]
+     right: ["Swamp"]
     stack backtrace:
        0: __rustc::rust_begin_unwind
-                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/std/src/panicking.rs:689:5
        1: core::panicking::panic_fmt
-                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:80:14
        2: core::panicking::assert_failed_inner
-                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:434:23
-       3: core::panicking::assert_failed::<core::option::Option<bool>, core::option::Option<bool>>
-                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/panicking.rs:394:5
-       4: dandan_deck_compatibility_reads_the_format_axes_on_both_paths
-                 at ./src/game/deck_validation.rs:9058:13
-       5: engine::game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths::{closure#0}
-                 at ./src/game/deck_validation.rs:9025:71
-       6: <engine::game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths::{closure#0} as core::ops::function::FnOnce<()>>::call_once
-                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
-       7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
-                 at /rustc/0febdbab2720dc0360cd294c67db88d6d06580d4/library/core/src/ops/function.rs:250:5
+       3: core::panicking::assert_failed::<alloc::vec::Vec<alloc::string::String>, [&str; 1]>
+       4: integration::text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+       5: integration::text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns::{closure#0}
+       6: <integration::text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns::{closure#0} as core::ops::function::FnOnce<()>>::call_once
     note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
 
 ────────────
-     Summary [   0.382s] 1 test run: 0 passed, 1 failed, 22658 skipped
-        FAIL [   0.356s] (1/1) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+     Summary [   3.200s] 1 test run: 0 passed, 1 failed, 8591 skipped
+        FAIL [   3.187s] (1/1) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
 error: test run failed
-DONE

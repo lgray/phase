@@ -1,0 +1,5 @@
+# Executor r3 (phase 5, fix round)
+Mode: implementation/fix (phase mode). START_SHA 029b93dcdcf20a86eeabdc57a75cefd3b8598119, worktree /home/user/phase (clean at start).
+Change: crates/engine/src/parser/oracle_effect/text_change.rs test module only. Debug-string `.contains` assertions replaced by typed walkers (`node_matches`/`any_node` over sub_ability, else_ability, mode_abilities; `has_unimplemented` matches `Effect::Unimplemented` or `AbilityCost::contains_unimplemented`; `has_word_substitution` matches `Effect::GenericEffect` static modifications `SubstituteTextWord`). Reach-guards stay positive; no allow-noncombinator used.
+PREPARATORY results: fmt (that file); check-parser-combinators.sh b9ba936 exit 0; clippy -p phase-engine --all-targets -D warnings exit 0; nextest text_change/text_substitution 34/34 pass; final full nextest -p phase-engine --no-fail-fast: 31355 passed, 0 failed, exit 0 (no file touched after start).
+CR annotations: none added. No behavioral/production change (test-only); matrix/coverage map unchanged.
