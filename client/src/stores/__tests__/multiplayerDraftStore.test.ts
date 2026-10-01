@@ -2971,6 +2971,14 @@ describe("multiplayerDraftStore", () => {
   });
 
   describe("bot-match concede", () => {
+    // A pod match is started from a live pod session.
+    beforeEach(async () => {
+      await useMultiplayerDraftStore.getState().hostDraft({
+        poolInput: { type: "Set", data: { pools: [{ code: "TST" }], sequence: ["TST"] } },
+        kind: "Premier", podSize: 8, hostDisplayName: "Host", tournamentFormat: "Swiss", podPolicy: "Competitive",
+      });
+    });
+
     it("binds the pod match concession through startMatch and concedes the local game seat", async () => {
       const dispatch = vi.fn(async () => []);
       useGameStore.setState({ dispatch });

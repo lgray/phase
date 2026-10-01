@@ -57,6 +57,7 @@ import { useGameStore } from "../gameStore";
 import { processRemoteUpdate } from "../../game/dispatch";
 import { P2PGuestAdapter, P2PHostAdapter } from "../../adapter/p2p-adapter";
 import { P2PDraftGuest } from "../../adapter/p2p-draft-guest";
+import { DraftPodGuestAdapter } from "../../adapter/draftPodGuestAdapter";
 import type { DraftPlayerView, SeatPublicView } from "../../adapter/draft-adapter";
 import type { CommanderSeatDecks, DraftDeckPayload } from "../../network/draftProtocol";
 
@@ -557,6 +558,22 @@ function parkNextGuest(gates: { initialize?: Promise<void>; initializeGame: Prom
     return adapter as never;
   });
   return { initialize, initializeGame };
+}
+
+/** Gives each `createGameLoopController` call its own controller, so a case can tell one attempt's from another's. */
+function distinctControllers() {
+  const original = matchLoopMock.controller;
+  const created: Array<typeof original> = [];
+  matchLoopMock.create.mockImplementation(() => {
+    matchLoopMock.controller = { start: vi.fn(), stop: vi.fn(), dispose: vi.fn() };
+    created.push(matchLoopMock.controller);
+  });
+  return Object.assign(created, {
+    restore: () => {
+      matchLoopMock.create.mockReset();
+      matchLoopMock.controller = original;
+    },
+  });
 }
 
 /** The seat mutations this launch applied, in call order. */
@@ -1650,14 +1667,7 @@ describe("multiplayerDraftStore Commander launch", () => {
     expect(matchLoopMock.controller.dispose).toHaveBeenCalledTimes(1);
   });
 
-  /**
-   * `launchCommanderGame`'s OWN catch, not `leave`'s captured-identity fences
-   * above: this launch never reaches `set({ matchAdapter, commanderSeat: 0 })`
-   * at all, so `leave` captures nothing to dispose — `installMatchRuntime`
-   * ran and started a controller entirely inside this launch's own aborted
-   * tail, after `leave` had already read (null) module state.
-   */
-  it("disposes an aborted launch's own controller when leave's abandon lands mid-tail", async () => {
+  it("an aborted launch whose tail resumes after leave's abandon installs no runtime", async () => {
     let releaseStart!: () => void;
     const startGate = new Promise<void>((resolve) => {
       releaseStart = resolve;
@@ -1692,18 +1702,10 @@ describe("multiplayerDraftStore Commander launch", () => {
       releaseStart();
       await parked;
 
-      // `installMatchRuntime` ran anyway and started a controller.
-      expect(matchLoopMock.create).toHaveBeenCalledTimes(1);
-      expect(matchLoopMock.controller.start).toHaveBeenCalledTimes(1);
-      // THE FIX, in the launch's OWN catch: absent it, nothing disposes this
-      // controller here. `leave` captured `activeMatchController` as null
-      // before this launch created one, and the second pod opened below
-      // bumps the epoch while `leave` is still parked on its own
-      // `terminateGame()` await — so when `leave` resumes it takes the
-      // stale-epoch early return and disposes only its own captured (null)
-      // references, never reaching `disposeMatchAdapter`'s unconditional
-      // `disposeMatchController()`.
-      expect(matchLoopMock.controller.dispose).toHaveBeenCalledTimes(1);
+      // Reach: the tail got as far as the installer's snapshot fetch.
+      const built = vi.mocked(P2PHostAdapter).mock.results[0].value as { getSnapshot: ReturnType<typeof vi.fn> };
+      expect(built.getSnapshot).toHaveBeenCalledOnce();
+      expect(matchLoopMock.create).not.toHaveBeenCalled();
       expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
       expect(useGameStore.getState().adapter).toBeNull();
       expect(useGameStore.getState().gameId).toBeNull();
@@ -1759,21 +1761,7 @@ describe("multiplayerDraftStore Commander launch", () => {
     expect(transport.joinRoomCalls).toHaveLength(1);
   });
 
-  /**
-   * The abort arrives LATE — after the bring-up has already committed itself to
-   * `useGameStore`, which the row above cannot reach because it parks in
-   * `joinRoom`, several awaits earlier.
-   *
-   * `installMatchRuntime` awaits a snapshot fetch and then commits
-   * synchronously, so a cancel landing during that fetch leaves the runtime
-   * installed and `throwIfAborted()` throwing immediately afterwards. The catch
-   * disposes the adapter, but `set({ matchAdapter })` never ran — and
-   * `disposeMatchAdapter`'s entire body is fenced on that field. So nothing
-   * `leave`, `reset` or `endCommanderSession` can do will ever reach the
-   * committed runtime: it is a DISPOSED adapter parked under a live
-   * `draft-match` game id.
-   */
-  it("releases a runtime the aborted join had already committed", async () => {
+  it("an aborted join parked in its snapshot fetch commits no runtime and releases its adapter", async () => {
     await installJoinedPod(commanderView(4, { humanSeats: [1, 2, 3] }));
     capturedDraftGuestListener?.({ type: "commanderLaunch", launch: commanderLaunchFor(2) });
 
@@ -1804,21 +1792,117 @@ describe("multiplayerDraftStore Commander launch", () => {
       unsubscribe();
     }
 
-    // The control: the runtime really was committed before the abort was seen.
-    expect(installedGameIds).toContain("game-1");
-    // ...and nothing is left holding it. Both fields, because `adapter` alone
-    // would stay null if the commit had written only `gameId`.
+    // Reach: the join was parked in the installer's snapshot fetch when the pod was left.
+    const built = vi.mocked(P2PGuestAdapter).mock.results[0].value as { getSnapshot: ReturnType<typeof vi.fn> };
+    expect(built.getSnapshot).toHaveBeenCalledOnce();
+    expect(installedGameIds).not.toContain("game-1");
     expect(useGameStore.getState().adapter).toBeNull();
-    expect(useGameStore.getState().gameId).toBeNull();
-    // A second control alongside `installedGameIds`: `installMatchRuntime`
-    // really did create and start a `GameLoopController` before the abort was
-    // seen, so it is not left running and subscribed to `useGameStore` for
-    // good — the way it would be without the disposal above.
-    expect(matchLoopMock.create).toHaveBeenCalledTimes(1);
-    expect(matchLoopMock.controller.start).toHaveBeenCalledTimes(1);
-    expect(matchLoopMock.controller.dispose).toHaveBeenCalledTimes(1);
+    expect(matchLoopMock.create).not.toHaveBeenCalled();
+    expect(transport.guestDispose).toHaveBeenCalledOnce();
     // The user left the pod; they must not be dropped into the game regardless.
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("a launch parked in its snapshot fetch leaves a newer pod's launched runtime running when the fetch settles", async () => {
+    const controllers = distinctControllers();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const make = vi.mocked(P2PHostAdapter).getMockImplementation()!;
+    vi.mocked(P2PHostAdapter).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+      const adapter = (make as (...a: unknown[]) => Record<string, unknown>).apply(this, args);
+      adapter.getSnapshot = vi.fn(async () => { await gate; return transport.snapshot; });
+      return adapter as never;
+    });
+    await installCompletedPod(commanderView(2));
+    const first = useMultiplayerDraftStore.getState().launchCommanderGame(navigate);
+    try {
+      await vi.waitFor(() => expect(vi.mocked(P2PHostAdapter).mock.results[0]?.value.getSnapshot).toHaveBeenCalledOnce());
+      mockHostAdapterQueue.push(freshHostAdapter());
+      await installCompletedPod(commanderView(2));
+      await useMultiplayerDraftStore.getState().launchCommanderGame(navigate);
+      const newer = vi.mocked(P2PHostAdapter).mock.results[1]?.value;
+      expect(newer).toBeDefined();
+      const installed = useGameStore.getState().gameId;
+      expect(useGameStore.getState().adapter).toBe(newer);
+      open();
+      await first;
+      expect(controllers).toHaveLength(1);
+      expect(controllers[0].dispose).not.toHaveBeenCalled();
+      expect(useGameStore.getState()).toMatchObject({ adapter: newer, gameId: installed });
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBe(newer);
+    } finally {
+      open();
+      await first;
+      controllers.restore();
+    }
+  });
+
+  it("a join parked in its snapshot fetch leaves a newer pod's joined runtime running when the fetch settles", async () => {
+    const controllers = distinctControllers();
+    await installJoinedPod(commanderView(4, { humanSeats: [2] }));
+    useMultiplayerDraftStore.setState({ commanderLaunch: commanderLaunchFor(2, "game-1") });
+    let open!: () => void;
+    transport.control.guestSnapshotGate = new Promise<void>((resolve) => { open = resolve; });
+    const first = useMultiplayerDraftStore.getState().joinCommanderGame(navigate);
+    try {
+      await vi.waitFor(() => expect(vi.mocked(P2PGuestAdapter).mock.results[0]?.value.getSnapshot).toHaveBeenCalledOnce());
+      transport.control.guestSnapshotGate = null;
+      await installJoinedPod(commanderView(4, { humanSeats: [2] }));
+      useMultiplayerDraftStore.setState({ commanderLaunch: commanderLaunchFor(2, "game-2") });
+      await useMultiplayerDraftStore.getState().joinCommanderGame(navigate);
+      expect(navigate).toHaveBeenLastCalledWith("/game/game-2?mode=draft-match");
+      const newer = vi.mocked(P2PGuestAdapter).mock.results[1].value;
+      open();
+      await first;
+      expect(controllers).toHaveLength(1);
+      expect(controllers[0].dispose).not.toHaveBeenCalled();
+      expect(useGameStore.getState()).toMatchObject({ adapter: newer, gameId: "game-2" });
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBe(newer);
+    } finally {
+      open();
+      await first;
+      controllers.restore();
+    }
+  });
+
+  it("a new pod's Launch proceeds while the replaced pod's launch is parked in startPregameGame", async () => {
+    await installCompletedPod(commanderView(2));
+    let releasePregame!: (result: { log_entries: [] }) => void;
+    transport.startPregameGame.mockImplementationOnce(() => new Promise((resolve) => { releasePregame = resolve; }));
+    const first = useMultiplayerDraftStore.getState().launchCommanderGame(navigate);
+    try {
+      await vi.waitFor(() => expect(transport.startPregameGame).toHaveBeenCalledOnce());
+      mockHostAdapterQueue.push(freshHostAdapter());
+      await installCompletedPod(commanderView(2));
+      expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
+      await useMultiplayerDraftStore.getState().launchCommanderGame(navigate);
+      expect(transport.hostRoomSignals).toHaveLength(2);
+      expect(navigate).toHaveBeenCalledOnce();
+    } finally {
+      releasePregame({ log_entries: [] });
+      await first;
+    }
+  });
+
+  it("a new pod's Join proceeds while the replaced pod's join is parked in initialize", async () => {
+    await installJoinedPod(commanderView(4, { humanSeats: [2] }));
+    useMultiplayerDraftStore.setState({ commanderLaunch: commanderLaunchFor(2, "game-1") });
+    let attach!: () => void;
+    const guest = parkNextGuest({ initialize: new Promise<void>((resolve) => { attach = resolve; }), initializeGame: Promise.resolve() });
+    const first = useMultiplayerDraftStore.getState().joinCommanderGame(navigate);
+    try {
+      await vi.waitFor(() => expect(guest.initialize).toHaveBeenCalledOnce());
+      const firstSignal = transport.joinRoomCalls[0].signal as AbortSignal;
+      await installJoinedPod(commanderView(4, { humanSeats: [2] }));
+      useMultiplayerDraftStore.setState({ commanderLaunch: commanderLaunchFor(2, "game-2") });
+      expect(firstSignal.aborted).toBe(true);
+      await useMultiplayerDraftStore.getState().joinCommanderGame(navigate);
+      expect(transport.joinRoomCalls).toHaveLength(1);
+      expect(navigate).toHaveBeenLastCalledWith("/game/game-2?mode=draft-match");
+    } finally {
+      attach();
+      await first;
+    }
   });
 
   /**
@@ -2066,6 +2150,102 @@ describe("multiplayerDraftStore Commander launch", () => {
       }
     });
 
+    it.each(["hostDraft", "joinDraft"] as const)("a Join pressed while %s waits on the replaced pod's teardown dials nothing when the call is route-aborted", async (opener) => {
+      await installJoinedPod(commanderView(4, { humanSeats: [2] }));
+      useMultiplayerDraftStore.setState({ commanderLaunch: commanderLaunchFor(2, "game-1") });
+      useGameStore.setState({ gameId: null });
+      let openTeardown!: () => void;
+      const teardown = new Promise<void>((resolve) => { openTeardown = resolve; });
+      const podTeardown = vi.spyOn(DraftPodGuestAdapter.prototype, "dispose").mockImplementationOnce(() => teardown);
+      const route = new AbortController();
+      mockHostAdapterQueue.push(freshHostAdapter());
+      const replacing = opener === "hostDraft"
+        ? useMultiplayerDraftStore.getState().hostDraft({
+          poolInput: { type: "Set", data: { pools: [{ code: "TST" }], sequence: ["TST"] } },
+          kind: "CommanderDraft", podSize: 4, hostDisplayName: "Host", tournamentFormat: "Swiss", podPolicy: "Competitive", signal: route.signal,
+        })
+        : useMultiplayerDraftStore.getState().joinDraft({ kind: "new", roomCode: "ABCDE", displayName: "P", signal: route.signal });
+      try {
+        await vi.waitFor(() => expect(podTeardown).toHaveBeenCalled());
+        // Reach: the invitation is still on the store, so only the pod guard can refuse the press.
+        expect(useMultiplayerDraftStore.getState().commanderLaunch?.gameId).toBe("game-1");
+        const joining = useMultiplayerDraftStore.getState().joinCommanderGame(navigate);
+        route.abort();
+        openTeardown();
+        await replacing;
+        await joining;
+      } finally {
+        openTeardown();
+        podTeardown.mockRestore();
+      }
+      expect(transport.joinRoomCalls).toHaveLength(0);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(useGameStore.getState().gameId).not.toBe("game-1");
+    });
+
+    it("a Join pressed while a joined pod's open fails online ends with it", async () => {
+      let fail!: () => void;
+      const make = vi.mocked(P2PDraftGuest).getMockImplementation()!;
+      vi.mocked(P2PDraftGuest).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+        return { ...(make as (...a: unknown[]) => object).apply(this, args), initialize: async () => {
+          capturedDraftGuestListener!({ type: "commanderLaunch", launch: commanderLaunchFor(2, "game-1") });
+          await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("host gone")); });
+        } } as never;
+      });
+      useGameStore.setState({ gameId: null });
+      const opening = useMultiplayerDraftStore.getState()
+        .joinDraft({ kind: "reconnect", roomCode: "ABCDE", displayName: "Guest", hostPeerId: "host-peer-id", draftToken: "token" });
+      await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().commanderLaunch).not.toBeNull());
+      transport.joinRoomCalls.length = 0;
+      let openPark!: () => void;
+      let rejectPark!: (reason: unknown) => void;
+      transport.control.joinRoomGate = new Promise<void>((resolve, reject) => { openPark = resolve; rejectPark = reject; });
+      const joining = useMultiplayerDraftStore.getState().joinCommanderGame(navigate);
+      let signal: AbortSignal | undefined;
+      try {
+        await vi.waitFor(() => expect(transport.joinRoomCalls).toHaveLength(1));
+        signal = transport.joinRoomCalls[0].signal as AbortSignal;
+        // The harness gate ignores the signal; production's `joinRoom` rejects on it.
+        signal.addEventListener("abort", () => rejectPark(new DOMException("Aborted", "AbortError")), { once: true });
+        fail();
+        await opening;
+      } finally {
+        transport.control.joinRoomGate = null;
+        openPark();
+        await joining;
+      }
+      expect(useGameStore.getState().gameId).not.toBe("game-1");
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it("a Join pressed after a joined pod's open fails online dials nothing", async () => {
+      let fail!: () => void;
+      const make = vi.mocked(P2PDraftGuest).getMockImplementation()!;
+      vi.mocked(P2PDraftGuest).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+        return { ...(make as (...a: unknown[]) => object).apply(this, args), initialize: async () => {
+          capturedDraftGuestListener!({ type: "commanderLaunch", launch: commanderLaunchFor(2, "game-1") });
+          await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("host gone")); });
+        } } as never;
+      });
+      useGameStore.setState({ gameId: null });
+      const opening = useMultiplayerDraftStore.getState()
+        .joinDraft({ kind: "reconnect", roomCode: "ABCDE", displayName: "Guest", hostPeerId: "host-peer-id", draftToken: "token" });
+      await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().commanderLaunch).not.toBeNull());
+      fail();
+      await opening;
+      // Reach: the invitation is still on the store and nothing is in flight, so only the pod guard can refuse the press.
+      expect(useMultiplayerDraftStore.getState().commanderLaunch?.gameId).toBe("game-1");
+      const dialed = transport.joinRoomCalls.length;
+      await Promise.race([useMultiplayerDraftStore.getState().joinCommanderGame(navigate), new Promise((resolve) => setTimeout(resolve, 50))]);
+      expect(useGameStore.getState().gameId).not.toBe("game-1");
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
+      expect(transport.joinRoomCalls).toHaveLength(dialed);
+    });
+
     it("a Join pressed while leave waits on the guest leave ack ends with the pod", async () => {
       await installJoinedPod(commanderView(4, { humanSeats: [2] }));
       useMultiplayerDraftStore.setState({ commanderLaunch: commanderLaunchFor(2, "game-1") });
@@ -2105,17 +2285,30 @@ describe("multiplayerDraftStore Commander launch", () => {
       await launching;
     });
 
-    it.each(["reset", "leave"] as const)("a launch parked in startPregameGame terminates its game once when %s ends the pod", async (end) => {
+    it.each(["reset", "leave", "its failure then leave"] as const)("a launch parked in startPregameGame terminates its game once when %s ends the pod", async (end) => {
       await installCompletedPod(commanderView(4));
       let releasePregame!: (result: { log_entries: [] }) => void;
-      transport.startPregameGame.mockImplementationOnce(() => new Promise((resolve) => { releasePregame = resolve; }));
+      let failPregame!: (err: Error) => void;
+      transport.startPregameGame.mockImplementationOnce(() => new Promise((resolve, reject) => { releasePregame = resolve; failPregame = reject; }));
       const launching = useMultiplayerDraftStore.getState().launchCommanderGame(navigate);
       await vi.waitFor(() => expect(transport.startPregameGame).toHaveBeenCalledOnce());
-      if (end === "reset") useMultiplayerDraftStore.getState().reset();
-      else await useMultiplayerDraftStore.getState().leave(false);
-      expect(transport.terminateGame).toHaveBeenCalledOnce();
-      releasePregame({ log_entries: [] });
-      await launching;
+      try {
+        if (end === "reset") useMultiplayerDraftStore.getState().reset();
+        else if (end === "leave") await useMultiplayerDraftStore.getState().leave(false);
+        else {
+          let finishTerminate!: () => void;
+          transport.terminateGame.mockImplementationOnce(() => new Promise<void>((resolve) => { finishTerminate = resolve; }));
+          failPregame(new Error("boom"));
+          await vi.waitFor(() => expect(transport.terminateGame).toHaveBeenCalledOnce());
+          const leaving = useMultiplayerDraftStore.getState().leave(false);
+          finishTerminate();
+          await leaving;
+        }
+        expect(transport.terminateGame).toHaveBeenCalledOnce();
+      } finally {
+        releasePregame({ log_entries: [] });
+        await launching;
+      }
     });
   });
 
@@ -2148,9 +2341,40 @@ describe("multiplayerDraftStore Commander launch", () => {
     const settle = (p: Promise<string | null>) =>
       Promise.race([p.then((v) => `resolved:${v}`), new Promise((r) => setTimeout(() => r("pending"), 50))]);
 
+    const podConfig = {
+      poolInput: { type: "Set" as const, data: { pools: [{ code: "TST" }], sequence: ["TST"] } },
+      kind: "CommanderDraft" as const, podSize: 2, hostDisplayName: "Host", tournamentFormat: "Swiss" as const, podPolicy: "Competitive" as const,
+    };
+
     async function podInMatch() {
       await installCompletedPod(commanderView(2));
       useMultiplayerDraftStore.setState({ matchPairing: launch, phase: "matchInProgress" });
+    }
+
+    /** Parks the next host start on `park`, the awaits an abort does not interrupt. */
+    function parkHostOn(park: "initialize" | "startPregameGame" | "getSnapshot", gate: Promise<void>) {
+      if (park === "startPregameGame") {
+        transport.startPregameGame.mockImplementationOnce(async () => { await gate; return { log_entries: [] }; });
+        return;
+      }
+      const make = vi.mocked(P2PHostAdapter).getMockImplementation()!;
+      vi.mocked(P2PHostAdapter).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+        const adapter = (make as (...a: unknown[]) => Record<string, unknown>).apply(this, args);
+        if (park === "initialize") adapter.initialize = vi.fn(() => gate);
+        else adapter.getSnapshot = vi.fn(async () => { await gate; return transport.snapshot; });
+        return adapter as never;
+      });
+    }
+
+    async function reachPark(park: "initialize" | "startPregameGame" | "getSnapshot") {
+      await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
+      if (park === "initialize") return;
+      transport.instances[0].finish();
+      if (park === "startPregameGame") await vi.waitFor(() => expect(transport.startPregameGame).toHaveBeenCalled());
+      else {
+        const built = vi.mocked(P2PHostAdapter).mock.results[0].value as { getSnapshot: ReturnType<typeof vi.fn> };
+        await vi.waitFor(() => expect(built.getSnapshot).toHaveBeenCalled());
+      }
     }
 
     async function guestPodInMatch() {
@@ -2176,24 +2400,24 @@ describe("multiplayerDraftStore Commander launch", () => {
       expect(s.error).toBeNull();
     });
 
-    it("leave() while parked on roomFull disposes the adapter", async () => {
+    it("leave() while parked on roomFull terminates the adapter's game", async () => {
       await podInMatch();
       const started = useMultiplayerDraftStore.getState().startMatch();
       await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
       await useMultiplayerDraftStore.getState().leave();
       const settled = await settle(started);
-      const disposedBeforeGuest = transport.dispose.mock.calls.length;
+      const terminatedBeforeGuest = transport.terminateGame.mock.calls.length;
       transport.instances[0].finish();
       await new Promise((r) => setTimeout(r, 0));
       const s = useMultiplayerDraftStore.getState();
       expect(settled).toBe("resolved:null");
-      expect(disposedBeforeGuest).toBe(1);
+      expect(terminatedBeforeGuest).toBe(1);
       expect(transport.hostDestroy).not.toHaveBeenCalled();
       expect(s.matchAdapter).toBeNull();
       expect(s.phase).toBe("idle");
     });
 
-    it("leave() while the host adapter initializes disposes it with no unhandled rejection", async () => {
+    it("leave() while the host adapter initializes terminates its game with no unhandled rejection", async () => {
       await podInMatch();
       const unhandled: unknown[] = [];
       const prior = process.listeners("unhandledRejection");
@@ -2215,7 +2439,7 @@ describe("multiplayerDraftStore Commander launch", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         open();
         expect(await settle(started)).toBe("resolved:null");
-        expect(transport.dispose).toHaveBeenCalledOnce();
+        expect(transport.terminateGame).toHaveBeenCalledOnce();
         expect(unhandled).toEqual([]);
       } finally {
         process.off("unhandledRejection", onUnhandled);
@@ -2252,7 +2476,8 @@ describe("multiplayerDraftStore Commander launch", () => {
       await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
       transport.instances[0].finish();
       expect(await started).toBeNull();
-      expect(transport.dispose).toHaveBeenCalledOnce();
+      expect(transport.terminateGame).toHaveBeenCalledOnce();
+      expect(transport.dispose).not.toHaveBeenCalled();
       expect(useMultiplayerDraftStore.getState().error).toBe("pregame refused");
     });
 
@@ -2275,8 +2500,8 @@ describe("multiplayerDraftStore Commander launch", () => {
       await vi.waitFor(() => expect(transport.instances).toHaveLength(2));
       expect(await settle(first)).toBe("resolved:null");
       expect(transport.hostRoomOptions.map((o) => o?.preferredRoomCode)).toEqual(["MATCH-m1", "MATCH-m2"]);
-      expect(transport.dispose).toHaveBeenCalledOnce();
-      expect(transport.dispose.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
+      expect(transport.terminateGame).toHaveBeenCalledOnce();
+      expect(transport.terminateGame.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
       expect(await settle(useMultiplayerDraftStore.getState().startMatch())).toBe("resolved:null");
       expect(transport.hostRoomSignals).toHaveLength(2);
       transport.instances[1].finish();
@@ -2292,8 +2517,8 @@ describe("multiplayerDraftStore Commander launch", () => {
       expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
       capturedHostEventHandler!({ type: "matchStart", launch: m2 });
       expect(await settle(first)).toBe("resolved:null");
-      expect(transport.dispose).toHaveBeenCalledOnce();
-      expect(transport.dispose.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
+      expect(transport.terminateGame).toHaveBeenCalledOnce();
+      expect(transport.terminateGame.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
       transport.instances[0].finish();
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
@@ -2401,31 +2626,160 @@ describe("multiplayerDraftStore Commander launch", () => {
       expect(await settle(first)).toBe("resolved:null");
       expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
       expect(transport.hostRoomOptions.map((o) => o?.preferredRoomCode)).toEqual(["MATCH-m1", "POD2-m1"]);
-      expect(transport.dispose).toHaveBeenCalledOnce();
-      expect(transport.dispose.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
+      expect(transport.terminateGame).toHaveBeenCalledOnce();
+      expect(transport.terminateGame.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
       transport.instances[1].finish();
       expect(await second).toBe("draft-match-m1");
     });
 
-    it.each([["hostDraft", "online"], ["joinDraft", "online"], ["hostDraft", "offline"], ["joinDraft", "offline"]] as const)(
-      "a start pressed while %s waits on the replaced pod's teardown ends with it, %s", async (opener, connectivity) => {
+    it.each(["initialize", "startPregameGame", "getSnapshot"] as const)(
+      "a new pod whose pairing reuses the match id starts while the replaced pod's start is parked in %s", async (park) => {
+      let open!: () => void;
+      await podInMatch();
+      parkHostOn(park, new Promise<void>((resolve) => { open = resolve; }));
+      const first = useMultiplayerDraftStore.getState().startMatch();
+      try {
+        await reachPark(park);
+        mockHostAdapterQueue.push(freshHostAdapter());
+        await installCompletedPod(commanderView(2));
+        useMultiplayerDraftStore.setState({
+          matchPairing: { ...launch, matchRoomCode: "POD2-m1", binding: { ...launch.binding, podId: "pod-2" } },
+          phase: "matchInProgress",
+        });
+        expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
+        expect(await settle(first)).toBe("pending");
+        const second = useMultiplayerDraftStore.getState().startMatch();
+        await vi.waitFor(() => expect(transport.instances).toHaveLength(2));
+        transport.instances[1].finish();
+        expect(await second).toBe("draft-match-m1");
+        expect(transport.hostRoomOptions.map((o) => o?.preferredRoomCode)).toEqual(["MATCH-m1", "POD2-m1"]);
+      } finally {
+        open();
+      }
+      expect(await first).toBeNull();
+    });
+
+    it("a start parked in its snapshot fetch leaves the next pairing's runtime running when the fetch settles", async () => {
+      const controllers = distinctControllers();
+      let open!: () => void;
+      try {
+        await podInMatch();
+        parkHostOn("getSnapshot", new Promise<void>((resolve) => { open = resolve; }));
+        const first = useMultiplayerDraftStore.getState().startMatch();
+        await reachPark("getSnapshot");
+        capturedHostEventHandler!({ type: "roundAdvanced" });
+        capturedHostEventHandler!({ type: "matchStart", launch: m2 });
+        const second = useMultiplayerDraftStore.getState().startMatch();
+        await vi.waitFor(() => expect(transport.instances).toHaveLength(2));
+        transport.instances[1].finish();
+        expect(await second).toBe("draft-match-m2");
+        const newer = vi.mocked(P2PHostAdapter).mock.results[1].value;
+        open();
+        expect(await first).toBeNull();
+        expect(transport.terminateGame).toHaveBeenCalledTimes(1);
+        expect(controllers).toHaveLength(1);
+        expect(controllers[0].dispose).not.toHaveBeenCalled();
+        expect(useGameStore.getState()).toMatchObject({ adapter: newer, gameId: "draft-match-m2" });
+        expect(useMultiplayerDraftStore.getState().matchAdapter).toBe(newer);
+      } finally {
+        open?.();
+        controllers.restore();
+      }
+    });
+
+    it.each([["hostDraft", "opens"], ["joinDraft", "opens"], ["hostDraft", "is route-aborted"], ["joinDraft", "is route-aborted"]] as const)(
+      "a start pressed while %s waits on the replaced pod's teardown opens no room when the call %s", async (opener, end) => {
       let openTeardown!: () => void;
       const teardown = new Promise<void>((resolve) => { openTeardown = resolve; });
       const pod = freshHostAdapter({ dispose: () => teardown });
       mockHostAdapterQueue.push(pod, freshHostAdapter());
       await podInMatch();
       useGameStore.setState({ gameId: null });
-      const replacing = opener === "hostDraft" ? installCompletedPod(commanderView(2)) : installJoinedPod(commanderView(2), 1);
+      const route = new AbortController();
+      const replacing = opener === "hostDraft"
+        ? useMultiplayerDraftStore.getState().hostDraft({ ...podConfig, signal: route.signal })
+        : useMultiplayerDraftStore.getState().joinDraft({ kind: "new", roomCode: "ABCDE", displayName: "P", signal: route.signal });
       await vi.waitFor(() => expect(pod.dispose).toHaveBeenCalled());
+      // Reach: the pairing is still on the store and nothing is in flight, so only the pod guard can refuse the press.
+      expect(useMultiplayerDraftStore.getState().matchPairing?.matchId).toBe("m1");
       const started = useMultiplayerDraftStore.getState().startMatch();
-      await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
-      useConnectivityStore.setState({ forcedOffline: connectivity === "offline" });
+      expect(await settle(started)).toBe("resolved:null");
+      if (end === "is route-aborted") route.abort();
       openTeardown();
       await replacing;
-      expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
-      transport.instances[0].finish();
-      expect(await settle(started)).toBe("resolved:null");
-      expect(useMultiplayerDraftStore.getState()).toMatchObject({ matchAdapter: null, phase: "complete" });
+      for (const instance of transport.instances) instance.finish();
+      expect(transport.hostRoomSignals).toHaveLength(0);
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(useGameStore.getState().gameId).not.toBe("draft-match-m1");
+    });
+
+    it.each(["hostDraft", "joinDraft"] as const)("a %s route-aborted during the replaced pod's teardown leaves no session behind", async (opener) => {
+      let openTeardown!: () => void;
+      const teardown = new Promise<void>((resolve) => { openTeardown = resolve; });
+      const pod = freshHostAdapter({ dispose: () => teardown });
+      mockHostAdapterQueue.push(pod);
+      await podInMatch();
+      const route = new AbortController();
+      const replacing = opener === "hostDraft"
+        ? useMultiplayerDraftStore.getState().hostDraft({ ...podConfig, signal: route.signal })
+        : useMultiplayerDraftStore.getState().joinDraft({ kind: "new", roomCode: "ABCDE", displayName: "P", signal: route.signal });
+      // Reach: the replaced pod's teardown is running, and its session is still on the store.
+      await vi.waitFor(() => expect(pod.dispose).toHaveBeenCalled());
+      expect(useMultiplayerDraftStore.getState()).toMatchObject({ role: "host", matchPairing: launch });
+      route.abort();
+      openTeardown();
+      expect(await replacing).toEqual({ status: "superseded" });
+      expect(useMultiplayerDraftStore.getState()).toMatchObject({ role: null, phase: "idle", matchPairing: null });
+    });
+
+    it.each([["hostDraft", "joinDraft"], ["joinDraft", "hostDraft"]] as const)(
+      "a %s route-aborted during the replaced pod's teardown keeps a newer %s's session", async (aborted, newer) => {
+      let openTeardown!: () => void;
+      const teardown = new Promise<void>((resolve) => { openTeardown = resolve; });
+      const pod = freshHostAdapter({ dispose: () => teardown });
+      mockHostAdapterQueue.push(pod, freshHostAdapter());
+      await podInMatch();
+      const route = new AbortController();
+      const openPod = (opener: "hostDraft" | "joinDraft", signal?: AbortSignal) => opener === "hostDraft"
+        ? useMultiplayerDraftStore.getState().hostDraft({ ...podConfig, signal })
+        : useMultiplayerDraftStore.getState().joinDraft({ kind: "new", roomCode: "ABCDE", displayName: "P", signal });
+      const replacing = openPod(aborted, route.signal);
+      await vi.waitFor(() => expect(pod.dispose).toHaveBeenCalled());
+      route.abort();
+      expect(await openPod(newer)).toMatchObject({ status: "opened" });
+      openTeardown();
+      expect(await replacing).toEqual({ status: "superseded" });
+      expect(useMultiplayerDraftStore.getState().role).toBe(newer === "hostDraft" ? "host" : "guest");
+    });
+
+    it("a second start in a route-aborted replacement's teardown window opens no room while the replaced pod's start is parked", async () => {
+      let openTeardown!: () => void;
+      const teardown = new Promise<void>((resolve) => { openTeardown = resolve; });
+      const pod = freshHostAdapter({ dispose: () => teardown });
+      mockHostAdapterQueue.push(pod, freshHostAdapter());
+      await podInMatch();
+      useGameStore.setState({ gameId: null });
+      let openFirst!: () => void;
+      parkHostOn("initialize", new Promise<void>((resolve) => { openFirst = resolve; }));
+      const first = useMultiplayerDraftStore.getState().startMatch();
+      const route = new AbortController();
+      try {
+        await reachPark("initialize");
+        const replacing = useMultiplayerDraftStore.getState().hostDraft({ ...podConfig, signal: route.signal });
+        await vi.waitFor(() => expect(pod.dispose).toHaveBeenCalled());
+        // Reach: the parked start was abandoned, so its slot no longer refuses a press.
+        expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
+        const second = useMultiplayerDraftStore.getState().startMatch();
+        expect(await settle(second)).toBe("resolved:null");
+        route.abort();
+        openTeardown();
+        await replacing;
+      } finally {
+        openFirst();
+      }
+      expect(await first).toBeNull();
+      expect(transport.hostRoomSignals).toHaveLength(1);
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
       expect(useGameStore.getState().gameId).not.toBe("draft-match-m1");
     });
 
@@ -2445,7 +2799,7 @@ describe("multiplayerDraftStore Commander launch", () => {
       await replacing;
     });
 
-    it("a start pressed while a resumed pod's open fails offline ends with it", async () => {
+    it.each(["online", "offline"] as const)("a start pressed while a resumed pod's open fails %s ends with it", async (connectivity) => {
       let fail!: () => void;
       const pod = freshHostAdapter();
       pod.initialize.mockImplementationOnce(async () => {
@@ -2453,17 +2807,48 @@ describe("multiplayerDraftStore Commander launch", () => {
         await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("persist failed")); });
       });
       mockHostAdapterQueue.push(pod);
+      useGameStore.setState({ gameId: null });
       const opening = installCompletedPod(commanderView(2));
       await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().matchPairing).not.toBeNull());
-      void useMultiplayerDraftStore.getState().startMatch();
+      const started = useMultiplayerDraftStore.getState().startMatch();
       await vi.waitFor(() => expect(transport.instances).toHaveLength(1));
-      useConnectivityStore.setState({ forcedOffline: true });
+      useConnectivityStore.setState({ forcedOffline: connectivity === "offline" });
       fail();
       await opening;
+      for (const instance of transport.instances) instance.finish();
+      const settled = await settle(started);
+      expect(useGameStore.getState().gameId).not.toBe("draft-match-m1");
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(settled).toBe("resolved:null");
       expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
     });
 
-    it("guest arm: a start pressed while a reconnect fails offline ends with it", async () => {
+    it("a start pressed after a resumed pod's open fails online opens no room", async () => {
+      let fail!: () => void;
+      const pod = freshHostAdapter();
+      pod.initialize.mockImplementationOnce(async () => {
+        capturedHostEventHandler!({ type: "matchStart", launch });
+        await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("persist failed")); });
+      });
+      mockHostAdapterQueue.push(pod);
+      useGameStore.setState({ gameId: null });
+      const opening = installCompletedPod(commanderView(2));
+      await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().matchPairing).not.toBeNull());
+      fail();
+      await opening;
+      // Reach: the pairing is still on the store and nothing is in flight, so only the pod guard can refuse the press.
+      expect(useMultiplayerDraftStore.getState().matchPairing?.matchId).toBe("m1");
+      const started = useMultiplayerDraftStore.getState().startMatch();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      for (const instance of transport.instances) instance.finish();
+      const settled = await settle(started);
+      expect(useGameStore.getState().gameId).not.toBe("draft-match-m1");
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(transport.hostRoomSignals).toHaveLength(0);
+      expect(settled).toBe("resolved:null");
+    });
+
+    it.each(["online", "offline"] as const)("guest arm: a start pressed while a reconnect fails %s ends with it", async (connectivity) => {
       let fail!: () => void;
       const make = vi.mocked(P2PDraftGuest).getMockImplementation()!;
       vi.mocked(P2PDraftGuest).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
@@ -2472,16 +2857,48 @@ describe("multiplayerDraftStore Commander launch", () => {
           await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("host gone")); });
         } } as never;
       });
+      useGameStore.setState({ gameId: null });
       const opening = useMultiplayerDraftStore.getState()
         .joinDraft({ kind: "reconnect", roomCode: "ABCDE", displayName: "Guest", hostPeerId: "host-peer-id", draftToken: "token" });
       await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().matchPairing).not.toBeNull());
-      const guest = parkNextGuest({ initializeGame: new Promise<void>(() => {}) });
-      void useMultiplayerDraftStore.getState().startMatch();
+      let reply!: () => void;
+      const guest = parkNextGuest({ initializeGame: new Promise<void>((resolve) => { reply = resolve; }) });
+      const started = useMultiplayerDraftStore.getState().startMatch();
       await vi.waitFor(() => expect(guest.initializeGame).toHaveBeenCalledOnce());
-      useConnectivityStore.setState({ forcedOffline: true });
+      useConnectivityStore.setState({ forcedOffline: connectivity === "offline" });
       fail();
       await opening;
+      reply();
+      const settled = await settle(started);
+      expect(useGameStore.getState().gameId).not.toBe("draft-match-m1");
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(settled).toBe("resolved:null");
       expect((transport.joinRoomCalls[1].signal as AbortSignal).aborted).toBe(true);
+    });
+
+    it("guest arm: a start pressed after a reconnect fails online dials nothing", async () => {
+      let fail!: () => void;
+      const make = vi.mocked(P2PDraftGuest).getMockImplementation()!;
+      vi.mocked(P2PDraftGuest).mockImplementationOnce(function (this: unknown, ...args: unknown[]) {
+        return { ...(make as (...a: unknown[]) => object).apply(this, args), initialize: async () => {
+          capturedDraftGuestListener!({ type: "matchStart", launch: guestLaunch("m1") });
+          await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("host gone")); });
+        } } as never;
+      });
+      useGameStore.setState({ gameId: null });
+      const opening = useMultiplayerDraftStore.getState()
+        .joinDraft({ kind: "reconnect", roomCode: "ABCDE", displayName: "Guest", hostPeerId: "host-peer-id", draftToken: "token" });
+      await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().matchPairing).not.toBeNull());
+      fail();
+      await opening;
+      // Reach: the pairing is still on the store and nothing is in flight, so only the pod guard can refuse the press.
+      expect(useMultiplayerDraftStore.getState().matchPairing?.matchId).toBe("m1");
+      const dialed = transport.joinRoomCalls.length;
+      const settled = await settle(useMultiplayerDraftStore.getState().startMatch());
+      expect(useGameStore.getState().gameId).not.toBe("draft-match-m1");
+      expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
+      expect(transport.joinRoomCalls).toHaveLength(dialed);
+      expect(settled).toBe("resolved:null");
     });
 
     it.each(["replaced", "left"] as const)(
@@ -2551,6 +2968,8 @@ describe("multiplayerDraftStore Commander launch", () => {
       const started = useMultiplayerDraftStore.getState().startMatch();
       await vi.waitFor(() => expect(transport.guestInstances).toHaveLength(1));
       await new Promise((resolve) => setTimeout(resolve, 10));
+      const built = vi.mocked(P2PGuestAdapter).mock.results[0].value as { getSnapshot: ReturnType<typeof vi.fn> };
+      expect(built.getSnapshot).toHaveBeenCalledOnce();
       await useMultiplayerDraftStore.getState().leave();
       const createsBefore = matchLoopMock.create.mock.calls.length;
       open();
@@ -2558,10 +2977,7 @@ describe("multiplayerDraftStore Commander launch", () => {
       const s = useMultiplayerDraftStore.getState();
       expect(transport.guestDispose).toHaveBeenCalledOnce();
       expect(transport.joinDestroyPeer).not.toHaveBeenCalled();
-      expect(matchLoopMock.create.mock.calls.length).toBe(createsBefore + 1);
-      expect(Math.max(...matchLoopMock.controller.dispose.mock.invocationCallOrder)).toBeGreaterThan(
-        Math.max(...matchLoopMock.create.mock.invocationCallOrder),
-      );
+      expect(matchLoopMock.create.mock.calls.length).toBe(createsBefore);
       expect(s.matchAdapter).toBeNull();
       expect(s.phase).toBe("idle");
     });
