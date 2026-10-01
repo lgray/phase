@@ -7869,13 +7869,15 @@ fn dependency_application_order(
             graph.add_edge(nodes[provider], nodes[dependent], ());
         }
     }
+    let components = tarjan_scc(&graph);
     let mut component_of = vec![0usize; len];
-    for (component, members) in tarjan_scc(&graph).iter().enumerate() {
+    for (component, members) in components.iter().enumerate() {
         for member in members {
             component_of[member.index()] = component;
         }
     }
-    // A dependency inside a loop is ignored, so loop members rank like independent effects.
+    // A dependency inside a loop is replaced by timestamp order among its members, so a loop
+    // member still waits for its outside dependencies while its younger siblings wait behind it.
     for (provider, targets) in dependents.iter_mut().enumerate() {
         targets.retain(|&dependent| {
             let inside = component_of[provider] == component_of[dependent];
@@ -7884,6 +7886,14 @@ fn dependency_application_order(
             }
             !inside
         });
+    }
+    for members in &components {
+        let mut ranked: Vec<usize> = members.iter().map(|member| member.index()).collect();
+        ranked.sort_unstable();
+        for pair in ranked.windows(2) {
+            dependents[pair[0]].push(pair[1]);
+            in_degree[pair[1]] += 1;
+        }
     }
 
     let mut ordered = Vec::with_capacity(len);
@@ -22061,6 +22071,36 @@ mod tests {
     fn dependency_order_loop_member_waits_for_upstream_node() {
         // L1 depends on X0 outside the loop {1, 2}.
         assert_eq!(order_of(3, &[(1, 2), (2, 1), (1, 0)]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn dependency_order_loop_member_waiting_on_a_newer_node_keeps_its_siblings_behind() {
+        // Loop {0, 1}; member 0 depends on the newer outside node 2.
+        assert_eq!(order_of(3, &[(0, 1), (1, 0), (0, 2)]), vec![2, 0, 1]);
+        // Loop {0, 1}; member 1 depends on the newer outside node 2.
+        assert_eq!(order_of(3, &[(0, 1), (1, 0), (1, 2)]), vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn dependency_order_cross_loop_dependency_keeps_each_loop_in_timestamp_order() {
+        // Loops {0, 1} and {2, 3}; member 0 depends on member 2.
+        assert_eq!(
+            order_of(4, &[(0, 1), (1, 0), (2, 3), (3, 2), (0, 2)]),
+            vec![2, 0, 1, 3]
+        );
+        // Loops {0, 1} and {2, 3}; member 1 depends on member 2.
+        assert_eq!(
+            order_of(4, &[(0, 1), (1, 0), (2, 3), (3, 2), (1, 2)]),
+            vec![0, 2, 1, 3]
+        );
+    }
+
+    #[test]
+    fn dependency_order_dependent_of_a_loop_member_applies_after_that_member() {
+        // Node 2 depends on member 1 of the loop {0, 1}.
+        assert_eq!(order_of(3, &[(0, 1), (1, 0), (2, 1)]), vec![0, 1, 2]);
+        // Node 0 depends on member 2 of the loop {1, 2}.
+        assert_eq!(order_of(3, &[(1, 2), (2, 1), (0, 2)]), vec![1, 2, 0]);
     }
 
     #[test]
