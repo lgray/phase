@@ -6742,11 +6742,13 @@ fn combat_relation_subject_ref(
         CombatRelationSubject::Source => source
             .trigger_source
             .map(|context| context.identity.reference)
+            // CR 113.7: the ability's capture describes its own source, so it does not answer
+            // for a context rebound to another object (a damage source chosen as a target).
             .or_else(|| {
                 source
                     .ability
-                    .and_then(|ability| ability.source_incarnation)
-                    .map(|incarnation| ObjectIncarnationRef::of(source.id, incarnation))
+                    .filter(|ability| ability.source_id == source.id)
+                    .and_then(|ability| ability.source_ref(state))
             })
             .or_else(|| live(source.id)),
         CombatRelationSubject::ParentTarget => {
@@ -12785,6 +12787,48 @@ mod tests {
             "the snapshot's own captured incarnation must match the ledger, \
              regardless of where the live object has since moved"
         );
+    }
+
+    /// CR 113.7: a context rebound to another source names that object in a combat relation,
+    /// not the resolving ability's own source.
+    #[test]
+    fn combat_relation_source_follows_a_rebound_context_source() {
+        let mut state = setup();
+        let blocker = add_creature(&mut state, PlayerId(1), "Blocker");
+        let attacker = add_creature(&mut state, PlayerId(0), "Attacker");
+        let ability_source = add_creature(&mut state, PlayerId(1), "Ability Source");
+        state
+            .creature_blocked_attackers_this_turn
+            .insert(combat::BlockHistoryPair {
+                blocker: ObjectIncarnationRef::from_object(&state.objects[&blocker]),
+                attacker: ObjectIncarnationRef::from_object(&state.objects[&attacker]),
+            });
+        let ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            ability_source,
+            PlayerId(1),
+        );
+        let filter = TargetFilter::Typed(TypedFilter::creature().properties(vec![
+            FilterProp::CombatRelation {
+                relation: CombatRelation::BlockedBySubject {
+                    scope: CombatHistoryScope::ThisTurn,
+                },
+                subject: CombatRelationSubject::Source,
+            },
+        ]));
+        let mut ctx = FilterContext::from_ability(&ability);
+        assert!(
+            !super::matches_target_filter(&state, attacker, &filter, &ctx),
+            "reach guard: the ability's own source never blocked"
+        );
+        ctx.source_id = blocker;
+        assert!(super::matches_target_filter(
+            &state, attacker, &filter, &ctx
+        ));
     }
 
     #[test]

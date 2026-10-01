@@ -7054,6 +7054,18 @@ fn stamp_grant(modification: &mut ContinuousModification, granter: ObjectIncarna
     }
 }
 
+/// CR 201.5a: latches a resolving ability's grants to its source as it was then.
+pub(crate) fn latch_grants(
+    modifications: &mut [ContinuousModification],
+    granter: ObjectIncarnationRef,
+) {
+    for modification in modifications.iter_mut() {
+        if grant_names_granter(modification) {
+            stamp_grant(modification, granter);
+        }
+    }
+}
+
 /// CR 201.5a: the stamping rule for a static installed on an object other than
 /// `granter` — a granted static or a created token's static.
 pub(crate) fn stamp_static_granter(def: &mut StaticDefinition, granter: ObjectIncarnationRef) {

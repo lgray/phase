@@ -5168,6 +5168,110 @@ mod granter_stamp {
             assert_eq!(lives(None), (20, 2));
         }
 
+        const RECALL_GRANT: &str =
+            "Until end of turn, target creature gains \"{T}: Exile Recall Grant.\"";
+
+        #[test]
+        fn spell_grant_names_the_resolved_spell() {
+            let mut sc = GameScenario::new();
+            sc.at_phase(Phase::PreCombatMain);
+            let spell = sc
+                .add_spell_to_hand_from_oracle(P0, "Recall Grant", true, RECALL_GRANT)
+                .id();
+            let host = sc.add_creature(P0, "Host", 2, 2).id();
+            let mut runner = sc.build();
+            runner.cast(spell).target_object(host).resolve();
+            let st = runner.state();
+            let index = st.objects[&host].abilities.len() - 1;
+            assert!(matches!(
+                *st.objects[&host].abilities[index].effect,
+                Effect::ChangeZone {
+                    target: TargetFilter::GrantingObject { .. },
+                    ..
+                }
+            ));
+            runner.activate(host, index).resolve();
+            assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
+        }
+
+        /// CR 113.7 + CR 201.5a: a resolving spell's token static names the spell as it is on the stack.
+        #[test]
+        fn spell_token_static_names_the_spell() {
+            let mut sc = GameScenario::new();
+            let spell = sc
+                .add_spell_to_hand_from_oracle(P0, "Foo Bar", true, "Create a 2/2 green Ooze creature token with \"This creature gets +2/+2 as long as there are three or more charge counters on Foo Bar.\"")
+                .id();
+            let mut state = sc.build().state().clone();
+            move_to_zone(&mut state, spell, Zone::Stack, &mut Vec::new());
+            let on_stack = ObjectIncarnationRef::from_object(&state.objects[&spell]);
+            let effect = (*state.objects[&spell].abilities[0].effect).clone();
+            assert!(
+                matches!(&effect, Effect::Token { static_abilities, .. } if static_abilities.len() == 1),
+                "reach-guard: the spell's effect creates a token with one static: {effect:?}"
+            );
+            let ability = ResolvedAbility::new(effect, vec![], spell, P0);
+            resolve_ability_chain(&mut state, &ability, &mut Vec::new(), 0).unwrap();
+            let ooze = *state
+                .battlefield
+                .iter()
+                .find(|id| state.objects[id].name == "Ooze")
+                .expect("the Ooze token");
+            let stamps: Vec<_> = state.objects[&ooze]
+                .base_static_definitions
+                .iter()
+                .map(|s| s.granting_object)
+                .collect();
+            assert_eq!(stamps, vec![Some(on_stack)]);
+        }
+
+        const PRINTED_PT_GRANT: &str = "{T}: Target creature gains \"This creature's power and toughness are each equal to the number of charge counters on Foo Bar.\" until end of turn.";
+        const PRINTED_DAMAGE_GRANT: &str = "{T}: Target creature gains \"{T}: This creature deals damage equal to the number of charge counters on Foo Bar to target player.\" until end of turn.";
+
+        fn charge() -> CounterType {
+            CounterType::Generic("charge".into())
+        }
+
+        fn printed_grant_board(text: &str) -> (GameRunner, ObjectId, ObjectId) {
+            let mut sc = GameScenario::new();
+            sc.at_phase(Phase::PreCombatMain);
+            let src = sc.add_artifact_from_oracle(P0, "Foo Bar", text).id();
+            sc.with_counter(src, charge(), 3);
+            let host = sc.add_creature(P0, "Host", 1, 1).id();
+            let mut runner = sc.build();
+            runner.activate(src, 0).target_object(host).resolve();
+            relayer(runner.state_mut());
+            (runner, src, host)
+        }
+
+        fn blink_with_charge(runner: &mut GameRunner, id: ObjectId, n: u32) {
+            let st = runner.state_mut();
+            move_to_zone(st, id, Zone::Exile, &mut Vec::new());
+            move_to_zone(st, id, Zone::Battlefield, &mut Vec::new());
+            st.objects
+                .get_mut(&id)
+                .unwrap()
+                .counters
+                .insert(charge(), n);
+            relayer(st);
+        }
+
+        #[test]
+        fn printed_static_grant_does_not_follow_a_blinked_source() {
+            let (mut runner, src, host) = printed_grant_board(PRINTED_PT_GRANT);
+            assert_eq!(runner.state().objects[&host].power, Some(3));
+            blink_with_charge(&mut runner, src, 5);
+            assert_eq!(runner.state().objects[&host].power, Some(0));
+        }
+
+        #[test]
+        fn printed_ability_grant_reads_the_departed_source() {
+            let (mut runner, src, host) = printed_grant_board(PRINTED_DAMAGE_GRANT);
+            blink_with_charge(&mut runner, src, 5);
+            let index = runner.state().objects[&host].abilities.len() - 1;
+            runner.activate(host, index).target_player(P1).resolve();
+            assert_eq!(runner.state().players[1].life, 17);
+        }
+
         const DRAW_BY_GRANTER: &str =
             "{T}: Draw cards equal to the number of +1/+1 counters on Foo Bar.";
         const GAIN_BY_GRANTER: &str =

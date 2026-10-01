@@ -34150,6 +34150,24 @@ impl ResolvedAbility {
                 && Some(r.current_incarnation) == current_incarnation)
     }
 
+    /// CR 113.7 + CR 400.7: the ability's source as the object it was when the ability was
+    /// created; a spell, which captures no incarnation, is its current stack object.
+    pub fn source_ref(
+        &self,
+        state: &crate::types::game_state::GameState,
+    ) -> Option<crate::types::identifiers::ObjectIncarnationRef> {
+        let incarnation = self.source_incarnation.or_else(|| {
+            state
+                .objects
+                .get(&self.source_id)
+                .map(|obj| obj.incarnation)
+        })?;
+        Some(crate::types::identifiers::ObjectIncarnationRef::of(
+            self.source_id,
+            incarnation,
+        ))
+    }
+
     /// CR 400.7: True if the ability's source is still the same object instance it
     /// was when the ability was created. Full triggered-source provenance takes
     /// precedence; activated and delayed self-transform abilities fall back to

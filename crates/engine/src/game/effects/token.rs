@@ -673,8 +673,7 @@ fn build_token_spec(
 
     // CR 201.5a + CR 400.7: the token's statics name the incarnation that
     // created it, so a creator that later changes zones is a different object.
-    if let Some(incarnation) = ability.source_incarnation {
-        let creator = ObjectIncarnationRef::of(ability.source_id, incarnation);
+    if let Some(creator) = ability.source_ref(state) {
         for static_def in static_abilities.iter_mut() {
             crate::game::layers::stamp_static_granter(static_def, creator);
         }

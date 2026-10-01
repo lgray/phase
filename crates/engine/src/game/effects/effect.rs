@@ -261,6 +261,12 @@ fn install_transient(
     modifications: Vec<ContinuousModification>,
     condition: Option<StaticCondition>,
 ) -> u64 {
+    let mut modifications = modifications;
+    // CR 201.5a + CR 400.7 + CR 113.7: a grant names the object whose ability resolved, as
+    // it was then; a resolving spell is still on the stack (CR 608.2n).
+    if let Some(granter) = ability.source_ref(state) {
+        crate::game::layers::latch_grants(&mut modifications, granter);
+    }
     state.add_transient_continuous_effect_inner(
         ability.source_id,
         ability.controller,
