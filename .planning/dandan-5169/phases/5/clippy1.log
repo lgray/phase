@@ -244,3 +244,4 @@
     Checking draft-wasm v0.97.0 (/home/user/phase/crates/draft-wasm)
     Checking phase-server v0.97.0 (/home/user/phase/crates/phase-server)
     Checking manabrew-compat v0.97.0 (/home/user/phase/crates/manabrew-compat)
+    Finished `dev` profile [unoptimized] target(s) in 20m 05s

@@ -37,3 +37,7 @@
 
 ## J6 GitHub re-test after second restart (2026-10-01T11:57:10Z)
 - curl api.github.com issue 5169 -> 403; gh -> not installed. PR route still closed.
+
+## J7 PARKED (2026-10-01 ~14:00Z) — USER park order via team-lead
+- Phase 5 executor stopped mid-verification (a full suite still remained, more than 30 min). Its uncommitted edit set was saved as wip/phase5-on-91ad0dff88426ed6d983e8e060d67cd0a030c926.patch (28 tracked files plus 3 new files) and is unverified.
+- feat/dandan-format stays at 91ad0dff (Phase 4b accepted). Plans for 6–16 are clean; the Phase 17 plan is written but not reviewed. The charter scope-addition batch for 12/14/16/17 is pending (USER-authorized). RESUME.md is at the dandan-run-state root.

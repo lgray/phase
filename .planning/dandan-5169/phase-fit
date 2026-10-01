@@ -131,3 +131,5 @@
 
 ## 23. Phase 16 (frontend shared piles)
 - Plan r1: DerivedViews.shared_piles + client resolvePileSeat display routing; bump 98->99/80->81. Review r1: 0 behavior; F1 machinery (delete ZoneViewer seat gate; engine already provides delve actions), F2/F3 text — applied by applier (orchestrator-verified). Loop closed; plan CLEAN. Scope additions (batch): 7 protocol pins (Standing rule), ZoneViewer.tsx, client test files (gameStateView.test.ts forced; ZoneViewer.test.tsx, castable-hook test, AnimationOverlay anchor test, GamePage.sharedPiles test).
+
+## 24. PARKED (USER directive). Phase 5 impl round 1 stopped by the orchestrator (environment/park, not a design round); WIP patch saved. Phase 17 plan unreviewed. Charter scope batch pending.
