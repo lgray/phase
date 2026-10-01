@@ -1028,6 +1028,7 @@ mod living_death_replacement_redirect_2932;
 mod living_death_sacrificed_this_way_lifegain_2932;
 mod living_death_same_destination_disambiguation_2932;
 mod loki_becomes_target_ability;
+mod loop_only_dependency_fallback;
 mod lost_monarch_combat_damage_by_type_intervening_if;
 mod louisoix_sacrifice_counter;
 mod lurking_predators_1604_repro;

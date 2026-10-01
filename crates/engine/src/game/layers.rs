@@ -1,6 +1,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use petgraph::algo::tarjan_scc;
+use petgraph::graph::{DiGraph, NodeIndex};
+
 use crate::database::synthesis::KeywordTriggerInstaller;
 use crate::game::arithmetic::saturating_pt_add;
 use crate::game::combat::AttackTarget;
@@ -7762,7 +7765,8 @@ fn collect_transient_combat_assignment_rule_effects(
 }
 
 /// Order effects using dependency-aware topological sort.
-/// CR 613.8: Dependency ordering for continuous effects.
+/// CR 613.8: Dependency ordering for continuous effects; a dependency loop falls back to
+/// timestamp order for the loop's members only (CR 613.8b).
 fn order_with_dependencies(
     effects: &[&ActiveContinuousEffect],
     state: &GameState,
@@ -7788,54 +7792,152 @@ fn order_with_dependencies(
         )
     });
 
-    let mut dependencies: Vec<Vec<usize>> = vec![Vec::new(); sorted.len()];
-    let mut in_degree = vec![0usize; sorted.len()];
-    for i in 0..sorted.len() {
-        for j in 0..sorted.len() {
-            if i == j {
-                continue;
-            }
-            if depends_on(sorted[i], sorted[j], state) {
-                dependencies[j].push(i);
-                in_degree[i] += 1;
+    // CR 613.8a: dependency is a relation between effects, so the graph node is the effect,
+    // keyed as the CR 613.6 applier keys it; a copy exception therefore stays with its own
+    // copy effect (CR 707.9b) instead of being reordered against a later copy.
+    let members = effect_nodes(&sorted, state);
+    let mut node_of = vec![0usize; sorted.len()];
+    for (node, entries) in members.iter().enumerate() {
+        for &entry in entries {
+            node_of[entry] = node;
+        }
+    }
+    let mut edges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for (i, dependent) in sorted.iter().enumerate() {
+        for (j, provider) in sorted.iter().enumerate() {
+            if node_of[i] != node_of[j] && depends_on(dependent, provider, state) {
+                edges.insert((node_of[j], node_of[i]));
             }
         }
+    }
+    let mut dependencies: Vec<Vec<usize>> = vec![Vec::new(); members.len()];
+    let mut in_degree = vec![0usize; members.len()];
+    for (provider, dependent) in edges {
+        dependencies[provider].push(dependent);
+        in_degree[dependent] += 1;
     }
 
     // CR 613.8c (tracking): the rule requires the order of remaining effects to be
     // RE-EVALUATED after each effect is applied (an unapplied effect may become
     // dependent on / independent of other unapplied effects). This is NOT
-    // implemented: the dependency graph above is computed ONCE and the Kahn pass
-    // below consumes that fixed graph without re-running `depends_on` between
+    // implemented: the dependency graph above is computed ONCE and the pass below
+    // consumes that fixed graph without re-running `depends_on` between
     // applications. Impact is zero today because `depends_on` is state-blind (see
     // its doc comment) — its answers cannot change mid-pass, so compute-once equals
     // iterative re-evaluation. This re-evaluation MUST be added if/when `depends_on`
     // becomes state-aware (the two are coupled).
-    let mut ordered = Vec::with_capacity(sorted.len());
-    let mut processed = vec![false; sorted.len()];
+    // CR 613.7a: an effect's modifications apply contiguously in written order.
+    dependency_application_order(dependencies, in_degree)
+        .into_iter()
+        .flat_map(|node| members[node].iter().map(|&entry| sorted[entry].clone()))
+        .collect()
+}
 
-    while ordered.len() < sorted.len() {
-        let Some(next) = (0..sorted.len()).find(|&idx| !processed[idx] && in_degree[idx] == 0)
-        else {
-            // CR 613.8b: Dependency cycle — fall back to timestamp ordering.
-            // CR 613.8b (tracking): the rule reverts ONLY the effects that are IN
-            // the dependency loop to timestamp order, leaving non-loop dependent
-            // effects ordered normally. This implementation is coarser: on ANY
-            // cycle it reverts the WHOLE layer bucket (`sorted`) to timestamp
-            // order. Deferred and unreachable today — no current card forms a
-            // dependency loop under the state-blind `depends_on` (see its doc
-            // comment), so the loop-only-vs-whole-bucket distinction is unobservable.
-            return sorted.iter().map(|effect| (*effect).clone()).collect();
+/// Groups timestamp-sorted entries into the effects that produced them (CR 613.8a), each
+/// group in written order and the groups ordered by their earliest entry; an entry with no
+/// effect identity is an effect of its own.
+fn effect_nodes(sorted: &[&ActiveContinuousEffect], state: &GameState) -> Vec<Vec<usize>> {
+    let mut nodes: Vec<Vec<usize>> = Vec::new();
+    let mut by_key: HashMap<ContinuousEffectGroupKey, usize> = HashMap::new();
+    for (idx, entry) in sorted.iter().enumerate() {
+        match continuous_effect_group_key(state, entry) {
+            Some(key) => match by_key.get(&key) {
+                Some(&node) => nodes[node].push(idx),
+                None => {
+                    by_key.insert(key, nodes.len());
+                    nodes.push(vec![idx]);
+                }
+            },
+            None => nodes.push(vec![idx]),
+        }
+    }
+    nodes
+}
+
+/// CR 613.8b: an effect waits until just after every effect it depends on; effects in a
+/// dependency loop ignore that rule among themselves and apply in timestamp order.
+///
+/// Nodes are indexed by timestamp rank; `dependents[j]` lists the nodes that depend on `j`
+/// and `in_degree[i]` counts the unapplied effects `i` depends on.
+fn dependency_application_order(
+    mut dependents: Vec<Vec<usize>>,
+    mut in_degree: Vec<usize>,
+) -> Vec<usize> {
+    let len = in_degree.len();
+    let mut ordered = Vec::with_capacity(len);
+    let mut processed = vec![false; len];
+
+    while ordered.len() < len {
+        let Some(next) = (0..len).find(|&idx| !processed[idx] && in_degree[idx] == 0) else {
+            // Every unprocessed node waits on another, so the remaining graph has a loop.
+            // Only the loop's own edges are ignored; effects that depend on the loop keep
+            // their in-degree and still wait for the members they depend on.
+            let members = earliest_source_loop(&dependents, &processed);
+            debug_assert!(members.len() > 1, "a stalled source component is a loop");
+            for &member in &members {
+                let (inside, outside): (Vec<usize>, Vec<usize>) = dependents[member]
+                    .iter()
+                    .partition(|dependent| members.contains(dependent));
+                for dependent in inside {
+                    in_degree[dependent] -= 1;
+                }
+                dependents[member] = outside;
+            }
+            continue;
         };
 
         processed[next] = true;
-        ordered.push(sorted[next].clone());
-        for &dependent in &dependencies[next] {
-            in_degree[dependent] = in_degree[dependent].saturating_sub(1);
+        ordered.push(next);
+        for &dependent in &dependents[next] {
+            in_degree[dependent] -= 1;
         }
     }
 
     ordered
+}
+
+/// The unprocessed strongly connected component with no dependency from outside itself
+/// whose lowest-ranked member ranks lowest.
+fn earliest_source_loop(dependents: &[Vec<usize>], processed: &[bool]) -> Vec<usize> {
+    let mut graph: DiGraph<(), ()> = DiGraph::with_capacity(dependents.len(), 0);
+    let nodes: Vec<NodeIndex> = dependents.iter().map(|_| graph.add_node(())).collect();
+    for (from, targets) in dependents.iter().enumerate() {
+        if processed[from] {
+            continue;
+        }
+        for &to in targets.iter().filter(|&&to| !processed[to]) {
+            graph.add_edge(nodes[from], nodes[to], ());
+        }
+    }
+
+    let components = tarjan_scc(&graph);
+    let mut component_of = vec![0usize; dependents.len()];
+    for (component, members) in components.iter().enumerate() {
+        for member in members {
+            component_of[member.index()] = component;
+        }
+    }
+    let mut has_outside_dependency = vec![false; components.len()];
+    for (from, targets) in dependents.iter().enumerate() {
+        if processed[from] {
+            continue;
+        }
+        for &to in targets.iter().filter(|&&to| !processed[to]) {
+            if component_of[from] != component_of[to] {
+                has_outside_dependency[component_of[to]] = true;
+            }
+        }
+    }
+
+    components
+        .iter()
+        .enumerate()
+        .filter(|(component, members)| {
+            !has_outside_dependency[*component] && members.iter().any(|m| !processed[m.index()])
+        })
+        .map(|(_, members)| members.iter().map(|m| m.index()).collect::<Vec<usize>>())
+        .min_by_key(|members| members.iter().copied().min())
+        .expect("an unprocessed, non-empty graph condenses to at least one source component")
 }
 
 pub(crate) fn order_active_continuous_effects(
@@ -21940,6 +22042,198 @@ mod tests {
         );
     }
 
+    /// Builds the `dependency_application_order` inputs from `(dependent, depends_on)` pairs.
+    fn order_of(len: usize, depends: &[(usize, usize)]) -> Vec<usize> {
+        let mut dependents = vec![Vec::new(); len];
+        let mut in_degree = vec![0usize; len];
+        for &(dependent, on) in depends {
+            dependents[on].push(dependent);
+            in_degree[dependent] += 1;
+        }
+        dependency_application_order(dependents, in_degree)
+    }
+
+    #[test]
+    fn dependency_order_whole_loop_is_timestamp_order() {
+        assert_eq!(order_of(2, &[(0, 1), (1, 0)]), vec![0, 1]);
+        assert_eq!(
+            order_of(4, &[(0, 3), (1, 0), (2, 1), (3, 2)]),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn dependency_order_chain_plus_loop_keeps_the_chain() {
+        // B0 depends on A1; A1 and C2 depend on each other.
+        assert_eq!(order_of(3, &[(0, 1), (1, 2), (2, 1)]), vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn dependency_order_dependent_on_whole_loop_waits() {
+        // D0 depends on both members of the loop {1, 2}.
+        assert_eq!(
+            order_of(3, &[(0, 1), (0, 2), (1, 2), (2, 1)]),
+            vec![1, 2, 0]
+        );
+    }
+
+    #[test]
+    fn dependency_order_stalls_recur_across_loops() {
+        // Loop {2, 3} has a member depending on loop {0, 1}.
+        assert_eq!(
+            order_of(4, &[(0, 1), (1, 0), (2, 3), (3, 2), (2, 0)]),
+            vec![0, 1, 2, 3]
+        );
+        // Independent loops {0, 3} and {1, 2} order by lowest member rank.
+        assert_eq!(
+            order_of(4, &[(0, 3), (3, 0), (1, 2), (2, 1)]),
+            vec![0, 3, 1, 2]
+        );
+    }
+
+    #[test]
+    fn dependency_order_loop_member_waits_for_upstream_node() {
+        // L1 depends on X0 outside the loop {1, 2}.
+        assert_eq!(order_of(3, &[(1, 2), (2, 1), (1, 0)]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn dependency_order_acyclic_graphs_follow_plain_kahn_order() {
+        assert_eq!(order_of(2, &[(0, 1)]), vec![1, 0]);
+        assert_eq!(order_of(3, &[]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn dependency_order_loop_effect_with_older_dependent_keeps_the_dependent_at_its_rank() {
+        // D0 depends on A1; A1 and B2 depend on each other. A1 stands for a multi-entry
+        // effect: the graph sees it as one node.
+        assert_eq!(
+            order_of(3, &[(0, 1), (1, 2), (2, 1)]),
+            vec![1, 0, 2],
+            "D applies right after A (CR 613.8b/613.8c), then the loop's later member"
+        );
+    }
+
+    fn entry(
+        source: ObjectId,
+        def_index: Option<usize>,
+        transient_id: Option<u64>,
+        mod_index: usize,
+        timestamp: u64,
+        modification: ContinuousModification,
+    ) -> ActiveContinuousEffect {
+        ActiveContinuousEffect {
+            source_id: source,
+            controller: PlayerId(0),
+            def_index,
+            transient_id,
+            trigger_producer_origin: None,
+            expanded_trigger_provider: None,
+            mod_index,
+            layer: modification.layer(),
+            timestamp,
+            modification,
+            affected_filter: TargetFilter::Any,
+            condition: None,
+            mode: StaticMode::Continuous,
+            characteristic_defining: false,
+        }
+    }
+
+    fn copy_values_of(state: &GameState, donor: ObjectId) -> ContinuousModification {
+        ContinuousModification::CopyValues {
+            values: Box::new(crate::game::printed_cards::intrinsic_copiable_values(
+                &state.objects[&donor],
+            )),
+            display_source: crate::game::game_object::DisplaySource::Card,
+            printed_ref: None,
+            token_image_ref: None,
+        }
+    }
+
+    #[test]
+    fn effect_nodes_group_entries_by_effect_identity() {
+        let mut state = setup();
+        let a = make_creature(&mut state, "A", 1, 1, PlayerId(0));
+        let b = make_creature(&mut state, "B", 1, 1, PlayerId(0));
+        let add_power = || ContinuousModification::AddPower { value: 1 };
+        let rename = || ContinuousModification::SetName { name: "N".into() };
+
+        // One transient effect with two modifications, then another transient effect.
+        let transient = [
+            entry(a, None, Some(1), 0, 1, rename()),
+            entry(a, None, Some(1), 1, 1, add_power()),
+            entry(a, None, Some(2), 0, 2, rename()),
+        ];
+        let refs: Vec<&ActiveContinuousEffect> = transient.iter().collect();
+        assert_eq!(effect_nodes(&refs, &state), vec![vec![0, 1], vec![2]]);
+
+        // Two printed statics of one source are two effects.
+        let statics = [
+            entry(b, Some(0), None, 0, 1, add_power()),
+            entry(b, Some(1), None, 0, 1, add_power()),
+        ];
+        let refs: Vec<&ActiveContinuousEffect> = statics.iter().collect();
+        assert_eq!(effect_nodes(&refs, &state), vec![vec![0], vec![1]]);
+
+        // Two granted statics on one recipient with different grant origins are two effects.
+        let granted_by = |definition_index: usize| {
+            let mut e = entry(b, None, None, 0, 1, add_power());
+            e.trigger_producer_origin = Some(TriggerProducerOrigin::Static {
+                source: ObjectIncarnationRef::from_object(&state.objects[&a]),
+                definition_index,
+                modification_index: 0,
+            });
+            e
+        };
+        let granted = [granted_by(0), granted_by(1)];
+        let refs: Vec<&ActiveContinuousEffect> = granted.iter().collect();
+        assert_eq!(effect_nodes(&refs, &state), vec![vec![0], vec![1]]);
+
+        // An entry with no effect identity is an effect of its own.
+        let anonymous = [
+            entry(a, None, None, 0, 1, add_power()),
+            entry(a, None, None, 1, 1, add_power()),
+        ];
+        let refs: Vec<&ActiveContinuousEffect> = anonymous.iter().collect();
+        assert_eq!(effect_nodes(&refs, &state), vec![vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering() {
+        let mut state = setup();
+        let target = make_creature(&mut state, "Target", 1, 1, PlayerId(0));
+        let donor = make_creature(&mut state, "Donor", 2, 2, PlayerId(0));
+        let first_copy = entry(target, None, Some(1), 0, 1, copy_values_of(&state, donor));
+        let exception = entry(
+            target,
+            None,
+            Some(1),
+            1,
+            1,
+            ContinuousModification::SetName {
+                name: "Wrong Turn".into(),
+            },
+        );
+        let second_copy = entry(target, None, Some(2), 0, 2, copy_values_of(&state, donor));
+        // Positive reach-guard: the two copy effects are a dependency loop, so the
+        // ordering takes its loop-fallback path.
+        assert!(depends_on(&first_copy, &second_copy, &state));
+        assert!(depends_on(&second_copy, &first_copy, &state));
+
+        let refs = [&second_copy, &exception, &first_copy];
+        let ordered = order_with_dependencies(&refs, &state);
+        let shape: Vec<(Option<u64>, usize)> = ordered
+            .iter()
+            .map(|e| (e.transient_id, e.mod_index))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![(Some(1), 0), (Some(1), 1), (Some(2), 0)],
+            "the exception applies with its own copy, before the later copy"
+        );
+    }
+
     #[test]
     fn basic_swamp_receives_no_duplicate_swamp_ability_from_urborg() {
         // An actual basic Swamp already has `{T}: Add {B}`. Urborg adding
@@ -26232,9 +26526,8 @@ mod tests {
     ///
     /// The two copy-granted renames land on neutral watchers rather than on the
     /// pair itself, ON PURPOSE. Two permanents copying each other is a CR 613.8b
-    /// dependency LOOP, so the engine correctly discards the dependency edges and
-    /// falls back to timestamp order, under which each half's older static applies
-    /// before the newer `CopyValues` overwrites its name. That is a separate rule
+    /// dependency LOOP, so the two `CopyValues` apply in timestamp order and each
+    /// copy-granted static, which depends on both, applies after them. That is a separate rule
     /// from the one under test, and asserting on the pair's own names would pin
     /// 613.8b's tie-break instead of 1a's fixed point.
     ///
