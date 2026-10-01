@@ -615,10 +615,9 @@ export class NativeEngineVersionMismatchError extends Error {
  *      into a MulliganDecisionPhase::BottomCards sub-phase on
  *      WaitingFor::MulliganDecision.
  *
- * 94 — ContinuousModification gains `SubstituteTextWord` (CR 612.1 word
- *      substitution), serialized inside GameState's transient continuous
- *      effects; a v93 peer cannot parse the tag. Wire 76 moves with it; lobby 15
- *      does not, no lobby frame carries the shape.
+ * 94 — ContinuousModification gains `SubstituteTextWord` (CR 612.1), serialized
+ *      inside GameState's transient continuous effects, so a v93 peer cannot
+ *      parse the tag.
  * 93 — GameFormat gains `Dandan`. It serializes as its Display string and
  *      deserializes through FromStr, so a v92 peer cannot parse a GameState or
  *      a lobby FormatConfig that names it. Wire 75 and lobby 15 move with it;

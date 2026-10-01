@@ -1617,9 +1617,7 @@ pub enum TextSubstitution {
     },
 }
 
-/// `Fixed` is what the text layer applies. `Chosen` is the parse-time form whose
-/// words are picked on resolution (CR 608.2d) and latched to `Fixed` when the
-/// effect installs (CR 611.2c); a `Chosen` modification reaching the layer is inert.
+/// `Fixed` is what the text layer applies, while `Chosen` is the parse-time form latched to `Fixed` when the effect installs (CR 608.2d + CR 611.2c) and inert if it reaches the layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum TextSubstitutionSpec {

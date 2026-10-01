@@ -1062,11 +1062,7 @@ pub fn generic_effect_population_filter<'a>(
         })
 }
 
-/// CR 608.2d + CR 611.2c: the words a text-changing effect substitutes are named
-/// as it resolves, so the pending `Chosen` modification latches to the `Fixed`
-/// pair the controller just answered. The answer is taken, so it is consumed
-/// exactly once and a skipped prompt can never latch a stale earlier answer; an
-/// answer outside the effect's domains leaves the inert `Chosen` form.
+/// CR 608.2d + CR 611.2c: the pending `Chosen` modification latches to the `Fixed` pair the controller just named, and the answer is taken so a skipped prompt can never latch a stale earlier one.
 fn latch_chosen_text_words(
     state: &mut GameState,
     modifications: Vec<ContinuousModification>,
@@ -4920,8 +4916,7 @@ mod tests {
         );
     }
 
-    /// CR 608.2d: the word answer latches once; a later effect whose prompt was
-    /// skipped must not read the earlier answer.
+    /// CR 608.2d: the word answer latches once, so a later effect whose prompt was skipped must not read it.
     #[test]
     fn text_word_latch_consumes_the_answer() {
         use crate::types::ability::{

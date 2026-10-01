@@ -1,6 +1,4 @@
-//! CR 612: word-substitution text changes (Magical Hack, Crystal Spray, and the
-//! color / basic-land-type class), driven through the real cast pipeline with the
-//! cards' verbatim Oracle text from the shared card database.
+//! CR 612: word-substitution text changes driven through the real cast pipeline with the cards' verbatim Oracle text from the shared card database.
 
 use std::collections::BTreeSet;
 
@@ -132,8 +130,7 @@ macro_rules! db {
     };
 }
 
-/// P1 + P2 + P5: a land-type word in a keyword is text (CR 612.1) and a change with
-/// no stated duration lasts indefinitely (CR 611.2a).
+/// A land-type word in a keyword is text (CR 612.1), and a change with no stated duration lasts indefinitely (CR 611.2a).
 #[test]
 fn magical_hack_changes_landwalk_indefinitely() {
     let db = db!();
@@ -185,8 +182,42 @@ fn magical_hack_changes_landwalk_indefinitely() {
     );
 }
 
-/// P3: the type line's land-type word changes and the derived intrinsic mana ability
-/// follows (CR 305.6 + CR 305.7).
+/// An indefinite text change ends when the permanent leaves the battlefield, so the returned object has its printed text (CR 400.7).
+#[test]
+fn indefinite_text_change_ends_when_the_permanent_leaves_and_returns() {
+    let db = db!();
+    let mut scenario = new_scenario();
+    let hack = scenario.add_real_card(P0, "Magical Hack", Zone::Hand, db);
+    let wraith = scenario.add_real_card(P0, "Bog Wraith", Zone::Battlefield, db);
+    let mut runner = build(scenario, db);
+
+    cast_text_change(
+        &mut runner,
+        hack,
+        wraith,
+        "Swamp -> Plains",
+        &[ManaType::Blue],
+    );
+    assert_eq!(
+        walks(&runner, wraith),
+        ["Plains"],
+        "reach-guard: the change is live while the permanent stays on the battlefield"
+    );
+
+    let mut events = Vec::new();
+    engine::game::zones::move_to_zone(runner.state_mut(), wraith, Zone::Hand, &mut events);
+    engine::game::zones::move_to_zone(runner.state_mut(), wraith, Zone::Battlefield, &mut events);
+    evaluate_layers(runner.state_mut());
+
+    assert_eq!(runner.state().objects[&wraith].zone, Zone::Battlefield);
+    assert_eq!(
+        walks(&runner, wraith),
+        ["Swamp"],
+        "CR 400.7: the returned permanent is a new object with its printed Swampwalk"
+    );
+}
+
+/// The type line's land-type word changes and the derived intrinsic mana ability follows (CR 305.6).
 #[test]
 fn magical_hack_changes_basic_land_subtype() {
     let db = db!();
@@ -216,7 +247,7 @@ fn magical_hack_changes_basic_land_subtype() {
     assert_eq!(
         offered_mana(&runner, forest),
         BTreeSet::from([ManaType::Blue]),
-        "CR 305.6 + CR 305.7: taps for {{U}}, no longer {{G}}"
+        "CR 305.6: taps for {{U}}, no longer {{G}}"
     );
     assert_eq!(
         offered_mana(&runner, swamp),
@@ -225,7 +256,7 @@ fn magical_hack_changes_basic_land_subtype() {
     );
 }
 
-/// P4: CR 613.8 dependency order beats timestamp for a chain, in both casting orders.
+/// CR 613.8: dependency order beats timestamp for a chain, in both casting orders.
 #[test]
 fn chain_of_text_changes_applies_dependency_order_in_both_casting_orders() {
     let db = db!();
@@ -253,7 +284,7 @@ fn chain_of_text_changes_applies_dependency_order_in_both_casting_orders() {
     }
 }
 
-/// P4: a CR 613.8b loop falls back to timestamp order.
+/// A CR 613.8b loop falls back to timestamp order.
 #[test]
 fn loop_of_text_changes_applies_timestamp_order() {
     let db = db!();
@@ -276,8 +307,7 @@ fn loop_of_text_changes_applies_timestamp_order() {
     }
 }
 
-/// P4: a loop does not drag a chain effect on the same object back to timestamp
-/// order (CR 613.8b), and an unrelated object's same-`from` pair stays confined.
+/// A loop does not drag a chain effect on the same object back to timestamp order (CR 613.8b), and an unrelated object's same-`from` pair stays confined.
 #[test]
 fn chain_plus_loop_on_one_object_and_unrelated_loop_on_another() {
     let db = db!();
@@ -289,7 +319,7 @@ fn chain_plus_loop_on_one_object_and_unrelated_loop_on_another() {
     let y = scenario.add_real_card(P0, "Bog Wraith", Zone::Battlefield, db);
     let mut runner = build(scenario, db);
 
-    // X: B (Plains -> Forest), then A (Swamp -> Plains), then C (Swamp -> Forest).
+    // Object X: Plains -> Forest, then Swamp -> Plains, then Swamp -> Forest.
     cast_text_change(
         &mut runner,
         hacks[0],
@@ -311,7 +341,7 @@ fn chain_plus_loop_on_one_object_and_unrelated_loop_on_another() {
         "Swamp -> Forest",
         &[ManaType::Blue],
     );
-    // Y: a same-`from` pair on another object.
+    // Object Y: a same-`from` pair on another object.
     cast_text_change(
         &mut runner,
         hacks[3],
@@ -339,7 +369,7 @@ fn chain_plus_loop_on_one_object_and_unrelated_loop_on_another() {
     );
 }
 
-/// P4: effects on two different objects never order against each other.
+/// Effects on two different objects never order against each other (CR 613.8a).
 #[test]
 fn same_from_changes_on_different_objects_do_not_interact() {
     let db = db!();
@@ -355,7 +385,7 @@ fn same_from_changes_on_different_objects_do_not_interact() {
     assert_eq!(walks(&runner, y2), ["Forest"]);
 }
 
-/// P5: a color word inside a keyword is text; a mana symbol is not (CR 612.2).
+/// A color word inside a keyword is text, but a mana symbol is not (CR 612.2).
 #[test]
 fn color_word_in_keyword_changes_and_unrelated_color_is_a_no_op() {
     let db = db!();
@@ -405,7 +435,7 @@ fn color_word_in_keyword_changes_and_unrelated_color_is_a_no_op() {
     assert_eq!(runner.state().objects[&knight_b].name, "Black Knight");
 }
 
-/// P6 + CR 612.3: printed static text changes; a granted ability is not text.
+/// Printed static text changes, but an ability granted by another object's static is not text (CR 612.3).
 #[test]
 fn granted_abilities_are_not_text_but_printed_statics_are() {
     let db = db!();
@@ -455,7 +485,7 @@ fn granted_abilities_are_not_text_but_printed_statics_are() {
     );
 }
 
-/// ST1: a text-changed static ability generates its effect from the changed text.
+/// A text-changed static ability generates its effect from the changed text (CR 613.1c).
 #[test]
 fn changed_static_ability_applies_in_the_same_layer_pass() {
     let db = db!();
@@ -500,8 +530,7 @@ fn changed_static_ability_applies_in_the_same_layer_pass() {
     assert_eq!(pt(&runner, white), (3, 3), "indefinite");
 }
 
-/// P2: the words in a mana ability's symbols are not text; the color word in the
-/// animation is (CR 612.2).
+/// The words in a mana ability's symbols are not text, but the color word in the animation is (CR 612.2).
 #[test]
 fn mana_symbols_are_not_words_but_the_color_word_is() {
     let db = db!();
@@ -557,7 +586,7 @@ fn mana_symbols_are_not_words_but_the_color_word_is() {
     );
 }
 
-/// S1: a text change on a spell on the stack is what resolves (CR 608.2b).
+/// A text change on a spell on the stack is what resolves (CR 608.2b).
 #[test]
 fn text_change_on_a_spell_changes_what_resolves() {
     let db = db!();
@@ -602,7 +631,7 @@ fn text_change_on_a_spell_changes_what_resolves() {
     }
 }
 
-/// S1 (land type): the resolving Acid Rain destroys the changed land type.
+/// A resolving spell destroys the changed land type (CR 608.2b).
 #[test]
 fn text_change_on_acid_rain_changes_which_lands_die() {
     let db = db!();
@@ -652,7 +681,7 @@ fn text_change_on_acid_rain_changes_which_lands_die() {
     }
 }
 
-/// S3: CR 400.7a, a text change on a permanent spell carries onto the permanent.
+/// A text change on a permanent spell carries onto the permanent (CR 400.7a).
 #[test]
 fn text_change_on_a_permanent_spell_carries_to_the_permanent() {
     let db = db!();
@@ -701,7 +730,7 @@ fn text_change_on_a_permanent_spell_carries_to_the_permanent() {
     }
 }
 
-/// S4: the other leg of CR 400.7a, a change on a non-permanent spell does not outlive it.
+/// A text change on a non-permanent spell does not outlive it (CR 400.7a).
 #[test]
 fn text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack() {
     let db = db!();
@@ -754,8 +783,7 @@ fn has_text_word(mods: &[ContinuousModification]) -> bool {
         .any(|m| matches!(m, ContinuousModification::SubstituteTextWord { .. }))
 }
 
-/// C1: the prompt lists exactly the domain's pairs; Crystal Spray folds both domains
-/// and draws after the change.
+/// The prompt lists exactly the domain's pairs, and Crystal Spray folds both domains and draws after the change (CR 608.2d).
 #[test]
 fn crystal_spray_prompts_both_domains_then_draws() {
     let db = db!();
@@ -803,7 +831,7 @@ fn crystal_spray_prompts_both_domains_then_draws() {
     let _ = sleight;
 }
 
-/// C1: out-of-domain and same-word answers are rejected by the latch, not applied.
+/// Out-of-domain and same-word answers are rejected by the latch rather than applied (CR 608.2d).
 #[test]
 fn sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer() {
     let db = db!();
@@ -839,7 +867,7 @@ fn sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer(
         .expect("a color pair");
 }
 
-/// E1: an "until end of turn" change ends at cleanup (CR 514.2).
+/// An "until end of turn" change ends at cleanup (CR 514.2).
 #[test]
 fn crystal_spray_change_ends_at_end_of_turn() {
     let db = db!();
@@ -867,8 +895,7 @@ fn crystal_spray_change_ends_at_end_of_turn() {
     assert_eq!(walks(&runner, wraith), ["Swamp"], "reverted at cleanup");
 }
 
-/// S5: the non-`effect` fields of a resolving ability are rewritten; runtime
-/// state is bit-identical.
+/// The non-`effect` fields of a resolving ability are rewritten while its runtime state stays bit-identical (CR 601.2b).
 #[test]
 fn restamp_rewrites_repeat_for_and_leaves_runtime_state_alone() {
     let db = db!();
@@ -924,8 +951,7 @@ fn restamp_rewrites_repeat_for_and_leaves_runtime_state_alone() {
     );
 }
 
-/// L1: the incremental evaluator agrees with a forced full pass with a live
-/// substitution, including when the entrant IS the recipient (CR 400.7a).
+/// The incremental evaluator agrees with a forced full pass under a live substitution, including when the entrant is the recipient (CR 400.7a).
 #[test]
 fn incremental_flush_matches_full_evaluation_with_a_live_substitution() {
     use std::collections::BTreeSet;
@@ -967,7 +993,7 @@ fn incremental_flush_matches_full_evaluation_with_a_live_substitution() {
     };
     use engine::types::game_state::LayersDirty;
 
-    // (a) A live substitution on a pre-existing permanent and an unrelated entrant.
+    // A live substitution on a pre-existing permanent and an unrelated entrant.
     install(runner.state_mut(), old, Swamp, Plains);
     runner.state_mut().layers_dirty = LayersDirty::Full;
     flush_layers(runner.state_mut());
@@ -989,7 +1015,7 @@ fn incremental_flush_matches_full_evaluation_with_a_live_substitution() {
         );
     }
 
-    // (b) The entrant IS the recipient: the incremental arm would reset it to base
+    // The entrant is the recipient: the incremental arm would reset it to base
     // and lose the rewrite, so it must escalate to the full pass.
     install(runner.state_mut(), entrant, Swamp, Forest);
     let (full, _) = flush_as(runner.state(), LayersDirty::Full);
@@ -1075,8 +1101,7 @@ fn walks_in(state: &engine::types::game_state::GameState, id: ObjectId) -> Vec<S
         .collect()
 }
 
-/// CEN1 + CEN2: every color/land-type string in the corpus sits at a classified
-/// position, and the carrier-directed rewrite round-trips through serde.
+/// Every color or land-type string in the corpus sits at a classified position, and the carrier-directed rewrite round-trips through serde.
 #[test]
 fn carrier_census_classifies_every_word_position_and_round_trips() {
     let db = db!();
@@ -1097,8 +1122,7 @@ fn carrier_census_classifies_every_word_position_and_round_trips() {
         for (tag, key, word) in unclassified_word_positions(&value) {
             missing.insert(format!("({tag:?}, {key}) {word} on {name}"));
         }
-        // CEN2: a rewrite that finds nothing is `None`; one that finds something
-        // deserializes back into the same typed shape.
+        // A rewrite that finds nothing is `None`, and one that finds something deserializes back into the same typed shape.
         for ability in &face.abilities {
             if let Some(rewritten) = identity.rewrite(ability) {
                 assert_ne!(&rewritten, ability, "{name}");
@@ -1133,8 +1157,7 @@ fn substitution_labels_round_trip_and_reject_invalid_pairs() {
     assert!(TextSubstitution::from_label("Black -> Forest", &both).is_none());
 }
 
-/// C1 + F7: an entwined Spectral Shift prompts twice; each mode latches its own
-/// answer onto its own target, and the answer is consumed.
+/// An entwined Spectral Shift prompts twice, and each mode latches its own answer onto its own target (CR 608.2d).
 #[test]
 fn entwined_spectral_shift_latches_each_modes_own_answer() {
     let db = db!();

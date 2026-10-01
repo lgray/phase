@@ -1,11 +1,4 @@
-//! CR 612: text-changing effects that replace one word with another.
-//!
-//! One authority decides which substitutions apply to which object
-//! ([`active_text_substitutions`]); one authority decides which serialized values
-//! are words "used in the correct way" (CR 612.2, [`WORD_CARRIERS`]); two readers
-//! consume them: the Layer 3 pre-pass for battlefield permanents
-//! ([`apply_battlefield_text_substitutions`]) and the resolution seam for spells on
-//! the stack ([`restamp_resolving_spell_text`]).
+//! CR 612: text-changing effects that replace one word with another, read by the Layer 3 pre-pass for battlefield permanents and by the resolution seam for spells on the stack.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -70,10 +63,7 @@ const COLOR: TextWordDomain = TextWordDomain::ColorWord;
 const LAND: TextWordDomain = TextWordDomain::BasicLandType;
 const W: WordClass = WordClass::Word;
 
-/// The single authority for CR 612.2 "used in the correct way". Every serialized
-/// color word or basic-land-type string in a card's abilities, triggers, statics,
-/// replacements and keywords sits at a position listed here (the census test
-/// enforces it over the card corpus); an unlisted position is left unchanged.
+/// The single authority for CR 612.2 "used in the correct way", so a color or basic-land-type string at a position not listed here is left unchanged.
 pub const WORD_CARRIERS: &[WordCarrier] = &[
     // ---- color words ----
     carrier(Some("AddColor"), "color", COLOR, W),
@@ -219,10 +209,7 @@ fn word_domain(leaf: &str) -> Option<TextWordDomain> {
 }
 
 impl TextSubstitution {
-    /// CR 612.1 + CR 612.2: `value` with every word this substitution replaces
-    /// rewritten at classified carrier positions only. `None` when nothing changed
-    /// (or, fail-closed, when the value does not survive its serialized form), so the
-    /// text stays as printed.
+    /// CR 612.1 + CR 612.2: `value` with every replaced word rewritten at classified carrier positions only, or `None` when nothing changed or the value does not survive its serialized form.
     pub fn rewrite<T: Serialize + DeserializeOwned>(&self, value: &T) -> Option<T> {
         let mut json = serde_json::to_value(value).ok()?;
         let (from, to) = self.words();
@@ -267,10 +254,7 @@ fn rewrite_each<T: Clone>(definitions: &mut Definitions<T>, rewrite: impl Fn(&T)
     }
 }
 
-/// CR 612.1 + CR 612.2: applies one substitution to a permanent's rules text and
-/// type line. The name, mana cost, color indicator and P/T are never touched
-/// (CR 612.2: mana symbols and names are not words), and a replacement installed
-/// by a resolution is an effect, not text (CR 612.3).
+/// CR 612.1 + CR 612.2: applies one substitution to a permanent's rules text and type line, never touching the name, mana cost, color indicator or P/T because mana symbols and names are not words.
 fn apply_to_permanent_text(obj: &mut GameObject, substitution: &TextSubstitution) {
     let updates: Vec<(usize, _)> = obj
         .abilities
@@ -319,8 +303,7 @@ fn apply_to_permanent_text(obj: &mut GameObject, substitution: &TextSubstitution
         if changed {
             let mut seen = HashSet::new();
             obj.card_types.subtypes.retain(|s| seen.insert(s.clone()));
-            // CR 305.6 + CR 305.7: the replaced type's intrinsic mana ability goes with
-            // its word; the new type's ability is derived after the Type layer.
+            // CR 305.6: the replaced type's intrinsic mana ability goes with its word, and the new type's ability is derived after the Type layer.
             let color = from.mana_color();
             if obj
                 .abilities
@@ -334,14 +317,7 @@ fn apply_to_permanent_text(obj: &mut GameObject, substitution: &TextSubstitution
     }
 }
 
-/// CR 612.1 + CR 613.7b + CR 613.8: the `Fixed` word substitutions currently in
-/// effect, per recipient, in application order (dependency first, then timestamp).
-///
-/// Only effects whose recipient is one `SpecificObject` are consumed (every
-/// parser-produced one is: the target binds at install, CR 611.2c). Effects are
-/// grouped per recipient before ordering, so no ordering bucket ever mixes two
-/// recipients: an effect on one object cannot change what an effect on another
-/// does to its own words.
+/// CR 612.1 + CR 613.7b + CR 613.8: the `Fixed` substitutions in effect on each `SpecificObject` recipient in application order, grouped per recipient so an effect on one object never changes what an effect on another does to its own words.
 pub fn active_text_substitutions(state: &GameState) -> BTreeMap<ObjectId, Vec<TextSubstitution>> {
     let mut gathered = Vec::new();
     gather_transient_continuous_effects(state, &mut gathered);
@@ -381,10 +357,7 @@ pub fn active_text_substitutions(state: &GameState) -> BTreeMap<ObjectId, Vec<Te
         .collect()
 }
 
-/// CR 612.1 + CR 613.1c: the Layer 3 pre-pass. Runs after layer 1 and before the
-/// statics of layers 4-7 are gathered, so a changed static ability generates its
-/// effects from the changed text. Only phased-in battlefield recipients are visited;
-/// a spell on the stack is read through [`restamp_resolving_spell_text`] instead.
+/// CR 612.1 + CR 613.1c: the Layer 3 pre-pass runs before the statics of layers 4-7 are gathered so a changed static generates its effects from the changed text, and spells on the stack are read through [`restamp_resolving_spell_text`] instead.
 pub(crate) fn apply_battlefield_text_substitutions(state: &mut GameState, bf_ids: &[ObjectId]) {
     let substitutions = active_text_substitutions(state);
     if substitutions.is_empty() {
@@ -403,10 +376,7 @@ pub(crate) fn apply_battlefield_text_substitutions(state: &mut GameState, bf_ids
     }
 }
 
-/// CR 612.1 + CR 608.2b: rewrites the ability chain of a spell about to resolve with
-/// the substitutions in effect on it. A resolving spell reads the ability stored in
-/// its stack entry, not the object's printed abilities, and stack objects are not
-/// reset by the layer pass, so the rewrite is applied to the entry's copy here.
+/// CR 612.1 + CR 608.2b: rewrites the ability chain in a resolving spell's stack entry, because the spell reads that copy rather than the object's printed abilities and the layer pass never resets stack objects.
 pub fn restamp_resolving_spell_text(
     state: &GameState,
     object_id: ObjectId,
@@ -442,11 +412,7 @@ fn rewrite_resolved_ability(substitution: &TextSubstitution, ability: &mut Resol
         // The rest of the chain is rewritten recursively.
         sub_ability,
         else_ability,
-        // Runtime state, never text: chosen objects and players, identities, paid-cost
-        // snapshots, chain plumbing and trigger provenance. `announced_x` and `chosen_x`
-        // are fixed at announcement (CR 601.2b); `modal` holds counts, costs and display
-        // bullets chosen at announcement; `description` and `selected_mode_labels` are
-        // display strings that keep the old words.
+        // Runtime state, never text: choices, identities, paid costs and display strings are fixed at announcement (CR 601.2b) and keep the old words.
         targets: _,
         declares_chosen_group: _,
         reads_chosen_group: _,

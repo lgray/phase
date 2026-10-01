@@ -1,10 +1,4 @@
-//! CR 612: text-changing effects that replace one word with another.
-//!
-//! Recognizes "Change the text of <target> by replacing all instances of one <word
-//! class> with another [or one <word class> with another] [<duration>]" for the two
-//! word classes the engine's `TextSubstitution` carries (color word, basic land
-//! type). Any other word class ("creature type", mana symbols, ...) fails the
-//! recognizer so the clause stays an honest `Effect::unimplemented`.
+//! CR 612: recognizes "Change the text of <target> by replacing all instances of one <word class> with another" for the color-word and basic-land-type classes only, so any other class stays an honest `Effect::unimplemented`.
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -69,9 +63,7 @@ fn parse_text_change(input: &str) -> OracleResult<'_, TextChange> {
     ))
 }
 
-/// CR 612.1 + CR 608.2d: the controller names the two words as the effect
-/// resolves (one `Choose` prompt), then a `GenericEffect` installs the Layer 3
-/// substitution on the target.
+/// CR 612.1 + CR 608.2d: the controller names the two words as the effect resolves, then a `GenericEffect` installs the Layer 3 substitution on the target.
 pub(super) fn try_parse_text_change_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
     let (change, _) = nom_on_lower(tp.original, tp.lower, parse_text_change)?;
 
@@ -167,7 +159,7 @@ mod tests {
         }
     }
 
-    /// SHAPE: Magical Hack, "one basic land type with another", no stated duration.
+    /// "One basic land type with another" with no stated duration lowers to a land-pair prompt and a permanent install.
     #[test]
     fn magical_hack_lowers_to_a_land_pair_prompt_and_a_permanent_install() {
         let abilities = parse(
@@ -185,7 +177,7 @@ mod tests {
         assert_eq!(target, spell_or_permanent());
     }
 
-    /// SHAPE: Crystal Spray, two domains, "until end of turn", draw after the change.
+    /// Two word domains with "until end of turn" lower to a both-domain prompt, an until-end-of-turn install, then the draw.
     #[test]
     fn crystal_spray_lowers_to_both_domains_until_end_of_turn_then_draws() {
         let abilities = parse(
@@ -210,7 +202,7 @@ mod tests {
         );
     }
 
-    /// SHAPE: the target phrase is a parameter ("target permanent" excludes spells).
+    /// The target phrase is a parameter, so "target permanent" excludes spells.
     #[test]
     fn mind_bend_targets_permanents_only() {
         let abilities = parse(
@@ -232,7 +224,7 @@ mod tests {
         );
     }
 
-    /// PR2: the keyworded and modal class members parse with no `Unimplemented`.
+    /// The keyworded and modal members of the word class parse with no `Unimplemented`.
     #[test]
     fn keyworded_and_modal_class_members_parse_completely() {
         for (name, text, keywords) in [

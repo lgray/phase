@@ -107,9 +107,8 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *
  * Bumps to date:
  *  76 — game_setup and state_update carry GameState, whose transient continuous
- *       effects can now hold the SubstituteTextWord modification (CR 612.1). A v75
- *       peer cannot parse the tag, so first contact rejects the skew. Bumped in
- *       lockstep with full-game protocol 94.
+ *       effects can now hold the SubstituteTextWord modification (CR 612.1), so a
+ *       v75 peer cannot parse the tag and first contact rejects the skew.
  *  75 — game_setup and state_update carry GameState, whose FormatConfig can
  *       now name the Dandan format. A v74 peer cannot parse the format name, so
  *       first contact rejects the skew. Bumped in lockstep with full-game

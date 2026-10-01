@@ -60,7 +60,7 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 94 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1 word-substitution text changes) with its `TextSubstitution` / `TextSubstitutionSpec` / `TextWordDomain` carriers, serialized inside `GameState`'s transient continuous effects. A v93 peer cannot parse the new tag, so it must be refused before it receives v94 state. P2P moves in lockstep (wire 76); the lobby protocol does not move, no lobby frame carries the shape.
+/// 94 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized inside `GameState`'s transient continuous effects, so a v93 peer cannot parse the tag and must be refused before it receives v94 state.
 /// 93 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v92 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 75); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 15.
 /// 92 — `ResolvedAbility.parent_target_missing_reason` is now serialized
 ///      (`#[serde(default, skip_serializing_if = "Option::is_none")]`, it was

@@ -5317,9 +5317,7 @@ fn modification_characteristic_writes_at(
         | ContinuousModification::SetTextName { .. }
         | ContinuousModification::SetChosenName => CharacteristicKinds::NAME_TEXT,
 
-        // ---- CR 612.1 + CR 613.1c (layer 3): rewrites arbitrary rules text. ----
-        // No kind set bounds the words a substitution can reach, so it
-        // over-approximates (over-escalation only costs a full pass).
+        // CR 612.1 + CR 613.1c (layer 3): no kind set bounds the words a substitution can reach, so it over-approximates.
         ContinuousModification::SubstituteTextWord { .. } => CharacteristicKinds::ALL,
 
         // ---- CR 613.1e (layer 5): color. ----
@@ -7982,12 +7980,7 @@ fn depends_on(a: &ActiveContinuousEffect, b: &ActiveContinuousEffect, _state: &G
         return false;
     }
 
-    // CR 613.8a + CR 613.8b: two word substitutions on ONE recipient. A depends on B
-    // when applying B creates the word A acts on (`b.to == a.from`) or removes it
-    // (`b.from == a.from`, symmetric, so the pair is a CR 613.8b loop applied in
-    // timestamp order). Words of different classes are disjoint carriers (CR 612.2),
-    // and an effect on another object cannot change what this one does to its own
-    // words, so any non-`SpecificObject` or differing recipient is independent.
+    // CR 613.8a + CR 613.8b: a word substitution depends on another only on the same recipient and word class, by creating (`b.to == a.from`) or removing (`b.from == a.from`, a symmetric loop) the word it acts on.
     if let (
         ContinuousModification::SubstituteTextWord {
             substitution: a_spec,
@@ -9155,8 +9148,7 @@ fn apply_continuous_effect_filtered(
                     obj.name = name.clone();
                 }
             }
-            // CR 612.1: exhaustiveness only. `bucket_effects_by_layer` removes every
-            // `SubstituteTextWord`; the Layer 3 pre-pass applies it before this loop.
+            // CR 612.1: exhaustiveness only, since the Layer 3 pre-pass applies `SubstituteTextWord` before this loop.
             ContinuousModification::SubstituteTextWord { .. } => {}
             ContinuousModification::AddPower { value } => {
                 if let Some(ref mut p) = obj.power {
@@ -9927,9 +9919,7 @@ fn has_basic_land_mana_ability(
         .any(|ability| is_intrinsic_basic_land_mana_ability(ability, color))
 }
 
-/// CR 305.6: is this the intrinsic "{T}: Add {C}" ability a basic land type grants?
-/// The single shape authority for both the derivation above and the text-changing
-/// pre-pass, which drops the replaced type's ability when its word is replaced.
+/// CR 305.6: is this the intrinsic "{T}: Add {C}" ability a basic land type grants, as the single shape authority for both the derivation above and the text-changing pre-pass?
 pub(crate) fn is_intrinsic_basic_land_mana_ability(
     ability: &AbilityDefinition,
     color: crate::types::mana::ManaColor,
@@ -22269,8 +22259,7 @@ mod tests {
         TextSubstitution::basic_land_type(from, to).expect("from != to")
     }
 
-    /// CR 613.8a + CR 613.8b: word substitutions depend on each other only on one
-    /// recipient and only within one word class.
+    /// CR 613.8a + CR 613.8b: word substitutions depend on each other only on one recipient and within one word class.
     #[test]
     fn text_word_substitutions_depend_only_on_one_recipient_and_one_word_class() {
         use BasicLandType::{Forest, Plains, Swamp};
