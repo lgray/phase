@@ -106,6 +106,10 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  76 — game_setup and state_update carry GameState, whose transient continuous
+ *       effects can now hold the SubstituteTextWord modification (CR 612.1). A v75
+ *       peer cannot parse the tag, so first contact rejects the skew. Bumped in
+ *       lockstep with full-game protocol 94.
  *  75 — game_setup and state_update carry GameState, whose FormatConfig can
  *       now name the Dandan format. A v74 peer cannot parse the format name, so
  *       first contact rejects the skew. Bumped in lockstep with full-game
@@ -486,7 +490,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 75 as const;
+export const WIRE_PROTOCOL_VERSION = 76 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

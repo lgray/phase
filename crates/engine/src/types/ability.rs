@@ -1596,6 +1596,124 @@ impl std::str::FromStr for BasicLandType {
     }
 }
 
+/// CR 612.2: the word classes a text-changing effect can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TextWordDomain {
+    ColorWord,
+    BasicLandType,
+}
+
+/// CR 612.2: one concrete from-to word replacement; both words are of one class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum TextSubstitution {
+    Color {
+        from: ManaColor,
+        to: ManaColor,
+    },
+    BasicLandType {
+        from: BasicLandType,
+        to: BasicLandType,
+    },
+}
+
+/// `Fixed` is what the text layer applies. `Chosen` is the parse-time form whose
+/// words are picked on resolution (CR 608.2d) and latched to `Fixed` when the
+/// effect installs (CR 611.2c); a `Chosen` modification reaching the layer is inert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum TextSubstitutionSpec {
+    Fixed(TextSubstitution),
+    Chosen { domains: Vec<TextWordDomain> },
+}
+
+impl TextSubstitution {
+    /// CR 612.2: a color word as printed in Oracle text.
+    fn color_word(color: ManaColor) -> &'static str {
+        match color {
+            ManaColor::White => "White",
+            ManaColor::Blue => "Blue",
+            ManaColor::Black => "Black",
+            ManaColor::Red => "Red",
+            ManaColor::Green => "Green",
+        }
+    }
+
+    /// Builds a color substitution; "it can't change a word to the same word" so
+    /// `from == to` is rejected.
+    pub fn color(from: ManaColor, to: ManaColor) -> Option<Self> {
+        (from != to).then_some(Self::Color { from, to })
+    }
+
+    /// Builds a basic-land-type substitution; `from == to` is rejected.
+    pub fn basic_land_type(from: BasicLandType, to: BasicLandType) -> Option<Self> {
+        (from != to).then_some(Self::BasicLandType { from, to })
+    }
+
+    /// The word class this substitution acts on.
+    pub fn domain(&self) -> TextWordDomain {
+        match self {
+            Self::Color { .. } => TextWordDomain::ColorWord,
+            Self::BasicLandType { .. } => TextWordDomain::BasicLandType,
+        }
+    }
+
+    /// CR 608.2d: every ordered pair the controller may name for `domains`
+    /// (domain order, then WUBRG / Plains-to-Forest order, `from != to`).
+    pub fn options(domains: &[TextWordDomain]) -> Vec<String> {
+        let mut out = Vec::new();
+        for domain in domains {
+            match domain {
+                TextWordDomain::ColorWord => {
+                    for from in ManaColor::ALL {
+                        for to in ManaColor::ALL {
+                            out.extend(Self::color(from, to).map(|s| s.label()));
+                        }
+                    }
+                }
+                TextWordDomain::BasicLandType => {
+                    for from in BasicLandType::all() {
+                        for to in BasicLandType::all() {
+                            out.extend(Self::basic_land_type(*from, *to).map(|s| s.label()));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The (from, to) words as the serialized carriers and the type line spell them.
+    pub fn words(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::Color { from, to } => (Self::color_word(*from), Self::color_word(*to)),
+            Self::BasicLandType { from, to } => (from.as_subtype_str(), to.as_subtype_str()),
+        }
+    }
+
+    /// Prompt label, e.g. `"Black -> Blue"`; the inverse of [`Self::from_label`].
+    pub fn label(&self) -> String {
+        let (from, to) = self.words();
+        format!("{from} -> {to}")
+    }
+
+    /// Parses a prompt label back into a substitution, rejecting `from == to`
+    /// and any pair whose class is outside `domains`.
+    pub fn from_label(label: &str, domains: &[TextWordDomain]) -> Option<Self> {
+        let (from, to) = label.split_once(" -> ")?;
+        domains.iter().find_map(|domain| match domain {
+            TextWordDomain::ColorWord => Self::color(
+                from.parse::<ManaColor>().ok()?,
+                to.parse::<ManaColor>().ok()?,
+            ),
+            TextWordDomain::BasicLandType => Self::basic_land_type(
+                from.parse::<BasicLandType>().ok()?,
+                to.parse::<BasicLandType>().ok()?,
+            ),
+        })
+    }
+}
+
 /// Odd or even — used by cards like "choose odd or even."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Parity {
@@ -32036,6 +32154,12 @@ pub enum ContinuousModification {
     /// (Witness Protection). Applied in Layer 3.
     SetTextName {
         name: String,
+    },
+    /// CR 612.1 + CR 612.2 + CR 613.1c: replaces every instance of one word with
+    /// another in the recipient's rules text and type line (Layer 3). Applied by
+    /// the Text pre-pass in `game::layers`, never by the per-modification apply loop.
+    SubstituteTextWord {
+        substitution: TextSubstitutionSpec,
     },
     AddPower {
         value: i32,

@@ -35,8 +35,8 @@ use crate::types::ability::{
     BasicLandType, CardTypeSetSource, CastingPermission, ChosenSubtypeKind, CommanderOwnership,
     ContinuousModification, CopiableValues, Designation, Duration, Effect, FilterProp,
     ManaContribution, ManaProduction, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef,
-    StaticCondition, StaticDefinition, TargetFilter, TriggerGrantProducerKey,
-    TriggerProducerOrigin, TypedFilter,
+    StaticCondition, StaticDefinition, TargetFilter, TextSubstitution, TextSubstitutionSpec,
+    TriggerGrantProducerKey, TriggerProducerOrigin, TypedFilter,
 };
 use crate::types::attribution::EffectRef;
 use crate::types::card_type::{
@@ -3203,6 +3203,11 @@ pub fn evaluate_layers(state: &mut GameState) {
         crate::types::game_state::StaticSourceIndex::rebuild_from_state(state);
     }
 
+    // CR 612.1 + CR 613.1c: Layer 3 word substitutions rewrite the printed text the
+    // main gather below reads, so they run before it (a changed static ability must
+    // generate its effects from the changed text).
+    super::text_substitution::apply_battlefield_text_substitutions(state, &bf_ids);
+
     // Step 3: Gather active continuous effects after layer 1 is applied.
     let mut effects_by_layer = gather_active_continuous_effects(state);
     crate::game::stickers::append_battlefield_pt_sticker_effects(state, &mut effects_by_layer);
@@ -4750,6 +4755,15 @@ fn prepare_incremental_flush(
         || active_effects.iter().any(|effect| {
             continuous_effect_scan_zones(state, &effect.affected_filter).contains(&Zone::Stack)
         })
+        // CR 612.1 + CR 400.7a: a text substitution is applied by the full-pass Layer 3
+        // pre-pass only; an entrant it names (a permanent spell's text change carried
+        // onto the permanent) would be reset to base here and lose it.
+        || active_effects.iter().any(|effect| {
+            matches!(
+                effect.modification,
+                ContinuousModification::SubstituteTextWord { .. }
+            ) && effect_can_reach_incremental_recipients(effect, &recipient_ids)
+        })
     {
         return None;
     }
@@ -5302,6 +5316,11 @@ fn modification_characteristic_writes_at(
         ContinuousModification::SetName { .. }
         | ContinuousModification::SetTextName { .. }
         | ContinuousModification::SetChosenName => CharacteristicKinds::NAME_TEXT,
+
+        // ---- CR 612.1 + CR 613.1c (layer 3): rewrites arbitrary rules text. ----
+        // No kind set bounds the words a substitution can reach, so it
+        // over-approximates (over-escalation only costs a full pass).
+        ContinuousModification::SubstituteTextWord { .. } => CharacteristicKinds::ALL,
 
         // ---- CR 613.1e (layer 5): color. ----
         ContinuousModification::SetColor { .. }
@@ -6391,6 +6410,16 @@ fn bucket_effects_by_layer(
         .collect();
 
     for effect in active_effects {
+        // CR 612.1 + CR 613.1c: text-word substitutions are applied by the Layer 3
+        // pre-pass (`text_substitution::apply_battlefield_text_substitutions`)
+        // because the statics gathered here must already carry the changed text;
+        // bucketing them would apply them twice.
+        if matches!(
+            effect.modification,
+            ContinuousModification::SubstituteTextWord { .. }
+        ) {
+            continue;
+        }
         push_effect(&mut effects, effect.layer, effect);
     }
 
@@ -7953,6 +7982,52 @@ fn depends_on(a: &ActiveContinuousEffect, b: &ActiveContinuousEffect, _state: &G
         return false;
     }
 
+    // CR 613.8a + CR 613.8b: two word substitutions on ONE recipient. A depends on B
+    // when applying B creates the word A acts on (`b.to == a.from`) or removes it
+    // (`b.from == a.from`, symmetric, so the pair is a CR 613.8b loop applied in
+    // timestamp order). Words of different classes are disjoint carriers (CR 612.2),
+    // and an effect on another object cannot change what this one does to its own
+    // words, so any non-`SpecificObject` or differing recipient is independent.
+    if let (
+        ContinuousModification::SubstituteTextWord {
+            substitution: a_spec,
+        },
+        ContinuousModification::SubstituteTextWord {
+            substitution: b_spec,
+        },
+    ) = (&a.modification, &b.modification)
+    {
+        let (TargetFilter::SpecificObject { id: a_id }, TargetFilter::SpecificObject { id: b_id }) =
+            (&a.affected_filter, &b.affected_filter)
+        else {
+            return false;
+        };
+        if a_id != b_id {
+            return false;
+        }
+        return match (a_spec, b_spec) {
+            (
+                TextSubstitutionSpec::Fixed(TextSubstitution::Color { from: a_from, .. }),
+                TextSubstitutionSpec::Fixed(TextSubstitution::Color {
+                    from: b_from,
+                    to: b_to,
+                }),
+            ) => b_to == a_from || b_from == a_from,
+            (
+                TextSubstitutionSpec::Fixed(TextSubstitution::BasicLandType {
+                    from: a_from, ..
+                }),
+                TextSubstitutionSpec::Fixed(TextSubstitution::BasicLandType {
+                    from: b_from,
+                    to: b_to,
+                }),
+            ) => b_to == a_from || b_from == a_from,
+            (TextSubstitutionSpec::Fixed(_), TextSubstitutionSpec::Fixed(_))
+            | (TextSubstitutionSpec::Chosen { .. }, _)
+            | (_, TextSubstitutionSpec::Chosen { .. }) => false,
+        };
+    }
+
     if matches!(b.modification, ContinuousModification::CopyValues { .. }) {
         return true;
     }
@@ -9080,6 +9155,9 @@ fn apply_continuous_effect_filtered(
                     obj.name = name.clone();
                 }
             }
+            // CR 612.1: exhaustiveness only. `bucket_effects_by_layer` removes every
+            // `SubstituteTextWord`; the Layer 3 pre-pass applies it before this loop.
+            ContinuousModification::SubstituteTextWord { .. } => {}
             ContinuousModification::AddPower { value } => {
                 if let Some(ref mut p) = obj.power {
                     *p = saturating_pt_add(*p, *value);
@@ -9844,17 +9922,27 @@ fn has_basic_land_mana_ability(
     obj: &crate::game::game_object::GameObject,
     color: crate::types::mana::ManaColor,
 ) -> bool {
-    obj.abilities.iter().any(|ability| {
-        ability.kind == AbilityKind::Activated
-            && matches!(ability.cost, Some(AbilityCost::Tap))
-            && matches!(
-                &*ability.effect,
-                Effect::Mana {
-                    produced: ManaProduction::Fixed { colors, .. },
-                    ..
-                } if colors.as_slice() == [color]
-            )
-    })
+    obj.abilities
+        .iter()
+        .any(|ability| is_intrinsic_basic_land_mana_ability(ability, color))
+}
+
+/// CR 305.6: is this the intrinsic "{T}: Add {C}" ability a basic land type grants?
+/// The single shape authority for both the derivation above and the text-changing
+/// pre-pass, which drops the replaced type's ability when its word is replaced.
+pub(crate) fn is_intrinsic_basic_land_mana_ability(
+    ability: &AbilityDefinition,
+    color: crate::types::mana::ManaColor,
+) -> bool {
+    ability.kind == AbilityKind::Activated
+        && matches!(ability.cost, Some(AbilityCost::Tap))
+        && matches!(
+            &*ability.effect,
+            Effect::Mana {
+                produced: ManaProduction::Fixed { colors, .. },
+                ..
+            } if colors.as_slice() == [color]
+        )
 }
 
 fn basic_land_mana_ability(color: crate::types::mana::ManaColor) -> AbilityDefinition {
@@ -22157,6 +22245,113 @@ mod tests {
         }
     }
 
+    fn word_entry(
+        recipient: ObjectId,
+        transient: u64,
+        timestamp: u64,
+        substitution: TextSubstitution,
+    ) -> ActiveContinuousEffect {
+        let mut effect = entry(
+            ObjectId(900),
+            None,
+            Some(transient),
+            0,
+            timestamp,
+            ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Fixed(substitution),
+            },
+        );
+        effect.affected_filter = TargetFilter::SpecificObject { id: recipient };
+        effect
+    }
+
+    fn land_word(from: BasicLandType, to: BasicLandType) -> TextSubstitution {
+        TextSubstitution::basic_land_type(from, to).expect("from != to")
+    }
+
+    /// CR 613.8a + CR 613.8b: word substitutions depend on each other only on one
+    /// recipient and only within one word class.
+    #[test]
+    fn text_word_substitutions_depend_only_on_one_recipient_and_one_word_class() {
+        use BasicLandType::{Forest, Plains, Swamp};
+        let state = setup();
+        let object = ObjectId(1);
+        let other = ObjectId(2);
+        let swamp_to_plains = word_entry(object, 1, 1, land_word(Swamp, Plains));
+        let plains_to_forest = word_entry(object, 2, 2, land_word(Plains, Forest));
+        let swamp_to_forest = word_entry(object, 3, 3, land_word(Swamp, Forest));
+
+        // Chain: applying Swamp->Plains creates the word Plains->Forest acts on.
+        assert!(depends_on(&plains_to_forest, &swamp_to_plains, &state));
+        assert!(!depends_on(&swamp_to_plains, &plains_to_forest, &state));
+
+        // Loop: each removes the Swamp the other acts on.
+        assert!(depends_on(&swamp_to_plains, &swamp_to_forest, &state));
+        assert!(depends_on(&swamp_to_forest, &swamp_to_plains, &state));
+
+        // A color word and a land-type word are disjoint carriers (CR 612.2).
+        let color = word_entry(
+            object,
+            4,
+            4,
+            TextSubstitution::color(ManaColor::Black, ManaColor::Blue).expect("from != to"),
+        );
+        assert!(!depends_on(&color, &swamp_to_plains, &state));
+        assert!(!depends_on(&swamp_to_plains, &color, &state));
+
+        // Another recipient never matters, even for an identical `from` or a chain.
+        let other_swamp_to_forest = word_entry(other, 5, 5, land_word(Swamp, Forest));
+        let other_plains_to_forest = word_entry(other, 6, 6, land_word(Plains, Forest));
+        for (a, b) in [
+            (&other_swamp_to_forest, &swamp_to_plains),
+            (&swamp_to_plains, &other_swamp_to_forest),
+            (&other_plains_to_forest, &swamp_to_plains),
+            (&plains_to_forest, &other_swamp_to_forest),
+        ] {
+            assert!(!depends_on(a, b, &state));
+        }
+
+        // A non-`SpecificObject` recipient never depends, and a `Chosen` spec is inert.
+        let mut filter_shaped = swamp_to_forest.clone();
+        filter_shaped.affected_filter = TargetFilter::Any;
+        assert!(!depends_on(&swamp_to_plains, &filter_shaped, &state));
+        let chosen = entry(
+            ObjectId(900),
+            None,
+            Some(7),
+            0,
+            7,
+            ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Chosen {
+                    domains: vec![crate::types::ability::TextWordDomain::BasicLandType],
+                },
+            },
+        );
+        assert!(!depends_on(&chosen, &swamp_to_plains, &state));
+        assert!(!depends_on(&swamp_to_plains, &chosen, &state));
+    }
+
+    /// CR 613.8: a dependency overrides timestamp order in the Text layer.
+    #[test]
+    fn text_word_chain_orders_by_dependency_not_timestamp() {
+        use BasicLandType::{Forest, Plains, Swamp};
+        let state = setup();
+        let object = ObjectId(1);
+        let plains_to_forest = word_entry(object, 1, 1, land_word(Plains, Forest));
+        let swamp_to_plains = word_entry(object, 2, 2, land_word(Swamp, Plains));
+        let ordered = order_active_continuous_effects(
+            Layer::Text,
+            &[plains_to_forest, swamp_to_plains],
+            &state,
+        );
+        let ids: Vec<Option<u64>> = ordered.iter().map(|e| e.transient_id).collect();
+        assert_eq!(
+            ids,
+            [Some(2), Some(1)],
+            "Swamp->Plains first although cast later"
+        );
+    }
+
     #[test]
     fn effect_nodes_group_entries_by_effect_identity() {
         let mut state = setup();
@@ -26828,6 +27023,11 @@ mod tests {
                 name: "N".to_string(),
             },
             ContinuousModification::SetChosenName,
+            ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Chosen {
+                    domains: vec![crate::types::ability::TextWordDomain::ColorWord],
+                },
+            },
             // ---- Layer 4 (CR 613.1d). ----
             ContinuousModification::AddType {
                 core_type: CoreType::Creature,

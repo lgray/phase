@@ -3318,7 +3318,11 @@ mod tests {
         }
     }
 
-    /// `GameFormat` gains `Dandan`, which serializes as its `Display` string and
+    /// `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized
+    /// inside `GameState`'s transient continuous effects; a v93 peer cannot parse
+    /// the tag, so it must be refused before it receives v94 state.
+    ///
+    /// Earlier bump, v93: `GameFormat` gains `Dandan`, which serializes as its `Display` string and
     /// deserializes through `FromStr`; a v92 peer cannot parse a `GameState`
     /// whose format names it, so it must be refused before it receives v93
     /// state.
@@ -3352,8 +3356,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_93_for_dandan_format() {
-        assert_eq!(PROTOCOL_VERSION, 93);
+    fn protocol_version_is_94_for_text_word_substitution() {
+        assert_eq!(PROTOCOL_VERSION, 94);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3364,7 +3368,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_93_for_dandan_format` stays
+    /// `protocol_version_is_94_for_text_word_substitution` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

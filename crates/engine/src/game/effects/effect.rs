@@ -292,6 +292,7 @@ fn register_transient_effect(
     end_permission: Option<&EndEffectPermission>,
 ) {
     let modifications = snapshot_transient_modifications(state, ability, &static_def.modifications);
+    let modifications = latch_chosen_text_words(state, modifications);
 
     // CR 708.5: A duration-bound "you may look at face-down [permanents] you don't
     // control any time" permission (Lumbering Laundry) is a *player-scoped* look
@@ -1059,6 +1060,53 @@ pub fn generic_effect_population_filter<'a>(
         .find_map(|static_def| {
             generic_effect_application_filter(target_filter, static_def.affected.as_ref())
         })
+}
+
+/// CR 608.2d + CR 611.2c: the words a text-changing effect substitutes are named
+/// as it resolves, so the pending `Chosen` modification latches to the `Fixed`
+/// pair the controller just answered. The answer is taken, so it is consumed
+/// exactly once and a skipped prompt can never latch a stale earlier answer; an
+/// answer outside the effect's domains leaves the inert `Chosen` form.
+fn latch_chosen_text_words(
+    state: &mut GameState,
+    modifications: Vec<ContinuousModification>,
+) -> Vec<ContinuousModification> {
+    use crate::types::ability::{ChoiceValue, TextSubstitution, TextSubstitutionSpec};
+
+    let has_chosen = modifications.iter().any(|m| {
+        matches!(
+            m,
+            ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Chosen { .. },
+            }
+        )
+    });
+    if !has_chosen {
+        return modifications;
+    }
+    let answer = state.last_named_choice.take();
+    modifications
+        .into_iter()
+        .map(|modification| match modification {
+            ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Chosen { domains },
+            } => {
+                let latched = match &answer {
+                    Some(ChoiceValue::Label(label)) => {
+                        TextSubstitution::from_label(label, &domains)
+                    }
+                    _ => None,
+                };
+                ContinuousModification::SubstituteTextWord {
+                    substitution: latched.map_or(
+                        TextSubstitutionSpec::Chosen { domains },
+                        TextSubstitutionSpec::Fixed,
+                    ),
+                }
+            }
+            other => other,
+        })
+        .collect()
 }
 
 fn snapshot_transient_modifications(
@@ -4869,6 +4917,43 @@ mod tests {
                 .affected,
             TargetFilter::SpecificObject { id: army },
             "the grant must name the amassed Army itself"
+        );
+    }
+
+    /// CR 608.2d: the word answer latches once; a later effect whose prompt was
+    /// skipped must not read the earlier answer.
+    #[test]
+    fn text_word_latch_consumes_the_answer() {
+        use crate::types::ability::{
+            ChoiceValue, TextSubstitution, TextSubstitutionSpec, TextWordDomain,
+        };
+
+        let mut state = GameState::new_two_player(42);
+        let chosen = || {
+            vec![ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Chosen {
+                    domains: vec![TextWordDomain::BasicLandType],
+                },
+            }]
+        };
+        state.last_named_choice = Some(ChoiceValue::Label("Swamp -> Plains".into()));
+
+        let latched = latch_chosen_text_words(&mut state, chosen());
+        let expected =
+            TextSubstitution::from_label("Swamp -> Plains", &[TextWordDomain::BasicLandType])
+                .expect("valid pair");
+        assert_eq!(
+            latched,
+            [ContinuousModification::SubstituteTextWord {
+                substitution: TextSubstitutionSpec::Fixed(expected),
+            }]
+        );
+        assert!(state.last_named_choice.is_none(), "the answer is taken");
+
+        assert_eq!(
+            latch_chosen_text_words(&mut state, chosen()),
+            chosen(),
+            "with no fresh answer the effect stays inert"
         );
     }
 }

@@ -60,6 +60,7 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
+/// 94 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1 word-substitution text changes) with its `TextSubstitution` / `TextSubstitutionSpec` / `TextWordDomain` carriers, serialized inside `GameState`'s transient continuous effects. A v93 peer cannot parse the new tag, so it must be refused before it receives v94 state. P2P moves in lockstep (wire 76); the lobby protocol does not move, no lobby frame carries the shape.
 /// 93 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v92 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 75); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 15.
 /// 92 — `ResolvedAbility.parent_target_missing_reason` is now serialized
 ///      (`#[serde(default, skip_serializing_if = "Option::is_none")]`, it was
@@ -768,7 +769,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 93;
+pub const PROTOCOL_VERSION: u32 = 94;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2011,12 +2012,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 93);
+        assert_eq!(PROTOCOL_VERSION, 94);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 92);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 93);
     }
 
     #[test]

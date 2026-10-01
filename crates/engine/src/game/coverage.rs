@@ -5137,6 +5137,14 @@ fn fmt_modification(m: &crate::types::ability::ContinuousModification) -> String
         }
         ContinuousModification::SetChosenBasicLandType => "set chosen land type".into(),
         ContinuousModification::SetChosenName => "set chosen name".into(),
+        ContinuousModification::SubstituteTextWord { substitution } => match substitution {
+            crate::types::ability::TextSubstitutionSpec::Fixed(sub) => {
+                format!("substitute text word {}", sub.label())
+            }
+            crate::types::ability::TextSubstitutionSpec::Chosen { .. } => {
+                "substitute chosen text word".into()
+            }
+        },
         ContinuousModification::AssignNoCombatDamage => "assign no combat damage".into(),
         ContinuousModification::RetainPrintedTriggerFromSource {
             source_trigger_index,

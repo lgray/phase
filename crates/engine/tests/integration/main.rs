@@ -1331,6 +1331,7 @@ mod termination_facilitator_bounty_damage_8379;
 mod terra_herald_optional_prompt;
 mod terra_magical_adept_milled_enchantment;
 mod terror_of_the_peaks_issue_2911;
+mod text_substitution_cr612;
 mod teysa_wojek_investigate_per_opponent;
 mod the_black_arrow_dragon_gated_destroy;
 mod the_chain_veil_loyalty_grants;
