@@ -1,0 +1,4 @@
+HEAD c7dfc79e0549ed4da33a777afa4e96c1a34f28f5 dirty=0
+FMT-OK
+error: Broken pipe (os error 32)
+warning: build failed, waiting for other jobs to finish...
