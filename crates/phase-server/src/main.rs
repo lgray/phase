@@ -17769,7 +17769,6 @@ mod issue_4548_full_create_tests {
         timed(server, async {
             let mut lapsed = host_pod(&url, "build-a", 2, true).await;
             let mut waiting = host_pod(&url, "build-a", 2, true).await;
-            app.draft_sessions.lock().await.reconnect.grace_period = Duration::from_millis(300);
             let mut lapsed_guest = connect_as(&url, "build-a").await;
             let lapsed_token =
                 joined_token(send_draft(&mut lapsed_guest, &draft_join(&lapsed.code)).await);
@@ -17779,9 +17778,11 @@ mod issue_4548_full_create_tests {
             lapsed.listing().await;
             waiting.listing().await;
 
+            // Each departure latches the grace in force when it is recorded.
+            app.draft_sessions.lock().await.reconnect.grace_period = Duration::ZERO;
             drop(lapsed_guest);
             await_draft_seat_departed(&app, &lapsed.code, 1).await;
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            app.draft_sessions.lock().await.reconnect.grace_period = Duration::from_secs(60);
             drop(waiting_guest);
             await_draft_seat_departed(&app, &waiting.code, 1).await;
             sweep_seats(&app).await;

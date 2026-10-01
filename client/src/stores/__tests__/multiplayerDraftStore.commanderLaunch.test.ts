@@ -160,15 +160,7 @@ const transport = vi.hoisted(() => {
     hostRoomGate: null as Promise<void> | null,
     /** When set, `joinRoom` parks on it after logging the call. */
     joinRoomGate: null as Promise<void> | null,
-    /**
-     * When set, the guest's `getSnapshot` parks on it.
-     *
-     * That is the ONLY window in which an abort can land after
-     * `installMatchRuntime` has committed the adapter into `useGameStore` but
-     * before `throwIfAborted()` observes it — `installMatchRuntime` awaits this
-     * fetch, then commits synchronously, and the abort check is the next
-     * statement. `joinRoomGate` parks far too early to reach it.
-     */
+    /** When set, the guest's `getSnapshot` parks on it. */
     guestSnapshotGate: null as Promise<void> | null,
     /** When set, the pod guest's own `leave()` (the wire ack `leave` awaits) parks on it. */
     guestLeaveGate: null as Promise<void> | null,
@@ -1766,9 +1758,7 @@ describe("multiplayerDraftStore Commander launch", () => {
     capturedDraftGuestListener?.({ type: "commanderLaunch", launch: commanderLaunchFor(2) });
 
     // Every game id the store passes through, so the assertions below can tell
-    // "cleaned up after installing" from "never installed at all". Without this
-    // control the final `toBeNull()` pair passes vacuously on any join that
-    // aborts EARLY, and the row would go green with the fix reverted.
+    // "cleaned up after installing" from "never installed at all".
     const installedGameIds: Array<string | null> = [];
     const unsubscribe = useGameStore.subscribe((state) => installedGameIds.push(state.gameId));
 
@@ -2219,6 +2209,34 @@ describe("multiplayerDraftStore Commander launch", () => {
       expect(useMultiplayerDraftStore.getState().matchAdapter).toBeNull();
       expect(navigate).not.toHaveBeenCalled();
       expect(signal?.aborted).toBe(true);
+    });
+
+    it("a Launch pressed while a resumed pod's open fails online ends with it", async () => {
+      let fail!: () => void;
+      const pod = freshHostAdapter();
+      const view = commanderView(2);
+      pod.initialize.mockImplementationOnce(async () => {
+        useMultiplayerDraftStore.setState({ phase: "complete", role: "host", seatIndex: 0, roomCode: "ABCDE", view, error: null });
+        await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("persist failed")); });
+      });
+      mockHostAdapterQueue.push(pod);
+      commanderSeatDecks.mockResolvedValue(seatDecksFor(view, 0));
+      transport.control.parkHostRoom = true;
+      const opening = useMultiplayerDraftStore.getState().hostDraft({
+        poolInput: { type: "Set", data: { pools: [{ code: "TST" }], sequence: ["TST"] } },
+        kind: "CommanderDraft", podSize: 2, hostDisplayName: "Host", tournamentFormat: "Swiss", podPolicy: "Competitive",
+      });
+      await vi.waitFor(() => expect(useMultiplayerDraftStore.getState().view).not.toBeNull());
+      const launching = useMultiplayerDraftStore.getState().launchCommanderGame(navigate);
+      try {
+        await vi.waitFor(() => expect(transport.hostRoomSignals).toHaveLength(1));
+        fail();
+        await opening;
+        expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
+      } finally {
+        useMultiplayerDraftStore.getState().reset();
+        await launching;
+      }
     });
 
     it("a Join pressed after a joined pod's open fails online dials nothing", async () => {

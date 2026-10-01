@@ -2692,8 +2692,7 @@ export const useMultiplayerDraftStore = create<
       if (matchAdapter) {
         matchAdapter.dispose();
         // `installMatchRuntime` may ALREADY have committed this adapter into
-        // `useGameStore` before `throwIfAborted()` fired — it awaits a snapshot
-        // fetch, which is exactly the window a cancel lands in. `set({
+        // `useGameStore` before `throwIfAborted()` fired. `set({
         // matchAdapter })` never ran on this path and `disposeMatchAdapter`'s
         // whole body is fenced on that field, so this is the only place the
         // committed runtime can be released. Left behind it is a DISPOSED
