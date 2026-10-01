@@ -121,3 +121,7 @@
 
 ## 20. Phase 13 (S4b FreeReveal)
 - Plan r1: F1 behavior (round-close reveal publishes ids surviving the redeal) + F2 text; readings accepted (repeatable while mulligan_count==0; reveal at round close; FreeReveal before Powder); availability computed, not stored. Revision r2 (names-only reveal). Review r2: ACCEPT; N3 (V3 must use public APIs public_revealed_cards / viewer_knows_card_identity) -> executor constraint. Plan CLEAN. Scope additions: protocol pins only (Standing rule).
+
+## 21. Phase 14 (S4c dealer + S6)
+- Plan r1: F1/F2 behavior (action-fold skipped; parked tail order), F3 machinery (serde census row -> test-forced scope addition), F4 machinery (mulligan.rs extraction -> DROPPED by ruling), F5/F6 text. Design round 1; revision r2 (self-found S1–S5).
+- Phase 14 r2 review: APPROVE; N1 text applied by orchestrator (frame-push wording; old 1->0, new 1); N2 recorded (no corpus card affected). Plan CLEAN. Scope additions (batch): deterministic_game_state_serde.rs (test-forced).

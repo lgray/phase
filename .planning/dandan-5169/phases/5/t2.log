@@ -1,0 +1,193 @@
+    Blocking waiting for file lock on build directory
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 2m 06s
+────────────
+ Nextest run ID 68cc5498-fb37-42cf-a59f-ba7378b1579e with nextest profile: default
+    Starting 20 tests across 1 binary (8568 tests skipped)
+        PASS [   3.344s] ( 1/20) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        FAIL [   3.363s] ( 2/20) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.33s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass' (17019) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:108:5:
+    turn did not advance
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: integration::text_substitution_cr612::pass_to_next_turn
+       3: integration::text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+       4: integration::text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass::{closure#0}
+       5: <integration::text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   3.475s] ( 3/20) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS [   3.856s] ( 4/20) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [   3.286s] ( 5/20) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        FAIL [   3.316s] ( 6/20) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.29s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn' (17048) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:657:5:
+    assertion `left == right` failed: guard: in effect this turn
+      left: ["Swamp"]
+     right: ["Forest"]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::vec::Vec<alloc::string::String>, [&str; 1]>
+       4: integration::text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+       5: integration::text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn::{closure#0}
+       6: <integration::text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   3.218s] ( 7/20) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS [   3.304s] ( 8/20) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS [   3.162s] ( 9/20) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        FAIL [   3.120s] (10/20) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::magical_hack_changes_basic_land_subtype ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::magical_hack_changes_basic_land_subtype
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.09s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::magical_hack_changes_basic_land_subtype' (17059) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:172:5:
+    assertion `left == right` failed: CR 305.6 + CR 305.7: taps for {U}, no longer {G}
+      left: {Blue, Green}
+     right: {Blue}
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::collections::btree::set::BTreeSet<engine::types::mana::ManaType>, alloc::collections::btree::set::BTreeSet<engine::types::mana::ManaType>>
+       4: integration::text_substitution_cr612::magical_hack_changes_basic_land_subtype
+       5: integration::text_substitution_cr612::magical_hack_changes_basic_land_subtype::{closure#0}
+       6: <integration::text_substitution_cr612::magical_hack_changes_basic_land_subtype::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   3.204s] (11/20) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::magical_hack_changes_landwalk_indefinitely ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.18s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::magical_hack_changes_landwalk_indefinitely' (17060) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:108:5:
+    turn did not advance
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: integration::text_substitution_cr612::pass_to_next_turn
+       3: integration::text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+       4: integration::text_substitution_cr612::magical_hack_changes_landwalk_indefinitely::{closure#0}
+       5: <integration::text_substitution_cr612::magical_hack_changes_landwalk_indefinitely::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        FAIL [   3.222s] (12/20) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.20s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is' (17062) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:377:5:
+    assertion `left == right` failed: CR 612.2: {G} and {W} are mana symbols, not color words
+      left: {}
+     right: {White, Green}
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::collections::btree::set::BTreeSet<engine::types::mana::ManaType>, alloc::collections::btree::set::BTreeSet<engine::types::mana::ManaType>>
+       4: integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+       5: integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is::{closure#0}
+       6: <integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   0.015s] (13/20) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS [   3.065s] (14/20) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        FAIL [   3.134s] (15/20) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.10s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone' (17065) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:675:5:
+    reach-guard: Sirocco has a repeat_for
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: integration::text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+       3: integration::text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone::{closure#0}
+       4: <integration::text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   3.107s] (16/20) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS [   3.408s] (17/20) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS [   2.990s] (18/20) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS [   3.125s] (19/20) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS [   3.238s] (20/20) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+────────────
+     Summary [  16.255s] 20 tests run: 14 passed, 6 failed, 8568 skipped
+        FAIL [   3.363s] ( 2/20) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        FAIL [   3.316s] ( 6/20) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        FAIL [   3.120s] (10/20) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        FAIL [   3.204s] (11/20) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        FAIL [   3.222s] (12/20) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        FAIL [   3.134s] (15/20) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+error: test run failed

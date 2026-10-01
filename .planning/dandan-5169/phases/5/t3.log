@@ -1,0 +1,60 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 6m 40s
+────────────
+ Nextest run ID 4e04d780-e3f2-4983-86f9-704140f3542a with nextest profile: default
+    Starting 20 tests across 1 binary (8568 tests skipped)
+        PASS [   3.228s] ( 1/20) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS [   3.298s] ( 2/20) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS [   3.406s] ( 3/20) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS [   4.278s] ( 4/20) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [   3.372s] ( 5/20) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS [   3.721s] ( 6/20) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        PASS [   3.617s] ( 7/20) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS [   3.844s] ( 8/20) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS [   3.661s] ( 9/20) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS [   3.530s] (10/20) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS [   3.697s] (11/20) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        FAIL [   3.403s] (12/20) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.37s
+
+  stderr ───
+    DEBUG monument=ObjectId(10) keys=[ObjectId(10)] wf=Priority { player: PlayerId(0) }
+    DEBUG monument obj zone=Battlefield tapped=false
+    DEBUG ObjectId(10) -> ["ActivateAbility { source_id: ObjectId(10), ability_index: 0 "]
+
+    thread 'text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is' (19842) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:383:5:
+    assertion `left == right` failed: CR 612.2: {G} and {W} are mana symbols, not color words
+      left: {}
+     right: {White, Green}
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::collections::btree::set::BTreeSet<engine::types::mana::ManaType>, alloc::collections::btree::set::BTreeSet<engine::types::mana::ManaType>>
+       4: integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+       5: integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is::{closure#0}
+       6: <integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   0.017s] (13/20) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS [   3.339s] (14/20) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS [   3.030s] (15/20) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS [   3.267s] (16/20) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS [   3.272s] (17/20) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS [   3.291s] (18/20) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS [   3.481s] (19/20) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS [   3.349s] (20/20) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+────────────
+     Summary [  17.177s] 20 tests run: 19 passed, 1 failed, 8568 skipped
+        FAIL [   3.403s] (12/20) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+error: test run failed

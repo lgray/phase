@@ -1,0 +1,133 @@
+   Compiling serde_core v1.0.228
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.9.5
+   Compiling rand_core v0.6.4
+   Compiling rand_xoshiro v0.6.0
+   Compiling rand_chacha v0.9.0
+   Compiling tracing v0.1.44
+   Compiling serde v1.0.228
+   Compiling indexmap v2.14.0
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling petgraph v0.6.5
+   Compiling toml_edit v0.22.27
+   Compiling im v15.1.0
+   Compiling toml v0.8.23
+   Compiling smallvec v1.15.1
+   Compiling serde_json v1.0.149
+   Compiling serde_ignored v0.1.14
+   Compiling thiserror v2.0.18
+   Compiling rand v0.9.4
+   Compiling strum v0.27.2
+   Compiling getrandom v0.4.2
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+   Compiling tempfile v3.27.0
+   Compiling insta v1.47.2
+error[E0559]: variant `engine::types::GameAction::TapLandForMana` has no field named `object_id`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:155:45
+    |
+155 |     runner.act(GameAction::TapLandForMana { object_id: forest }).expect("tap");
+    |                                             ^^^^^^^^^ `engine::types::GameAction::TapLandForMana` does not have this field
+    |
+    = note: available fields are: `selection`
+
+error[E0559]: variant `engine::types::GameAction::TapLandForMana` has no field named `object_id`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:374:45
+    |
+374 |     runner.act(GameAction::TapLandForMana { object_id: monument }).ok();
+    |                                             ^^^^^^^^^ `engine::types::GameAction::TapLandForMana` does not have this field
+    |
+    = note: available fields are: `selection`
+
+error[E0609]: no field `abilities` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:693:31
+    |
+693 |             "abilities": face.abilities,
+    |                               ^^^^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+693 |             "abilities": face.1.abilities,
+    |                               ++
+
+error[E0609]: no field `triggers` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:694:30
+    |
+694 |             "triggers": face.triggers,
+    |                              ^^^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+694 |             "triggers": face.1.triggers,
+    |                              ++
+
+error[E0609]: no field `static_abilities` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:695:38
+    |
+695 |             "static_abilities": face.static_abilities,
+    |                                      ^^^^^^^^^^^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+695 |             "static_abilities": face.1.static_abilities,
+    |                                      ++
+
+error[E0609]: no field `replacements` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:696:34
+    |
+696 |             "replacements": face.replacements,
+    |                                  ^^^^^^^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+696 |             "replacements": face.1.replacements,
+    |                                  ++
+
+error[E0609]: no field `keywords` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:697:30
+    |
+697 |             "keywords": face.keywords,
+    |                              ^^^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+697 |             "keywords": face.1.keywords,
+    |                              ++
+
+error[E0609]: no field `name` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:701:74
+    |
+701 |             missing.insert(format!("({tag:?}, {key}) {word} on {}", face.name));
+    |                                                                          ^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+701 |             missing.insert(format!("({tag:?}, {key}) {word} on {}", face.1.name));
+    |                                                                          ++
+
+error[E0609]: no field `abilities` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:705:30
+    |
+705 |         for ability in &face.abilities {
+    |                              ^^^^^^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+705 |         for ability in &face.1.abilities {
+    |                              ++
+
+error[E0609]: no field `name` on type `(&str, &CardFace)`
+   --> crates/engine/tests/integration/text_substitution_cr612.rs:707:60
+    |
+707 |                 assert_ne!(&rewritten, ability, "{}", face.name);
+    |                                                            ^^^^ unknown field
+    |
+help: one of the expressions' fields has a field of the same name
+    |
+707 |                 assert_ne!(&rewritten, ability, "{}", face.1.name);
+    |                                                            ++
+
+Some errors have detailed explanations: E0559, E0609.
+For more information about an error, try `rustc --explain E0559`.
+error: could not compile `phase-engine` (test "integration") due to 10 previous errors
+error: command `/root/.rustup/toolchains/nightly-2026-04-19-x86_64-unknown-linux-gnu/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package phase-engine --test integration` exited with code 101

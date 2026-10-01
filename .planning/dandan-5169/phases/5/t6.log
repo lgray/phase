@@ -1,0 +1,8 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 2m 09s
+────────────
+ Nextest run ID 77a9a6e5-430a-4f3f-9060-782bb0bd5e99 with nextest profile: default
+    Starting 1 test across 1 binary (8588 tests skipped)
+        PASS [   3.621s] (1/1) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+────────────
+     Summary [   3.637s] 1 test run: 1 passed, 8588 skipped

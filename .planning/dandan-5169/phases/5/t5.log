@@ -1,0 +1,58 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 2m 04s
+────────────
+ Nextest run ID 89bac6be-8e13-4dd9-a6e5-a1565a472835 with nextest profile: default
+    Starting 21 tests across 1 binary (8568 tests skipped)
+        PASS [   3.296s] ( 1/21) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS [   3.358s] ( 2/21) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS [   3.486s] ( 3/21) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS [   4.335s] ( 4/21) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [   3.391s] ( 5/21) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        PASS [   3.499s] ( 6/21) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS [   3.442s] ( 7/21) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS [   3.729s] ( 8/21) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS [   3.685s] ( 9/21) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS [   3.648s] (10/21) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        FAIL [   3.876s] (11/21) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8588 filtered out; finished in 3.84s
+
+  stderr ───
+
+    thread 'text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution' (21538) panicked at crates/engine/tests/integration/text_substitution_cr612.rs:776:9:
+    assertion `left == right` failed: case (a) ObjectId(9)
+      left: [Landwalk("Swamp")]
+     right: [Landwalk("Plains")]
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::panicking::assert_failed_inner
+       3: core::panicking::assert_failed::<alloc::vec::Vec<engine::types::keywords::Keyword>, alloc::vec::Vec<engine::types::keywords::Keyword>>
+       4: integration::text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+       5: integration::text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution::{closure#0}
+       6: <integration::text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+        PASS [   3.730s] (12/21) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS [   2.965s] (13/21) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS [   0.024s] (14/21) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS [   3.179s] (15/21) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS [   3.445s] (16/21) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS [   3.138s] (17/21) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS [   3.139s] (18/21) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS [   3.001s] (19/21) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS [   3.050s] (20/21) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS [   3.180s] (21/21) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+────────────
+     Summary [  18.124s] 21 tests run: 20 passed, 1 failed, 8568 skipped
+        FAIL [   3.876s] (11/21) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+error: test run failed

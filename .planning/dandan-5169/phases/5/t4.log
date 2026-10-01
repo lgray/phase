@@ -1,0 +1,38 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 2m 02s
+────────────
+ Nextest run ID 4169757d-bbc3-43a9-884a-39254d19ba52 with nextest profile: default
+    Starting 1 test across 1 binary (8587 tests skipped)
+        FAIL [   3.095s] (1/1) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+  stdout ───
+
+    running 1 test
+    test text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is ... FAILED
+
+    failures:
+
+    failures:
+        text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8587 filtered out; finished in 3.06s
+
+  stderr ───
+    DEBUG after activation: ChooseManaColor { player: PlayerId(0), choice: SingleColor { options: [Green, White] }, context: ManaAbility(PendingManaAbility { player: PlayerId(0), source_id: ObjectId(10), ability_index: Some(0), rules_execution_node: Some(ActivatedMana(SettlementNodeOrdinal(9))), ability_snapshot: Some({"kind":"Activated","effect":{"type":"Mana","produced":{"type":"AnyOneColor","count":{"type":"Fixed","value":1},"color_options":["Green","White"]}},"cost":{"type":"Tap"},"sub_ability":null,"duration":null,"description":"{T}: Add {G} or {W}.","target_prompt":null,"condition":null,"optional_targeting":false,"optional":false,"forward_result":false,"is_mana_ability":true}), color_override: None, resume: Priority, cost_move_resume: None, chosen_tappers: None, chosen_discards: [], chosen_mana_payment: None, chosen_counter_counts: [], chosen_x: None, collected_evidence: [], chosen_exiled: [], chosen_sacrificed_battlefield: [], cost_paid_object: None, batch_siblings: [] }) }
+
+    thread 'text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is' (20577) panicked at crates/engine/src/game/scenario.rs:3387:10:
+    ActivateAbility must be accepted by the engine: ActionNotAllowed("Cannot perform ActivateAbility { source_id: ObjectId(10), ability_index: 1 } while waiting for ChooseManaColor { player: PlayerId(0), choice: SingleColor { options: [Green, White] }, context: ManaAbility(PendingManaAbility { player: PlayerId(0), source_id: ObjectId(10), ability_index: Some(0), rules_execution_node: Some(ActivatedMana(SettlementNodeOrdinal(9))), ability_snapshot: Some({\"kind\":\"Activated\",\"effect\":{\"type\":\"Mana\",\"produced\":{\"type\":\"AnyOneColor\",\"count\":{\"type\":\"Fixed\",\"value\":1},\"color_options\":[\"Green\",\"White\"]}},\"cost\":{\"type\":\"Tap\"},\"sub_ability\":null,\"duration\":null,\"description\":\"{T}: Add {G} or {W}.\",\"target_prompt\":null,\"condition\":null,\"optional_targeting\":false,\"optional\":false,\"forward_result\":false,\"is_mana_ability\":true}), color_override: None, resume: Priority, cost_move_resume: None, chosen_tappers: None, chosen_discards: [], chosen_mana_payment: None, chosen_counter_counts: [], chosen_x: None, collected_evidence: [], chosen_exiled: [], chosen_sacrificed_battlefield: [], cost_paid_object: None, batch_siblings: [] }) }")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+       1: core::panicking::panic_fmt
+       2: core::result::unwrap_failed
+       3: <core::result::Result<(), engine::game::engine::EngineError>>::expect
+       4: <engine::game::scenario::AbilityActivation>::resolve
+       5: integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+       6: integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is::{closure#0}
+       7: <integration::text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+    note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+────────────
+     Summary [   3.107s] 1 test run: 0 passed, 1 failed, 8587 skipped
+        FAIL [   3.095s] (1/1) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+error: test run failed
