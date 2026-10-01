@@ -2651,13 +2651,14 @@ describe("multiplayerDraftStore Commander launch", () => {
     });
 
     it.each(["initialize", "startPregameGame", "getSnapshot"] as const)(
-      "a new pod whose pairing reuses the match id starts while the replaced pod's start is parked in %s", async (park) => {
+      "an abandoned host terminates once while parked in %s and a new pod can start", async (park) => {
       let open!: () => void;
       await podInMatch();
       parkHostOn(park, new Promise<void>((resolve) => { open = resolve; }));
       const first = useMultiplayerDraftStore.getState().startMatch();
       try {
         await reachPark(park);
+        expect(transport.terminateGame).not.toHaveBeenCalled();
         mockHostAdapterQueue.push(freshHostAdapter());
         await installCompletedPod(commanderView(2));
         useMultiplayerDraftStore.setState({
@@ -2666,6 +2667,8 @@ describe("multiplayerDraftStore Commander launch", () => {
         });
         expect((transport.hostRoomSignals[0] as AbortSignal).aborted).toBe(true);
         expect(await settle(first)).toBe("pending");
+        expect(transport.terminateGame).toHaveBeenCalledOnce();
+        expect(transport.terminateGame.mock.contexts[0]).toBe(vi.mocked(P2PHostAdapter).mock.results[0].value);
         const second = useMultiplayerDraftStore.getState().startMatch();
         await vi.waitFor(() => expect(transport.instances).toHaveLength(2));
         transport.instances[1].finish();
@@ -2675,6 +2678,7 @@ describe("multiplayerDraftStore Commander launch", () => {
         open();
       }
       expect(await first).toBeNull();
+      expect(transport.terminateGame).toHaveBeenCalledOnce();
     });
 
     it("a start parked in its snapshot fetch leaves the next pairing's runtime running when the fetch settles", async () => {

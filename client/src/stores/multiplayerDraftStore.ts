@@ -2835,7 +2835,12 @@ export const useMultiplayerDraftStore = create<
           },
         );
         // `terminateGame`, not `dispose`: a guest already seated must be told the game is over.
-        built = { adapter: matchAdapter, release: () => void matchAdapter.terminateGame().catch(() => {}) };
+        let teardown: Promise<void> | undefined;
+        built = {
+          adapter: matchAdapter,
+          release: () => { void (teardown ??= matchAdapter.terminateGame().catch(() => {})); },
+        };
+        abort.signal.addEventListener("abort", built.release, { once: true });
         unowned = undefined;
 
         let resolveRoomFull!: () => void;
@@ -3018,6 +3023,7 @@ export const useMultiplayerDraftStore = create<
       set({ error: err instanceof Error ? err.message : String(err) });
       return null;
     } finally {
+      if (built) abort.signal.removeEventListener("abort", built.release);
       if (matchStartInFlight === handle) matchStartInFlight = null;
     }
   },
