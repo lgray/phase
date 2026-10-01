@@ -105,3 +105,9 @@
 - USER DECISION (direct, 2026-10-01): "revising charter is fine." — authorizes charter decision revisions past the charter loop's fifth design round (expansion case accepted by the user for this run).
 - Phase 11 plan r1 review: F1 behavior (engine_resolution_choices over-extended; only DigChoice kept map needed for Telling Time), F2 text, F3–F5. Narrow path taken. Plan revision r2 dispatched.
 - Charter decision revision r5 (USER-authorized): Phase 11 scope + engine_resolution_choices.rs (DigChoice SelectCards kept-card map only); stated limit "dropped, not deferred" for search partition/discover/reveal-until-to-hand. Charter review r6: 1 review-only (seam-note premise, "different function" -> "different branch of the same arm"), applied by orchestrator (two-sided verified). Charter review r7 (fresh, whole): CLEAN. Charter frozen at r5 + seam fix (copy phase-charter.r5 is pre-fix).
+- Phase 11 plan r2 review: F1 behavior (reveal_until/scoped_library_search supplied despite stated limit) -> revision r3. r3 review: F1 behavior (unconditional .performed_by on DigChoice kept map / dig.rs put-all also drives record_exiling_player for Dig->Exile: 22 non-Dandan cards would newly set exiled_by) + text note. Behavior counts r1 1, r2 1, r3 1: two consecutive non-lowering design rounds -> LOOP LIMIT. Expansion case put to the user:
+  1. Open item: phase-11 plan-review-r3 F1 (behavior): gate the taker on destination Hand; add a Dig->Exile preservation row.
+  2. Spend buys: one planner revision + one plan review (2 dispatches, 0 builds); closes when review returns 0 behavior.
+  3. Cost: 2 Sonnet dispatches.
+  4. If declined: phase 11 stops; run stops before phase 11 (phases 1-4 accepted, 4b fixing).
+  5. Prediction: next round behavior count 0 (< 1). Prior predictions this loop: none.

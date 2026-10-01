@@ -1,0 +1,20 @@
+   Compiling phase-engine v0.97.0 (/home/user/phase/crates/engine)
+    Finished `test` profile [unoptimized] target(s) in 10m 09s
+────────────
+ Nextest run ID 5e52e4f7-c14d-4312-b679-5a57e67cc55a with nextest profile: default
+    Starting 13 tests across 1 binary (22661 tests skipped)
+        PASS [   0.017s] ( 1/13) phase-engine game::layers::tests::dependency_order_cross_loop_dependency_keeps_each_loop_in_timestamp_order
+        PASS [   0.019s] ( 2/13) phase-engine game::layers::tests::dependency_order_chain_plus_loop_keeps_the_chain
+        PASS [   0.025s] ( 3/13) phase-engine game::layers::tests::dependency_order_acyclic_graphs_follow_plain_kahn_order
+        PASS [   0.028s] ( 4/13) phase-engine game::layers::tests::dependency_order_dependent_of_a_loop_member_applies_after_that_member
+        PASS [   0.015s] ( 5/13) phase-engine game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop
+        PASS [   0.017s] ( 6/13) phase-engine game::layers::tests::dependency_order_dependent_on_whole_loop_waits
+        PASS [   0.015s] ( 7/13) phase-engine game::layers::tests::dependency_order_loop_effect_with_older_dependent_keeps_the_dependent_at_its_rank
+        PASS [   0.017s] ( 8/13) phase-engine game::layers::tests::dependency_order_loop_member_waiting_on_a_newer_node_keeps_its_siblings_behind
+        PASS [   0.014s] ( 9/13) phase-engine game::layers::tests::dependency_order_loop_member_waits_for_upstream_node
+        PASS [   0.020s] (10/13) phase-engine game::layers::tests::dependency_order_stalls_recur_across_loops
+        PASS [   0.016s] (11/13) phase-engine game::layers::tests::dependency_order_whole_loop_is_timestamp_order
+        PASS [   0.014s] (12/13) phase-engine types::layers::tests::dependency_ordering_layers
+        PASS [   0.017s] (13/13) phase-engine game::layers::tests::test_dependency_ordering_overrides_timestamp
+────────────
+     Summary [   0.087s] 13 tests run: 13 passed, 22661 skipped
