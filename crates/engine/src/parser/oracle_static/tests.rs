@@ -5,11 +5,11 @@ use super::restriction::*;
 use super::support::*;
 use super::*;
 use crate::types::ability::{
-    ActivationRestriction, AggregateFunction, AttackedYouScope, CardTypeSetSource,
-    CommanderOwnership, Comparator, CountScope, DamageKindFilter, Duration, Effect, FilterProp,
-    ObjectProperty, ObjectScope, PlayerFilter, PlayerRelation, PlayerScope, PtStat, PtValueScope,
-    QuantityExpr, QuantityRef, SharedQuality, SharedQualityRelation, SubtypeExclusion, TypeFilter,
-    ZoneRef,
+    ActivationRestriction, AggregateFunction, AttackedYouScope, AttackerBlockStatus,
+    CardTypeSetSource, CommanderOwnership, Comparator, CountScope, DamageKindFilter, Duration,
+    Effect, FilterProp, ObjectProperty, ObjectScope, PlayerFilter, PlayerRelation, PlayerScope,
+    PtStat, PtValueScope, QuantityExpr, QuantityRef, SharedQuality, SharedQualityRelation,
+    SubtypeExclusion, TypeFilter, ZoneRef,
 };
 use crate::types::counter::CounterType;
 use crate::types::keywords::{Keyword, WardCost};
@@ -6586,6 +6586,36 @@ fn static_spells_cost_less() {
         StaticMode::ModifyCost {
             mode: CostModifyMode::Reduce,
             amount: ManaCost::Cost { generic: 1, .. },
+            ..
+        }
+    ));
+}
+
+// Cemetery Prowler #6898: "for each card type they share with cards exiled with ~"
+// must lower to a SharedCardTypes(ExiledBySource) multiplier (the spell/exile
+// intersection), NOT an ObjectCount over every card or a population-only
+// DistinctCardTypes. Before the fix the "they share with" separator routed the
+// whole clause into an ObjectCount over a bare "Card" filter (no zone).
+#[test]
+fn static_spells_cost_less_for_each_card_type_shared_with_exiled() {
+    let def = parse_static_line(
+        "Spells you cast cost {1} less to cast for each card type they share with cards exiled with this creature.",
+    )
+    .unwrap();
+    let StaticMode::ModifyCost {
+        mode: CostModifyMode::Reduce,
+        dynamic_count: Some(QuantityRef::SharedCardTypes { source }),
+        ..
+    } = &def.mode
+    else {
+        panic!("expected Reduce + SharedCardTypes, got {:?}", def.mode);
+    };
+    assert_eq!(source, &CardTypeSetSource::ExiledBySource);
+    assert!(matches!(
+        def.mode,
+        StaticMode::ModifyCost {
+            amount: ManaCost::Cost { generic: 1, .. },
+            spell_filter: None,
             ..
         }
     ));
@@ -17028,7 +17058,9 @@ fn static_unblocked_attacking_ninjas_you_control_have_lifelink() {
     if let Some(TargetFilter::Typed(tf)) = &def.affected {
         assert_eq!(tf.get_subtype(), Some("Ninja"));
         assert_eq!(tf.controller, Some(ControllerRef::You));
-        assert!(tf.properties.contains(&FilterProp::Unblocked));
+        assert!(tf.properties.contains(&FilterProp::BlockStatus {
+            status: AttackerBlockStatus::Unblocked
+        }));
         assert!(tf
             .properties
             .contains(&FilterProp::Attacking { defender: None }));
@@ -17055,7 +17087,9 @@ fn static_attacking_ninjas_you_control_have_deathtouch() {
         assert!(tf
             .properties
             .contains(&FilterProp::Attacking { defender: None }));
-        assert!(!tf.properties.contains(&FilterProp::Unblocked));
+        assert!(!tf.properties.contains(&FilterProp::BlockStatus {
+            status: AttackerBlockStatus::Unblocked
+        }));
     } else {
         panic!(
             "Expected Typed filter with Ninja subtype, got {:?}",

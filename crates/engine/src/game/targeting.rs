@@ -1068,7 +1068,7 @@ pub fn resolved_targets(
     // exposed through `resolving_stack_entry`; the live stack lookup covers
     // target resolution before the entry is popped.
     if matches!(target_filter, TargetFilter::ParentTargetSlot { .. }) {
-        return super::ability_utils::flatten_targets_in_chain(parent_slot_base(state, ability));
+        return super::ability_utils::declared_targets_in_chain(parent_slot_base(state, ability));
     }
     // CR 601.2c + CR 608.2b: Pre-selected targets take precedence over
     // event-context resolution when the player chose targets at activation/
@@ -1161,7 +1161,7 @@ pub(crate) fn parent_chain_targets_from_root(
     state: &GameState,
     ability: &ResolvedAbility,
 ) -> Vec<TargetRef> {
-    super::ability_utils::flatten_targets_in_chain(resolving_root_ability(state, ability))
+    super::ability_utils::declared_targets_in_chain(resolving_root_ability(state, ability))
 }
 
 /// CR 608.2c: The root `ResolvedAbility` of the currently-resolving stack
@@ -1227,7 +1227,7 @@ pub(crate) fn resolve_parent_slot_from_root(
     ability: &ResolvedAbility,
     index: usize,
 ) -> Option<TargetRef> {
-    super::ability_utils::flatten_targets_in_chain(parent_slot_base(state, ability))
+    super::ability_utils::declared_targets_in_chain(parent_slot_base(state, ability))
         .into_iter()
         .nth(index)
 }
@@ -1269,20 +1269,12 @@ pub(crate) fn resolve_live_parent_slot_from_root(
     let illegal_at_resolution = resolution_carrier_entry(state, ability)
         .and_then(StackEntry::ability)
         .is_some_and(|root| {
-            use super::ability_utils::flatten_targets_in_chain as flatten;
             let base = parent_slot_base(state, ability);
-            let branch =
-                |node: Option<&ResolvedAbility>| node.map_or(0, |node| flatten(node).len());
             // CR 608.2b: illegal targets won't be affected by parts of the effect for which they're illegal.
-            let ahead: usize =
-                std::iter::successors(Some(root), |node| node.sub_ability.as_deref())
-                    .take_while(|node| !std::ptr::eq(*node, base))
-                    .map(|node| {
-                        flatten(node).len()
-                            - branch(node.sub_ability.as_deref())
-                            - branch(node.else_ability.as_deref())
-                    })
-                    .sum();
+            // The stamp, this offset and the slot reader all count declared
+            // slots (`declared_targets_in_chain` numbering), so an inheriting
+            // rider's carried snapshot never shifts a later slot.
+            let ahead = super::ability_utils::declared_slots_ahead_of(root, base);
             root.illegal_target_slots.contains(&(ahead + index))
         });
     if illegal_at_resolution {
@@ -1699,15 +1691,26 @@ pub(crate) fn resolve_event_context_target_for_event_or_state(
             let controller = state.objects.get(&source_obj_id)?.controller;
             Some(TargetRef::Player(controller))
         }
-        // CR 108.3 + CR 608.2c: `ParentTargetOwner` mirrors `ParentTargetController`
-        // but returns the *owner* of the resolved object. When no trigger event
-        // supplies a source object (Enslave's phase trigger), fall back to the
-        // ability source's AttachedTo host — the Aura/Equipment context where
-        // "its owner" anaphorically refers to the equipped/enchanted permanent.
+        // CR 108.3 + CR 603.10a + CR 608.2c + CR 608.2h: `ParentTargetOwner`
+        // mirrors `ParentTargetController` but returns the *owner* of the
+        // resolved object. Zone-change triggers prefer the record/LKI owner,
+        // because the departing object may already be a new object by the time
+        // the ability resolves. When no trigger event supplies a source object
+        // (Enslave's phase trigger), fall back to the ability source's
+        // AttachedTo host — the Aura/Equipment context where "its owner"
+        // anaphorically refers to the equipped/enchanted permanent.
         TargetFilter::ParentTargetOwner => {
+            if let Some(GameEvent::ZoneChanged { record, .. }) = event {
+                return Some(TargetRef::Player(record.owner));
+            }
             if let Some(event) = event {
                 if let Some(source_obj_id) = extract_source_from_event(event) {
-                    if let Some(owner) = state.objects.get(&source_obj_id).map(|o| o.owner) {
+                    if let Some(owner) = state
+                        .objects
+                        .get(&source_obj_id)
+                        .map(|o| o.owner)
+                        .or_else(|| state.lki_cache.get(&source_obj_id).map(|lki| lki.owner))
+                    {
                         return Some(TargetRef::Player(owner));
                     }
                 }
@@ -2043,7 +2046,7 @@ pub(crate) fn extract_source_from_event(
         GameEvent::Evolved { object_id } => Some(*object_id),
         GameEvent::CounterRemoved { object_id, .. } => Some(*object_id),
         GameEvent::TokenCreated { object_id, .. } => Some(*object_id),
-        GameEvent::CreatureDestroyed { object_id } => Some(*object_id),
+        GameEvent::CreatureDestroyed { object_id, .. } => Some(*object_id),
         GameEvent::PermanentSacrificed { object_id, .. } => Some(*object_id),
         GameEvent::Unattached {
             old_target: TargetRef::Object(object_id),
@@ -3327,6 +3330,7 @@ mod tests {
     use crate::game::zones::create_object;
     use crate::types::ability::{Comparator, ContinuousModification, Duration, QuantityExpr};
     use crate::types::card_type::CoreType;
+    use crate::types::format::FormatConfig;
     use crate::types::game_state::{
         CastingVariant, DrainStatus, PostReplacementDrain, ResidentDrainPolicy,
     };
@@ -3698,6 +3702,34 @@ mod tests {
             ObjectId(999),
         );
         assert_eq!(result, Some(TargetRef::Player(PlayerId(1))));
+    }
+
+    #[test]
+    fn parent_target_owner_prefers_zone_change_record_owner() {
+        // CR 108.3 + CR 603.10a + CR 608.2h: leaves-the-battlefield owner
+        // anaphors read the zone-change record/LKI authority. The live object
+        // row is absent here on purpose; falling back to live object state (or
+        // to the ability controller) would return None or P1 instead of P0.
+        let mut state = GameState::new(FormatConfig::standard(), 3, 0);
+        let moved = ObjectId(77);
+        state.current_trigger_event = Some(GameEvent::ZoneChanged {
+            object_id: moved,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(crate::types::game_state::ZoneChangeRecord {
+                owner: PlayerId(0),
+                controller: PlayerId(1),
+                ..crate::types::game_state::ZoneChangeRecord::test_minimal(
+                    moved,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )
+            }),
+        });
+
+        let result =
+            resolve_event_context_target(&state, &TargetFilter::ParentTargetOwner, ObjectId(999));
+        assert_eq!(result, Some(TargetRef::Player(PlayerId(0))));
     }
 
     #[test]
@@ -7147,6 +7179,8 @@ mod tests {
             player_id: PlayerId(1),
             source_id: ObjectId(99),
             kind: crate::types::events::ActivatedAbilityKind::Normal,
+            departed_source_lki: None,
+            trigger_state: crate::types::events::ActivationTriggerState::Pending,
         };
         assert_eq!(extract_player_from_event(&event, &state), Some(PlayerId(1)));
     }

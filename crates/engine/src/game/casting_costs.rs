@@ -1009,9 +1009,15 @@ fn spell_alternative_cost_is_payable(
         AbilityCost::Mana { cost } => {
             super::casting::can_pay_cost_after_auto_tap(state, player, object_id, cost)
         }
-        AbilityCost::Composite { costs } => costs
-            .iter()
-            .all(|sub_cost| spell_alternative_cost_is_payable(state, player, object_id, sub_cost)),
+        // CR 118.3 + CR 601.2h: every leg must be payable, and multiple chosen
+        // hand-discard legs must be payable together (one card cannot serve two).
+        AbilityCost::Composite { costs } => {
+            costs.iter().all(|sub_cost| {
+                spell_alternative_cost_is_payable(state, player, object_id, sub_cost)
+            }) && super::cost_payability::discard_legs_jointly_payable(
+                state, player, object_id, costs,
+            )
+        }
         other => other.is_payable(state, player, object_id),
     }
 }
@@ -14246,6 +14252,24 @@ fn auto_tap_mana_sources_inner(
                         caused_by: None,
                     });
                 }
+                // CR 305.6 + CR 605.3: tapping a basic land for mana activates its
+                // intrinsic mana ability. It never moves the land, so it carries no
+                // departed-source LKI; its triggers are observed at the activation
+                // boundary, before production, like every mana activation.
+                let activation_event = super::casting_targets::emit_ability_activated(
+                    state,
+                    player,
+                    option.object_id,
+                    crate::types::events::ActivatedAbilityKind::Mana,
+                    crate::types::zones::Zone::Battlefield,
+                    events,
+                );
+                super::triggers::collect_activation_event_at_boundary(
+                    state,
+                    events,
+                    activation_event,
+                )
+                .expect("intrinsic mana activation trigger collection cause must be live");
                 mana_payment::produce_mana(
                     state,
                     option.object_id,
@@ -16594,6 +16618,7 @@ mod tests {
                         extra_cost: None,
                         enters_with_counter: None,
                         required_cast_keyword: None,
+                        pool: crate::types::statics::GraveyardPermissionPool::OwnGraveyard,
                     },
                 )
                 .affected(crate::types::ability::TargetFilter::Typed(
@@ -16731,7 +16756,8 @@ mod tests {
                 },
             },
             Some(TriggerFiring::ReceiptEligible(origin)),
-        );
+        )
+        .expect("the fixture begins with no carrier installed");
         state.park_ability_continuation(PendingContinuation::new(
             Box::new(ResolvedAbility::new(
                 Effect::NoOp,

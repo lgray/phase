@@ -492,11 +492,13 @@ pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
         }
     }
 
-    // CR 608.2c: "that many" / "that much" — an anaphoric back-reference to the
-    // previous effect's count (read the whole text and apply the rules of
-    // English). Resolves to `EventContextAmount` (which falls back to
-    // `state.last_effect_count` for chained sub-ability
-    // continuations). Composes with the "twice"/"three times" multipliers
+    // CR 608.2c: "that many" / "that much" / "that number of" — an
+    // anaphoric back-reference to the previous effect's count (read the whole
+    // text and apply the rules of English). Resolves to `EventContextAmount`
+    // (which falls back to `state.last_effect_count` for chained sub-ability
+    // continuations); a governing gate that measured the antecedent later
+    // rebinds the placeholder to its own `QuantityRef`. Composes with the
+    // "twice"/"three times" multipliers
     // above so "twice that many cards" parses as Multiply{2, EventContextAmount}.
     if let Some(((), rest)) = super::oracle_nom::bridge::nom_on_lower(text, &lower, |i| {
         nom::combinator::value(
@@ -504,6 +506,7 @@ pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
             nom::branch::alt((
                 nom::bytes::complete::tag::<_, _, OracleError<'_>>("that many"),
                 nom::bytes::complete::tag("that much"),
+                nom::bytes::complete::tag("that number of"),
             )),
         )
         .parse(i)
@@ -2550,8 +2553,20 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     // Part-Time Mutant" (full form, inside an except clause). The earlier
     // `replace_all_words` is word-boundary-aware, so re-running on the
     // residue cannot re-touch a `~` produced by the prior pass.
+    //
+    // CR 201.5c: only instances of the shortened name used to refer to the
+    // card are treated as its name. A single-word short name is matched
+    // case-sensitively, like a single-word full name above, so the same word in
+    // another case stays ordinary rules text, such as a step name ("an
+    // additional untap step" on Untap, Upkeep, Draw) or a keyword ("has storm"
+    // on Storm, Force of Nature; CR 702.40a). A multi-word short name stays
+    // case-insensitive, like a multi-word full name.
     if let Some(short_name) = comma_short_self_name(card_name) {
-        result = replace_all_words(&result, short_name, "~");
+        result = if short_name.contains(' ') {
+            replace_all_words(&result, short_name, "~")
+        } else {
+            replace_all_words_case_sensitive(&result, short_name, "~")
+        };
     }
 
     // "Of"-based short name: "Rosie Cotton of South Lane" → "Rosie Cotton"
@@ -3415,6 +3430,67 @@ mod tests {
                 "Haliya, Guided by Light"
             ),
             "Whenever ~ or another creature enters"
+        );
+    }
+
+    /// CR 201.5c + CR 702.40a: a single-word comma short name is matched only
+    /// in its printed case; the same word in lowercase is the storm keyword and
+    /// stays.
+    #[test]
+    fn single_word_comma_short_name_keeps_a_lowercase_keyword() {
+        // Reach guard in the same input: the printed "Storm" becomes `~`.
+        assert_eq!(
+            normalize_card_name_refs(
+                "Whenever Storm deals combat damage to a player, the next instant or sorcery spell you cast this turn has storm.",
+                "Storm, Force of Nature",
+            ),
+            "Whenever ~ deals combat damage to a player, the next instant or sorcery spell you cast this turn has storm."
+        );
+    }
+
+    /// CR 201.5c: a single-word comma short name in lowercase that names a
+    /// step is rules text and stays.
+    #[test]
+    fn single_word_comma_short_name_keeps_a_lowercase_step_name() {
+        // Reach guard: this name has the single-word short name "Untap", so
+        // the unchanged text below is not the absence of a short name.
+        assert_eq!(comma_short_self_name("Untap, Upkeep, Draw"), Some("Untap"));
+        const UNTAP_UPKEEP_DRAW: &str = "Choose one —\n\
+            • After this phase, there is an additional untap step.\n\
+            • After this phase, there is an additional upkeep step.\n\
+            • After this phase, there is an additional draw step.\n\
+            Entwine {3} (Choose all of them if you pay the entwine cost.)";
+        assert_eq!(
+            normalize_card_name_refs(UNTAP_UPKEEP_DRAW, "Untap, Upkeep, Draw"),
+            UNTAP_UPKEEP_DRAW
+        );
+    }
+
+    /// CR 201.5c: the sibling name forms keep their case rules. A multi-word
+    /// comma short name matches in any case; a single-word full name matches
+    /// only as printed.
+    #[test]
+    fn multi_word_comma_short_name_and_single_word_full_name_keep_their_case_rules() {
+        assert_eq!(
+            normalize_card_name_refs(
+                "Whenever Agrus Kos attacks, attacking red creatures get +2/+0 and attacking white creatures get +0/+2 until end of turn.",
+                "Agrus Kos, Wojek Veteran",
+            ),
+            "Whenever ~ attacks, attacking red creatures get +2/+0 and attacking white creatures get +0/+2 until end of turn."
+        );
+        assert_eq!(
+            normalize_card_name_refs(
+                "Whenever agrus kos attacks, draw a card.",
+                "Agrus Kos, Wojek Veteran",
+            ),
+            "Whenever ~ attacks, draw a card."
+        );
+        assert_eq!(
+            normalize_card_name_refs(
+                "Whenever a player says \"sorry\" at any other time, Sorry deals 2 damage to that player.",
+                "Sorry",
+            ),
+            "Whenever a player says \"sorry\" at any other time, ~ deals 2 damage to that player."
         );
     }
 
@@ -4303,6 +4379,32 @@ mod tests {
             other => panic!("expected Multiply, got {other:?}"),
         }
         assert_eq!(rest, "stun counters");
+    }
+
+    /// CR 608.2c: the demonstrative count phrases — "that many", "that much",
+    /// and "that number of" — all parse to the unbound `EventContextAmount`
+    /// placeholder and leave the counted noun as the remainder.
+    #[test]
+    fn parse_count_expr_demonstrative_count_phrases() {
+        for (text, expected_rest) in [
+            (
+                "that number of +1/+1 counters on target creature",
+                "+1/+1 counters on target creature",
+            ),
+            ("that many +1/+1 counters", "+1/+1 counters"),
+            ("that much life", "life"),
+        ] {
+            let (qty, rest) = parse_count_expr(text)
+                .unwrap_or_else(|| panic!("{text:?} must parse as a count expression"));
+            assert_eq!(
+                qty,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount
+                },
+                "{text:?} must be the EventContextAmount placeholder"
+            );
+            assert_eq!(rest, expected_rest, "{text:?} must leave the noun phrase");
+        }
     }
 
     /// CR 107.1b: "equal to" in count positions must compose full quantity

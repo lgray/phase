@@ -1613,6 +1613,51 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
     for event in &mut filtered.current_trigger_events {
         redact_hidden_zone_change_event(event, &hidden_zone_change_ids);
     }
+    // CR 400.2 + CR 401.2 + CR 603.7: a phase-delayed ability carries the
+    // battlefield departure it was created under
+    // (`SpellContext::creation_lookback_event`). That record names the departed
+    // object exactly like a stack `trigger_event` does, so it takes the same
+    // hidden-object redaction in every carrier the projection retains:
+    // installed delayed triggers, queued/ordering/deferred triggers, and stack
+    // entries. (`resolution_stack` and the paused-resolution resumes are blanked
+    // above; `departed_stack_spells` holds spells, never delayed abilities.)
+    let mut redact_lookback =
+        |event: &mut GameEvent| redact_hidden_zone_change_event(event, &hidden_zone_change_ids);
+    for trigger in &mut filtered.delayed_triggers {
+        trigger
+            .ability
+            .for_each_creation_lookback_event_mut(&mut redact_lookback);
+    }
+    for entry in filtered
+        .stack
+        .iter_mut()
+        .chain(filtered.resolving_stack_entry.iter_mut())
+    {
+        if let Some(ability) = entry.ability_mut() {
+            ability.for_each_creation_lookback_event_mut(&mut redact_lookback);
+        }
+    }
+    if let Some(pending) = filtered.pending_trigger.as_mut() {
+        pending
+            .ability
+            .for_each_creation_lookback_event_mut(&mut redact_lookback);
+    }
+    for context in &mut filtered.deferred_triggers {
+        context
+            .pending
+            .ability
+            .for_each_creation_lookback_event_mut(&mut redact_lookback);
+    }
+    if let Some(order) = filtered.pending_trigger_order.as_mut() {
+        for group in &mut order.groups {
+            for context in &mut group.triggers {
+                context
+                    .pending
+                    .ability
+                    .for_each_creation_lookback_event_mut(&mut redact_lookback);
+            }
+        }
+    }
     filtered.zone_changes_this_turn = filtered
         .zone_changes_this_turn
         .iter()
@@ -3427,6 +3472,9 @@ fn redact_printed_identity(obj: &mut crate::game::game_object::GameObject) {
     obj.token_rules_text = None;
     obj.attraction_lights.clear();
     obj.token_image_ref = None;
+    // Redaction must not leak art metadata either: a hidden object renders
+    // no art, so no descriptor may survive alongside the cleared ref.
+    obj.token_art = None;
     obj.source_related_token_ids.clear();
     obj.spellbook.clear();
     obj.parse_warnings.clear();

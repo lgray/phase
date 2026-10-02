@@ -5,7 +5,7 @@ use crate::types::ability::{
 #[cfg(test)]
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{DelayedTrigger, GameState};
+use crate::types::game_state::{BattlefieldDepartureSourceContext, DelayedTrigger, GameState};
 use crate::types::identifiers::TrackedSetId;
 use crate::types::zones::Zone;
 
@@ -572,6 +572,24 @@ pub fn resolve(
     // CR 603.7c: A delayed triggered ability that refers to information from
     // its creation event keeps that creation-time binding for later resolution.
     delayed_ability.scoped_player = ability.scoped_player;
+    // CR 603.7 + CR 603.10a + CR 608.2h: a phase-delayed ability created under
+    // a battlefield departure ("When this creature dies, at the beginning of the
+    // next end step, …") fires on a phase event that names no object. Carry the
+    // departure itself so every object look-back read in the payload ("that
+    // many", "its power", "this creature's counters") answers from the departed
+    // object's last-known information. Event-delayed triggers are never stamped:
+    // they read the event that actually fires them.
+    if creation_time_provenance {
+        if let Some(
+            event @ GameEvent::ZoneChanged {
+                from: Some(Zone::Battlefield),
+                ..
+            },
+        ) = state.current_trigger_event.as_ref()
+        {
+            delayed_ability.set_creation_lookback_event_recursive(event);
+        }
+    }
     // A delayed trigger is a continuation of this resolved ability, so preserve
     // the same exact trigger source across its later match and resolution. Spell
     // and activated-ability sources may not already carry trigger provenance;
@@ -1463,6 +1481,25 @@ fn snapshot_quantity_ref(
         }
     ) && ability.targets.is_empty()
     {
+        // CR 603.10a + CR 608.2h + CR 708.2a: when the creation event is a
+        // battlefield departure, "its mana value" is the departed permanent's
+        // last-known mana value (0 if it was face down), never the card as it
+        // now sits in its new zone.
+        if let Some(
+            event @ GameEvent::ZoneChanged {
+                from: Some(Zone::Battlefield),
+                ..
+            },
+        ) = state.current_trigger_event.as_ref()
+        {
+            match crate::types::game_state::battlefield_departure_trigger_source_context(event) {
+                BattlefieldDepartureSourceContext::Present(context) => {
+                    return Some(i32::try_from(context.lki.mana_value).unwrap_or(i32::MAX));
+                }
+                BattlefieldDepartureSourceContext::Malformed => return Some(0),
+                BattlefieldDepartureSourceContext::Absent => {}
+            }
+        }
         if let Some(spell_id) = state
             .current_trigger_event
             .as_ref()
@@ -1842,12 +1879,12 @@ mod tests {
     use crate::game::game_object::GameObject;
     use crate::types::ability::{
         AbilityDefinition, AbilityKind, BounceSelection, DamageKindFilter, DelayedTriggerCondition,
-        Effect, ExtraPhaseAnchor, ManaProduction, ObjectScope, PtValue, QuantityExpr, QuantityRef,
-        TriggerDefinition,
+        Effect, ExtraPhaseAnchor, ExtraPhaseRecipient, ManaProduction, ObjectScope, PtValue,
+        QuantityExpr, QuantityRef, TriggerDefinition,
     };
     use crate::types::identifiers::{CardId, ExtraPhaseId, ObjectId, TrackedSetId};
     use crate::types::mana::ManaCost;
-    use crate::types::phase::{Phase, PhaseGroup};
+    use crate::types::phase::{Phase, PhaseGroup, TurnSegment};
     use crate::types::player::PlayerId;
     use crate::types::triggers::{PlaneswalkRole, TriggerMode};
 
@@ -2139,6 +2176,93 @@ mod tests {
     }
 
     #[test]
+    fn only_phase_delayed_departures_stamp_creation_lookback() {
+        let departure_event = crate::types::events::GameEvent::ZoneChanged {
+            object_id: ObjectId(9),
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(crate::types::game_state::ZoneChangeRecord::test_minimal(
+                ObjectId(9),
+                Some(Zone::Battlefield),
+                Zone::Graveyard,
+            )),
+        };
+        let non_departure_event = crate::types::events::GameEvent::CardsDrawn {
+            player_id: PlayerId(0),
+            count: 1,
+        };
+
+        let trigger = || Box::new(TriggerDefinition::new(TriggerMode::ChangesZone));
+        let cases = [
+            (
+                DelayedTriggerCondition::WhenDies {
+                    filter: TargetFilter::Any,
+                },
+                Some(departure_event.clone()),
+                false,
+                "WhenDies under a departure",
+            ),
+            (
+                DelayedTriggerCondition::WhenNextEvent {
+                    trigger: trigger(),
+                    or_trigger: None,
+                    lifetime: Default::default(),
+                },
+                Some(departure_event.clone()),
+                false,
+                "WhenNextEvent under a departure",
+            ),
+            (
+                DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+                Some(departure_event.clone()),
+                true,
+                "AtNextPhase under a departure",
+            ),
+            (
+                DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+                Some(non_departure_event),
+                false,
+                "AtNextPhase under a non-departure event",
+            ),
+        ];
+
+        for (condition, current_event, should_stamp, label) in cases {
+            let mut state = GameState::new_two_player(42);
+            state.current_trigger_event = current_event;
+            let effect_def = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            );
+            let ability = ResolvedAbility::new(
+                Effect::CreateDelayedTrigger {
+                    condition,
+                    effect: Box::new(effect_def),
+                    uses_tracked_set: false,
+                },
+                vec![],
+                ObjectId(5),
+                PlayerId(0),
+            );
+            let mut events = Vec::new();
+
+            resolve(&mut state, &ability, &mut events).expect("CreateDelayedTrigger resolves");
+
+            assert_eq!(
+                state.delayed_triggers[0]
+                    .ability
+                    .context
+                    .creation_lookback_event
+                    .is_some(),
+                should_stamp,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn only_phase_delayed_conditions_use_creation_time_provenance() {
         let trigger = || Box::new(TriggerDefinition::new(TriggerMode::Taps));
         assert!(condition_uses_creation_time_provenance(
@@ -2218,10 +2342,10 @@ mod tests {
         )
     }
 
-    fn add_combat(target: TargetFilter, after: ExtraPhaseAnchor, count: i32) -> Effect {
+    fn add_combat(recipient: ExtraPhaseRecipient, after: ExtraPhaseAnchor, count: i32) -> Effect {
         Effect::AdditionalPhase {
-            target,
-            phase: Phase::BeginCombat,
+            recipient,
+            segment: TurnSegment::Phase(PhaseGroup::Combat),
             after,
             followed_by: vec![],
             count: QuantityExpr::Fixed { value: count },
@@ -2260,7 +2384,7 @@ mod tests {
         let mut state = precombat_main();
         let chain = add_then_that_combat(
             add_combat(
-                TargetFilter::None,
+                ExtraPhaseRecipient::NoPlayer,
                 ExtraPhaseAnchor::ThisPhase { named: None },
                 1,
             ),
@@ -2308,7 +2432,7 @@ mod tests {
                 "first-of-turn phase already ended",
                 late,
                 add_combat(
-                    TargetFilter::Controller,
+                    ExtraPhaseRecipient::Controller,
                     ExtraPhaseAnchor::FirstOfTurn(PhaseGroup::PostcombatMain),
                     1,
                 ),
@@ -2317,7 +2441,7 @@ mod tests {
                 "granted phase on an opponent's turn",
                 opponents_turn,
                 add_combat(
-                    TargetFilter::Controller,
+                    ExtraPhaseRecipient::Controller,
                     ExtraPhaseAnchor::ThisPhase { named: None },
                     1,
                 ),
@@ -2329,13 +2453,17 @@ mod tests {
                     state.phase = Phase::Upkeep;
                     state
                 },
-                add_combat(TargetFilter::None, ExtraPhaseAnchor::this_main_phase(), 1),
+                add_combat(
+                    ExtraPhaseRecipient::NoPlayer,
+                    ExtraPhaseAnchor::this_main_phase(),
+                    1,
+                ),
             ),
             (
                 "two combats added",
                 precombat_main(),
                 add_combat(
-                    TargetFilter::None,
+                    ExtraPhaseRecipient::NoPlayer,
                     ExtraPhaseAnchor::ThisPhase { named: None },
                     2,
                 ),
@@ -2378,7 +2506,7 @@ mod tests {
             &mut state,
             &ResolvedAbility::new(
                 add_combat(
-                    TargetFilter::None,
+                    ExtraPhaseRecipient::NoPlayer,
                     ExtraPhaseAnchor::ThisPhase { named: None },
                     1,
                 ),
@@ -2415,7 +2543,7 @@ mod tests {
         let mut events = Vec::new();
         let chain = ResolvedAbility::new(
             add_combat(
-                TargetFilter::None,
+                ExtraPhaseRecipient::NoPlayer,
                 ExtraPhaseAnchor::ThisPhase { named: None },
                 1,
             ),
@@ -2426,7 +2554,7 @@ mod tests {
         .sub_ability(
             ResolvedAbility::new(
                 add_combat(
-                    TargetFilter::None,
+                    ExtraPhaseRecipient::NoPlayer,
                     ExtraPhaseAnchor::ThisPhase { named: None },
                     0,
                 ),

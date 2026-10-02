@@ -17,7 +17,8 @@ use crate::types::ability::{
     ActivationManaPaymentRestriction, ActivationRestriction, ChoiceType, ControllerRef,
     CostReduction, DelayedTriggerCondition, Duration, Effect, ManaSpendPermission, MultiTargetSpec,
     OpponentMayScope, PlayerFilter, QuantityExpr, QuantityRef, ReturnResultReadSpec, RoundingMode,
-    SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetSelectionMode, UnlessPayModifier,
+    SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetReadOrigin, TargetSelectionMode,
+    UnlessPayModifier,
 };
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaExpiry;
@@ -878,6 +879,11 @@ pub(crate) struct ClauseIr {
     /// The exact choose instruction named by this selected-group consumer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reads_chosen_clause: Option<ClauseId>,
+    /// CR 115.1 + CR 608.2c: where this clause's `ObjectScope::Target` reads take
+    /// their object from. Written only by the comparative "that creature" gate
+    /// after it proves the immediately preceding clause announced the object.
+    #[serde(skip_serializing_if = "TargetReadOrigin::is_own")]
+    pub(crate) target_reads: TargetReadOrigin,
     /// The prior return instruction whose actual results a delayed clause names.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reads_return_result: Option<(ClauseId, ReturnResultReadSpec)>,
@@ -986,6 +992,80 @@ pub(crate) struct ClauseIr {
     /// source, disposition, and provenance (Plan 01 §5 construction gate).
     #[serde(skip)]
     _sealed: (),
+}
+
+impl ClauseIr {
+    /// Turn this clause, in place, into an honest parser gap
+    /// (`Effect::unimplemented(name, <printed fragment>)`) that carries NO
+    /// executable metadata — exactly what [`ClauseIrBuilder::clause`] +
+    /// `Effect::unimplemented` would have minted for the same text. Identity,
+    /// printed source and boundary are kept; every field that assembly would
+    /// copy onto the lowered definition (optional gates, unless-payments,
+    /// repeat counts, player scopes, delayed markers, target metadata,
+    /// dispositions that patch other clauses, chosen-group links) is reset to
+    /// its draft default, so the gap resolves as nothing and prompts no one.
+    ///
+    /// Destructures every field without `..`, so a new `ClauseIr` field must be
+    /// classified here before this compiles.
+    pub(crate) fn replace_with_gap(&mut self, name: &str) {
+        let fragment = self.source.fragment().unwrap_or_default().to_string();
+        let ClauseIr {
+            id: _,
+            declares_chosen_clause,
+            reads_chosen_clause,
+            target_reads,
+            reads_return_result,
+            source: _,
+            disposition,
+            parsed,
+            boundary: _,
+            condition,
+            is_optional,
+            opponent_may_scope,
+            repeat_for,
+            player_scope,
+            starting_with,
+            delayed_condition,
+            prefix_delayed_condition,
+            multi_target,
+            where_x_expression,
+            unless_pay,
+            target_selection_mode,
+            target_chooser,
+            declared_target_choice_timing,
+            printed_color_choice,
+            chosen_color_grant,
+            placement,
+            _sealed: _,
+        } = self;
+        *declares_chosen_clause = None;
+        *reads_chosen_clause = None;
+        *target_reads = TargetReadOrigin::OwnAnnouncement;
+        *reads_return_result = None;
+        *disposition = ClauseDisposition::Emit {
+            followup: None,
+            intrinsic: None,
+        };
+        *parsed =
+            crate::parser::oracle_ir::ast::parsed_clause(Effect::unimplemented(name, fragment));
+        *condition = None;
+        *is_optional = false;
+        *opponent_may_scope = None;
+        *repeat_for = None;
+        *player_scope = None;
+        *starting_with = None;
+        *delayed_condition = None;
+        *prefix_delayed_condition = None;
+        *multi_target = None;
+        *where_x_expression = None;
+        *unless_pay = None;
+        *target_selection_mode = TargetSelectionMode::Chosen;
+        *target_chooser = None;
+        *declared_target_choice_timing = None;
+        *printed_color_choice = None;
+        *chosen_color_grant = None;
+        *placement = ClausePlacement::Sibling;
+    }
 }
 
 impl ClauseDisposition {
@@ -1235,6 +1315,9 @@ impl ClauseIrBuilder {
         .declared_target_choice_timing(c.declared_target_choice_timing)
         .printed_color_choice(c.printed_color_choice)
         .push();
+        if let Some(absorbed) = self.clauses.last_mut() {
+            absorbed.target_reads = c.target_reads;
+        }
     }
 
     /// Consume the builder, yielding the source-ordered clause list.
@@ -1575,6 +1658,7 @@ impl ClauseDraft<'_> {
             id,
             declares_chosen_clause,
             reads_chosen_clause,
+            target_reads: TargetReadOrigin::OwnAnnouncement,
             reads_return_result,
             source,
             disposition: self.disposition,
