@@ -68,9 +68,11 @@ Apply these before every dispatch or verification-tool edit and after every resu
 
 When in doubt, it is `behavior`.
 
+**Pre-existing reports.** A reviewer's Pre-existing list (defects that reproduce at base and that the change does not depend on) is not a finding. It opens no round, counts toward no loop and never blocks. The orchestrator reports each item once, with its evidence, to the user, who picks its destination. It never becomes a phase, a scope extension or a dispatch of its own. A small fix in a file the work already edits may ride an already-scheduled executor round, recorded as an addendum line in a chartered run.
+
 **Design rounds and the loop limit.** A round with a `behavior` finding is a design round: fix it through a fresh planner (Step 2) or fix executor (Step 6), then review afresh. A round without one is closed as Steps 2 and 6 describe. Each return to Step 1 from an executor stop-and-return, and each abandoned or failed review dispatch, also counts as a design round of its loop; these rounds count toward the fifth-round limit only, and the lowering comparison skips them. Each review loop — the sizing audit, the charter, each plan loop, each implementation-review loop, the integration review, and the final PR review ([pr-handoff.md](pr-handoff.md)) — stops at its **fifth design round**, or sooner when **two consecutive design rounds** (counting design rounds only) **fail to lower the behavior-finding count**. A loop restarted, renamed or re-phased for the same work keeps its count, and returning from implementation to planning resumes that plan loop's count. Only accepting a candidate that implements part of the requested behavior resets the counts; a checkpoint, clean plan, helper-only phase or new reviewer does not. If tooling is itself the requested product, its accepted implementation qualifies.
 
-**Budget.** The invocation may name `budget=tight|standard|until-clean`; the default is `standard`. The budget decides who approves spending past a limit — a design round past a loop limit, verification machinery, a `SCOPE_PATHS` extension outside the scope rule's standing classes, or a new phase or restart proposed at a stop:
+**Budget.** The invocation may name `budget=tight|standard|until-clean`; the default is `standard`. The budget decides who approves spending past a limit — a design round past a loop limit, verification machinery, or a new phase or restart proposed at a stop:
 
 - `tight` approves nothing and takes the decline path.
 - `standard` asks the user with an expansion case, and takes the decline path when nobody can answer (an autonomous run).
@@ -97,14 +99,12 @@ Argue from the open item and the prediction record only. Work already spent is n
 A parity or preservation row takes its expected value from another reading: the prompted route, base, or a sibling route. When that reference is wrong for the card, the defect exists before this work. It can surface in the planner's Reference Readings, in plan review, in an executor stop-and-return, or in any implementation-review finding (codex and CodeRabbit included). The route is fixed, so it is **not a stop and needs no expansion case under any budget**. Shipping the dependent work on the defective reading would be wrong behavior for the card class, which the decline path already refuses. Asking the user would only offer a choice between stopping and this route.
 
 1. **Record** the card, the reading derived from its Oracle text and the CR, the measured reference, and the affected rows in the phase-fit record.
-2. **Fix the reference first**, as its own unit ahead of the dependent work.
-   - It runs the full pipeline (plan, review, implement, review) under fresh loop counts, with tests red at base and its own PR on `origin/main`.
-   - Cover the defect's class (every route that drops the same value), not only the row that exposed it.
-   - In a chartered run, add it as a fix phase before the dependent phase ([chartered.md](chartered.md#the-charter)).
-3. **Hold the dependent work.** Keep its worktree and uncommitted changes. Don't commit or ship it on the defective reading.
-4. **Resume** once the fix lands: rebase the dependent work, re-measure the affected rows, and make them assert the derived reading.
+2. **Fix the reference inside the dependent work**, as the work encounters it.
+   - Cover the defect's class (every route that drops the same value), not only the row that exposed it, with tests red at base.
+   - In a chartered run, record it as one addendum line in the phase's addenda file ([chartered.md](chartered.md#the-charter)).
+3. **Assert the derived reading** in the dependent rows, in the same work.
 
-If the fix-first unit itself sizes above one unit (Sizing T1), or the dependent work cannot be held, it is an ordinary stop with an expansion case.
+A fix that breaks a decision the design rests on, or sizes above one unit (Sizing T1), goes back for design revision: a re-charter in a chartered run, a fresh planner otherwise. Short of that, it never inserts a phase.
 
 ## Phase-fit gate (Step 1a)
 

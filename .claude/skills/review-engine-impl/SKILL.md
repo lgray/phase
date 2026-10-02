@@ -7,6 +7,15 @@ description: Review an implementation in scope, such as an uncommitted diff, a j
 
 Review for gaps: things that are missing or wrong. Do not spend findings on style nits, CI-enforced formatting, or a diff recap.
 
+## Review the change
+
+This applies in every mode. Findings are defects in the change under review: what it introduces, the premises it rests on, and what it states it delivers but does not.
+
+- A defect is **pre-existing** when it reproduces at the change's base. The change **depends on** it when a test or acceptance row the change asserts cannot pass, or would have to be weakened, without fixing it. Run that one probe only when the answer changes what happens next.
+- A pre-existing defect the change depends on is a finding (`behavior`; in charter mode, a decision finding).
+- Any other pre-existing defect goes in a separate **Pre-existing** list after the findings, once, with its evidence. It is untagged, never blocks, and is not repeated in a later round.
+- Aim probes at the change's own claims. Do not hunt for pre-existing defects.
+
 ## Workflow
 
 1. Identify the changed surface from the diff, commit, or named files.
