@@ -6612,8 +6612,7 @@ mod paid_object_label_tests {
     }
 
     /// CR 608.2h: Food Chain's yield reads the exiled creature's mana value, so
-    /// Grizzly Bears (3 mana) and Hill Giant (5 mana) stay distinct profiles;
-    /// a larger count does not dominate a smaller one.
+    /// Grizzly Bears (3 mana) and Hill Giant (5 mana) stay distinct profiles.
     #[test]
     fn paid_object_dependent_yields_stay_distinct_profiles() {
         let kinds = profiles("Food Chain", &["Grizzly Bears", "Hill Giant"]);
