@@ -1,0 +1,46 @@
+   Compiling syn v2.0.117
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Checking regex-syntax v0.8.10
+    Checking futures-core v0.3.32
+    Checking slab v0.4.12
+    Checking futures-util v0.3.32
+    Checking regex-automata v0.4.14
+    Checking matchers v0.2.0
+   Compiling wasm-bindgen-macro-support v0.2.121
+   Compiling serde_derive v1.0.228
+   Compiling tracing-attributes v0.1.31
+   Compiling strum_macros v0.27.2
+   Compiling thiserror-impl v2.0.18
+    Checking tracing v0.1.44
+    Checking thiserror v2.0.18
+    Checking strum v0.27.2
+   Compiling wasm-bindgen-macro v0.2.121
+    Checking wasm-bindgen v0.2.121
+    Checking serde v1.0.228
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+    Checking smallvec v1.15.1
+    Checking im v15.1.0
+    Checking insta v1.47.2
+    Checking toml_edit v0.22.27
+    Checking tracing-subscriber v0.3.23
+    Checking js-sys v0.3.98
+    Checking console_error_panic_hook v0.1.7
+    Checking toml v0.8.23
+    Checking serde-wasm-bindgen v0.6.5
+    Checking phase-ai v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Checking seat-reducer v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+    Checking phase-llm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Checking engine-wasm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+error: function `put_on_top` is never used
+   --> crates/engine/tests/integration/dandan_shared_pile_storage.rs:244:4
+    |
+244 | fn put_on_top(state: &mut GameState, seat: PlayerId, cards: &[ObjectId]) {
+    |    ^^^^^^^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: could not compile `phase-engine` (test "integration") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+done rc=101

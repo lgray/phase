@@ -1,0 +1,12 @@
+    Checking phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: function `put_on_top` is never used
+   --> crates/engine/tests/integration/dandan_shared_pile_storage.rs:244:4
+    |
+244 | fn put_on_top(state: &mut GameState, seat: PlayerId, cards: &[ObjectId]) {
+    |    ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-engine` (test "integration") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 29s
+done rc=0

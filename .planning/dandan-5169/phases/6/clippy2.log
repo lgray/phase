@@ -1,0 +1,7 @@
+    Checking phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Checking phase-ai v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Checking seat-reducer v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+    Checking phase-llm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Checking engine-wasm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14m 11s
+clippy rc=0

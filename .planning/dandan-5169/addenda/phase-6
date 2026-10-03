@@ -1,0 +1,1 @@
+Decision: S2a canonical-seat storage. Scope adds crates/engine/tests/fixtures/integration_cards.json.gz (test fixture regeneration for the 15 real cards the new test file references; standing class: fixtures). visibility.rs unedited. Every charter decision stands. 2026-10-03.

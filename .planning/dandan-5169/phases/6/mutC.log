@@ -1,0 +1,101 @@
+applied ['B1']
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 09s
+────────────
+ Nextest run ID 5eb7150e-d215-421a-9410-0b46e45bd671 with nextest profile: default
+    Starting 20 tests across 1 binary (9236 tests skipped)
+        PASS [   0.103s] ( 1/20) phase-engine::integration dandan_shared_pile_storage::shuffling_the_empty_seat_consumes_no_entropy
+        PASS [   0.103s] ( 2/20) phase-engine::integration dandan_shared_pile_storage::v14_wasm_boot_guard_reads_the_library_accessor
+        PASS [  56.896s] ( 3/20) phase-engine::integration dandan_shared_pile_storage::v5_v6_standard_format_cycles_in_the_owners_own_zones
+        PASS [  58.152s] ( 4/20) phase-engine::integration dandan_shared_pile_storage::v15_scry_choice_reorders_the_pile_for_the_non_canonical_seat
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v15_dig_choice_reorders_the_pile_for_the_non_canonical_seat
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v4_opening_deal_draws_both_hands_from_the_pile
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v1_pile_stays_in_the_lowest_seat_when_another_seat_starts
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v15_surveil_keeps_cards_on_top_of_the_pile_for_the_non_canonical_seat
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v3_mulligan_by_either_seat_shuffles_the_pile
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v15_library_placement_by_the_zone_pipeline_targets_the_pile
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v2_fixed_list_resolves_against_the_real_database
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v1_non_shared_formats_keep_per_seat_libraries
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v10_pool_resolver_maps_both_seats_to_the_pile_holder
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v7_conjure_into_the_library_lands_in_the_pile_only
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v1_boot_loads_one_pile_into_the_canonical_seat
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v8_library_shuffle_acts_on_the_pile_and_replays
+        SLOW [> 60.000s] (─────) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+        PASS [  62.423s] ( 5/20) phase-engine::integration dandan_shared_pile_storage::v1_pile_stays_in_the_lowest_seat_when_another_seat_starts
+        PASS [  64.004s] ( 6/20) phase-engine::integration dandan_shared_pile_storage::v7_conjure_into_the_library_lands_in_the_pile_only
+        PASS [  64.373s] ( 7/20) phase-engine::integration dandan_shared_pile_storage::v2_fixed_list_resolves_against_the_real_database
+        PASS [  65.322s] ( 8/20) phase-engine::integration dandan_shared_pile_storage::v1_boot_loads_one_pile_into_the_canonical_seat
+        PASS [  67.838s] ( 9/20) phase-engine::integration dandan_shared_pile_storage::v8_library_shuffle_acts_on_the_pile_and_replays
+        PASS [  69.039s] (10/20) phase-engine::integration dandan_shared_pile_storage::v1_non_shared_formats_keep_per_seat_libraries
+        PASS [  70.321s] (11/20) phase-engine::integration dandan_shared_pile_storage::v3_mulligan_by_either_seat_shuffles_the_pile
+        PASS [  70.538s] (12/20) phase-engine::integration dandan_shared_pile_storage::v15_surveil_keeps_cards_on_top_of_the_pile_for_the_non_canonical_seat
+        PASS [  71.404s] (13/20) phase-engine::integration dandan_shared_pile_storage::v15_dig_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [  73.034s] (14/20) phase-engine::integration dandan_shared_pile_storage::v4_opening_deal_draws_both_hands_from_the_pile
+        PASS [  73.074s] (15/20) phase-engine::integration dandan_shared_pile_storage::v10_pool_resolver_maps_both_seats_to_the_pile_holder
+        FAIL [  73.525s] (16/20) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+  stdout ───
+
+    running 1 test
+    test dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones has been running for over 60 seconds
+    test dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones ... FAILED
+
+    failures:
+
+    failures:
+        dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9255 filtered out; finished in 73.27s
+
+  stderr ───
+
+    thread 'dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones' (375327) panicked at crates/engine/tests/integration/dandan_shared_pile_storage.rs:390:9:
+    assertion `left == right` failed: PlayerId(1): the cycling cost was paid into the shared graveyard
+      left: []
+     right: [ObjectId(7)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [  74.656s] (17/20) phase-engine::integration dandan_shared_pile_storage::v15_library_placement_by_the_zone_pipeline_targets_the_pile
+        FAIL [  75.759s] (18/20) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+  stdout ───
+
+    running 1 test
+    test dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions has been running for over 60 seconds
+    test dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions ... FAILED
+
+    failures:
+
+    failures:
+        dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9255 filtered out; finished in 75.63s
+
+  stderr ───
+
+    thread 'dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions' (375345) panicked at crates/engine/tests/integration/dandan_shared_pile_storage.rs:533:13:
+    assertion `left == right` failed: appended to the container's end
+      left: Some(ObjectId(7))
+     right: Some(ObjectId(10))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [  31.575s] (19/20) phase-engine::integration dandan_shared_pile_storage::v9_library_boundary_by_either_seat_forgets_the_looked_at_pile
+        PASS [  30.669s] (20/20) phase-engine::integration dandan_shared_pile_storage::v9_standard_shuffle_keeps_the_other_players_library_knowledge
+────────────
+     Summary [  88.857s] 20 tests run: 18 passed (12 slow), 2 failed, 9236 skipped
+        FAIL [  73.525s] (16/20) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+        FAIL [  75.759s] (18/20) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+error: test run failed
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 42s
+────────────
+ Nextest run ID c262b8b2-a46c-45d1-9b4c-70f878a2421b with nextest profile: default
+    Starting 5 tests across 1 binary (23140 tests skipped)
+        PASS [   0.052s] (1/5) phase-engine game::engine_resolution_choices::tests::nth_from_top_pair_reads_the_shared_pile_not_the_empty_seat
+        PASS [   0.057s] (2/5) phase-engine types::game_state::shared_zone_storage_tests::storage_seat_resolves_only_the_shared_zones
+        PASS [   0.069s] (3/5) phase-engine types::game_state::shared_zone_storage_tests::library_stamp_names_the_storage_seat
+        PASS [   0.069s] (4/5) phase-engine game::engine_resolution_choices::tests::mixed_owner_top_batch_is_one_pass_over_the_shared_pile
+        PASS [   0.068s] (5/5) phase-engine game::engine_resolution_choices::tests::library_origin_reposition_sees_one_pile_across_owners
+────────────
+     Summary [   0.109s] 5 tests run: 5 passed, 23140 skipped
+done rc=0
+restored+verified ['crates/engine/src/game/zones.rs']
