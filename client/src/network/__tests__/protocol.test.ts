@@ -78,8 +78,8 @@ const PREVIEW_ANSWER = {
 
 describe("lobby capability floor for the Dandan format", () => {
   it("requires the frozen Dandan floor for a lobby frame naming the format", () => {
-    expect(lobbyProtocolRequiredForFormat("Dandan")).toBe(15);
-    expect(MIN_LOBBY_PROTOCOL_FOR_DANDAN).toBe(15);
+    expect(lobbyProtocolRequiredForFormat("Dandan")).toBe(16);
+    expect(MIN_LOBBY_PROTOCOL_FOR_DANDAN).toBe(16);
     expect(MIN_LOBBY_PROTOCOL_FOR_DANDAN).toBeLessThanOrEqual(LOBBY_PROTOCOL_VERSION);
   });
 
@@ -90,8 +90,8 @@ describe("lobby capability floor for the Dandan format", () => {
 });
 
 describe("encodeWireMessage / decodeWireMessage", () => {
-  it("pins the P2P wire protocol to v76", () => {
-    expect(WIRE_PROTOCOL_VERSION).toBe(76);
+  it("pins the P2P wire protocol to v87", () => {
+    expect(WIRE_PROTOCOL_VERSION).toBe(87);
   });
 
   it("defaults shortcut actions for a legacy payload created before the additive field", () => {

@@ -34,8 +34,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // option's `additional_cost`, and the announced graveyard permission (the
 // option's `authority`, the slot prompt's `permission`, the latched terms).
 // v91 retypes PendingManaAbility's required chosen-counter count (#9207).
-// v93 adds the `Dandan` GameFormat name.
-// v94 adds the `SubstituteTextWord` text-changing modification (CR 612.1).
+// v93 adds the SacrificedForCost reduction provenance.
+// v97 adds TargetReadOrigin instruction provenance.
+// v99 adds the GraveyardCastPermission pool.
+// v100 replaces `AdditionalPhase.phase` with a `TurnSegment` `segment`,
+// retypes `followed_by` to `TurnSegment`, and replaces
+// `AdditionalPhase.target` with an `ExtraPhaseRecipient` `recipient`.
+// v101 adds `ActivatedAbilityKind::Mana` (mana-ability activations now emit
+// `GameEvent::AbilityActivated`), the event's `departed_source_lki`, and
+// `AbilityActivationRecord.source_zone`.
+// v104 adds the `Dandan` GameFormat name.
+// v105 adds the `SubstituteTextWord` text-changing modification (CR 612.1).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -56,13 +65,28 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +20: the v91 PendingManaAbility chosen-counter count retype.
 // +21: the v92 serialized ParentTargetMissingReason carrier and its
 // RevealUntil reveal-until whiff verdict.
-// +22: the v93 `Dandan` GameFormat name.
-// +23: the v94 `SubstituteTextWord` text-changing modification.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 23;
+// +22: the v93 SacrificedForCost reduction provenance.
+// +23: the v94 phase-delayed departure look-back carrier
+// (SpellContext.creation_lookback_event) and TriggerSourceContext.mana_cost.
+// +24: the v95 FilterProp::BlockStatus reshape (Unblocked → BlockStatus { status }).
+// +25: the v96 QuantityRef::NameStickerLetterCount tagged quantity.
+// +26: the v97 serialized TargetReadOrigin (`target_reads`) instruction
+// provenance.
+// +27: the v98 PerPlayerScope::Opponents value, the PerPlayerChoiceOrder and
+// SubstituteChooser chooser purposes, and the per-player frame's current and
+// nominee fields.
+// +28: the v99 GraveyardCastPermission pool (from any graveyard).
+// +29: the v100 additional-phase segment and recipient parse bump.
+// +30: the v101 mana-ability activation kind and departed-source LKI.
+// +31: v102 adds the tagged SharedCardTypes quantity.
+// +32: v103 removes FormatConfig.allow_experimental_dungeons for the format-derived dungeon pool.
+// +33: the v104 `Dandan` GameFormat name.
+// +34: the v105 `SubstituteTextWord` text-changing modification.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 34;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
-const EXPECTED_LOBBY_PROTOCOL_VERSION = 15;
+const EXPECTED_LOBBY_PROTOCOL_VERSION = 16;
 // The capability FLOOR for correlated tournament settlement — a different kind
 // of number from the other version constants here, and the reason it is pinned
 // separately. Those track a surface's current version; this one is frozen at the
@@ -102,9 +126,22 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +18: wire 72 moves with full-game v90 for the experimental-dungeon capability flag.
 // +19: wire 73 moves with full-game v91 for the counter-count retype.
 // +20: wire 74 moves with full-game v92 for the serialized reveal-until verdict.
-// +21: wire 75 moves with full-game v93 for the `Dandan` GameFormat name.
-// +22: wire 76 moves with full-game v94 for the `SubstituteTextWord` modification.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 22;
+// +21: wire 75 moves with full-game v93 for the SacrificedForCost provenance.
+// +22: wire 76 moves with full-game v94 for the departure look-back carrier.
+// +23: wire 77 moves with full-game v95 for the FilterProp::BlockStatus reshape.
+// +24: wire 78 moves with full-game v96 for name-sticker quantities.
+// +25: wire 79 moves with full-game v97 for the serialized TargetReadOrigin.
+// +26: wire 80 moves with full-game v98 for per-player choice order and
+// PerPlayerScope::Opponents.
+// +27: wire 81 moves with full-game v99 for the graveyard permission pool.
+// +28: wire 82 moves with full-game v100 for the additional-phase segment and
+// recipient.
+// +29: wire 83 moves with full-game v101 for the mana-ability activation kind.
+// +30: wire 84 moves with full-game v102 for SharedCardTypes.
+// +31: wire 85 moves with full-game v103 for the format-derived dungeon pool.
+// +32: wire 86 moves with full-game v104 for the `Dandan` GameFormat name.
+// +33: wire 87 moves with full-game v105 for the `SubstituteTextWord` modification.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 33;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse
@@ -256,7 +293,7 @@ const AUTHORED_LITERALS = [
     "MIN_LOBBY_PROTOCOL_FOR_RECOVERABLE_ROTATION",
     // Client-only frozen floor for the format names lobby 11 introduced; no Rust mirror.
     "MIN_LOBBY_PROTOCOL_FOR_FREEFORM_FORMATS",
-    // Client-only frozen floor for the format name lobby 15 introduced; no Rust mirror.
+    // Client-only frozen floor for the format name lobby 16 introduced; no Rust mirror.
     "MIN_LOBBY_PROTOCOL_FOR_DANDAN",
     "MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL",
     "PROTOCOL_VERSION",

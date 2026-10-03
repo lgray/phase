@@ -1,5 +1,8 @@
 // CR 601.3 — casting/activation restriction statics.
 
+use nom::combinator::opt;
+use nom::sequence::{pair, preceded};
+
 #[allow(unused_imports)]
 use super::prelude::*;
 #[allow(unused_imports)]
@@ -201,6 +204,42 @@ fn legend_rule_permanent_type(word: &str) -> Option<crate::types::ability::TypeF
     .parse(word)
     .ok()?;
     rest.is_empty().then_some(tf)
+}
+
+/// CR 604.1 + CR 207.2c: split a leading "if <condition>, " gate off a static line,
+/// returning the condition text (original case) and the remaining clause. A line
+/// with no leading "if" yields `(None, tp)` unchanged. The condition ends at the
+/// first ", " — the same clause boundary the leading-conditional grammar uses.
+pub(crate) fn split_leading_if_gate<'a>(tp: &TextPair<'a>) -> (Option<&'a str>, TextPair<'a>) {
+    let split = preceded(
+        tag::<_, _, OracleError<'_>>("if "),
+        pair(take_until(", "), tag(", ")),
+    )
+    .parse(tp.lower);
+    let Ok((body_lower, (condition_lower, _))) = split else {
+        return (None, *tp);
+    };
+    // ASCII lowercasing preserves byte lengths, so the lowercase offsets index
+    // the original-case text.
+    let body_start = tp.lower.len() - body_lower.len();
+    let condition_start = body_start - ", ".len() - condition_lower.len();
+    (
+        Some(&tp.original[condition_start..condition_start + condition_lower.len()]),
+        TextPair::new(&tp.original[body_start..], body_lower),
+    )
+}
+
+/// CR 101.2: true when `lower` is exactly "<subject> can't be countered[.]" with
+/// nothing after the phrase, so no unmodeled tail ("and the damage can't be
+/// prevented") can ride along.
+pub(crate) fn is_bare_cant_be_countered_clause(lower: &str) -> bool {
+    all_consuming((
+        take_until::<_, _, OracleError<'_>>("can't be countered"),
+        tag("can't be countered"),
+        opt(tag(".")),
+    ))
+    .parse(lower)
+    .is_ok()
 }
 
 /// Parse the subject of "X can't be countered" lines.
@@ -1993,6 +2032,7 @@ pub(crate) fn try_parse_graveyard_cast_permission(
                 extra_cost: None,
                 enters_with_counter: None,
                 required_cast_keyword: None,
+                pool: GraveyardPermissionPool::OwnGraveyard,
             })
             .affected(affected)
             .condition(StaticCondition::DuringYourTurn)
@@ -2258,6 +2298,7 @@ pub(crate) fn try_parse_graveyard_cast_permission(
         extra_cost,
         enters_with_counter,
         required_cast_keyword,
+        pool: GraveyardPermissionPool::OwnGraveyard,
     })
     .affected(affected)
     .description(text.to_string());
@@ -2783,6 +2824,7 @@ fn try_parse_disjunctive_graveyard_cast_permission(
         extra_cost: None,
         enters_with_counter: None,
         required_cast_keyword: None,
+        pool: GraveyardPermissionPool::OwnGraveyard,
     })
     .affected(affected)
     .description(text.to_string());
@@ -2829,6 +2871,7 @@ fn try_parse_unlimited_combined_graveyard_permission(
             extra_cost: None,
             enters_with_counter: None,
             required_cast_keyword: None,
+            pool: GraveyardPermissionPool::OwnGraveyard,
         })
         .affected(affected)
         .description(text.to_string()),

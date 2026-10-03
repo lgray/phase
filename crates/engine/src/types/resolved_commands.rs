@@ -1315,8 +1315,7 @@ pub struct ResolvedStackRemovalCommand {
     /// CR 405.2: the index the entry occupied. Recorded rather than re-found,
     /// because the production sites locate it by a `position`/`rposition` scan
     /// whose predicate can match a DIFFERENT entry on a stack that has since
-    /// diverged — `counter.rs` in particular scans on `id OR source_id`, which
-    /// matches every ability sharing a source permanent.
+    /// diverged.
     pub index: usize,
     /// Stack depth AFTER the removal (CR 405.2).
     pub resulting_depth: usize,
@@ -3944,6 +3943,7 @@ mod tests {
             activator: PlayerId(0),
             source: ObjectId(9),
             source_lki: object.snapshot_public_characteristics(),
+            source_zone: crate::types::zones::Zone::Battlefield,
             ability_tag: None,
             is_loyalty_ability: false,
             targets: vec![crate::types::game_state::ActivationTargetFact::Player(

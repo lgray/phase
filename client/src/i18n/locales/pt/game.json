@@ -1348,8 +1348,6 @@
     },
     "config": {
       "startingLife": "Vida Inicial",
-      "experimentalDungeons": "Masmorras experimentais",
-      "experimentalDungeonsHelp": "Oferecer Baldur's Gate Wilderness nas opções de masmorra e ao tomar a iniciativa. Experimental e não oficial.",
       "players": "Jogadores",
       "whoGoesFirst": "Quem Começa",
       "firstPlayer": {
@@ -2008,7 +2006,11 @@
   },
   "zoneOpponentChooser": {
     "title": "Escolher oponente",
-    "subtitle": "Escolha qual oponente faz a escolha."
+    "subtitle": "Escolha qual oponente faz a escolha.",
+    "orderTitle": "Escolher próximo jogador",
+    "orderSubtitle": "Escolha para quem fazer a próxima seleção.",
+    "substituteTitle": "Escolher jogador",
+    "substituteSubtitle": "Escolha quem faz esta escolha."
   },
   "pileOpponent": {
     "title": "Choose Opponent",

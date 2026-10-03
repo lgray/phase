@@ -13260,6 +13260,118 @@ fn heliod_warped_eclipse_reduces_by_sum_of_opponents_draws() {
     }
 }
 
+/// CR 205.2a + CR 607.2a + CR 601.2f (#6898): Cemetery Prowler's "for each card
+/// type they share with cards exiled with ~" reduces by the INTERSECTION of the
+/// spell's card types with the linked-exile population's card types — not the
+/// population's distinct-type count, not the exiled card count, and not the whole
+/// card count (which the ObjectCount misparse produced).
+fn prowler_shared_card_type_reduction(
+    types_exiled: &[&[CoreType]],
+    spell_types: &[CoreType],
+) -> u32 {
+    let mut state = setup_game_at_main_phase();
+    let player = PlayerId(0);
+
+    let prowler = create_object(
+        &mut state,
+        CardId(850),
+        player,
+        "Cemetery Prowler".to_string(),
+        Zone::Battlefield,
+    );
+    state
+        .objects
+        .get_mut(&prowler)
+        .unwrap()
+        .static_definitions
+        .push(
+            StaticDefinition::new(StaticMode::ModifyCost {
+                mode: crate::types::statics::CostModifyMode::Reduce,
+                amount: ManaCost::generic(1),
+                spell_filter: None,
+                reach: crate::types::statics::CostReductionReach::SpillsToGeneric,
+                dynamic_count: Some(QuantityRef::SharedCardTypes {
+                    source: crate::types::ability::CardTypeSetSource::ExiledBySource,
+                }),
+            })
+            .affected(TargetFilter::Typed(
+                TypedFilter::card().controller(ControllerRef::You),
+            )),
+        );
+
+    for types in types_exiled {
+        let exiled = add_exiled_card(&mut state, player, "Exiled Card");
+        let obj = state.objects.get_mut(&exiled).unwrap();
+        obj.card_types.core_types = types.to_vec();
+        link_exiled_to_source(&mut state, exiled, prowler);
+    }
+
+    let spell = create_object(
+        &mut state,
+        CardId(851),
+        player,
+        "Generic Spell".to_string(),
+        Zone::Hand,
+    );
+    {
+        let obj = state.objects.get_mut(&spell).unwrap();
+        obj.card_types.core_types = spell_types.to_vec();
+        obj.mana_cost = ManaCost::Cost {
+            generic: 3,
+            shards: vec![],
+        };
+    }
+    let mut cost = state.objects.get(&spell).unwrap().mana_cost.clone();
+    apply_battlefield_cost_modifiers(&state, player, spell, &mut cost);
+    match cost {
+        ManaCost::Cost { generic, .. } => generic,
+        other => panic!("expected ManaCost::Cost, got {other:?}"),
+    }
+}
+
+#[test]
+fn cemetery_prowler_reduces_by_shared_card_types() {
+    // An empty linked-exile population shares no card types, even when the
+    // spell itself has a card type.
+    assert_eq!(
+        prowler_shared_card_type_reduction(&[], &[CoreType::Creature]),
+        3
+    );
+
+    // Two exiled creature cards → one shared type → {1} (the Gatherer ruling's
+    // "creature spells cost {1} less, not {2} less").
+    assert_eq!(
+        prowler_shared_card_type_reduction(
+            &[&[CoreType::Creature], &[CoreType::Creature]],
+            &[CoreType::Creature],
+        ),
+        2
+    );
+    // Exiled instant, casting a sorcery → shares nothing → no reduction.
+    assert_eq!(
+        prowler_shared_card_type_reduction(&[&[CoreType::Instant]], &[CoreType::Sorcery]),
+        3
+    );
+    // Mixed exiled creature + instant, casting a creature → only "creature"
+    // shared → {1}, not the population's 2 distinct types.
+    assert_eq!(
+        prowler_shared_card_type_reduction(
+            &[&[CoreType::Creature], &[CoreType::Instant]],
+            &[CoreType::Creature],
+        ),
+        2
+    );
+    // Multi-typed "artifact creature" spell sharing both types with an exiled
+    // artifact creature → each shared type counted exactly once → {2}.
+    assert_eq!(
+        prowler_shared_card_type_reduction(
+            &[&[CoreType::Artifact, CoreType::Creature]],
+            &[CoreType::Artifact, CoreType::Creature],
+        ),
+        1
+    );
+}
+
 #[test]
 fn activated_ability_cost_reduction_applies_to_matching_permanent_type() {
     let mut state = setup_game_at_main_phase();
@@ -16101,7 +16213,7 @@ fn snuff_out_alt_cost_paid_resolves_destroy_on_chosen_target() {
         "Snuff Out should have destroyed the target creature on resolution"
     );
     assert!(events.iter().any(
-        |e| matches!(e, GameEvent::CreatureDestroyed { object_id } if *object_id == target_id)
+        |e| matches!(e, GameEvent::CreatureDestroyed { object_id, .. } if *object_id == target_id)
     ));
 }
 
@@ -19671,6 +19783,10 @@ fn delve_exiles_graveyard_card_for_generic() {
     )
     .expect("delving a graveyard card is legal");
 
+    // CR 601.2h: selecting pays nothing; the card leaves with the total cost.
+    assert_eq!(state.objects.get(&gy).unwrap().zone, Zone::Graveyard);
+
+    apply_as_current(&mut state, GameAction::PassPriority).expect("commit the payment");
     // CR 702.66a: the delved card is exiled.
     assert_eq!(
         state.objects.get(&gy).unwrap().zone,
@@ -19706,6 +19822,7 @@ fn delve_records_exiled_with_casting_spell() {
         },
     )
     .expect("delving a graveyard card is legal");
+    apply_as_current(&mut state, GameAction::PassPriority).expect("commit the payment");
 
     assert!(
         state
@@ -19717,7 +19834,7 @@ fn delve_records_exiled_with_casting_spell() {
 }
 
 #[test]
-fn delve_cancel_cast_returns_exiled_cards_to_graveyard() {
+fn delve_cancel_cast_leaves_selected_cards_in_graveyard() {
     use super::super::engine::apply_as_current;
     let mut state = setup_game_at_main_phase();
     let obj_id = make_delve_spell(&mut state);
@@ -24058,6 +24175,47 @@ fn cancel_cast_uses_stamped_convoked_creatures_when_pending_snapshot_is_empty() 
 }
 
 #[test]
+fn terminal_cancel_with_fresh_pending_cast_drops_delve_markers() {
+    let mut state = setup_game_at_main_phase();
+    let fuel = create_object(
+        &mut state,
+        CardId(71),
+        PlayerId(0),
+        "Delve Fuel".to_string(),
+        Zone::Graveyard,
+    );
+    let spell = create_object(
+        &mut state,
+        CardId(72),
+        PlayerId(0),
+        "Delve Spell".to_string(),
+        Zone::Hand,
+    );
+    state.players[0]
+        .mana_pool
+        .add(ManaUnit::convoke_payment(ManaType::Colorless, fuel));
+    let pending = PendingCast::new(
+        spell,
+        CardId(72),
+        ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            spell,
+            PlayerId(0),
+        ),
+        ManaCost::generic(1),
+    );
+
+    handle_cancel_cast(&mut state, &pending, &mut Vec::new());
+
+    assert!(state.players[0].mana_pool.mana.is_empty());
+    assert_eq!(state.objects[&fuel].zone, Zone::Graveyard);
+}
+
+#[test]
 fn generic_convoke_payment_cannot_pay_colorless_mana_symbol() {
     use crate::game::engine::apply_as_current;
 
@@ -24677,7 +24835,7 @@ fn pay_and_push_emits_targeting_events_for_chained_spell_targets() {
     // declaration continuation, so reproduce its event before paying costs.
     emit_targeting_events(
         &state,
-        &flatten_targets_in_chain(&ability),
+        &crate::game::ability_utils::flatten_targets_in_chain(&ability),
         object_id,
         PlayerId(0),
         &mut events,
@@ -31813,6 +31971,7 @@ fn chosen_muldrotha_variant_requests_and_consumes_permanent_type_slot() {
                 extra_cost: None,
                 enters_with_counter: None,
                 required_cast_keyword: None,
+                pool: crate::types::statics::GraveyardPermissionPool::OwnGraveyard,
             })
             .affected(TargetFilter::Typed(TypedFilter::new(TypeFilter::Permanent))),
         );
@@ -31960,6 +32119,7 @@ fn muldrotha_and_graveyard_artifact_creature(state: &mut GameState) -> (ObjectId
                 extra_cost: None,
                 enters_with_counter: None,
                 required_cast_keyword: None,
+                pool: crate::types::statics::GraveyardPermissionPool::OwnGraveyard,
             })
             .affected(TargetFilter::Typed(TypedFilter::new(TypeFilter::Permanent))),
         );
@@ -60616,6 +60776,7 @@ fn an_activation_journal_row_round_trips() {
         activator: PlayerId(0),
         source,
         source_lki: state.objects[&source].snapshot_public_characteristics(),
+        source_zone: crate::types::zones::Zone::Battlefield,
         ability_tag: Some(crate::types::ability::AbilityTag::Boast),
         is_loyalty_ability: true,
         targets: vec![

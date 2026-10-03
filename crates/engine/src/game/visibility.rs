@@ -1012,6 +1012,20 @@ pub(crate) fn identity_projection_for_viewer(
         .battlefield
         .iter()
         .copied()
+        .chain(
+            state
+                .battlefield
+                .iter()
+                .filter(|_| matches!(state.waiting_for, WaitingFor::GameOver { .. }))
+                .flat_map(|root_id| {
+                    state
+                        .objects
+                        .get(root_id)
+                        .into_iter()
+                        .flat_map(|root| root.merged_components.iter().copied())
+                        .filter(move |component_id| component_id != root_id)
+                }),
+        )
         .chain(state.stack.iter().map(|entry| entry.id))
         .filter(|obj_id| {
             state
@@ -1029,7 +1043,10 @@ pub(crate) fn identity_projection_for_viewer(
         // face-down permanent if they control an active "you may look at
         // face-down [filter] any time" static (CR 708.5 exception) whose
         // affected filter matches this permanent.
-        let viewer_may_look = can_view_private_for_player(source.controller)
+        // CR 708.9: at the end of each game, all face-down permanents,
+        // components of merged permanents, and spells are revealed to all players.
+        let viewer_may_look = matches!(state.waiting_for, WaitingFor::GameOver { .. })
+            || can_view_private_for_player(source.controller)
             || viewer_may_look_at_face_down(state, obj_id, &can_view_private_for_player);
         projections.insert(
             obj_id,
@@ -1206,7 +1223,6 @@ fn redact_activation_records(filtered: &mut GameState) {
             PendingCostMoveResume::WardSacrificePayment { .. }
             | PendingCostMoveResume::ReplacementMayCost { .. }
             | PendingCostMoveResume::Foretell { .. }
-            | PendingCostMoveResume::DelveManaPayment { .. }
             | PendingCostMoveResume::UnlessBouncePayment { .. }
             | PendingCostMoveResume::ManaAbilityPayment { .. }
             | PendingCostMoveResume::CounterAdditionUnlessPayment { .. }
@@ -1613,6 +1629,51 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
     }
     for event in &mut filtered.current_trigger_events {
         redact_hidden_zone_change_event(event, &hidden_zone_change_ids);
+    }
+    // CR 400.2 + CR 401.2 + CR 603.7: a phase-delayed ability carries the
+    // battlefield departure it was created under
+    // (`SpellContext::creation_lookback_event`). That record names the departed
+    // object exactly like a stack `trigger_event` does, so it takes the same
+    // hidden-object redaction in every carrier the projection retains:
+    // installed delayed triggers, queued/ordering/deferred triggers, and stack
+    // entries. (`resolution_stack` and the paused-resolution resumes are blanked
+    // above; `departed_stack_spells` holds spells, never delayed abilities.)
+    let mut redact_lookback =
+        |event: &mut GameEvent| redact_hidden_zone_change_event(event, &hidden_zone_change_ids);
+    for trigger in &mut filtered.delayed_triggers {
+        trigger
+            .ability
+            .for_each_creation_lookback_event_mut(&mut redact_lookback);
+    }
+    for entry in filtered
+        .stack
+        .iter_mut()
+        .chain(filtered.resolving_stack_entry.iter_mut())
+    {
+        if let Some(ability) = entry.ability_mut() {
+            ability.for_each_creation_lookback_event_mut(&mut redact_lookback);
+        }
+    }
+    if let Some(pending) = filtered.pending_trigger.as_mut() {
+        pending
+            .ability
+            .for_each_creation_lookback_event_mut(&mut redact_lookback);
+    }
+    for context in &mut filtered.deferred_triggers {
+        context
+            .pending
+            .ability
+            .for_each_creation_lookback_event_mut(&mut redact_lookback);
+    }
+    if let Some(order) = filtered.pending_trigger_order.as_mut() {
+        for group in &mut order.groups {
+            for context in &mut group.triggers {
+                context
+                    .pending
+                    .ability
+                    .for_each_creation_lookback_event_mut(&mut redact_lookback);
+            }
+        }
     }
     filtered.zone_changes_this_turn = filtered
         .zone_changes_this_turn
@@ -3428,6 +3489,9 @@ fn redact_printed_identity(obj: &mut crate::game::game_object::GameObject) {
     obj.token_rules_text = None;
     obj.attraction_lights.clear();
     obj.token_image_ref = None;
+    // Redaction must not leak art metadata either: a hidden object renders
+    // no art, so no descriptor may survive alongside the cleared ref.
+    obj.token_art = None;
     obj.source_related_token_ids.clear();
     obj.spellbook.clear();
     obj.parse_warnings.clear();
@@ -3745,7 +3809,8 @@ fn redact_hidden_library_identity_carriers(
 mod tests {
     use super::*;
     use crate::game::engine::{apply, EngineError};
-    use crate::game::morph::manifest;
+    use crate::game::merge::{merge_object_onto, MergeSide};
+    use crate::game::morph::{apply_face_down_creature_characteristics, manifest};
     use crate::game::printed_cards::snapshot_object_face;
     use crate::game::replacement::{
         continue_replacement, replace_event, replacement_choice_waiting_for, ReplacementResult,
@@ -3754,7 +3819,8 @@ mod tests {
     use crate::types::ability::EffectKind;
     use crate::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, BeholdCostAction, CostPaidObjectSnapshot,
-        Effect, QuantityExpr, ReplacementDefinition, ResolvedAbility, TargetFilter,
+        Effect, FaceDownProfile, QuantityExpr, ReplacementDefinition, ResolvedAbility,
+        TargetFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::{CardType, CoreType};
@@ -3951,6 +4017,7 @@ mod tests {
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
+            delved_cards: Vec::new(),
             deferred_sacrificed_permanents: Vec::new(),
             pinned_pool_units: Vec::new(),
             cancel_restore_prepared_source: None,
@@ -5152,6 +5219,86 @@ mod tests {
                 .contains("each opponent loses 2 life"),
             "hidden card's serialized payload must not quote its printed text"
         );
+    }
+
+    /// CR 708.9: at the end of the game, face-down permanents are revealed to
+    /// all players, so an opponent's projection carries the real identity.
+    #[test]
+    fn game_over_reveals_face_down_permanent_to_observer() {
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let controller = PlayerId(0);
+        let secret = create_object(
+            &mut state,
+            CardId(7),
+            controller,
+            "Secret Manifest".to_string(),
+            Zone::Library,
+        );
+        state.objects.get_mut(&secret).unwrap().card_types = CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec![],
+        };
+        let mut events = Vec::new();
+        manifest(&mut state, controller, &mut events).unwrap();
+
+        let hidden = filter_state_for_viewer(&state, PlayerId(1));
+        assert_eq!(hidden.objects[&secret].name, "Hidden Card");
+
+        state.waiting_for = WaitingFor::GameOver { winner: None };
+        let revealed = filter_state_for_viewer(&state, PlayerId(1));
+        assert_eq!(revealed.objects[&secret].name, "Secret Manifest");
+    }
+
+    /// CR 708.9: face-down components are revealed at game end even when
+    /// absorption leaves them outside the independent battlefield membership.
+    #[test]
+    fn game_over_reveals_absorbed_face_down_component_to_observer() {
+        let mut state = GameState::new_two_player(42);
+        let controller = PlayerId(0);
+        let root = create_object(
+            &mut state,
+            CardId(8),
+            controller,
+            "Face-up root".to_string(),
+            Zone::Battlefield,
+        );
+        let component = create_object(
+            &mut state,
+            CardId(9),
+            controller,
+            "Secret component".to_string(),
+            Zone::Stack,
+        );
+        let printed_face = snapshot_object_face(&state.objects[&component]);
+        state.objects.get_mut(&component).unwrap().back_face = Some(printed_face);
+        apply_face_down_creature_characteristics(
+            state.objects.get_mut(&component).unwrap(),
+            &FaceDownProfile::vanilla_2_2(),
+        );
+        // The stack resolver has already popped the component before this
+        // production merge boundary absorbs it into the battlefield survivor.
+        merge_object_onto(
+            &mut state,
+            component,
+            root,
+            MergeSide::Bottom,
+            &mut Vec::new(),
+        );
+        assert_eq!(state.objects[&component].zone, Zone::Battlefield);
+        assert!(!state.battlefield.contains(&component));
+        assert!(state.objects[&root].merged_components.contains(&component));
+        assert!(!state.objects[&root].face_down);
+
+        assert!(!identity_projection_for_viewer(&state, PlayerId(1)).contains_key(&component));
+        let before_game_end = filter_state_for_viewer(&state, PlayerId(1));
+        assert_eq!(before_game_end.objects[&component].name, "");
+
+        state.waiting_for = WaitingFor::GameOver { winner: None };
+        let revealed = filter_state_for_viewer(&state, PlayerId(1));
+        assert_eq!(revealed.objects[&component].name, "Secret component");
+        assert!(revealed.objects[&component].back_face.is_some());
+        assert!(state.objects[&component].face_down);
     }
 
     /// CR 708.5 + CR 708.2: a face-down permanent has no name and no abilities,
@@ -8102,9 +8249,16 @@ mod tests {
                 cost: ManaCost::generic(1),
                 turn_foretold: 7,
             },
-            PendingCostMoveResume::DelveManaPayment {
+            PendingCostMoveResume::Cast {
                 player: PlayerId(0),
-                fuel_id: hidden,
+                pending: Some(dummy_pending_cast(hidden, CardId(70_003), PlayerId(0))),
+                chosen: vec![hidden],
+                paused_at_index: 0,
+                destination: Zone::Exile,
+                completion: PendingCostMoveCompletion::FinalizeDelvedCast {
+                    phyrexian_choices: None,
+                    pre_payment_checks: None,
+                },
             },
             PendingCostMoveResume::SacrificeForCost {
                 player: PlayerId(0),

@@ -14,14 +14,15 @@ use crate::types::ability::{
     CardTypeSetSource, CastFromZoneDriver, ChosenAttribute, CommanderOwnership,
     ContinuousModification, ControllerRef, CopyRetargetPermission, CostPaidObjectSnapshot,
     CounterKindDomain, DetachedRemainder, Duration, EachDamageRecipient, Effect, EffectError,
-    EffectKind, EffectOutcomeSignal, EffectResolutionResult, EffectScope, FilterProp,
-    ForEachCategoryAction, ForwardedResultContext, ManaProduction, MassLibraryShuffleMode,
-    ObjectSelectionCardinality, OpponentMayScope, PlayerFilter, PlayerRelation, PlayerScope,
-    PossessionAxis, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
-    RepeatContinuation, ResolvedAbility, RevealUntilDisposition, SacrificeCost,
-    SacrificeRequirement, SharedQuality, SharedQualityRelation, SiblingCondition, StaticDefinition,
-    SubAbilityLink, TapStateChange, TargetChoiceTiming, TargetDamageSourceBinding, TargetFilter,
-    TargetRef, ThisWayCause, TypedFilter, ZoneChoiceCandidateSource, ZoneChoiceChooser,
+    EffectKind, EffectOutcomeSignal, EffectResolutionResult, EffectScope, ExtraPhaseRecipient,
+    FilterProp, ForEachCategoryAction, ForwardedResultContext, ManaProduction,
+    MassLibraryShuffleMode, NameStickerSet, ObjectSelectionCardinality, OpponentMayScope,
+    PlayerFilter, PlayerRelation, PlayerScope, PossessionAxis, PtValue, QuantityExpr, QuantityRef,
+    ReciprocalZoneChoiceRole, RepeatContinuation, ResolvedAbility, RevealUntilDisposition,
+    SacrificeCost, SacrificeRequirement, SharedQuality, SharedQualityRelation, SiblingCondition,
+    StaticDefinition, SubAbilityLink, TapStateChange, TargetChoiceTiming,
+    TargetDamageSourceBinding, TargetFilter, TargetRef, ThisWayCause, TypedFilter,
+    ZoneChoiceCandidateSource, ZoneChoiceChooser,
 };
 #[cfg(test)]
 use crate::types::ability::{AttackSubject, CombatHistoryScope};
@@ -598,6 +599,7 @@ pub(crate) fn matches_player_scope(
                                         recipient: None,
                                         scoped_player: Some(p.id),
                                         damage_source: None,
+                                        spell: None,
                                         event_amount: None,
                                     },
                                 );
@@ -1690,12 +1692,16 @@ pub(crate) fn resume_resolution_frames(state: &mut GameState, events: &mut Vec<G
                 }
             }
             // CR 608.2c + CR 614.12a + CR 615.5: Retiring a paused replacement
-            // dispatch can expose the next ordinary continuation. Drain that
-            // exact continuation before priority; if it is the remaining
-            // Attach operation, its own completion boundary owns the printed
-            // tail. A typed Attach-choice owner remains action-owned.
-            if retired_paused_dispatch
-                && matches!(state.waiting_for, WaitingFor::Priority { .. })
+            // dispatch, or removing an exhausted frame after a nested child
+            // already retired its dispatch, can expose the next ordinary
+            // continuation. Drain that exact continuation before priority; if
+            // it is the remaining Attach operation, its own completion boundary
+            // owns the printed tail. A typed Attach-choice owner remains
+            // action-owned.
+            if matches!(
+                state.resolution_stack.last(),
+                Some(ResolutionFrame::AbilityContinuation(_))
+            ) && matches!(state.waiting_for, WaitingFor::Priority { .. })
                 && state
                     .active_ability_continuation()
                     .is_some_and(|continuation| continuation.attachment_choice.is_none())
@@ -3196,8 +3202,8 @@ fn is_public_zone(zone: crate::types::zones::Zone) -> bool {
 /// the triggering action (e.g. the number of Treasures sacrificed). At
 /// creation time `last_effect_count` (and the rest of the event-context
 /// cascade) is still live, so resolving `EventContextAmount` here captures the
-/// real count. The reflexive triggered ability resolves later in a fresh
-/// `apply()` where that scratch state has been cleared; `subject_match_count`
+/// real count. The reflexive triggered ability resolves later as its own stack
+/// object, after `stack::resolve_top` has cleared that scratch state; `subject_match_count`
 /// is rehydrated into `current_trigger_match_count` (CR 603.2c) and resolves
 /// the number of targets at target-assign time. Without this freeze the bound
 /// collapses to 0 — yielding "Unused selected target slots" or a silently
@@ -4129,12 +4135,14 @@ pub(crate) fn should_propagate_parent_targets(
             && sub.target_choice_timing == TargetChoiceTiming::Resolution)
 }
 
-/// Whether an empty-targeted child can inherit the parent's bound targets.
-/// Kept separate from the parent's current target population so structural
-/// continuation analysis can use the same authority as runtime propagation.
+/// CR 608.2b: whether an empty-targeted child can inherit the parent's bound targets.
+/// A node emptied by initial target validation carries local removal evidence;
+/// intentionally empty nodes retain the original inheritance rules.
 pub(crate) fn can_inherit_parent_targets(sub: &ResolvedAbility) -> bool {
     sub.targets.is_empty()
+        && sub.illegal_local_target_slots.is_empty()
         && sub.reads_chosen_group.is_none()
+        && !has_resolution_owned_zone_choice(sub)
         && (sub.target_choice_timing != TargetChoiceTiming::Resolution
             // CR 608.2c: a resolution-time instruction can still consume an
             // object selected by its parent. `ParentTarget` is not a fresh
@@ -4159,11 +4167,18 @@ pub(crate) fn can_inherit_parent_targets(sub: &ResolvedAbility) -> bool {
 /// (Worldsoul's Rage), while context references such as Beseech the Mirror's
 /// exile-linked card remain bound continuations rather than fresh choices.
 fn has_resolution_owned_zone_choice(sub: &ResolvedAbility) -> bool {
-    if sub.target_choice_timing != TargetChoiceTiming::Resolution {
-        return false;
-    }
-    let Effect::ChangeZone { origin, target, .. } = &sub.effect else {
-        return false;
+    let (target, origin) = match &sub.effect {
+        Effect::ChangeZone { origin, target, .. }
+            if sub.target_choice_timing == TargetChoiceTiming::Resolution =>
+        {
+            (target, *origin)
+        }
+        Effect::PutAtLibraryPosition { target, .. }
+            if matches!(target.extract_in_zone(), Some(Zone::Hand | Zone::Library)) =>
+        {
+            (target, target.extract_in_zone())
+        }
+        _ => return false,
     };
     let selection_zones = origin.map_or_else(|| target.extract_zones(), |zone| vec![zone]);
     !selection_zones.is_empty()
@@ -4606,7 +4621,11 @@ pub(crate) fn condition_survives_false_parent_gate(condition: &AbilityCondition)
 ///   is true" — Kathril / Mutable Pupa). That is a structural marker on the sub
 ///   (`SiblingCondition::ReplicatedOrBranch`) rather than a condition, and it
 ///   only means "independent OR-branch" on a `SequentialSibling` link, so BOTH
-///   conjuncts are part of the test.
+///   conjuncts are part of the test. The parser also stamps it on a clause gated
+///   on the mana spent to cast the spell that directly follows another such
+///   clause (CR 601.2h + CR 608.2c: "A if {R} was spent …, and B if {G} was
+///   spent …"), whose gate reads the spell's payment rather than the previous
+///   clause.
 ///
 /// Two consumers, which is why this is factored out rather than spelled twice:
 /// `resolve_ability_chain` (below) on its condition-false path, and
@@ -4881,6 +4900,9 @@ fn instruction_outlives_declined_gate(
         target_constraints,
         multi_target,
         force_block_attacker,
+        // Reads the object an earlier instruction announced, so it can name a
+        // gated result: only the default origin is unbound.
+        target_reads,
         // Walked by the caller.
         sub_ability: _,
         sub_link: _,
@@ -4911,6 +4933,7 @@ fn instruction_outlives_declined_gate(
         target_incarnations: _,
         selected_target_incarnations: _,
         illegal_target_slots: _,
+        illegal_local_target_slots: _,
         controller: _,
         original_controller: _,
         context: _,
@@ -4954,7 +4977,8 @@ fn instruction_outlives_declined_gate(
         && target_chooser.is_none()
         && target_constraints.is_empty()
         && multi_target.is_none()
-        && force_block_attacker.is_none();
+        && force_block_attacker.is_none()
+        && *target_reads == crate::types::ability::TargetReadOrigin::OwnAnnouncement;
     unbound
         && duration
             .as_ref()
@@ -5099,8 +5123,8 @@ fn audit_later_instruction(effect: &Effect) -> LaterInstructionAudit<'_> {
             },
         ),
         Effect::AdditionalPhase {
-            target,
-            phase: _,
+            recipient,
+            segment: _,
             after: _,
             followed_by: _,
             count: _,
@@ -5108,13 +5132,18 @@ fn audit_later_instruction(effect: &Effect) -> LaterInstructionAudit<'_> {
         } => (
             // CR 608.2c + CR 118.12: a declined "if you do" skips only a later
             // instruction whose referent the gated action supplies; "there is an
-            // additional … phase" (`TargetFilter::None`) names no player (CR 500.10a
-            // gates only "you get"), so the grant has no referent to audit.
+            // additional … phase" (`NoPlayer`) names no player (CR 500.10a gates
+            // only a player's grant), so the grant has no referent to audit.
             Some(
-                std::iter::once(target)
-                    .filter(|target| **target != TargetFilter::None)
-                    .chain(attacker_restriction.as_ref())
-                    .collect(),
+                match recipient {
+                    ExtraPhaseRecipient::NoPlayer => None,
+                    ExtraPhaseRecipient::Controller
+                    | ExtraPhaseRecipient::TriggeringPlayer
+                    | ExtraPhaseRecipient::TargetedPlayer(_) => Some(recipient.as_target_filter()),
+                }
+                .into_iter()
+                .chain(attacker_restriction.as_ref())
+                .collect(),
             ),
             ParentTargetHandling::NotAudited,
         ),
@@ -5766,6 +5795,7 @@ fn quantity_ref_counts_population_matching(
             filter_pred(source) || filter_pred(target)
         }
         QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::SharedCardTypes { source }
         | QuantityRef::DistinctSubtypes { source, .. }
         | QuantityRef::DistinctColorsAmong { source } => {
             card_type_set_source_counts_population_matching(source, filter_pred)
@@ -5799,6 +5829,7 @@ fn quantity_ref_counts_population_matching(
         | QuantityRef::ObjectManaValue { .. }
         | QuantityRef::ObjectColorCount { .. }
         | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::NameStickerLetterCount { .. }
         | QuantityRef::ObjectTypelineComponentCount { .. }
         | QuantityRef::ManaSymbolsInManaCost { .. }
         | QuantityRef::SelfManaValue
@@ -6003,6 +6034,7 @@ fn condition_reads_filter_population(
         AbilityCondition::PreviousEffectAmount { rhs, .. } => has_quantity(rhs),
         // Leaves: nothing filter- or quantity-shaped to read.
         AbilityCondition::TriggerEventTargetDamagedBySourceThisTurn
+        | AbilityCondition::TriggerEventTargetExploitedBySource
         | AbilityCondition::AdditionalCostPaid { .. }
         | AbilityCondition::AdditionalCostPaidInstead
         | AbilityCondition::AlternativeManaCostPaid
@@ -6470,9 +6502,10 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             // optional-decline branch selector — it reads the flip, not the
             // declined effect.
             | AbilityCondition::CoinFlipOutcome { .. }
-            // The frozen trigger-event damage read is independent of an
+            // The frozen trigger-event damage/exploit read is independent of an
             // optional-effect decision, so it cannot select a decline branch.
             | AbilityCondition::TriggerEventTargetDamagedBySourceThisTurn
+            | AbilityCondition::TriggerEventTargetExploitedBySource
             | AbilityCondition::WhenYouDo
             | AbilityCondition::WasCast { .. }
             | AbilityCondition::CastDuringPhase { .. }
@@ -6863,6 +6896,10 @@ fn quantity_ref_references_demonstrative(qty: &QuantityRef) -> bool {
         | QuantityRef::CountersOn { scope, .. }
         | QuantityRef::ObjectColorCount { scope }
         | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::NameStickerLetterCount {
+            stickers: NameStickerSet::OnObject { scope },
+            letters: _,
+        }
         | QuantityRef::ObjectTypelineComponentCount { scope }
         | QuantityRef::ManaSymbolsInManaCost { scope, .. } => scope,
         _ => return false,
@@ -8400,27 +8437,42 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
     false
 }
 
+/// CR 608.2c: Does a [`CardTypeSetSource`] population read the chain's tracked
+/// object set, at any depth of its `AnyOf` union?
+///
+/// The single authority for the tracked-set dependency on the population axis.
+/// A direct-only `TrackedSet { .. }` match misses a tracked set nested inside an
+/// `AnyOf` ("among cards exiled with ~ and creatures you control"), so the
+/// producer never publishes and the chained count resolves to 0. Uses the same
+/// bounded walker as every other union consumer; an incomplete walk is
+/// conservatively reported as a dependency so a truncated source still forces
+/// publication rather than silently under-counting.
+fn card_type_set_source_references_tracked_set(source: &CardTypeSetSource) -> bool {
+    let mut found = false;
+    let complete =
+        source.try_for_each_member(crate::types::ability::UNION_DEPTH_BUDGET, &mut |leaf| {
+            found |= matches!(leaf, CardTypeSetSource::TrackedSet { .. });
+        });
+    found || !complete
+}
+
 fn quantity_expr_references_tracked_set(qty: &QuantityExpr) -> bool {
     match qty {
         QuantityExpr::Fixed { .. } => false,
         QuantityExpr::Ref { qty } => match qty {
-            QuantityRef::TrackedSetSize
-            | QuantityRef::FilteredTrackedSetSize { .. }
-            | QuantityRef::DistinctCardTypes {
-                source: CardTypeSetSource::TrackedSet { .. },
+            QuantityRef::TrackedSetSize | QuantityRef::FilteredTrackedSetSize { .. } => true,
+            // CR 608.2c: the three characteristic-set quantities share the
+            // population axis, so a tracked set nested inside an `AnyOf` union
+            // must be detected too — a direct-only `TrackedSet` match would let
+            // the producer skip publication and the chained count resolve to 0.
+            QuantityRef::DistinctCardTypes { source }
+            | QuantityRef::SharedCardTypes { source }
+            | QuantityRef::DistinctSubtypes { source, .. }
+            | QuantityRef::DistinctColorsAmong { source } => {
+                card_type_set_source_references_tracked_set(source)
             }
-            | QuantityRef::DistinctSubtypes {
-                source: CardTypeSetSource::TrackedSet { .. },
-                ..
-            } => true,
             QuantityRef::PropertyAggregate(aggregate) => {
-                let mut found = false;
-                let complete = aggregate
-                    .source()
-                    .try_for_each_member(crate::types::ability::UNION_DEPTH_BUDGET, &mut |leaf| {
-                        found |= matches!(leaf, CardTypeSetSource::TrackedSet { .. })
-                    });
-                found || !complete
+                card_type_set_source_references_tracked_set(aggregate.source())
             }
             // CR 608.2c: a player-count whose filter is keyed on the chain's
             // tracked object set is a CONSUMER of that set — the preceding
@@ -8965,7 +9017,7 @@ fn affected_objects_from_events(
         Effect::Destroy { .. } | Effect::DestroyAll { .. } => events
             .iter()
             .filter_map(|event| match event {
-                GameEvent::CreatureDestroyed { object_id } => Some(*object_id),
+                GameEvent::CreatureDestroyed { object_id, .. } => Some(*object_id),
                 _ => None,
             })
             .collect(),
@@ -9187,17 +9239,47 @@ fn affected_objects_from_events(
 /// clash, dig, behold — `effect_manages_own_outcome_flag`) keeps its own
 /// record, an effect kind without an event witness stays "mandatory means
 /// yes" (`mandatory_parent_effect_performed`'s default arm), and any recorded
-/// performance (`optional_effect_performed`) always wins.
+/// performance (`optional_effect_performed`) otherwise wins.
+///
+/// A mass zone move is the exception: CR 603.12 keys the reflexive on the
+/// move EVENT, which CR 118.12's "started to pay" reading of "if you do" does
+/// not need. An empty or CR 610.3b-refused `ChangeZoneAll` moved nothing, so
+/// no reflexive — authoritative even over an accepted or inherited performed
+/// mark (`mandatory_parent_event_occurred`).
 fn when_you_do_mandatory_parent_did_nothing(
     condition: &AbilityCondition,
     parent: &ResolvedAbility,
     parent_events: &[GameEvent],
 ) -> bool {
-    condition.has_when_you_do_marker()
-        && !parent.optional
+    if !condition.has_when_you_do_marker() || effect_manages_own_outcome_flag(&parent.effect) {
+        return false;
+    }
+    if effect_reflexive_needs_move_event(&parent.effect) {
+        return !mandatory_parent_event_occurred(&parent.effect, parent_events);
+    }
+    !parent.optional
         && !parent.context.optional_effect_performed
-        && !effect_manages_own_outcome_flag(&parent.effect)
         && !mandatory_parent_effect_performed(&parent.effect, parent_events)
+}
+
+/// CR 603.12: Effect kinds whose reflexive "when you do" needs an actual move
+/// event even though their "if you do" (CR 118.12) treats a started-but-empty
+/// move as performed.
+fn effect_reflexive_needs_move_event(effect: &Effect) -> bool {
+    matches!(effect, Effect::ChangeZoneAll { .. })
+}
+
+/// CR 603.12: Whether the parent's own event slice witnesses the event a
+/// reflexive "when you do" keys on. A mass zone move occurred only if some
+/// object actually changed zones; every other kind defers to the shared
+/// performed reader.
+fn mandatory_parent_event_occurred(effect: &Effect, parent_events: &[GameEvent]) -> bool {
+    if effect_reflexive_needs_move_event(effect) {
+        return parent_events
+            .iter()
+            .any(|event| matches!(event, GameEvent::ZoneChanged { .. }));
+    }
+    mandatory_parent_effect_performed(effect, parent_events)
 }
 
 /// CR 603.12 + CR 701.20a: the inline half of the reveal-until-hit guard. The
@@ -10685,16 +10767,18 @@ pub(crate) fn ability_pins_object_anaphor(ability: &ResolvedAbility) -> bool {
 /// immediately afterward", per prevented event, and its amount is read live from
 /// `state.last_effect_count` (stamped at `game/combat_damage.rs`). Freezing a parent-dependent
 /// quantity at install would pre-empt that.
-/// MEASURED, so the omission is not load-bearing for today's corpus either:
 /// `snapshot_parent_dependent_quantities` walks only EFFECT quantity fields (Mana count,
 /// DealDamage/DamageAll/DamageEachPlayer/GainLife/LoseLife amount, Draw/Mill/PutCounter count,
-/// Pump/PumpAll P/T, ChangeZone.enter_with_counters) — it never walks `ability.repeat_for` —
-/// and `snapshot_quantity_ref` has no `EventContextAmount` arm (it falls to `_ => None`). So
-/// calling it would change nothing for the current riders; it is omitted for the rule, not for
-/// the symptom. `delayed_trigger::resolve` also runs
-/// `stamp_triggering_source_origins_in_ability_chain`, `rebind_last_created_to_parent_target` and
-/// stamps `scoped_player` — all correctly irrelevant at this seam (none of them touch the
-/// referent or its pin).
+/// Pump/PumpAll P/T, ChangeZone.enter_with_counters, RevealUntil.count) — it never walks
+/// `ability.repeat_for` — and its `snapshot_quantity_ref` freezes `EventContextAmount` only at
+/// the first payload instruction of a creation-time-provenance, non-departure delayed trigger
+/// (CR 603.7a) — and only because `delayed_trigger::resolve` passes it the creation-time amount
+/// the creating resolution determined; the walker itself decides nothing about provenance. A rider's "for each 1 damage
+/// prevented this way" is an `EventContextAmount` read live per prevented event (CR 615.5), so
+/// this seam must not freeze it, nor freeze any other parent-dependent leaf at install.
+/// `delayed_trigger::resolve` also runs `stamp_triggering_source_origins_in_ability_chain`,
+/// `rebind_last_created_to_parent_target` and stamps `scoped_player` — all correctly irrelevant
+/// at this seam (none of them touch the referent or its pin).
 /// **DO NOT unify this function with `delayed_trigger::resolve`'s inline binding.** They share
 /// the referent authority (`targeting::parent_chain_referents`) and the pin preference below;
 /// merging the call sites would silently give a prevention rider the CR 603.7c `TriggeringSource`
@@ -10963,6 +11047,23 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
             target: TargetFilter::ParentTarget,
             ..
         } => ability.parent_target_missing_reason.is_some(),
+        // CR 608.2d: "The player can’t choose an option that’s illegal or impossible".
+        // An optional placement from a private zone (e.g. Fire Prophecy / Volcanic Spite:
+        // "You may put a card from your hand on the bottom of your library. If
+        // you do, draw a card.") is impossible when the player has no eligible
+        // cards in that zone and must select a positive exact count. Zero
+        // cards remains a legal choice for zero-count and up-to placements.
+        Effect::PutAtLibraryPosition { target, count, .. } => {
+            if matches!(target, TargetFilter::ParentTarget)
+                && ability.parent_target_missing_reason.is_some()
+            {
+                return true;
+            }
+            !count.is_up_to()
+                && crate::game::quantity::resolve_quantity_with_targets(state, count, ability) > 0
+                && put_on_top::private_zone_selection(state, ability, target)
+                    .is_some_and(|(_, _, mut eligible)| eligible.next().is_none())
+        }
         Effect::CastFromZone {
             mode,
             target,
@@ -12221,9 +12322,9 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::SkipNextTurn { target, .. }
         | Effect::SkipNextStep { target, .. }
         | Effect::ControlNextTurn { target, .. }
-        | Effect::AdditionalPhase { target, .. }
         | Effect::Detain { target, .. }
         | Effect::TargetOnly { target } => target,
+        Effect::AdditionalPhase { recipient, .. } => recipient.as_target_filter(),
         // CR 701.26a/b + CR 603.7c: only the single-permanent tap/untap exposes
         // an event-context target. The mass (`All`) scope's `target` is a
         // population filter, not a per-event target ref — it must not be
@@ -13479,9 +13580,13 @@ fn emit_sacrifice_batch_follow_ups(
             continue;
         }
         match follow_up {
-            PendingPlayerScopeSacrificeFollowUp::Exploit { exploiter } => {
+            PendingPlayerScopeSacrificeFollowUp::Exploit {
+                exploiter,
+                exploiter_incarnation,
+            } => {
                 events.push(GameEvent::CreatureExploited {
                     exploiter,
+                    exploiter_incarnation,
                     sacrificed,
                     record,
                 });
@@ -14419,6 +14524,9 @@ fn reset_top_level_resolution_state(state: &mut GameState) {
     // CR 608.2d: same reasoning, one axis over — a new top-level
     // resolution cannot inherit a prior resolution's announced colour.
     state.chosen_color_this_resolution = None;
+    // CR 608.2c: "that sticker" names a sticker this resolution's own PutSticker
+    // instruction placed; a new top-level resolution cannot inherit a prior one's.
+    state.placed_sticker_this_resolution = None;
     // CR 401.5 + CR 608.2c + CR 609.3 + issue #4950: Defense in depth —
     // `apply_parent_chain_context` already consumes this at the very next
     // parent->child hand-off after a Dig/ChooseFromZone/RevealHand sets
@@ -15622,6 +15730,7 @@ fn resolve_chain_body(
                 cardinality: Some(ObjectSelectionCardinality::Exactly { .. }),
                 ..
             }
+            | Effect::PutAtLibraryPosition { .. }
     );
     if optional_is_infeasible && auto_decline_infeasible_optional {
         return resolve_optional_effect_decision(
@@ -16131,6 +16240,12 @@ fn resolve_chain_body(
     // CR 603.7: Snapshot event count so we can detect objects moved by this effect.
     let events_before = events.len();
     let mut immediate_effect_result = None;
+    // CR 610.3b + CR 118.12: per-call verdicts for this node's bounded zone
+    // move. Each `resolve_effect` call (one per repeat iteration) is judged on
+    // its OWN event window by the resolver's own predicate; the node counts as
+    // refused only when every bounded call was refused.
+    let mut bounded_move_calls = 0usize;
+    let mut bounded_move_refusals = 0usize;
 
     // Skip no-op unimplemented/runtime-handled effects, and a random
     // `Effect::Choose` already resolved above by `resolve_random_in_chain`.
@@ -16400,6 +16515,16 @@ fn resolve_chain_body(
                     // one-time case as well. Only an actual `repeat_for` body
                     // gets a fresh occurrence; an ordinary return publishes
                     // into its enclosing chain for the following reader.
+                    if iter_effective.bounded_zone_change_event().is_some() {
+                        bounded_move_calls += 1;
+                        if change_zone::until_event_already_occurred(
+                            state,
+                            iter_effective,
+                            &events[..],
+                        ) {
+                            bounded_move_refusals += 1;
+                        }
+                    }
                     let resolved = if ability.repeat_for.is_some() {
                         with_iteration_return_result_occurrence(state, iter_effective, |state| {
                             resolve_effect(state, iter_effective, events)
@@ -16672,7 +16797,13 @@ fn resolve_chain_body(
         } = event
         {
             state.player_actions_this_way.insert((*player_id, *action));
-            record_player_action_this_turn(state, *player_id, *action);
+            // Draw completions record their turn-ledger entry at the single event
+            // emission site in `draw.rs`; overlapping nested chain windows may
+            // still see that event for the resolution-local set, but must not
+            // append it to the Vec more than once.
+            if *action != PlayerActionKind::Draw {
+                record_player_action_this_turn(state, *player_id, *action);
+            }
         }
     }
 
@@ -16847,6 +16978,25 @@ fn resolve_chain_body(
         });
     let amassed_army_object = amassed_army_context_from_events(state, &events[events_before..]);
 
+    // CR 610.3b + CR 118.12: a bounded zone move refused because its "until"
+    // event had already happened was not performed. That verdict is
+    // authoritative for THIS node's dependent "if you do" rider even when the
+    // node arrives already marked performed — an accepted "you may" or a
+    // performed flag inherited from an earlier instruction — so clear the mark
+    // on this node's own hand-off. Scoped to the node: nothing global is
+    // written, so no later resolution can observe it.
+    let bounded_move_refused =
+        bounded_move_calls > 0 && bounded_move_refusals == bounded_move_calls;
+    let bounded_refusal_owned;
+    let ability = if bounded_move_refused && ability.context.optional_effect_performed {
+        let mut owned = ability.clone();
+        owned.context.optional_effect_performed = false;
+        bounded_refusal_owned = owned;
+        &bounded_refusal_owned
+    } else {
+        ability
+    };
+
     // CR 608.2c: "[Mandatory action]. If you do, [rider]." — seed the
     // performed-flag for a mandatory parent whose action just occurred.
     //
@@ -16876,6 +17026,7 @@ fn resolve_chain_body(
     let ability = if !ability.optional
         && !ability.context.optional_effect_performed
         && !state.cost_payment_failed_flag
+        && !bounded_move_refused
         && mandatory_parent_effect_performed(&ability.effect, &events[events_before..])
         && !effect_manages_own_outcome_flag(&ability.effect)
         && ability.sub_ability.as_ref().is_some_and(|sub| {
@@ -18244,8 +18395,9 @@ fn resolve_chain_body(
             // object-target slot whose empty `sub.targets` means the slot was
             // legally declined (Cruel Revival's "Return up to one target Zombie
             // card from your graveyard ..." per CR 115.6). Player targets are
-            // shared across the chain (Paradigm's "that player" draw + lose-life;
-            // relative-controller change-zone) and are always inherited. Reflexive
+            // shared with context references (Paradigm's "that player" draw +
+            // lose-life; relative-controller change-zone), but an independent
+            // stack-time player slot never inherits another clause's target. Reflexive
             // gated subs ("When you discard a card this way, put a counter on target
             // Faerie") keep inheriting their selected target through the parent
             // chain; their condition decides whether the sub fires.
@@ -18389,9 +18541,9 @@ fn resolve_chain_body(
     Ok(())
 }
 
-/// `resolve_chain_body` records, through this helper, each `PlayerPerformedAction`
-/// emitted inside its window; any other caller must run outside every chain
-/// window.
+/// Append one completed player action to the turn ledger. Draw frames call this
+/// at the same point they publish their `PlayerPerformedAction`; other event kinds
+/// use their single chain or completion recorder.
 pub(crate) fn record_player_action_this_turn(
     state: &mut GameState,
     player: PlayerId,
@@ -18582,10 +18734,13 @@ fn fails_shared_quality(state: &GameState, effective: &ResolvedAbility) -> bool 
     }
 }
 
-/// CR 115.6 + CR 608.2c: the parent targets an undeclared child inherits on the
-/// chain's ordinary descent: every player, and every object unless the child
-/// owns an independent object slot.
+/// CR 608.2b + CR 608.2c: an empty child with local initial-legality removal
+/// evidence inherits nothing. Other children retain players and objects unless
+/// the child owns an independent object slot.
 fn inherited_parent_targets(parent: &ResolvedAbility, sub: &ResolvedAbility) -> Vec<TargetRef> {
+    if sub.targets.is_empty() && !sub.illegal_local_target_slots.is_empty() {
+        return Vec::new();
+    }
     let has_independent_target_slot = sub_has_independent_object_target_slot(sub);
     parent
         .targets
@@ -18892,7 +19047,7 @@ pub(crate) fn evaluate_condition(
                     .current_trigger_event
                     .as_ref()
                     .and_then(|event| match event {
-                        GameEvent::CreatureDestroyed { object_id }
+                        GameEvent::CreatureDestroyed { object_id, .. }
                         | GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
                         _ => None,
                     })
@@ -18908,6 +19063,38 @@ pub(crate) fn evaluate_condition(
                         .source_incarnation
                         .is_none_or(|recorded| source_incarnation == Some(recorded))
                     && crate::game::triggers::damage_record_matches_dying_object(
+                        state,
+                        record,
+                        dying_object,
+                        state.current_trigger_event.as_ref(),
+                    )
+            })
+        }
+        // CR 702.110b + CR 608.2c: resolution-time check that the trigger's dying
+        // creature was exploited by this source this turn (Silumgar Scavenger).
+        AbilityCondition::TriggerEventTargetExploitedBySource => {
+            let Some(dying_object) =
+                state
+                    .current_trigger_event
+                    .as_ref()
+                    .and_then(|event| match event {
+                        GameEvent::CreatureDestroyed { object_id, .. }
+                        | GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
+                        GameEvent::CreatureExploited { sacrificed, .. } => Some(*sacrificed),
+                        _ => None,
+                    })
+            else {
+                return false;
+            };
+            let source_incarnation = ability
+                .trigger_source_incarnation()
+                .or(ability.source_incarnation);
+            state.creatures_exploited_this_turn.iter().any(|record| {
+                record.exploiter == ability.source_id
+                    && record
+                        .exploiter_incarnation
+                        .is_none_or(|recorded| source_incarnation == Some(recorded))
+                    && crate::game::triggers::exploit_record_matches_dying_object(
                         state,
                         record,
                         dying_object,
@@ -20330,8 +20517,134 @@ mod tests {
     use super::*;
     use crate::database::synthesis::synthesize_extort;
 
+    /// CR 608.2b: only an empty node carrying measured removal evidence refuses
+    /// parent-target inheritance; an intentionally empty node retains it.
+    #[test]
+    fn only_pruned_empty_target_slots_do_not_inherit_parent_targets() {
+        let parent = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Player,
+            },
+            vec![
+                TargetRef::Player(PlayerId(0)),
+                TargetRef::Object(ObjectId(2)),
+            ],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        for (expected_targets, effect) in [
+            (
+                vec![TargetRef::Player(PlayerId(0))],
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::Player,
+                },
+            ),
+            (
+                vec![TargetRef::Player(PlayerId(0))],
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Any,
+                    damage_source: None,
+                    excess: None,
+                },
+            ),
+            (
+                vec![
+                    TargetRef::Player(PlayerId(0)),
+                    TargetRef::Object(ObjectId(2)),
+                ],
+                Effect::Destroy {
+                    target: TargetFilter::ParentTarget,
+                    cant_regenerate: false,
+                },
+            ),
+            (
+                vec![
+                    TargetRef::Player(PlayerId(0)),
+                    TargetRef::Object(ObjectId(2)),
+                ],
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::Any,
+                },
+            ),
+        ] {
+            let mut child = ResolvedAbility::new(effect, Vec::new(), ObjectId(1), PlayerId(0));
+            assert!(can_inherit_parent_targets(&child));
+            assert!(should_propagate_parent_targets(&parent, &child));
+            assert!(!expected_targets.is_empty());
+            assert_eq!(inherited_parent_targets(&parent, &child), expected_targets);
+
+            child.illegal_local_target_slots = vec![0];
+            assert!(!can_inherit_parent_targets(&child));
+            assert!(!should_propagate_parent_targets(&parent, &child));
+            assert!(inherited_parent_targets(&parent, &child).is_empty());
+        }
+    }
+
     fn effect_from_json(json: &str) -> Effect {
         serde_json::from_str(json).expect("test effect shape must deserialize")
+    }
+
+    /// CR 608.2d: choosing zero is legal for zero-count and up-to placements,
+    /// while an exact positive placement needs an eligible card.
+    #[test]
+    fn optional_private_zone_placement_preserves_zero_selection_choices() {
+        for zone in [Zone::Hand, Zone::Library] {
+            for count in [
+                QuantityExpr::Fixed { value: 0 },
+                QuantityExpr::up_to(QuantityExpr::Fixed { value: 1 }),
+                QuantityExpr::Fixed { value: 1 },
+            ] {
+                let mut state = GameState::new_two_player(42);
+                let source = create_object(
+                    &mut state,
+                    CardId(900),
+                    PlayerId(0),
+                    "Placement Source".to_string(),
+                    Zone::Battlefield,
+                );
+                let permits_zero =
+                    count.is_up_to() || matches!(count, QuantityExpr::Fixed { value: 0 });
+                let mut ability = ResolvedAbility::new(
+                    Effect::PutAtLibraryPosition {
+                        target: TargetFilter::Typed(
+                            TypedFilter::new(TypeFilter::Card)
+                                .properties(vec![FilterProp::InZone { zone }]),
+                        ),
+                        count,
+                        position: crate::types::ability::LibraryPosition::Bottom,
+                    },
+                    vec![],
+                    source,
+                    PlayerId(0),
+                );
+                ability.optional = true;
+                assert!(state.players[0].hand.is_empty());
+                assert!(state.players[0].library.is_empty());
+
+                resolve_ability_chain(&mut state, &ability, &mut Vec::new(), 0)
+                    .expect("empty private-zone placement must resolve or offer its legal choice");
+                assert_eq!(
+                    matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+                    permits_zero,
+                    "only a positive exact count is impossible with an empty {zone:?}"
+                );
+                if permits_zero {
+                    crate::game::engine::apply_as_current(
+                        &mut state,
+                        crate::types::actions::GameAction::DecideOptionalEffect { accept: true },
+                    )
+                    .expect("accepting a zero-card placement must succeed");
+                }
+                assert!(state.active_optional_effect_frame().is_none());
+                assert!(state.players[0].hand.is_empty());
+                assert!(state.players[0].library.is_empty());
+                assert_eq!(state.objects[&source].zone, Zone::Battlefield);
+            }
+        }
     }
 
     #[test]
@@ -20606,23 +20919,30 @@ mod tests {
                 r#""owner":{"type":"TriggeringPlayer"}"#
             )
         ));
-        // AdditionalPhase (Wyll): "there is" names no player (`None`); a grant
-        // to the controller ("you get") survives too; a grant to a player the
-        // trigger event names does not.
-        let phase = r#"{"type":"AdditionalPhase","target":{"type":"None"},"phase":"BeginCombat","after":{"type":"ThisPhase","data":{"named":["PrecombatMain","PostcombatMain"]}},"followed_by":["PostCombatMain"],"count":{"type":"Fixed","value":1}}"#;
+        // AdditionalPhase (Wyll): "there is" names no player (`NoPlayer`); a
+        // grant to the controller ("you get") or to a targeted player survives
+        // too; a grant to a player the trigger event names does not.
+        let phase = r#"{"type":"AdditionalPhase","recipient":{"type":"NoPlayer"},"segment":{"type":"Phase","data":"Combat"},"after":{"type":"ThisPhase","data":{"named":["PrecombatMain","PostcombatMain"]}},"followed_by":[{"type":"Phase","data":"PostcombatMain"}],"count":{"type":"Fixed","value":1}}"#;
         assert!(survives(DRAW, phase));
         assert!(survives(
             DRAW,
             &phase.replace(
-                r#""target":{"type":"None"}"#,
-                r#""target":{"type":"Controller"}"#
+                r#""recipient":{"type":"NoPlayer"}"#,
+                r#""recipient":{"type":"Controller"}"#
+            )
+        ));
+        assert!(survives(
+            DRAW,
+            &phase.replace(
+                r#""recipient":{"type":"NoPlayer"}"#,
+                r#""recipient":{"type":"TargetedPlayer","data":{"type":"Player"}}"#
             )
         ));
         assert!(!survives(
             DRAW,
             &phase.replace(
-                r#""target":{"type":"None"}"#,
-                r#""target":{"type":"TriggeringPlayer"}"#
+                r#""recipient":{"type":"NoPlayer"}"#,
+                r#""recipient":{"type":"TriggeringPlayer"}"#
             )
         ));
         // GainLife.
@@ -20739,6 +21059,43 @@ mod tests {
             by: None
         }));
         assert!(!static_mode_names_no_referent(&StaticMode::CantBeTargeted));
+    }
+
+    /// CR 608.2c + CR 118.12: the declined-"if you do" audit reads each
+    /// additional-phase recipient kind as the referent it names: none for
+    /// `NoPlayer`, and the kind's own filter for every player kind. A declined
+    /// gate's verdict cannot tell the controller or a targeted player from no
+    /// referent, since both exist whether or not the gated action happened, so
+    /// this reads the audit's referent list. Every kind is checked before the
+    /// assertion, so a failure names each kind that went wrong.
+    #[test]
+    fn the_declined_gate_audit_names_each_player_recipient_as_its_referent() {
+        let wrong: Vec<String> = [
+            (r#"{"type":"NoPlayer"}"#, None),
+            (r#"{"type":"Controller"}"#, Some(TargetFilter::Controller)),
+            (
+                r#"{"type":"TriggeringPlayer"}"#,
+                Some(TargetFilter::TriggeringPlayer),
+            ),
+            (
+                r#"{"type":"TargetedPlayer","data":{"type":"Player"}}"#,
+                Some(TargetFilter::Player),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(recipient, referent)| {
+            let effect = effect_from_json(&format!(
+                r#"{{"type":"AdditionalPhase","recipient":{recipient},"segment":{{"type":"Phase","data":"Combat"}},"after":{{"type":"ThisPhase","data":{{"named":["PrecombatMain","PostcombatMain"]}}}},"count":{{"type":"Fixed","value":1}}}}"#
+            ));
+            let audited: Option<Vec<TargetFilter>> = audit_later_instruction(&effect)
+                .referents
+                .map(|referents| referents.into_iter().cloned().collect());
+            let expected = Some(referent.into_iter().collect::<Vec<_>>());
+            (audited != expected)
+                .then(|| format!("{recipient}: audited {audited:?}, expected {expected:?}"))
+        })
+        .collect();
+        assert!(wrong.is_empty(), "{}", wrong.join("; "));
     }
 
     /// Phase 7, J-3 (the building block): after a declined gate, each later
@@ -21161,7 +21518,10 @@ mod tests {
     ) -> PendingPlayerScopeSacrificeCompletion {
         PendingPlayerScopeSacrificeCompletion {
             announced: vec![victim],
-            follow_up: Some(PendingPlayerScopeSacrificeFollowUp::Exploit { exploiter }),
+            follow_up: Some(PendingPlayerScopeSacrificeFollowUp::Exploit {
+                exploiter,
+                exploiter_incarnation: None,
+            }),
             ..Default::default()
         }
     }
@@ -21187,6 +21547,7 @@ mod tests {
                     exploiter: event_exploiter,
                     sacrificed,
                     record,
+                    ..
                 } if *event_exploiter == exploiter
                     && *sacrificed == victim
                     && record == &expected_record
@@ -23563,6 +23924,102 @@ mod tests {
         assert!(
             ability_or_branch_references_tracked_set(&ability),
             "token P/T TrackedSetAggregate must publish the chain tracked set"
+        );
+    }
+
+    /// CR 608.2c: a tracked set nested inside an `AnyOf` population must mark
+    /// the quantity as a tracked-set consumer. A direct-only `TrackedSet { .. }`
+    /// match misses the union member, so the producer never publishes and the
+    /// chained count resolves to 0. `SharedCardTypes` shares the population axis
+    /// with `DistinctCardTypes`/`DistinctSubtypes`, so all three route through
+    /// the same bounded walk.
+    #[test]
+    fn shared_card_types_over_any_of_tracked_set_references_tracked_set() {
+        let qty = QuantityExpr::Ref {
+            qty: QuantityRef::SharedCardTypes {
+                source: crate::types::ability::CardTypeSetSource::AnyOf {
+                    sources: crate::types::ability::UnionSources::new(vec![
+                        crate::types::ability::CardTypeSetSource::TrackedSet {
+                            set: crate::types::ability::TrackedAnaphorSource::ChainSet,
+                            caused_by: None,
+                        },
+                        crate::types::ability::CardTypeSetSource::ExiledBySource,
+                    ])
+                    .expect("two-member union is valid"),
+                },
+            },
+        };
+        assert!(
+            quantity_expr_references_tracked_set(&qty),
+            "a SharedCardTypes population with a TrackedSet union member must reference the tracked set"
+        );
+
+        // Paired negative: a union with no tracked-set member reads no tracked set.
+        let qty_no_tracked = QuantityExpr::Ref {
+            qty: QuantityRef::SharedCardTypes {
+                source: crate::types::ability::CardTypeSetSource::AnyOf {
+                    sources: crate::types::ability::UnionSources::new(vec![
+                        crate::types::ability::CardTypeSetSource::ExiledBySource,
+                        crate::types::ability::CardTypeSetSource::Objects {
+                            filter: TargetFilter::Any,
+                        },
+                    ])
+                    .expect("two-member union is valid"),
+                },
+            },
+        };
+        assert!(
+            !quantity_expr_references_tracked_set(&qty_no_tracked),
+            "a union with no tracked-set member must NOT reference the tracked set"
+        );
+    }
+
+    /// CR 608.2c: `DistinctColorsAmong` uses the same characteristic-source
+    /// population axis as the other distinct-characteristic quantities. Its
+    /// direct and `AnyOf`-nested tracked-set sources must therefore publish the
+    /// chain set before the quantity is resolved.
+    #[test]
+    fn distinct_colors_among_tracked_set_sources_references_tracked_set() {
+        let direct = QuantityExpr::Ref {
+            qty: QuantityRef::DistinctColorsAmong {
+                source: crate::types::ability::CardTypeSetSource::TrackedSet {
+                    set: crate::types::ability::TrackedAnaphorSource::ChainSet,
+                    caused_by: None,
+                },
+            },
+        };
+        assert!(
+            quantity_expr_references_tracked_set(&direct),
+            "DistinctColorsAmong over a direct TrackedSet must publish the chain set"
+        );
+
+        let nested = QuantityExpr::Ref {
+            qty: QuantityRef::DistinctColorsAmong {
+                source: crate::types::ability::CardTypeSetSource::AnyOf {
+                    sources: crate::types::ability::UnionSources::new(vec![
+                        crate::types::ability::CardTypeSetSource::ExiledBySource,
+                        crate::types::ability::CardTypeSetSource::TrackedSet {
+                            set: crate::types::ability::TrackedAnaphorSource::ChainSet,
+                            caused_by: None,
+                        },
+                    ])
+                    .expect("two-member union is valid"),
+                },
+            },
+        };
+        assert!(
+            quantity_expr_references_tracked_set(&nested),
+            "DistinctColorsAmong over an AnyOf TrackedSet must publish the chain set"
+        );
+
+        let unrelated = QuantityExpr::Ref {
+            qty: QuantityRef::DistinctColorsAmong {
+                source: crate::types::ability::CardTypeSetSource::ExiledBySource,
+            },
+        };
+        assert!(
+            !quantity_expr_references_tracked_set(&unrelated),
+            "DistinctColorsAmong over ExiledBySource must not publish a tracked set"
         );
     }
 

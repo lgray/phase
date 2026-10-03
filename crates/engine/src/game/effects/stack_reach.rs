@@ -10,7 +10,7 @@ use crate::game::functioning_abilities::active_replacements;
 use crate::game::replacement::{find_applicable_replacements, replacement_registry};
 use crate::game::{stack, targeting};
 use crate::types::ability::{
-    AbilityCondition, AbilityCost, Duration, Effect, EffectOutcomeSignal, EffectScope, ObjectScope,
+    AbilityCondition, AbilityCost, Effect, EffectOutcomeSignal, EffectScope, ObjectScope,
     ResolvedAbility, TapStateChange, TargetFilter, TargetRef,
 };
 use crate::types::game_state::{GameState, StackEntry, StackEntryKind};
@@ -894,12 +894,10 @@ fn node_acted_on(
             .map(|(subject, fought)| vec![TargetRef::Object(subject), TargetRef::Object(fought)])
             .unwrap_or_default(),
         Effect::DealDamage { .. } => super::deal_damage::damage_recipients(state, bound),
-        // CR 701.6a: the resolver removes the most recent entry whose id or
-        // source is the target, which can be an entry other than the target.
         Effect::Counter { .. } => super::counter::countered_targets(state, bound)
             .into_iter()
             .filter(|target| match target {
-                TargetRef::Object(id) => super::counter::countered_stack_index(state, *id)
+                TargetRef::Object(id) => super::counter::countered_stack_index(state, bound, *id)
                     .is_none_or(|index| state.stack[index].id == *id),
                 TargetRef::Player(_) => true,
             })
@@ -933,9 +931,7 @@ fn node_acted_on(
         // move.
         Effect::ChangeZone { .. }
             if bound
-                .duration
-                .as_ref()
-                .and_then(Duration::zone_change_event)
+                .bounded_zone_change_event()
                 .is_some_and(|event| bound.context.duration_events.contains(&event)) =>
         {
             Vec::new()

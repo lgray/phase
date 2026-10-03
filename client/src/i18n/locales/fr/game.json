@@ -1348,8 +1348,6 @@
     },
     "config": {
       "startingLife": "Points de vie de départ",
-      "experimentalDungeons": "Donjons expérimentaux",
-      "experimentalDungeonsHelp": "Proposer Baldur's Gate Wilderness dans les donjons et à la prise d'initiative. Expérimental et non officiel.",
       "players": "Joueurs",
       "whoGoesFirst": "Qui commence",
       "firstPlayer": {
@@ -2008,7 +2006,11 @@
   },
   "zoneOpponentChooser": {
     "title": "Choisir un adversaire",
-    "subtitle": "Choisissez quel adversaire fait le choix."
+    "subtitle": "Choisissez quel adversaire fait le choix.",
+    "orderTitle": "Choisir le joueur suivant",
+    "orderSubtitle": "Choisissez pour qui faire la prochaine sélection.",
+    "substituteTitle": "Choisir un joueur",
+    "substituteSubtitle": "Choisissez qui fait ce choix."
   },
   "pileOpponent": {
     "title": "Choose Opponent",
