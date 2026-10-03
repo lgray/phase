@@ -5265,8 +5265,10 @@ fn resolve_ref(
                     .iter()
                     .find(|p| p.id == pid)
                     .map_or(0, |p| match zone {
-                        ZoneRef::Library => usize_to_i32_saturating(p.library.len()),
-                        ZoneRef::Graveyard => usize_to_i32_saturating(p.graveyard.len()),
+                        ZoneRef::Library => usize_to_i32_saturating(state.library_of(p.id).len()),
+                        ZoneRef::Graveyard => {
+                            usize_to_i32_saturating(state.graveyard_of(p.id).len())
+                        }
                         ZoneRef::Hand => usize_to_i32_saturating(p.hand.len()),
                         ZoneRef::Exile => usize_to_i32_saturating(
                             state

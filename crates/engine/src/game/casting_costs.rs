@@ -5291,7 +5291,7 @@ pub(crate) fn handle_exile_for_cost(
                 .get(player.0 as usize)
                 .is_some_and(|p| match zone {
                     ExileCostSourceZone::Hand => p.hand.contains(&id),
-                    ExileCostSourceZone::Graveyard => p.graveyard.contains(&id),
+                    ExileCostSourceZone::Graveyard => state.graveyard_of(p.id).contains(&id),
                 });
             if !still_in_zone {
                 return Err(EngineError::InvalidAction(format!(
@@ -5335,7 +5335,7 @@ pub(crate) fn handle_exile_any_number_for_cost(
                 .get(player.0 as usize)
                 .is_some_and(|p| match zone {
                     ExileCostSourceZone::Hand => p.hand.contains(&id),
-                    ExileCostSourceZone::Graveyard => p.graveyard.contains(&id),
+                    ExileCostSourceZone::Graveyard => state.graveyard_of(p.id).contains(&id),
                 });
             if !still_in_zone {
                 return Err(EngineError::InvalidAction(format!(

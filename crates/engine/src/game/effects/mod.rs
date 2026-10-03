@@ -714,8 +714,6 @@ pub(crate) fn candidate_player_scalar(p: &Player, attr: &QuantityRef) -> Option<
         QuantityRef::LifeGainedThisTurn { .. } => {
             Some(u32_to_i32_saturating(p.life_gained_this_turn))
         }
-        // CR 404.1: cards in the candidate's graveyard.
-        QuantityRef::GraveyardSize { .. } => Some(usize_to_i32_saturating(p.graveyard.len())),
         // CR 122.1f (poison) + CR 122.1: the candidate's named player-counter total.
         QuantityRef::PlayerCounter { kind, .. } => {
             Some(u32_to_i32_saturating(p.player_counter(kind)))
@@ -754,6 +752,13 @@ pub(crate) fn candidate_player_scalar_with_state(
         // `Player::life` via the live game state.
         QuantityRef::LifeTotal { .. } => {
             Some(crate::game::players::team_life_total(state, candidate.id))
+        }
+        // CR 404.1 + CR 400.1: cards in the candidate's graveyard, read through
+        // the storage authority so a shared-graveyard format counts the pile.
+        QuantityRef::GraveyardSize { .. } => {
+            Some(crate::game::arithmetic::usize_to_i32_saturating(
+                state.graveyard_of(candidate.id).len(),
+            ))
         }
         QuantityRef::BattlefieldEntriesThisTurn { filter, .. } => {
             Some(crate::game::arithmetic::usize_to_i32_saturating(
@@ -39288,14 +39293,14 @@ mod tests {
             ),
             Some(3)
         );
-        // CR 404.1: graveyard size reads p.graveyard.len().
+        // CR 404.1: graveyard size needs the storage authority, so the stateless
+        // reader fails the predicate closed and the stateful one counts.
+        let graveyard_size = QuantityRef::GraveyardSize {
+            player: PlayerScope::Controller,
+        };
+        assert_eq!(candidate_player_scalar(p, &graveyard_size), None);
         assert_eq!(
-            candidate_player_scalar(
-                p,
-                &QuantityRef::GraveyardSize {
-                    player: PlayerScope::Controller
-                }
-            ),
+            candidate_player_scalar_with_state(&state, p, PlayerId(0), &graveyard_size),
             Some(2)
         );
         // CR 122.1f: poison reads the dedicated poison_counters field.
@@ -42635,5 +42640,65 @@ mod tests {
                 inner: Box::new(leaf),
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod dandan_read_sweep_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::ability::PlayerScope;
+    use crate::types::format::FormatConfig;
+    use crate::types::identifiers::CardId;
+    use crate::types::zones::Zone;
+
+    fn graveyard_size() -> QuantityRef {
+        QuantityRef::GraveyardSize {
+            player: PlayerScope::Controller,
+        }
+    }
+
+    /// CR 404.1 + CR 400.1: a candidate's graveyard size is the shared pile's
+    /// size for every seat of a shared-graveyard format, and its own pile otherwise.
+    #[test]
+    fn candidate_graveyard_size_reads_the_storage_authority() {
+        let mut shared = GameState::new(FormatConfig::dandan(), 2, 7);
+        let mut standard = GameState::new_two_player(7);
+        for (n, state) in [(3u64, &mut shared), (1, &mut standard)] {
+            for i in 0..n {
+                create_object(
+                    state,
+                    CardId(i + 1),
+                    PlayerId(1),
+                    format!("Dead {i}"),
+                    Zone::Graveyard,
+                );
+            }
+        }
+        let read = |state: &GameState, seat: usize| {
+            candidate_player_scalar_with_state(
+                state,
+                &state.players[seat],
+                PlayerId(0),
+                &graveyard_size(),
+            )
+        };
+
+        assert_eq!(
+            read(&shared, 1),
+            Some(3),
+            "the non-canonical seat counts the pile"
+        );
+        assert_eq!(
+            read(&shared, 0),
+            Some(3),
+            "the canonical seat counts the pile"
+        );
+        assert_eq!(
+            read(&standard, 1),
+            Some(1),
+            "reach: Standard counts the seat's own pile"
+        );
+        assert_eq!(read(&standard, 0), Some(0));
     }
 }

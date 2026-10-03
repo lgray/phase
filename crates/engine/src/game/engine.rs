@@ -6746,10 +6746,17 @@ fn normalize_recast_frame(
         for id in &ids {
             s.objects.remove(id);
         }
-        if let Some(p) = s.players.iter_mut().find(|p| p.id == ctx.controller) {
-            p.hand.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
-            p.graveyard.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
-            p.library.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
+        let pruned_seat = s
+            .players
+            .iter_mut()
+            .find(|p| p.id == ctx.controller)
+            .map(|p| {
+                p.hand.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
+                p.id
+            });
+        if let Some(seat) = pruned_seat {
+            s.graveyard_of_mut(seat).retain(|id| !ids.contains(id));
+            s.library_of_mut(seat).retain(|id| !ids.contains(id));
         }
     }
     // CR 608.2 anaphora / display bookkeeping: the "last created token / revealed /
@@ -26259,5 +26266,54 @@ mod minted_battlefield_set_tests {
             .for_each(|p| p.library.retain(|x| *x != arrival));
         let (_, k2) = derived_fodder_class(&minted_both, &after).expect("one minted class");
         assert_eq!(k2, 2, "two MINTED members of one class report k = 2");
+    }
+}
+
+#[cfg(test)]
+mod dandan_read_sweep_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::format::FormatConfig;
+    use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+    use crate::types::identifiers::CardId;
+
+    /// CR 400.1: stripping the self-returning recast card from a
+    /// comparison frame also removes its id from the shared pile it sat in.
+    #[test]
+    fn recast_frame_prunes_the_shared_pile_graveyard() {
+        for (format, shared) in [
+            (FormatConfig::dandan(), true),
+            (FormatConfig::standard(), false),
+        ] {
+            let mut state = GameState::new(format, 2, 7);
+            let seat = PlayerId(1);
+            let recast = create_object(
+                &mut state,
+                CardId(5),
+                seat,
+                "Recast".into(),
+                Zone::Graveyard,
+            );
+            let kept = create_object(&mut state, CardId(6), seat, "Kept".into(), Zone::Graveyard);
+            let ctx = LoopActionContext {
+                card_id: CardId(5),
+                controller: seat,
+                action: LoopAction::Recast {
+                    from_zone: Zone::Graveyard,
+                    uses_buyback: BuybackUsage::NotUsed,
+                },
+                convoke: None,
+                pins: Vec::new(),
+            };
+
+            let frame = normalize_recast_frame(&state, &ctx);
+
+            assert!(!frame.objects.contains_key(&recast), "shared={shared}");
+            assert_eq!(
+                frame.graveyard_of(seat).iter().copied().collect::<Vec<_>>(),
+                vec![kept],
+                "shared={shared}: the pile no longer holds the stripped id"
+            );
+        }
     }
 }

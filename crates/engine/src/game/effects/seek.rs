@@ -45,10 +45,8 @@ pub fn resolve(
     // Collect library objects that match the filter.
     // CR 107.3a + CR 601.2b: ability-context filter evaluation.
     let ctx = FilterContext::from_ability(ability);
-    let library_scope = player
-        .library
-        .iter()
-        .take(from_top.unwrap_or(player.library.len()));
+    let library = state.library_of(player.id);
+    let library_scope = library.iter().take(from_top.unwrap_or(library.len()));
     let mut matching: Vec<_> = library_scope
         .filter(|&&obj_id| matches_target_filter(state, obj_id, &filter, &ctx))
         .copied()

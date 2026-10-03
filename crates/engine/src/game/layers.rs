@@ -2471,7 +2471,7 @@ fn evaluate_condition_inner(
             .players
             .iter()
             .find(|p| p.id == controller)
-            .and_then(|p| p.library.front())
+            .and_then(|p| state.library_of(p.id).front())
             .is_some_and(|&top_id| {
                 matches_target_filter(
                     state,

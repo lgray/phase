@@ -2255,7 +2255,7 @@ fn debug_library_cards(state: &GameState, viewer: Option<PlayerId>) -> Vec<Debug
         .iter()
         .find(|player| player.id == viewer)
         .into_iter()
-        .flat_map(|player| player.library.iter())
+        .flat_map(|player| state.library_of(player.id).iter())
         .filter_map(|object_id| {
             state
                 .objects
