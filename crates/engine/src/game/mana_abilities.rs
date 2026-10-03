@@ -699,10 +699,13 @@ pub(super) fn resolve_mana_ability_excluding(
         events,
         cost_event_start,
     )?;
-    if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-        state.waiting_for = waiting_for;
-    } else {
+    // CR 605.3b + CR 601.2g-h: a mana ability that resolved returns to the
+    // payment that activated it; only a cost move paused on a prompt replaces
+    // the caller's root.
+    if matches!(waiting_for, WaitingFor::Priority { .. }) {
         state.waiting_for = waiting_before;
+    } else {
+        state.waiting_for = waiting_for;
     }
     Ok(())
 }
