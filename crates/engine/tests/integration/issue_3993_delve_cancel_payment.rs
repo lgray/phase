@@ -684,3 +684,104 @@ fn delve_spell_cast_from_graveyard_cannot_select_itself() {
     assert_eq!(graveyard_names(&runner), gy_before);
     assert_eq!(delve_marker_count(&runner), 0);
 }
+
+/// Real Treasure Cruise in the graveyard with flashback (its own mana cost),
+/// `others` other graveyard cards, and `blue` + `colorless` mana in the pool.
+fn cruise_flashback_from_graveyard(
+    others: usize,
+    colorless: usize,
+) -> (GameRunner, ObjectId, Vec<ObjectId>) {
+    use engine::types::keywords::{FlashbackCost, Keyword};
+
+    let db = shared_card_db().expect("card db");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let cruise = scenario.add_real_card(P0, "Treasure Cruise", Zone::Graveyard, db);
+    let fuel = (0..others)
+        .map(|i| {
+            scenario
+                .add_spell_to_graveyard(P0, &format!("Fuel {i}"), true)
+                .id()
+        })
+        .collect();
+    let mut pool = mana_pool(colorless, 0);
+    pool.push(ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![]));
+    scenario.with_mana_pool(P0, pool);
+    let mut runner = scenario.build();
+
+    let object = runner.state_mut().objects.get_mut(&cruise).expect("cruise");
+    assert!(
+        object
+            .keywords
+            .iter()
+            .any(|keyword| matches!(keyword, Keyword::Delve)),
+        "real Treasure Cruise carries Delve"
+    );
+    let flashback = Keyword::Flashback(FlashbackCost::Mana(object.mana_cost.clone()));
+    object.base_keywords.push(flashback.clone());
+    object.keywords.push(flashback);
+    (runner, cruise, fuel)
+}
+
+fn cast_offered(runner: &GameRunner, spell: ObjectId) -> bool {
+    legal_actions_full(runner.state()).0.iter().any(
+        |action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == spell),
+    )
+}
+
+/// CR 601.2a + CR 702.66a: the affordability preview must not count the spell
+/// being cast from the graveyard as its own delve fuel. Cost {7}{U} against
+/// {U} + 4 colorless: two other graveyard cards reach 7 mana only if the spell
+/// counts itself; a third real fuel card makes the cast genuinely payable.
+#[test]
+fn delve_affordability_preview_excludes_spell_cast_from_graveyard() {
+    let (runner, cruise, _) = cruise_flashback_from_graveyard(3, 4);
+    assert!(
+        cast_offered(&runner, cruise),
+        "control: three real fuel cards make the cast payable"
+    );
+
+    let (runner, cruise, _) = cruise_flashback_from_graveyard(2, 4);
+    assert!(
+        !cast_offered(&runner, cruise),
+        "two real fuel cards cannot pay; the spell is not its own fuel"
+    );
+}
+
+/// CR 601.2a + CR 702.66a: with Delve as the only tap-payment keyword the spell
+/// is absent from the selectable fuel and a direct selection is rejected.
+#[test]
+fn pure_delve_spell_cast_from_graveyard_cannot_select_itself() {
+    let (mut runner, cruise, fuel) = cruise_flashback_from_graveyard(3, 4);
+    cast_manual(&mut runner, cruise);
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ManaPayment { .. }
+    ));
+    let selectable: Vec<ObjectId> = legal_actions_full(runner.state())
+        .0
+        .iter()
+        .filter_map(|action| match action {
+            GameAction::TapForConvoke { object_id, .. } => Some(*object_id),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fuel.iter().all(|id| selectable.contains(id)),
+        "other graveyard cards stay selectable"
+    );
+    assert!(
+        !selectable.contains(&cruise),
+        "the spell cannot delve itself"
+    );
+
+    let gy_before = graveyard_names(&runner);
+    runner
+        .act(GameAction::TapForConvoke {
+            object_id: cruise,
+            mana_type: ManaType::Colorless,
+        })
+        .expect_err("selecting the spell being cast is rejected");
+    assert_eq!(graveyard_names(&runner), gy_before);
+    assert_eq!(delve_marker_count(&runner), 0);
+}

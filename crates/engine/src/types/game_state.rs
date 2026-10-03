@@ -26373,16 +26373,35 @@ impl GameState {
         ManaPipId(id)
     }
 
+    /// CR 702.66a: A graveyard card that may be exiled to pay for `spell`.
+    /// CR 601.2a: the spell being cast has moved to the stack, so it is never
+    /// its own delve fuel even when it was cast from the graveyard.
+    pub fn is_delve_fuel_for(
+        &self,
+        player: PlayerId,
+        spell: ObjectId,
+        object_id: ObjectId,
+    ) -> bool {
+        object_id != spell
+            && self
+                .objects
+                .get(&object_id)
+                .is_some_and(|object| object.is_delve_eligible(player))
+    }
+
     /// CR 702.66a: A graveyard card the caster may still select to pay generic
-    /// mana: eligible, not already selected, and not the spell being cast
-    /// (CR 601.2a: it has moved to the stack, so it is not a graveyard card).
+    /// mana: fuel for the pending spell and not already selected.
     pub fn is_delve_selectable(&self, player: PlayerId, object_id: ObjectId) -> bool {
-        self.objects
-            .get(&object_id)
-            .is_some_and(|object| object.is_delve_eligible(player))
-            && !self.pending_cast.as_ref().is_some_and(|pending| {
-                pending.object_id == object_id || pending.delved_cards.contains(&object_id)
-            })
+        match self.pending_cast.as_ref() {
+            Some(pending) => {
+                self.is_delve_fuel_for(player, pending.object_id, object_id)
+                    && !pending.delved_cards.contains(&object_id)
+            }
+            None => self
+                .objects
+                .get(&object_id)
+                .is_some_and(|object| object.is_delve_eligible(player)),
+        }
     }
 
     /// CR 106.4 + CR 118.3a: Resolve and apply one real-pool mana insertion.
