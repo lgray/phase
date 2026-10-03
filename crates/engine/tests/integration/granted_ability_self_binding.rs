@@ -3054,12 +3054,18 @@ mod concretizer_seams {
         assert_eq!(st.objects[&attacker].zone, Zone::Graveyard);
     }
 
+    /// CR 115.10a + CR 608.2c + CR 608.2d: the untargeted attach choice is made while the
+    /// trigger resolves, after the host is sacrificed.
     #[test]
-    fn nettlevine_blight_moves_to_another_permanent() {
+    fn nettlevine_blight_chooses_its_new_host_after_the_sacrifice() {
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PostCombatMain);
         let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
         let other = scenario.add_creature(P0, "Other", 1, 1).id();
+        let shrouded = scenario
+            .add_creature(P0, "Shrouded", 1, 1)
+            .with_keyword(Keyword::Shroud)
+            .id();
         let blight = scenario
             .add_enchantment_from_oracle(P0, "Nettlevine Blight", NETTLEVINE_BLIGHT)
             .with_subtypes(vec!["Aura"])
@@ -3068,20 +3074,27 @@ mod concretizer_seams {
         attach_to(runner.state_mut(), blight, host);
         relayer(runner.state_mut());
         runner.advance_to_end_step();
-        let legal = match &runner.state().waiting_for {
-            WaitingFor::TriggerTargetSelection { selection, .. } => {
-                selection.current_legal_targets.clone()
-            }
-            other => panic!("expected the attach target choice, got {other:?}"),
-        };
-        assert!(legal.contains(&TargetRef::Object(host)), "{legal:?}");
-        drive(&mut runner, Some(TargetRef::Object(other)));
+        drive(&mut runner, None);
         let st = runner.state();
+        let offered = match &st.waiting_for {
+            WaitingFor::EffectZoneChoice { cards, .. } => cards.clone(),
+            other => panic!("expected the resolution-time attach choice, got {other:?}"),
+        };
         assert_eq!(st.objects[&host].zone, Zone::Graveyard);
+        assert!(!offered.contains(&host), "{offered:?}");
+        assert!(offered.contains(&shrouded), "{offered:?}");
+        assert!(offered.contains(&other), "{offered:?}");
+        runner
+            .act(GameAction::SelectCards {
+                cards: vec![shrouded],
+            })
+            .unwrap();
+        runner.advance_until_stack_empty();
+        let st = runner.state();
         assert_eq!(st.objects[&blight].zone, Zone::Battlefield);
         assert_eq!(
             st.objects[&blight].attached_to,
-            Some(AttachTarget::Object(other))
+            Some(AttachTarget::Object(shrouded))
         );
     }
 
