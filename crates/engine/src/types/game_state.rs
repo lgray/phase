@@ -26374,15 +26374,15 @@ impl GameState {
     }
 
     /// CR 702.66a: A graveyard card the caster may still select to pay generic
-    /// mana: eligible, and not already selected by the pending cast.
+    /// mana: eligible, not already selected, and not the spell being cast
+    /// (CR 601.2a: it has moved to the stack, so it is not a graveyard card).
     pub fn is_delve_selectable(&self, player: PlayerId, object_id: ObjectId) -> bool {
         self.objects
             .get(&object_id)
             .is_some_and(|object| object.is_delve_eligible(player))
-            && !self
-                .pending_cast
-                .as_ref()
-                .is_some_and(|pending| pending.delved_cards.contains(&object_id))
+            && !self.pending_cast.as_ref().is_some_and(|pending| {
+                pending.object_id == object_id || pending.delved_cards.contains(&object_id)
+            })
     }
 
     /// CR 106.4 + CR 118.3a: Resolve and apply one real-pool mana insertion.

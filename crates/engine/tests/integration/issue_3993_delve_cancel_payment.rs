@@ -8,6 +8,7 @@
 
 use engine::ai_support::legal_actions_full;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::ability::{
     CastPermissionConstraint, CastingPermission, Comparator, ExileGrantCostProvenance, PlayerScope,
     QuantityExpr, QuantityRef, TargetRef,
@@ -18,6 +19,8 @@ use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
+
+use super::support::shared_card_db;
 
 const DELVE_DRAW_ORACLE: &str =
     "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\n\
@@ -634,4 +637,50 @@ fn even_split_damage_commit_exiles_delve_fuel_and_casts() {
     );
     assert_eq!(witness.runner.state().objects[&fuel].zone, Zone::Exile);
     assert_eq!(delve_marker_count(&witness.runner), 0);
+}
+
+/// CR 601.2a + CR 702.66a: a delve spell cast from the graveyard is already on
+/// the stack, so it cannot exile itself to pay for its own cost. Hogaak is cast
+/// from the graveyard (Manual payment) with two other graveyard cards as fuel.
+#[test]
+fn delve_spell_cast_from_graveyard_cannot_select_itself() {
+    let db = shared_card_db().expect("card db");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_spell_to_graveyard(P0, "Pre A", true);
+    let hogaak = scenario.add_real_card(P0, "Hogaak, Arisen Necropolis", Zone::Graveyard, db);
+    let fuel = scenario.add_spell_to_graveyard(P0, "Fuel", true).id();
+    let mut runner = scenario.build();
+
+    cast_manual(&mut runner, hogaak);
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ManaPayment { .. }
+    ));
+    let selectable: Vec<ObjectId> = legal_actions_full(runner.state())
+        .0
+        .iter()
+        .filter_map(|action| match action {
+            GameAction::TapForConvoke { object_id, .. } => Some(*object_id),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        selectable.contains(&fuel),
+        "other graveyard cards stay selectable"
+    );
+    assert!(
+        !selectable.contains(&hogaak),
+        "the spell cannot delve itself"
+    );
+
+    let gy_before = graveyard_names(&runner);
+    runner
+        .act(GameAction::TapForConvoke {
+            object_id: hogaak,
+            mana_type: ManaType::Colorless,
+        })
+        .expect_err("selecting the spell being cast is rejected");
+    assert_eq!(graveyard_names(&runner), gy_before);
+    assert_eq!(delve_marker_count(&runner), 0);
 }
