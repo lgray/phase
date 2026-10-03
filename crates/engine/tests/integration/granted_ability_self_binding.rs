@@ -5393,6 +5393,55 @@ mod granter_stamp {
             }
             assert_eq!(wrong, Vec::<String>::new());
         }
+
+        /// CR 201.5a + CR 613.4b: a granted Animate's dynamic base P/T counts the
+        /// granter's counters (5), not the host's (1); CR 613.4c then adds the host's counter.
+        #[test]
+        fn granted_animate_pt_reads_the_granter() {
+            let mut b = board_with("{T}: Draw a card.", &[5], false);
+            let granter_counters = PtValue::Quantity(QuantityExpr::Ref {
+                qty: QuantityRef::CountersOn {
+                    scope: ObjectScope::GrantingObject,
+                    counter_type: Some(CounterType::Plus1Plus1),
+                },
+            });
+            grant_modification(
+                &mut b,
+                ContinuousModification::GrantAbility {
+                    definition: Box::new(
+                        AbilityDefinition::new(
+                            AbilityKind::Activated,
+                            Effect::Animate {
+                                power: Some(granter_counters.clone()),
+                                toughness: Some(granter_counters),
+                                types: vec![],
+                                remove_types: vec![],
+                                target: TargetFilter::None,
+                                keywords: vec![],
+                            },
+                        )
+                        .cost(AbilityCost::Tap),
+                    ),
+                },
+            );
+            let index = last_ability(&b);
+            assert!(matches!(
+                *b.runner.state().objects[&b.host].abilities[index].effect,
+                Effect::Animate { .. }
+            ));
+            assert_eq!(power(&b), 3);
+            activate(&mut b, index);
+            b.runner.advance_until_stack_empty();
+            assert!(
+                b.runner
+                    .state()
+                    .transient_continuous_effects
+                    .iter()
+                    .any(|tce| tce.affected == TargetFilter::SpecificObject { id: b.host }),
+                "reach-guard: the Animate installed its effect on the host"
+            );
+            assert_eq!(power(&b), 6);
+        }
     }
 }
 
