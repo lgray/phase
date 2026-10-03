@@ -3319,12 +3319,16 @@ mod tests {
     }
 
     /// `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized
-    /// inside `GameState`'s transient continuous effects; a v104 peer cannot parse
-    /// the tag, so it must be refused before it receives v105 state.
+    /// inside `GameState`'s transient continuous effects; a v105 peer cannot parse
+    /// the tag, so it must be refused before it receives v106 state.
     /// `GameFormat` gains `Dandan`, which serializes as its `Display` string and
-    /// deserializes through `FromStr`; a v103 peer cannot parse a `GameState`
-    /// whose format names it, so it must be refused before it receives v104
+    /// deserializes through `FromStr`; a v104 peer cannot parse a `GameState`
+    /// whose format names it, so it must be refused before it receives v105
     /// state.
+    /// `PendingCast` gains `delved_cards` and the pending cost-move resume swaps
+    /// `DelveManaPayment` for `FinalizeDelvedCast` (#9400); a v103 peer cannot
+    /// parse the parked delve commit, so it must be refused before it receives
+    /// v104 state.
     /// `GameEvent::AbilityActivated` now carries `kind: "Mana"` for mana-ability
     /// activations and an optional `departed_source_lki`; a v100 peer cannot
     /// parse the `Mana` kind, so it must be refused before it receives v101 state.
@@ -3387,8 +3391,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_105_for_text_word_substitution() {
-        assert_eq!(PROTOCOL_VERSION, 105);
+    fn protocol_version_is_106_for_text_word_substitution() {
+        assert_eq!(PROTOCOL_VERSION, 106);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3399,7 +3403,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_105_for_text_word_substitution` stays
+    /// `protocol_version_is_106_for_text_word_substitution` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

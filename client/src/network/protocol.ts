@@ -106,13 +106,17 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
- *  87 — game_setup and state_update carry GameState, whose transient continuous
+ *  88 — game_setup and state_update carry GameState, whose transient continuous
  *       effects can now hold the SubstituteTextWord modification (CR 612.1), so a
- *       v86 peer cannot parse the tag and first contact rejects the skew.
- *  86 — game_setup and state_update carry GameState, whose FormatConfig can
- *       now name the Dandan format. A v85 peer cannot parse the format name, so
+ *       v87 peer cannot parse the tag and first contact rejects the skew.
+ *  87 — game_setup and state_update carry GameState, whose FormatConfig can
+ *       now name the Dandan format. A v86 peer cannot parse the format name, so
  *       first contact rejects the skew. Bumped in lockstep with full-game
- *       protocol 104.
+ *       protocol 105.
+ *  86 — game_setup and state_update carry GameState, whose PendingCast
+ *       gains delved_cards and whose pending cost-move resume swaps
+ *       DelveManaPayment for FinalizeDelvedCast (#9400). Bumped in lockstep
+ *       with full-game protocol 104.
  *  85 — game_setup and state_update carry GameState, whose FormatConfig
  *       loses allow_experimental_dungeons: the Wilderness pool is
  *       format-derived now, so a v84 peer would fail it closed in freeform
@@ -539,7 +543,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 87 as const;
+export const WIRE_PROTOCOL_VERSION = 88 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {
