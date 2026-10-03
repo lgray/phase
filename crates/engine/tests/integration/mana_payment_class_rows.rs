@@ -788,3 +788,31 @@ const EXACT_SURPLUS: &[Row] = &[
     ("e/Untaidake, the Cloud Keeper", "Untaidake, the Cloud Keeper", "{T}, Pay 2 life: Add {C}{C}. Spend this mana only to cast legendary spells.", &[("Swamp", B, 'p'), ("Swamp", B, 'p'), ("Swamp", B, 'p'), ("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Zhulodok, Void Gorger", true, "tt/BF"),
     ("e/Troyan, Gutsy Explorer (2)", "Troyan, Gutsy Explorer", "{T}: Add {G}{U}. Spend this mana only to cast spells with mana value 5 or greater or spells with {X} in their mana costs.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f'), ("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Spined Wurm", true, "tt/BF"),
 ];
+
+/// CR 608.2h + CR 118.3: a mana ability whose yield reads the object its cost
+/// pays with is sized by the objects that cost could choose; a choice that
+/// yields too little, or mana a restriction keeps off the spell, is refused.
+#[test]
+fn paid_object_yield_is_sized_by_its_candidates() {
+    check(PAID_OBJECT_SIZING);
+}
+
+#[rustfmt::skip]
+const PAID_OBJECT_SIZING: &[Row] = &[
+    ("s/food-chain+bears#spellexile", "Food Chain", "", &[("Grizzly Bears", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("s/priest+altar", "Priest of Yawgmoth", "", &[("Ashnod's Altar", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("s/red-priest+altar", "Red Priest of Yawgmoth", "", &[("Ashnod's Altar", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("s/slobad+altar/monolith", "Slobad, Iron Goblin", "", &[("Ashnod's Altar", B, 'f')], &[], "Basalt Monolith", true, "tt/BF"),
+    ("h/food-chain+memnite#spellexile", "Food Chain", "", &[("Memnite", B, 'f')], &[], "Eternal Scourge", false, "ff/X"),
+    ("h/priest+memnite", "Priest of Yawgmoth", "", &[("Memnite", B, 'f')], &[], "Eternal Scourge", false, "ff/H"),
+    ("h/red-priest+memnite", "Red Priest of Yawgmoth", "", &[("Memnite", B, 'f')], &[], "Eternal Scourge", false, "ff/H"),
+    ("h/furgul+memnite", "Furgul, Quag Nurturer", "", &[("Memnite", B, 'f')], &[], "Eternal Scourge", false, "ff/H"),
+    ("h/slobad+memnite/monolith", "Slobad, Iron Goblin", "", &[("Memnite", B, 'f')], &[], "Basalt Monolith", false, "ff/H"),
+    ("h/food-chain+bears/monolith", "Food Chain", "", &[("Grizzly Bears", B, 'f')], &[], "Basalt Monolith", false, "ff/H"),
+    ("h/slobad+altar/scourge", "Slobad, Iron Goblin", "", &[("Ashnod's Altar", B, 'f')], &[], "Eternal Scourge", false, "ff/H"),
+    ("h/szeras-alone", "Illuminor Szeras", "", &[], &[], "Eternal Scourge", false, "ff/H"),
+    ("c/priest+altar/corpse", "Priest of Yawgmoth", "", &[("Ashnod's Altar", B, 'f')], &[], "Walking Corpse", true, "tt/BF"),
+    ("s/food-chain+giant/swashbuckler", "Food Chain", "", &[("Hill Giant", B, 'f'), ("Mountain", B, 'p'), ("Plains", B, 'p')], &[], "Fearless Swashbuckler", true, "tt/BF"),
+    ("s/food-chain+bears/swashbuckler", "Food Chain", "", &[("Grizzly Bears", B, 'f'), ("Mountain", B, 'p'), ("Plains", B, 'p')], &[], "Fearless Swashbuckler", true, "tt/BF"),
+    ("c/food-chain+memnite/swashbuckler", "Food Chain", "", &[("Memnite", B, 'f'), ("Mountain", B, 'p'), ("Plains", B, 'p')], &[], "Fearless Swashbuckler", true, "tt/BF"),
+];

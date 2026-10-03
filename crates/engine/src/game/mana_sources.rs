@@ -15,9 +15,10 @@
 
 use crate::types::ability::ManaSpendRestriction;
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction, ControllerRef, Effect,
-    ManaProduction, PlayerFilter, QuantityExpr, ResolvedAbility, SacrificeCost,
-    SacrificeRequirement, TargetFilter, TriggerDefinition, TriggerDefinitionRef, TypedFilter,
+    AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction, ControllerRef,
+    CostPaidObjectSnapshot, Effect, ManaProduction, PlayerFilter, QuantityExpr, ResolvedAbility,
+    SacrificeCost, SacrificeRequirement, TargetFilter, TriggerDefinition, TriggerDefinitionRef,
+    TypedFilter,
 };
 use crate::types::actions::GameAction;
 use crate::types::card_type::CoreType;
@@ -845,14 +846,74 @@ fn live_taps_for_mana_output(
     )
 }
 
+/// The live label is one list, so a yield read from the paid object shows the
+/// largest candidate's yield, the same one the capacity reads.
 fn resolved_mana_ability_for_live_output(
     state: &GameState,
     source_id: ObjectId,
     player: PlayerId,
     ability_def: &AbilityDefinition,
 ) -> ResolvedAbility {
-    let ability = super::ability_utils::build_resolved_from_def(ability_def, source_id, player);
+    let ability = match &*ability_def.effect {
+        Effect::Mana { produced, .. } => {
+            largest_sizing_resolution(state, produced, ability_def, source_id, player)
+                .map(|(resolved, _)| resolved)
+        }
+        _ => None,
+    }
+    .unwrap_or_else(|| {
+        super::ability_utils::build_resolved_from_def(ability_def, source_id, player)
+    });
     mana_abilities::apply_condition_instead_mana_swap(state, &ability)
+}
+
+/// CR 608.2h + CR 118.3: The resolutions a mana ability is sized by before it
+/// is activated: one per object its cost could be paid with, each bound as the
+/// cost-paid object its yield may read, or the single unbound resolution when
+/// the cost chooses no object.
+fn sizing_resolutions(
+    state: &GameState,
+    ability: &AbilityDefinition,
+    object_id: ObjectId,
+    controller: PlayerId,
+) -> Vec<ResolvedAbility> {
+    let resolved = super::ability_utils::build_resolved_from_def(ability, object_id, controller);
+    let Some(candidates) =
+        mana_abilities::cost_paid_object_candidates(state, controller, object_id, ability)
+    else {
+        return vec![resolved];
+    };
+    candidates
+        .iter()
+        .filter_map(|id| state.objects.get(id))
+        .map(|obj| {
+            let mut bound = resolved.clone();
+            bound.set_cost_paid_object_recursive(CostPaidObjectSnapshot::capture(
+                obj,
+                obj.snapshot_for_mana_spent(),
+            ));
+            bound
+        })
+        .collect()
+}
+
+/// The sizing resolution that adds the most mana, with that amount.
+fn largest_sizing_resolution(
+    state: &GameState,
+    produced: &ManaProduction,
+    ability: &AbilityDefinition,
+    object_id: ObjectId,
+    controller: PlayerId,
+) -> Option<(ResolvedAbility, u32)> {
+    sizing_resolutions(state, ability, object_id, controller)
+        .into_iter()
+        .map(|resolved| {
+            let gross =
+                super::effects::mana::resolve_mana_types_for_ability(produced, state, &resolved)
+                    .len() as u32;
+            (resolved, gross)
+        })
+        .max_by_key(|(_, gross)| *gross)
 }
 
 fn live_mana_output_units(
@@ -2116,12 +2177,9 @@ pub fn max_mana_yield(state: &GameState, object_id: ObjectId, controller: Player
         })
         .filter_map(|(_, ability)| match &*ability.effect {
             Effect::Mana { produced, .. } => {
-                let resolved =
-                    super::ability_utils::build_resolved_from_def(ability, object_id, controller);
-                let gross = super::effects::mana::resolve_mana_types_for_ability(
-                    produced, state, &resolved,
-                )
-                .len() as u32;
+                let gross =
+                    largest_sizing_resolution(state, produced, ability, object_id, controller)
+                        .map_or(0, |(_, gross)| gross);
                 // CR 605.3b: Net the mana paid to activate this ability —
                 // gross output overstates what a filter land actually adds.
                 let activation_cost = mana_abilities::mana_sub_cost_of(&ability.cost)
@@ -2250,12 +2308,9 @@ pub(crate) fn feasible_mana_capacity(
         })
         .filter_map(|(_, ability)| match &*ability.effect {
             Effect::Mana { produced, .. } => {
-                let resolved =
-                    super::ability_utils::build_resolved_from_def(ability, object_id, controller);
-                let gross = super::effects::mana::resolve_mana_types_for_ability(
-                    produced, state, &resolved,
-                )
-                .len() as u32;
+                let gross =
+                    largest_sizing_resolution(state, produced, ability, object_id, controller)
+                        .map_or(0, |(_, gross)| gross);
                 // CR 605.3b: Net the mana paid to activate. Non-mana cost
                 // components (Sacrifice / Discard / PayLife / Exile) have no
                 // mana sub-cost, so `mana_sub_cost_of` returns `None` and the
@@ -2343,7 +2398,7 @@ pub(crate) fn has_activatable_non_tap_mana_ability_for_payment(
 
 /// CR 117.1d + CR 601.2g: One activation's producible mana shape for the
 /// castability gate's colored-shard coverage check (issue #583 / #1234).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ActivatableManaProfileKind {
     Exact(Vec<ManaType>),
     AnyOneColor { count: u32, options: Vec<ManaType> },
@@ -2504,12 +2559,28 @@ fn activatable_mana_profiles_for_object(
             ) {
                 return None;
             }
-            let resolved =
-                super::ability_utils::build_resolved_from_def(ability, object_id, controller);
-            profile_kind_from_production(state, object_id, controller, produced, &resolved)
-                .and_then(|kind| profile_kind_allowed_for_context(kind, payment_context))
-                .map(|kind| ActivatableManaProfile { object_id, kind })
+            // Candidates whose yields match are one profile, since the shard
+            // backtracker branches on every profile.
+            let mut kinds: Vec<ActivatableManaProfileKind> = Vec::new();
+            for kind in sizing_resolutions(state, ability, object_id, controller)
+                .iter()
+                .filter_map(|resolved| {
+                    profile_kind_from_production(state, object_id, controller, produced, resolved)
+                        .and_then(|kind| profile_kind_allowed_for_context(kind, payment_context))
+                })
+            {
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
+                }
+            }
+            Some(
+                kinds
+                    .into_iter()
+                    .map(|kind| ActivatableManaProfile { object_id, kind })
+                    .collect::<Vec<_>>(),
+            )
         })
+        .flatten()
         .collect()
 }
 
@@ -6461,5 +6532,103 @@ mod tests {
             !source_is_snow(&state, ObjectId(0)),
             "the ObjectId(0) sentinel (and any absent object) is not a snow source",
         );
+    }
+}
+
+#[cfg(test)]
+mod paid_object_label_tests {
+    use super::*;
+    use crate::game::scenario::{GameScenario, P0};
+    use crate::game::scenario_db::GameScenarioDbExt;
+
+    /// The produced-mana label of each of `member`'s mana actions, with
+    /// `others` placed on the battlefield before it.
+    fn labels(member: &str, others: &[&str]) -> Vec<Vec<ManaType>> {
+        let db = crate::test_support::shared_card_db();
+        let mut scenario = GameScenario::new();
+        for name in others {
+            scenario.add_real_card(P0, name, Zone::Battlefield, db);
+        }
+        let id = scenario.add_real_card(P0, member, Zone::Battlefield, db);
+        let runner = scenario.build();
+        let state = runner.state();
+        let gates = mana_abilities::ManaActivationGates::compute(state);
+        let auras = taps_for_mana_trigger_sources(state);
+        current_mana_source_options(state, P0, id, &auras, &gates)
+            .iter()
+            .map(|option| {
+                live_mana_output_for_option(state, P0, option)
+                    .into_iter()
+                    .map(|unit| unit.mana_type)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// CR 608.2h: Priest of Yawgmoth ("{T}, Sacrifice an artifact: Add an
+    /// amount of {B} equal to the sacrificed artifact's mana value.") labels its
+    /// action with the largest yield its sacrifice could pay for: Ashnod's
+    /// Altar's {B}{B}{B}, not the earlier Memnite's nothing.
+    #[test]
+    fn paid_object_yield_labels_the_largest_candidate() {
+        assert_eq!(
+            labels("Priest of Yawgmoth", &["Ashnod's Altar"]),
+            vec![vec![ManaType::Black; 3]]
+        );
+        assert_eq!(
+            labels("Priest of Yawgmoth", &["Memnite", "Ashnod's Altar"]),
+            vec![vec![ManaType::Black; 3]]
+        );
+    }
+
+    /// The castability profiles of `member`, with `others` placed on the
+    /// battlefield before it.
+    fn profiles(member: &str, others: &[&str]) -> Vec<ActivatableManaProfileKind> {
+        let db = crate::test_support::shared_card_db();
+        let mut scenario = GameScenario::new();
+        for name in others {
+            scenario.add_real_card(P0, name, Zone::Battlefield, db);
+        }
+        let id = scenario.add_real_card(P0, member, Zone::Battlefield, db);
+        let runner = scenario.build();
+        activatable_mana_profiles_for_object(runner.state(), id, P0, None)
+            .into_iter()
+            .map(|profile| profile.kind)
+            .collect()
+    }
+
+    /// Phyrexian Altar ("Sacrifice a creature: Add one mana of any color.")
+    /// yields the same mana whichever creature it sacrifices, so twenty
+    /// victims are one profile for the shard backtracker.
+    #[test]
+    fn paid_object_independent_yield_is_one_profile() {
+        assert_eq!(profiles("Phyrexian Altar", &["Grizzly Bears"; 20]).len(), 1);
+    }
+
+    /// CR 608.2h: Food Chain's yield reads the exiled creature's mana value, so
+    /// Grizzly Bears (3 mana) and Hill Giant (5 mana) stay distinct profiles;
+    /// a larger count does not dominate a smaller one.
+    #[test]
+    fn paid_object_dependent_yields_stay_distinct_profiles() {
+        let kinds = profiles("Food Chain", &["Grizzly Bears", "Hill Giant"]);
+        assert_eq!(kinds.len(), 2, "{kinds:?}");
+        let counts: Vec<u32> = kinds
+            .iter()
+            .map(|kind| match kind {
+                ActivatableManaProfileKind::AnyOneColor { count, .. } => *count,
+                other => panic!("unexpected profile {other:?}"),
+            })
+            .collect();
+        assert_eq!(counts, vec![3, 5]);
+    }
+
+    /// CR 608.2h: Food Chain ("Exile a creature you control: Add X mana of any
+    /// one color, where X is 1 plus the exiled creature's mana value.") labels
+    /// each color with 1 plus Grizzly Bears' mana value.
+    #[test]
+    fn exiled_creature_yield_labels_each_color() {
+        let labels = labels("Food Chain", &["Grizzly Bears"]);
+        assert_eq!(labels.len(), 5, "{labels:?}");
+        assert!(labels.iter().all(|label| label.len() == 3), "{labels:?}");
     }
 }
