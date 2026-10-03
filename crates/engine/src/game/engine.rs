@@ -18491,6 +18491,16 @@ pub fn start_game(state: &mut GameState) -> ActionResult {
     result
 }
 
+/// CR 100.6a + CR 100.4: the structure actually played; never longer than `ceiling` allows.
+fn match_type_within(configured: MatchType, ceiling: MatchType) -> MatchType {
+    match (configured, ceiling) {
+        (MatchType::Bo3, MatchType::Bo3) => MatchType::Bo3,
+        (MatchType::Bo3, MatchType::Bo1) | (MatchType::Bo1, MatchType::Bo1 | MatchType::Bo3) => {
+            MatchType::Bo1
+        }
+    }
+}
+
 /// Start game with a specific player taking the first turn.
 pub fn start_game_with_starting_player(
     state: &mut GameState,
@@ -18507,6 +18517,11 @@ pub fn start_game_with_starting_player(
     {
         state.match_config.match_type = MatchType::Bo1;
     }
+    // The ceiling is read from the format, so no host-supplied match config can raise it.
+    state.match_config.match_type = match_type_within(
+        state.match_config.match_type,
+        state.format_config.format.best_of_three_ceiling(),
+    );
 
     events.push(GameEvent::GameStarted);
 

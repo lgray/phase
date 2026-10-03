@@ -275,7 +275,25 @@ mod external_format_config_tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use engine::types::custom_format::CustomFormatId;
     use engine::types::format::RangeOfInfluenceConfig;
+
+    #[test]
+    fn best_of_three_ceiling_reads_the_format_axis_and_fails_closed() {
+        assert_eq!(
+            best_of_three_ceiling_or_bo1(Some(GameFormat::Standard)),
+            MatchType::Bo3
+        );
+        assert_eq!(
+            best_of_three_ceiling_or_bo1(Some(GameFormat::Custom(CustomFormatId(1)))),
+            MatchType::Bo3
+        );
+        assert_eq!(
+            best_of_three_ceiling_or_bo1(Some(GameFormat::Dandan)),
+            MatchType::Bo1
+        );
+        assert_eq!(best_of_three_ceiling_or_bo1(None), MatchType::Bo1);
+    }
 
     #[test]
     fn restore_refuses_only_legacy_paused_casting_variant_menu_without_face() {
@@ -1097,6 +1115,19 @@ pub fn max_deck_copies_for_format(name: &str, format_config: JsValue) -> JsValue
         };
         to_js(&max_deck_copies(db, name, &format_config))
     })
+}
+
+/// The longest match structure `format` may be played as; the lobby offers Bo3 only when this is Bo3.
+#[wasm_bindgen(js_name = bestOfThreeCeilingForFormat)]
+pub fn best_of_three_ceiling_for_format(format: JsValue) -> JsValue {
+    to_js(&best_of_three_ceiling_or_bo1(
+        serde_wasm_bindgen::from_value::<GameFormat>(format).ok(),
+    ))
+}
+
+/// An undecodable format identifies no format whose ceiling admits Bo3, so it answers Bo1.
+fn best_of_three_ceiling_or_bo1(format: Option<GameFormat>) -> MatchType {
+    format.map_or(MatchType::Bo1, GameFormat::best_of_three_ceiling)
 }
 
 /// Whether the named card can serve as this format's command-zone leader.
