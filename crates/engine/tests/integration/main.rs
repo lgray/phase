@@ -1439,6 +1439,7 @@ mod turn_control_priority_softlock;
 mod turn_control_semantic_owner;
 mod twice_instead_repeat_for;
 mod twilight_prophet_upkeep_drain_1375;
+mod type_phrase_union_rows;
 mod typhoon_per_opponent_island_count;
 mod tyvar_activate_as_though_haste;
 mod ultimate_nullification;
