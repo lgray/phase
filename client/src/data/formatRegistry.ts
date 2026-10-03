@@ -668,7 +668,6 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       sideboard_policy: { type: "Forbidden" },
       default_deck_copy_limit: { type: "Unlimited" },
       allow_debug_actions: false,
-      allow_experimental_dungeons: false,
     },
   },
 ];
