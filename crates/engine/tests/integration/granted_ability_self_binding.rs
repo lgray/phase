@@ -158,7 +158,11 @@ fn deconstruction_hammer_sacrifice_hits_the_equipment_not_the_host() {
     let granted = &runner.state().objects[&host].abilities[idx];
     assert_eq!(
         granted.cost.as_ref().and_then(sacrifice_target),
-        Some(&TargetFilter::GrantingObject { bound: None })
+        Some(&TargetFilter::GrantingObject {
+            bound: Some(ObjectIncarnationRef::from_object(
+                &runner.state().objects[&hammer]
+            ))
+        })
     );
     assert_eq!(
         granted.granting_object,
@@ -279,7 +283,14 @@ fn trusty_boomerang_return_bounces_the_equipment_not_the_host() {
         _ => None,
     })
     .expect("granted ability must carry a Bounce effect");
-    assert_eq!(bounce_target, TargetFilter::GrantingObject { bound: None });
+    assert_eq!(
+        bounce_target,
+        TargetFilter::GrantingObject {
+            bound: Some(ObjectIncarnationRef::from_object(
+                &runner.state().objects[&boomerang]
+            ))
+        }
+    );
     assert_eq!(
         runner.state().objects[&host].abilities[idx].granting_object,
         Some(ObjectIncarnationRef::from_object(
@@ -1486,7 +1497,7 @@ mod object_scope_reads {
 mod concretizer_seams {
     use std::sync::Arc;
 
-    use engine::game::combat::AttackTarget;
+    use engine::game::combat::{can_block_pair, AttackTarget};
     use engine::game::effects::attach::attach_to;
     use engine::game::effects::resolve_ability_chain;
     use engine::game::filter::{matches_target_filter, FilterContext};
@@ -1510,6 +1521,7 @@ mod concretizer_seams {
     use engine::types::keywords::Keyword;
     use engine::types::mana::{ManaCost, ManaType, ManaUnit};
     use engine::types::phase::Phase;
+    use engine::types::statics::StaticMode;
     use engine::types::zones::Zone;
 
     use super::{
@@ -1769,7 +1781,10 @@ mod concretizer_seams {
             .as_ref()
         {
             Effect::DealDamage { amount, .. } => {
-                assert_eq!(*amount, counters_on(ObjectScope::GrantingObject, "arrow"))
+                assert_eq!(
+                    *amount,
+                    counters_on(bound(runner.state(), trainings[0]), "arrow")
+                )
             }
             other => panic!("{other:?}"),
         }
@@ -2300,7 +2315,12 @@ mod concretizer_seams {
                 }
             })
             .expect("the granted trigger is on the host");
-        assert_eq!(attachment, TargetFilter::GrantingObject { bound: None });
+        assert_eq!(
+            attachment,
+            TargetFilter::GrantingObject {
+                bound: Some(incarnation(runner.state(), blight))
+            }
+        );
         assert_eq!(stamp, Some(incarnation(runner.state(), blight)));
         assert_ne!(blight, host);
     }
@@ -2995,7 +3015,9 @@ mod concretizer_seams {
         assert_eq!(
             targets,
             vec![(
-                TargetFilter::GrantingObject { bound: None },
+                TargetFilter::GrantingObject {
+                    bound: Some(incarnation(runner.state(), sp))
+                },
                 Some(incarnation(runner.state(), sp))
             )]
         );
@@ -3061,6 +3083,119 @@ mod concretizer_seams {
             st.objects[&blight].attached_to,
             Some(AttachTarget::Object(other))
         );
+    }
+
+    /// CR 201.5a: a grant a granted copy effect adds names the original granter.
+    #[test]
+    fn granted_copy_riders_grant_reads_the_granter() {
+        let mut grant = grant_static(
+            "Equipped creature has \"{T}: Draw a card.\"\nEquip {1}",
+            "Foo Bar",
+            "Artifact",
+            "Equipment",
+        );
+        let rider = ContinuousModification::GrantAbility {
+            definition: Box::new(AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::GainLife {
+                    amount: counters_on(ObjectScope::GrantingObject, "charge"),
+                    player: TargetFilter::Controller,
+                },
+            )),
+        };
+        *granted_ability(&mut grant).effect = Effect::BecomeCopy {
+            target: TargetFilter::Typed(TypedFilter::creature()),
+            recipient: engine::types::ability::CopyRecipient::Source,
+            duration: None,
+            mana_value_limit: None,
+            additional_modifications: vec![rider],
+        };
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        scenario.with_counter(host, counter("charge"), 1);
+        let fb = scenario.add_creature(P0, "Foo Bar", 0, 0).id();
+        scenario.with_counter(fb, counter("charge"), 3);
+        let model = scenario.add_creature(P0, "Model", 1, 1).id();
+        let mut runner = scenario.build();
+        attach(
+            &mut runner,
+            fb,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            grant,
+        );
+        let copy = runner.state().objects[&host]
+            .abilities
+            .iter()
+            .position(|a| matches!(&*a.effect, Effect::BecomeCopy { .. }))
+            .expect("the granted copy ability is on the host");
+        activate(&mut runner, host, copy, Some(model));
+        drive(&mut runner, None);
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().objects[&host].name, "Model");
+        let gain = runner.state().objects[&host]
+            .abilities
+            .iter()
+            .position(|a| matches!(&*a.effect, Effect::GainLife { .. }))
+            .expect("the copy rider's grant is on the host");
+        runner.state_mut().objects.get_mut(&host).unwrap().tapped = false;
+        let life = runner.state().players[0].life;
+        activate(&mut runner, host, gain, None);
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().players[0].life - life, 3);
+    }
+
+    /// CR 201.5a + CR 114.4 + CR 509.1b: an emblem a granted ability creates names the
+    /// granter, so its "can't block" restriction binds the granter, not the host.
+    #[test]
+    fn granted_emblems_cant_block_names_the_granter() {
+        let mut grant = grant_static(
+            "Other creatures you control have \"{T}: Draw a card.\"",
+            "Foo Bar",
+            "Creature",
+            "Human",
+        );
+        *granted_ability(&mut grant).effect = Effect::CreateEmblem {
+            statics: vec![StaticDefinition::new(StaticMode::CantBlock)
+                .affected(TargetFilter::GrantingObject { bound: None })],
+            triggers: vec![],
+        };
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let fb = scenario.add_creature(P0, "Foo Bar", 2, 2).id();
+        let raider = scenario.add_creature(P1, "Raider", 2, 2).id();
+        let mut runner = scenario.build();
+        let st = runner.state_mut();
+        let obj = st.objects.get_mut(&fb).unwrap();
+        obj.static_definitions.push(grant.clone());
+        Arc::make_mut(&mut obj.base_static_definitions).push(grant);
+        relayer(st);
+        assert!(can_block_pair(runner.state(), fb, raider));
+        let index = runner.state().objects[&host]
+            .abilities
+            .iter()
+            .position(|a| matches!(&*a.effect, Effect::CreateEmblem { .. }))
+            .expect("the granted emblem ability is on the host");
+        activate(&mut runner, host, index, None);
+        runner.advance_until_stack_empty();
+        relayer(runner.state_mut());
+        assert!(
+            runner
+                .state()
+                .objects
+                .values()
+                .any(|o| o.zone == Zone::Command
+                    && o.static_definitions
+                        .as_slice()
+                        .iter()
+                        .any(|s| s.mode == StaticMode::CantBlock)),
+            "reach-guard: the emblem is in the command zone"
+        );
+        assert!(!can_block_pair(runner.state(), fb, raider));
+        assert!(can_block_pair(runner.state(), host, raider));
     }
 
     /// CR 201.5a + CR 603.2c: a batched trigger counts its subjects through the granter

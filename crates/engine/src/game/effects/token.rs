@@ -9231,7 +9231,11 @@ mod tests {
         let granted = &runner.state().objects[&host].abilities[idx];
         assert_eq!(
             granted.cost.as_ref().and_then(sacrifice_target),
-            Some(&TargetFilter::GrantingObject { bound: None })
+            Some(&TargetFilter::GrantingObject {
+                bound: Some(ObjectIncarnationRef::from_object(
+                    &runner.state().objects[&rock_id]
+                ))
+            })
         );
         assert_eq!(
             granted.granting_object,

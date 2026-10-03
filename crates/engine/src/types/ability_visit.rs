@@ -1125,7 +1125,7 @@ pub mod nodes {
 /// The parser can place a symbol elsewhere; every entry that parses masked text then refuses
 /// that definition (`parser::oracle::granter_reference_unreached`).
 macro_rules! define_granter_walk {
-    ([$($mut_:tt)?]; $Node:ident) => {
+    ([$($mut_:tt)?]; $Node:ident; $nodes:ident) => {
 use crate::types::ability::{
     AbilityCondition, AbilityCost, ActivationRestriction, CardTypeSetSource,
     ContinuousModification, Duration, Effect, FilterProp, ObjectScope, ParsedCondition,
@@ -1134,7 +1134,8 @@ use crate::types::ability::{
 };
 use crate::types::identifiers::ObjectIncarnationRef;
 use crate::types::statics::{BlockExceptionKind, StaticMode};
-use super::$Node;
+use super::{$Node, $nodes};
+use std::ops::ControlFlow;
 
 /// A granter symbol: the incarnation slot of a filter, an object scope, or the caster
 /// player filter.
@@ -1144,6 +1145,36 @@ pub(crate) enum Symbol<'a> {
     // The shared walk only counts this variant; it never reads the filter.
     #[allow(dead_code)]
     Caster(&'a $($mut_)? TargetFilter),
+}
+
+/// Visits `root` and every definition node nested in it — the nodes whose fields
+/// [`node_fields`] reads.
+pub(crate) fn each_node(root: $Node<'_>, v: &mut impl FnMut($Node<'_>)) {
+    let mut on = |node: $Node<'_>| on_node(node, v);
+    let _ = match root {
+        $Node::Ability(def) => $nodes::visit_ability_def(def, &mut on),
+        $Node::Trigger(trigger) => $nodes::visit_trigger(trigger, &mut on),
+        $Node::Static(def) => $nodes::visit_static(def, &mut on),
+        $Node::Replacement(def) => $nodes::visit_replacement(def, &mut on),
+    };
+}
+
+/// [`each_node`] over the definitions a modification grants.
+pub(crate) fn each_node_in(m: &$($mut_)? ContinuousModification, v: &mut impl FnMut($Node<'_>)) {
+    let _ = $nodes::visit_continuous_mod(m, &mut |node| on_node(node, &mut *v));
+}
+
+// `BecomeCopy` is a leaf of the node walk, but its extra modifications carry grants.
+fn on_node($($mut_)? node: $Node<'_>, v: &mut impl FnMut($Node<'_>)) -> ControlFlow<()> {
+    if let $Node::Ability(def) = &$($mut_)? node {
+        if let Effect::BecomeCopy { additional_modifications, .. } = &$($mut_)? *def.effect {
+            for m in additional_modifications {
+                each_node_in(m, v);
+            }
+        }
+    }
+    v(node);
+    ControlFlow::Continue(())
 }
 
 /// Visits the symbols in `node`'s own fields; nested definition nodes are not entered.
@@ -1443,34 +1474,12 @@ fn object_scope(scope: &$($mut_)? ObjectScope, v: &mut impl FnMut(Symbol<'_>)) {
 
 /// Shared granter-symbol walk.
 pub(crate) mod granter_symbols {
-    define_granter_walk!([]; DefinitionNode);
+    define_granter_walk!([]; DefinitionNode; nodes);
 }
 
 /// Exclusive granter-symbol walk.
 pub(crate) mod granter_symbols_mut {
-    define_granter_walk!([mut]; DefinitionNodeMut);
-
-    /// Visits the symbols inside the durations of `node`'s own fields.
-    pub(crate) fn node_durations(node: DefinitionNodeMut<'_>, v: &mut impl FnMut(Symbol<'_>)) {
-        let DefinitionNodeMut::Ability(def) = node else {
-            return;
-        };
-        if let Some(d) = &mut def.duration {
-            duration(d, v);
-        }
-        if let Effect::BecomeCopy {
-            duration: Some(d), ..
-        }
-        | Effect::CastFromZone {
-            duration: Some(d), ..
-        }
-        | Effect::GenericEffect {
-            duration: Some(d), ..
-        } = &mut *def.effect
-        {
-            duration(d, v);
-        }
-    }
+    define_granter_walk!([mut]; DefinitionNodeMut; nodes_mut);
 
     /// CR 201.5a + CR 400.7: binds a symbol to `granter` — a scope to that incarnation
     /// whether current or not, a filter to match that incarnation and no later one.
@@ -1490,43 +1499,5 @@ pub(crate) fn each_granter_symbol(
     root: DefinitionNode<'_>,
     v: &mut impl FnMut(granter_symbols::Symbol<'_>),
 ) {
-    let mut on_node = |node: DefinitionNode<'_>| on_granter_node(node, v);
-    let _ = match root {
-        DefinitionNode::Ability(def) => nodes::visit_ability_def(def, &mut on_node),
-        DefinitionNode::Trigger(trigger) => nodes::visit_trigger(trigger, &mut on_node),
-        DefinitionNode::Static(def) => nodes::visit_static(def, &mut on_node),
-        DefinitionNode::Replacement(def) => nodes::visit_replacement(def, &mut on_node),
-    };
-}
-
-// `BecomeCopy` is a leaf of the node walk, but its extra modifications carry grants.
-fn on_granter_node(
-    node: DefinitionNode<'_>,
-    v: &mut impl FnMut(granter_symbols::Symbol<'_>),
-) -> ControlFlow<()> {
-    if let DefinitionNode::Ability(def) = &node {
-        if let Effect::BecomeCopy {
-            additional_modifications,
-            ..
-        } = &*def.effect
-        {
-            for modification in additional_modifications {
-                let _ =
-                    nodes::visit_continuous_mod(modification, &mut |n| on_granter_node(n, &mut *v));
-            }
-        }
-    }
-    granter_symbols::node_fields(node, v);
-    ControlFlow::Continue(())
-}
-
-/// Visits every granter symbol inside a duration of `def` or of a definition nested in it.
-pub(crate) fn each_granter_duration_symbol_mut(
-    def: &mut AbilityDefinition,
-    v: &mut impl FnMut(granter_symbols_mut::Symbol<'_>),
-) {
-    let _ = nodes_mut::visit_ability_def(def, &mut |node| {
-        granter_symbols_mut::node_durations(node, v);
-        ControlFlow::Continue(())
-    });
+    granter_symbols::each_node(root, &mut |node| granter_symbols::node_fields(node, v));
 }

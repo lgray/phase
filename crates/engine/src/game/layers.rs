@@ -36,8 +36,7 @@ use crate::types::ability::{
     TriggerProducerOrigin, TypedFilter,
 };
 use crate::types::ability_visit::{
-    each_granter_duration_symbol_mut, each_granter_symbol, granter_symbols, granter_symbols_mut,
-    nodes_mut, DefinitionNode, DefinitionNodeMut,
+    each_granter_symbol, granter_symbols, granter_symbols_mut, DefinitionNode, DefinitionNodeMut,
 };
 use crate::types::attribution::EffectRef;
 use crate::types::card_type::{
@@ -7012,54 +7011,20 @@ fn references_granting_object(body: DefinitionNode<'_>) -> bool {
     names
 }
 
-/// CR 201.5a + CR 400.7 + CR 611.2b: binds the granter symbols in every `Duration` of
-/// `body` to `granter`, because no reader of a duration consults a granter stamp.
-pub(crate) fn bind_granter_durations(body: &mut AbilityDefinition, granter: ObjectIncarnationRef) {
-    each_granter_duration_symbol_mut(body, &mut granter_symbols_mut::bind(granter));
-}
-
-/// A static's own fields are read without its stamp, so they carry it.
-fn bind_static_granter(def: &mut StaticDefinition) {
-    if let Some(granter) = def.granting_object {
-        granter_symbols_mut::node_fields(
-            DefinitionNodeMut::Static(def),
-            &mut granter_symbols_mut::bind(granter),
-        );
-    }
-}
-
-/// Only the matcher fields bind; the bodies a replacement runs read their stamp.
-fn bind_replacement_granter(def: &mut crate::types::ability::ReplacementDefinition) {
-    if let Some(granter) = def.granting_object {
-        granter_symbols_mut::node_fields(
-            DefinitionNodeMut::Replacement(def),
-            &mut granter_symbols_mut::bind(granter),
-        );
-    }
-}
-
-/// CR 201.5a + CR 613.1f: the stamping rule. Every definition node of a granted
-/// body names `granter`; a node that already names one keeps it, because a granted
-/// ability copied onto a new object still refers to its original source.
-fn stamp_granter(
-    granter: ObjectIncarnationRef,
-) -> impl FnMut(DefinitionNodeMut<'_>) -> std::ops::ControlFlow<()> {
-    move |node| {
-        match node {
-            DefinitionNodeMut::Ability(def) => {
-                def.granting_object.get_or_insert(granter);
-            }
-            DefinitionNodeMut::Trigger(trigger) => {
-                trigger.granting_object.get_or_insert(granter);
-            }
-            DefinitionNodeMut::Static(static_def) => {
-                static_def.granting_object.get_or_insert(granter);
-            }
-            DefinitionNodeMut::Replacement(replacement) => {
-                replacement.granting_object.get_or_insert(granter);
-            }
-        }
-        std::ops::ControlFlow::Continue(())
+/// CR 201.5a + CR 613.1f + CR 400.7: the stamping rule. Every definition node of a granted
+/// body names `granter`, and its granter symbols bind to the granter it names; a node that
+/// already names one keeps it, because a granted ability copied onto a new object still
+/// refers to its original source.
+fn stamp_granter(granter: ObjectIncarnationRef) -> impl FnMut(DefinitionNodeMut<'_>) {
+    move |mut node| {
+        let named = match &mut node {
+            DefinitionNodeMut::Ability(def) => &mut def.granting_object,
+            DefinitionNodeMut::Trigger(trigger) => &mut trigger.granting_object,
+            DefinitionNodeMut::Static(static_def) => &mut static_def.granting_object,
+            DefinitionNodeMut::Replacement(replacement) => &mut replacement.granting_object,
+        };
+        let named = *named.get_or_insert(granter);
+        granter_symbols_mut::node_fields(node, &mut granter_symbols_mut::bind(named));
     }
 }
 
@@ -7082,19 +7047,9 @@ fn grant_names_granter(modification: &ContinuousModification) -> bool {
     }
 }
 
-/// CR 201.5a + CR 613.1f: stamps a grant's body with `granter`, binding the parts the
-/// layer system reads without the stamp.
+/// CR 201.5a + CR 613.1f: stamps a grant's body with `granter`.
 fn stamp_grant(modification: &mut ContinuousModification, granter: ObjectIncarnationRef) {
-    let _ = nodes_mut::visit_continuous_mod(modification, &mut stamp_granter(granter));
-    match modification {
-        ContinuousModification::GrantStaticAbility { definition } => {
-            bind_static_granter(definition)
-        }
-        ContinuousModification::GrantReplacement { replacement } => {
-            bind_replacement_granter(replacement)
-        }
-        _ => {}
-    }
+    granter_symbols_mut::each_node_in(modification, &mut stamp_granter(granter));
 }
 
 /// CR 201.5a: latches a resolving ability's grants to its source as it was then, and
@@ -7110,13 +7065,12 @@ pub(crate) fn latch_grants(
             stamp_grant(modification, granter);
         }
         // Not gated on `grant_names_granter`: a caster-only body names no granter object.
-        let _ = nodes_mut::visit_continuous_mod(modification, &mut |node| {
+        granter_symbols_mut::each_node_in(modification, &mut |node| {
             granter_symbols_mut::node_fields(node, &mut |symbol| {
                 if let granter_symbols_mut::Symbol::Caster(f) = symbol {
                     *f = lowered.clone();
                 }
             });
-            std::ops::ControlFlow::Continue(())
         });
     }
 }
@@ -7125,8 +7079,7 @@ pub(crate) fn latch_grants(
 /// `granter` — a granted static or a created token's static.
 pub(crate) fn stamp_static_granter(def: &mut StaticDefinition, granter: ObjectIncarnationRef) {
     if references_granting_object(DefinitionNode::Static(def)) {
-        let _ = nodes_mut::visit_static(def, &mut stamp_granter(granter));
-        bind_static_granter(def);
+        granter_symbols_mut::each_node(DefinitionNodeMut::Static(def), &mut stamp_granter(granter));
     }
 }
 
@@ -10239,22 +10192,51 @@ mod tests {
         use crate::types::ability::{
             AbilityDefinition, AbilityKind, Effect, ReplacementDefinition,
         };
-        use crate::types::ability_visit::nodes_mut;
         let granter = ObjectIncarnationRef::of(ObjectId(5), 1);
         let earlier = ObjectIncarnationRef::of(ObjectId(9), 4);
-        let mut nested = AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp);
+        let destroy_granter = || Effect::Destroy {
+            target: TargetFilter::GrantingObject { bound: None },
+            cant_regenerate: false,
+        };
+        let destroyed = |def: &AbilityDefinition| match &*def.effect {
+            Effect::Destroy { target, .. } => target.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut nested = AbilityDefinition::new(AbilityKind::Spell, destroy_granter());
         nested.granting_object = Some(earlier);
-        let mut body = AbilityDefinition::new(AbilityKind::Activated, Effect::NoOp)
-            .sub_ability(AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp));
+        let mut body = AbilityDefinition::new(AbilityKind::Activated, Effect::NoOp).sub_ability(
+            AbilityDefinition::new(AbilityKind::Spell, destroy_granter()),
+        );
         body.else_ability = Some(Box::new(nested));
-        let _ = nodes_mut::visit_ability_def(&mut body, &mut stamp_granter(granter));
+        granter_symbols_mut::each_node(
+            DefinitionNodeMut::Ability(&mut body),
+            &mut stamp_granter(granter),
+        );
         assert_eq!(body.granting_object, Some(granter));
-        assert_eq!(body.sub_ability.unwrap().granting_object, Some(granter));
-        assert_eq!(body.else_ability.unwrap().granting_object, Some(earlier));
+        let sub = body.sub_ability.unwrap();
+        assert_eq!(sub.granting_object, Some(granter));
+        assert_eq!(
+            destroyed(&sub),
+            TargetFilter::GrantingObject {
+                bound: Some(granter)
+            }
+        );
+        // A node that already names a granter binds its symbols to that one.
+        let nested = body.else_ability.unwrap();
+        assert_eq!(nested.granting_object, Some(earlier));
+        assert_eq!(
+            destroyed(&nested),
+            TargetFilter::GrantingObject {
+                bound: Some(earlier)
+            }
+        );
 
         let mut trigger = TriggerDefinition::new(TriggerMode::Attacks)
             .execute(AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp));
-        let _ = nodes_mut::visit_trigger(&mut trigger, &mut stamp_granter(granter));
+        granter_symbols_mut::each_node(
+            DefinitionNodeMut::Trigger(&mut trigger),
+            &mut stamp_granter(granter),
+        );
         assert_eq!(trigger.granting_object, Some(granter));
         assert_eq!(trigger.execute.unwrap().granting_object, Some(granter));
 
@@ -10277,7 +10259,10 @@ mod tests {
             },
         ));
         assert!(references_granting_object(DefinitionNode::Ability(&body)));
-        let _ = nodes_mut::visit_ability_def(&mut body, &mut stamp_granter(granter));
+        granter_symbols_mut::each_node(
+            DefinitionNodeMut::Ability(&mut body),
+            &mut stamp_granter(granter),
+        );
         let Effect::AddTargetReplacement { replacement, .. } = &*body.effect else {
             unreachable!()
         };

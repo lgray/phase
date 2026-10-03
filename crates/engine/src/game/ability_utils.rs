@@ -149,18 +149,6 @@ pub fn build_resolved_from_def_with_targets(
     controller: PlayerId,
     targets: Vec<TargetRef>,
 ) -> ResolvedAbility {
-    let bound;
-    let def = match def.granting_object {
-        Some(granter) => {
-            // CR 201.5a + CR 400.7: a "for as long as" duration (CR 611.2b) names the
-            // granter's incarnation; no reader of the duration consults a granter stamp.
-            let mut stamped = def.clone();
-            super::layers::bind_granter_durations(&mut stamped, granter);
-            bound = stamped;
-            &bound
-        }
-        None => def,
-    };
     let mut resolved =
         ResolvedAbility::new(*def.effect.clone(), targets, source_id, controller).kind(def.kind);
     resolved.declares_chosen_group = def.declares_chosen_group;

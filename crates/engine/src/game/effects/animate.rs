@@ -6,7 +6,7 @@ use crate::types::ability::{
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, TransientContinuousEffectBindings};
+use crate::types::game_state::GameState;
 
 /// CR 613.1: Animation — apply type/subtype and P/T changes via the layer system.
 /// Uses `TransientContinuousEffect` so the layer system handles ordering (CR 613.1d,
@@ -104,18 +104,13 @@ pub fn resolve(
         if !state.objects.contains_key(&obj_id) {
             return Err(EffectError::ObjectNotFound(obj_id));
         }
-        state.add_transient_continuous_effect_with_bindings(
+        state.add_transient_continuous_effect(
             ability.source_id,
             ability.controller,
             duration.clone(),
             TargetFilter::SpecificObject { id: obj_id },
             modifications.clone(),
             None,
-            // CR 201.5a: a granted ability's effect names the object that granted it.
-            TransientContinuousEffectBindings {
-                granting_object: ability.context.granting_object,
-                ..TransientContinuousEffectBindings::default()
-            },
         );
     }
 
