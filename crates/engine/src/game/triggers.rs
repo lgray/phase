@@ -4321,7 +4321,8 @@ fn collect_latched_batched_zone_triggers(
             if let Some(contextual_event) =
                 contextual_batched_trigger_event(state, event, &latched.definition, &stamped)
             {
-                admitted.push((source_context, contextual_event));
+                // CR 201.5a: the count reads the subjects through the context admission read.
+                admitted.push((stamped, contextual_event));
             }
         }
 

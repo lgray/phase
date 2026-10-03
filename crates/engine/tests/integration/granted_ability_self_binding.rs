@@ -3062,6 +3062,77 @@ mod concretizer_seams {
             Some(AttachTarget::Object(other))
         );
     }
+
+    /// CR 201.5a + CR 603.2c: a batched trigger counts its subjects through the granter
+    /// it admitted them with.
+    #[test]
+    fn batched_granted_trigger_counts_subjects_against_the_granter() {
+        let mut grant = grant_static(
+            "Equipped creature has \"Whenever one or more other creatures you control leave the battlefield, draw a card.\"\nEquip {1}",
+            "Foo Bar",
+            "Artifact",
+            "Equipment",
+        );
+        let trigger = grant
+            .modifications
+            .iter_mut()
+            .find_map(|m| match m {
+                ContinuousModification::GrantTrigger { trigger } => Some(trigger),
+                _ => None,
+            })
+            .expect("GrantTrigger");
+        assert!(trigger.batched);
+        trigger.valid_card = Some(TargetFilter::Typed(
+            TypedFilter::new(TypeFilter::Artifact).properties(vec![FilterProp::Cmc {
+                comparator: Comparator::LT,
+                value: counters_on(ObjectScope::GrantingObject, "charge"),
+            }]),
+        ));
+        *trigger.execute.as_mut().unwrap().effect = Effect::Draw {
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::EventContextAmount,
+            },
+            target: TargetFilter::Controller,
+        };
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let host = scenario.add_creature(P0, "Bearer", 2, 2).id();
+        let fb = scenario.add_creature(P0, "Foo Bar", 0, 0).id();
+        scenario.with_counter(fb, counter("charge"), 3);
+        let other = scenario.add_creature(P0, "Other", 0, 0).id();
+        let killer = scenario
+            .add_creature_from_oracle(P0, "Killer", 3, 3, "{T}: Exile target artifact.")
+            .id();
+        scenario.with_library_top(P0, &["L1", "L2", "L3"]);
+        let mut runner = scenario.build();
+        make_artifact(runner.state_mut(), other);
+        attach(
+            &mut runner,
+            fb,
+            host,
+            CoreType::Artifact,
+            "Equipment",
+            grant,
+        );
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&killer)
+            .unwrap()
+            .summoning_sick = false;
+        let hand = runner.state().players[0].hand.len();
+        activate(&mut runner, killer, 0, Some(other));
+        let mut fired = false;
+        while !runner.state().stack.is_empty() {
+            fired |= runner.state().stack.iter().any(|e| e.source_id == host);
+            runner.act(GameAction::PassPriority).unwrap();
+        }
+        assert!(fired, "the granted trigger fired");
+        drive(&mut runner, None);
+        runner.advance_until_stack_empty();
+        assert_eq!(runner.state().objects[&other].zone, Zone::Exile);
+        assert_eq!(runner.state().players[0].hand.len() - hand, 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
