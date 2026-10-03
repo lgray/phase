@@ -691,11 +691,24 @@ fn cruise_flashback_from_graveyard(
     others: usize,
     colorless: usize,
 ) -> (GameRunner, ObjectId, Vec<ObjectId>) {
+    cruise_flashback_with(others, colorless, false)
+}
+
+/// As `cruise_flashback_from_graveyard`; `convoke_bear` also grants the spell
+/// Convoke and puts one untapped creature on the battlefield.
+fn cruise_flashback_with(
+    others: usize,
+    colorless: usize,
+    convoke_bear: bool,
+) -> (GameRunner, ObjectId, Vec<ObjectId>) {
     use engine::types::keywords::{FlashbackCost, Keyword};
 
     let db = shared_card_db().expect("card db");
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
+    if convoke_bear {
+        scenario.add_creature(P0, "Bear", 2, 2);
+    }
     let cruise = scenario.add_real_card(P0, "Treasure Cruise", Zone::Graveyard, db);
     let fuel = (0..others)
         .map(|i| {
@@ -720,6 +733,10 @@ fn cruise_flashback_from_graveyard(
     let flashback = Keyword::Flashback(FlashbackCost::Mana(object.mana_cost.clone()));
     object.base_keywords.push(flashback.clone());
     object.keywords.push(flashback);
+    if convoke_bear {
+        object.base_keywords.push(Keyword::Convoke);
+        object.keywords.push(Keyword::Convoke);
+    }
     (runner, cruise, fuel)
 }
 
@@ -784,4 +801,49 @@ fn pure_delve_spell_cast_from_graveyard_cannot_select_itself() {
         .expect_err("selecting the spell being cast is rejected");
     assert_eq!(graveyard_names(&runner), gy_before);
     assert_eq!(delve_marker_count(&runner), 0);
+}
+
+/// CR 601.2a + CR 702.66a: a delve-only spell cast from the graveyard with no
+/// other graveyard card has no delve fuel, so Auto payment of an affordable
+/// {7}{U} must not stop at a manual payment step.
+#[test]
+fn delve_only_spell_cast_from_graveyard_without_other_fuel_auto_pays() {
+    let (mut runner, cruise, fuel) = cruise_flashback_from_graveyard(0, 7);
+    assert!(fuel.is_empty(), "reach guard: no other graveyard card");
+    let card_id = runner.state().objects[&cruise].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: cruise,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("cast Treasure Cruise from the graveyard");
+    assert!(
+        !matches!(runner.state().waiting_for, WaitingFor::ManaPayment { .. }),
+        "the spell is not its own delve fuel, so the convoke-mode gate stays closed"
+    );
+    assert_eq!(
+        runner.state().objects[&cruise].zone,
+        Zone::Stack,
+        "reach guard: the pool paid the full cost"
+    );
+}
+
+/// CR 601.2a + CR 702.66a: Delve composing with Convoke counts only other
+/// graveyard cards. {7}{U} against {U} + 4 colorless + one creature needs two
+/// real fuel cards; one fuel card plus the spell itself must not suffice.
+#[test]
+fn delve_composed_with_convoke_excludes_spell_cast_from_graveyard() {
+    let (runner, cruise, _) = cruise_flashback_with(2, 4, true);
+    assert!(
+        cast_offered(&runner, cruise),
+        "control: two real fuel cards + creature + 4 mana pay {{7}}{{U}}"
+    );
+
+    let (runner, cruise, _) = cruise_flashback_with(1, 4, true);
+    assert!(
+        !cast_offered(&runner, cruise),
+        "one real fuel card cannot pay; the spell is not its own fuel"
+    );
 }
