@@ -847,3 +847,35 @@ fn delve_composed_with_convoke_excludes_spell_cast_from_graveyard() {
         "one real fuel card cannot pay; the spell is not its own fuel"
     );
 }
+
+/// CR 601.2a + CR 702.66a: the X-value ceiling counts delve fuel without the
+/// spell cast from the graveyard; cost {X}{U} with one other card allows X = 1.
+#[test]
+fn x_delve_max_excludes_spell_cast_from_graveyard() {
+    use engine::types::keywords::{FlashbackCost, Keyword};
+
+    let (mut runner, cruise, _) = cruise_flashback_from_graveyard(1, 0);
+    let cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::X, ManaCostShard::Blue],
+        generic: 0,
+    };
+    let object = runner.state_mut().objects.get_mut(&cruise).expect("cruise");
+    object.mana_cost = cost.clone();
+    for keyword in object
+        .keywords
+        .iter_mut()
+        .chain(object.base_keywords.iter_mut())
+    {
+        if let Keyword::Flashback(FlashbackCost::Mana(flashback)) = keyword {
+            *flashback = cost.clone();
+        }
+    }
+
+    cast_manual(&mut runner, cruise);
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseXValue { max, .. } => {
+            assert_eq!(*max, 1, "max X must count only the one real fuel card")
+        }
+        other => panic!("expected ChooseXValue, got {other:?}"),
+    }
+}
