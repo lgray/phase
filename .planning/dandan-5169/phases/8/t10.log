@@ -1,0 +1,32 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.65s
+────────────
+ Nextest run ID 03eef28d-bd2a-44fa-8ac2-1d76fb2843d1 with nextest profile: default
+    Starting 48 tests across 1 binary (9262 tests skipped)
+       START [         ] ( 1/48) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+
+running 1 test
+test dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.93s
+
+        PASS [   1.943s] ( 1/48) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+       START [         ] ( 2/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+
+running 1 test
+test dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.94s
+
+        PASS [   1.958s] ( 2/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+       START [         ] ( 3/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+
+running 1 test
+test dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.02s
+
+        PASS [   2.038s] ( 3/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+       START [         ] ( 4/48) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+
+running 1 test

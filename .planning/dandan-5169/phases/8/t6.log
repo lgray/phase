@@ -1,0 +1,113 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.59s
+────────────
+ Nextest run ID 3b162f98-7ed7-4490-b24f-e78135fb44f3 with nextest profile: default
+    Starting 41 tests across 1 binary (9262 tests skipped)
+        PASS [   3.378s] ( 1/41) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+        PASS [   3.480s] ( 2/41) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+        PASS [   3.538s] ( 3/41) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+        PASS [   4.090s] ( 4/41) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+        PASS [   4.138s] ( 5/41) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+        PASS [   4.152s] ( 6/41) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+        FAIL [   4.222s] ( 7/41) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9302 filtered out; finished in 4.17s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered' (851900) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1223:9:
+    assertion `left == right` failed: true PlayerId(1): nothing may apply, so the chosen spell is named
+      left: []
+     right: [Object(ObjectId(7))]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.288s] ( 8/41) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+        FAIL [   4.462s] ( 9/41) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9302 filtered out; finished in 4.42s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library' (851895) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1142:5:
+    assertion `left == right` failed: the higher mana value wins (CR 701.30d): the Brawler gets its counter
+      left: None
+     right: Some(1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   5.050s] (10/41) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+        PASS [   6.040s] (11/41) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+        PASS [   6.343s] (12/41) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+        PASS [   6.634s] (13/41) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+        PASS [   6.908s] (14/41) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+        PASS [   3.393s] (15/41) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+        PASS [   7.044s] (16/41) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+        PASS [   7.043s] (17/41) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+        PASS [   3.456s] (18/41) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+        PASS [   3.700s] (19/41) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+        PASS [   4.610s] (20/41) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+        PASS [   4.039s] (21/41) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+        PASS [   4.258s] (22/41) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+        PASS [   4.345s] (23/41) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+        PASS [   4.999s] (24/41) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+        PASS [   4.466s] (25/41) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+        PASS [   6.249s] (26/41) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+        PASS [   3.819s] (27/41) phase-engine::integration dandan_read_sweep::v6_skullwinder_returns_the_chosen_opponents_card_from_the_pile
+        PASS [   4.512s] (28/41) phase-engine::integration dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+        FAIL [   5.024s] (29/41) phase-engine::integration dandan_read_sweep::v5_journey_for_the_elixir_searches_the_pile_library_and_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v5_journey_for_the_elixir_searches_the_pile_library_and_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v5_journey_for_the_elixir_searches_the_pile_library_and_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9302 filtered out; finished in 4.99s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v5_journey_for_the_elixir_searches_the_pile_library_and_graveyard' (851951) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:729:5:
+    assertion `left == right` failed: probe
+      left: [(true, PlayerId(1), [ObjectId(1), ObjectId(6)], ObjectId(1), ObjectId(7)), (true, PlayerId(0), [ObjectId(1), ObjectId(6)], ObjectId(1), ObjectId(7)), (false, PlayerId(1), [ObjectId(1), ObjectId(6)], ObjectId(1), ObjectId(7))]
+     right: []
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.435s] (30/41) phase-engine::integration dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard
+        PASS [   4.432s] (31/41) phase-engine::integration dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+        PASS [   3.519s] (32/41) phase-engine::integration dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top
+        PASS [   3.866s] (33/41) phase-engine::integration dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+        PASS [   4.511s] (34/41) phase-engine::integration dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom
+        PASS [   3.508s] (35/41) phase-engine::integration dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+        PASS [   3.721s] (36/41) phase-engine::integration dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type
+        PASS [   4.864s] (37/41) phase-engine::integration dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+        PASS [   3.544s] (38/41) phase-engine::integration dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+        PASS [   3.271s] (39/41) phase-engine::integration dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size
+        PASS [   3.841s] (40/41) phase-engine::integration dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard
+        PASS [   3.199s] (41/41) phase-engine::integration dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay
+────────────
+     Summary [  12.725s] 41 tests run: 38 passed, 3 failed, 9262 skipped
+        FAIL [   4.222s] ( 7/41) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+        FAIL [   4.462s] ( 9/41) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+        FAIL [   5.024s] (29/41) phase-engine::integration dandan_read_sweep::v5_journey_for_the_elixir_searches_the_pile_library_and_graveyard
+error: test run failed
+done rc=100

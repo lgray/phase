@@ -1,0 +1,24 @@
+    Blocking waiting for file lock on build directory
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10m 11s
+────────────
+ Nextest run ID 95b1f9a7-8608-4088-8190-335c3a03198e with nextest profile: default
+    Starting 15 tests across 1 binary (23145 tests skipped)
+        PASS [   0.066s] ( 1/15) phase-engine game::effects::free_cast_from_zones::dandan_read_sweep_tests::the_graveyard_candidates_come_from_the_shared_pile
+        PASS [   0.068s] ( 2/15) phase-engine game::augment::dandan_read_sweep_tests::candidates_read_the_storage_authority
+        PASS [   0.069s] ( 3/15) phase-engine game::effects::choose_card::dandan_read_sweep_tests::offers_the_shared_pile_to_the_non_canonical_seat
+        PASS [   0.070s] ( 4/15) phase-engine game::casting::dandan_read_sweep_tests::non_owner_graveyard_ids_dedup_the_shared_pile
+        PASS [   0.076s] ( 5/15) phase-engine game::restrictions::dandan_read_sweep_tests::zone_count_conditions_in_a_per_seat_format_read_the_seats_own_zone
+        PASS [   0.077s] ( 6/15) phase-engine game::engine_payment_choices::dandan_read_sweep_tests::unless_mill_payment_mills_the_shared_pile
+        PASS [   0.085s] ( 7/15) phase-engine game::engine_payment_choices::dandan_read_sweep_tests::top_library_exile_cost_pays_from_the_shared_pile
+        PASS [   0.083s] ( 8/15) phase-engine game::effects::dandan_read_sweep_tests::candidate_graveyard_size_reads_the_storage_authority
+        PASS [   0.086s] ( 9/15) phase-engine game::effects::exile_face_down_pile::dandan_read_sweep_tests::the_non_canonical_seat_exiles_the_shared_pile_top
+        PASS [   0.085s] (10/15) phase-engine game::cost_payability::dandan_read_sweep_tests::exile_cost_enumerators_read_the_shared_pile
+        PASS [   0.084s] (11/15) phase-engine game::casting::dandan_read_sweep_tests::non_owner_grants_in_a_per_seat_format_read_the_other_seats_graveyard
+        PASS [   0.094s] (12/15) phase-engine game::restrictions::dandan_read_sweep_tests::zone_count_conditions_read_the_shared_pile
+        PASS [   0.095s] (13/15) phase-engine game::casting::dandan_read_sweep_tests::non_owner_grants_list_each_pile_card_once
+        PASS [   0.095s] (14/15) phase-engine game::engine::dandan_read_sweep_tests::recast_frame_prunes_the_shared_pile_graveyard
+        PASS [   6.911s] (15/15) phase-engine game::casting::dandan_read_sweep_tests::graveyard_permission_slot_demand_counts_the_shared_pile
+────────────
+     Summary [   6.971s] 15 tests run: 15 passed, 23145 skipped
+done rc=0

@@ -1,0 +1,8 @@
+    Checking libc v0.2.186
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Checking getrandom v0.3.4
+    Checking rand_core v0.9.5
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.4
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 10s
+done rc=0

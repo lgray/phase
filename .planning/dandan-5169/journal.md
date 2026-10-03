@@ -51,3 +51,5 @@
 - Each remaining phase plan's protocol bump numbers are stale: executor step 0 re-derives upstream+delta at PHASE_BASE.
 - Phase 17 plan loop closed: r1 1 behavior (V8/V9 must provision via load_deck_into_state) + 6 text -> r2 clean. Completion worktree wt-complete + target-complete (reflink copy of target-dandan) prepared. Phase 6 executor r1 dispatched from 4e141877ca.
 - Phase 6 ACCEPTED (1b112fdec9). Pre-existing, reported once to lead: (1) Calim, Djinn Emperor parse drops 'seventh from the top' / has self_ref:false discard yet coverage says supported (not a Dandan decklist card); (2) reposition_library_origins_after_batch_delivery descending-order interleave of two Top library-origin cards.
+- Merge defect found by Phase 7 executor: formatRegistry.ts Dandan entry still set allow_experimental_dungeons (removed upstream #9476) -> tsc TS2353. Fixed in a separate commit c1cf96cf63 before Phase 7's candidate; Phase 7 PHASE_BASE = that commit (1b112fdec9 + 1 client line).
+- Phase 7 ACCEPTED (e0d9cb1208). Phase 8 executor running speculatively on it.

@@ -1,0 +1,79 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.86s
+────────────
+ Nextest run ID 4890cfad-ef24-488f-b204-171fb4e689b7 with nextest profile: default
+    Starting 11 tests across 1 binary (9262 tests skipped)
+        PASS [   3.493s] ( 1/11) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+        PASS [   4.063s] ( 2/11) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+        FAIL [   4.505s] ( 3/11) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9272 filtered out; finished in 4.44s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name' (825615) panicked at crates/engine/src/game/scenario.rs:3033:14:
+    SpellCast resolution must be accepted by the engine: InvalidAction("Invalid card name 'Island'")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   4.588s] ( 4/11) phase-engine::integration dandan_read_sweep::v2_mental_note_over_an_empty_pile_mills_nothing
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v2_mental_note_over_an_empty_pile_mills_nothing ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v2_mental_note_over_an_empty_pile_mills_nothing
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9272 filtered out; finished in 4.54s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v2_mental_note_over_an_empty_pile_mills_nothing' (825624) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:207:5:
+    assertion `left == right` failed: only the spell itself
+      left: []
+     right: [ObjectId(1)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.606s] ( 5/11) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+        PASS [   4.607s] ( 6/11) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+        FAIL [   4.643s] ( 7/11) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9272 filtered out; finished in 4.58s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it' (825622) panicked at crates/engine/src/game/scenario.rs:3409:10:
+    ActivateAbility must be accepted by the engine: ActionNotAllowed("Cannot activate tap ability: permanent is tapped")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.665s] ( 8/11) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+        PASS [   5.312s] ( 9/11) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+        PASS [   5.533s] (10/11) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+        PASS [   5.842s] (11/11) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+────────────
+     Summary [   5.852s] 11 tests run: 8 passed, 3 failed, 9262 skipped
+        FAIL [   4.505s] ( 3/11) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+        FAIL [   4.588s] ( 4/11) phase-engine::integration dandan_read_sweep::v2_mental_note_over_an_empty_pile_mills_nothing
+        FAIL [   4.643s] ( 7/11) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+error: test run failed
+done rc=100

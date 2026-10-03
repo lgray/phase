@@ -1,0 +1,4 @@
+tsc rc=0
+eslint rc=0
+vitest rc=1
+done rc=0

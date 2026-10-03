@@ -1,0 +1,71 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.60s
+────────────
+ Nextest run ID 7a10bdce-a185-494b-b15e-43c64e24b799 with nextest profile: default
+    Starting 22 tests across 1 binary (9262 tests skipped)
+        PASS [   4.017s] ( 1/22) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+        PASS [   4.349s] ( 2/22) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+        PASS [   4.580s] ( 3/22) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+        PASS [   4.584s] ( 4/22) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+        PASS [   4.874s] ( 5/22) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+        PASS [   6.328s] ( 6/22) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+        PASS [   6.779s] ( 7/22) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+        PASS [   6.886s] ( 8/22) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+        PASS [   7.392s] ( 9/22) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+        PASS [   7.429s] (10/22) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+        FAIL [   7.445s] (11/22) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9283 filtered out; finished in 7.40s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name' (832967) panicked at crates/engine/src/game/scenario.rs:3033:14:
+    SpellCast resolution must be accepted by the engine: InvalidAction("Invalid card name 'Memory Lapse'")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   7.833s] (12/22) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9283 filtered out; finished in 7.74s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile' (832978) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:504:9:
+    assertion `left == right` failed: true PlayerId(1)
+      left: Hand
+     right: Battlefield
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   8.020s] (13/22) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+        PASS [   8.145s] (14/22) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+        PASS [   8.207s] (15/22) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+        PASS [   4.512s] (16/22) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+        PASS [   4.413s] (17/22) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+        PASS [   4.850s] (18/22) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+        PASS [   9.530s] (19/22) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+        PASS [   6.394s] (20/22) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+        PASS [   4.697s] (21/22) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+        PASS [   6.703s] (22/22) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+────────────
+     Summary [  11.582s] 22 tests run: 20 passed, 2 failed, 9262 skipped
+        FAIL [   7.445s] (11/22) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+        FAIL [   7.833s] (12/22) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+error: test run failed
+done rc=100

@@ -1,0 +1,197 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 47s
+────────────
+ Nextest run ID fca3dfe6-9ba2-449a-ad14-4cecae3a56f1 with nextest profile: default
+    Starting 48 tests across 1 binary (9262 tests skipped)
+        PASS [   4.720s] ( 1/48) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+        PASS [   5.327s] ( 2/48) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+        PASS [   5.581s] ( 3/48) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+        FAIL [   6.273s] ( 4/48) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 6.21s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered' (944545) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1225:9:
+    assertion `left == right` failed: true PlayerId(1): nothing may apply, so the chosen spell is named
+      left: []
+     right: [Object(ObjectId(5))]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   6.521s] ( 5/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+        PASS [   6.758s] ( 6/48) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+        PASS [   8.303s] ( 7/48) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+        PASS [   8.470s] ( 8/48) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+        PASS [   4.013s] ( 9/48) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+        PASS [   9.339s] (10/48) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+        PASS [   9.867s] (11/48) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+        PASS [  10.871s] (12/48) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+        FAIL [  11.432s] (13/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 11.31s
+
+  stderr ───
+    Priority { player: PlayerId(1) }
+
+    thread 'dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library' (944552) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1144:5:
+    assertion `left == right` failed: the higher mana value wins (CR 701.30d): the Brawler gets its counter
+      left: None
+     right: Some(1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [  11.931s] (14/48) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+        PASS [  12.104s] (15/48) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+        PASS [   5.529s] (16/48) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+        PASS [  12.815s] (17/48) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+        PASS [   6.962s] (18/48) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+        PASS [   8.191s] (19/48) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+        PASS [   7.440s] (20/48) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+        PASS [  14.268s] (21/48) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+        FAIL [   9.193s] (22/48) phase-engine::integration dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 9.11s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile' (944739) panicked at crates/engine/src/game/scenario_db.rs:81:32:
+    card 'Mirelurk Queen' not found in CardDatabase
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   6.095s] (23/48) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+        PASS [   6.450s] (24/48) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+        FAIL [   5.504s] (25/48) phase-engine::integration dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 5.42s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard' (945122) panicked at crates/engine/src/game/scenario_db.rs:81:32:
+    card 'Gray Merchant of Asphodel' not found in CardDatabase
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   7.586s] (26/48) phase-engine::integration dandan_read_sweep::v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat
+        PASS [   8.720s] (27/48) phase-engine::integration dandan_read_sweep::v5_doomsday_searches_the_pile_library_and_graveyard
+        FAIL [   6.496s] (28/48) phase-engine::integration dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 6.32s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard' (945173) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1279:13:
+    assertion `left == right` failed: true PlayerId(1): ResolutionOptionalPaymentChoice { player: PlayerId(1), source_id: ObjectId(10), costs: [ResolutionOptionalPaymentOption { index: 0, cost: Exile { count: 3, zone: Some(Graveyard), filter: None } }] }
+      left: Graveyard
+     right: Exile
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   6.140s] (29/48) phase-engine::integration dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+        PASS [   8.385s] (30/48) phase-engine::integration dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+        PASS [  12.515s] (31/48) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+        PASS [   8.398s] (32/48) phase-engine::integration dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard
+        PASS [   7.902s] (33/48) phase-engine::integration dandan_read_sweep::v6_skullwinder_returns_the_chosen_opponents_card_from_the_pile
+        FAIL [  10.486s] (34/48) phase-engine::integration dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 10.42s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard' (945110) panicked at crates/engine/src/game/scenario_db.rs:81:32:
+    card 'Altar of the Wretched' not found in CardDatabase
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   8.724s] (35/48) phase-engine::integration dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+        PASS [   8.431s] (36/48) phase-engine::integration dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom
+        FAIL [  11.063s] (37/48) phase-engine::integration dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 11.01s
+
+  stderr ───
+
+    thread 'dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard' (945126) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1306:13:
+    expected CollectEvidenceChoice, got ScryChoice { player: PlayerId(1), cards: [ObjectId(1)] }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   6.027s] (38/48) phase-engine::integration dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top
+        PASS [   5.054s] (39/48) phase-engine::integration dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type
+        PASS [  14.471s] (40/48) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+        PASS [   9.878s] (41/48) phase-engine::integration dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+        PASS [  15.438s] (42/48) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+        PASS [   5.669s] (43/48) phase-engine::integration dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+        PASS [   4.319s] (44/48) phase-engine::integration dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size
+        PASS [   5.787s] (45/48) phase-engine::integration dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+        PASS [   5.527s] (46/48) phase-engine::integration dandan_read_sweep::v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+        PASS [   6.800s] (47/48) phase-engine::integration dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard
+        PASS [   6.917s] (48/48) phase-engine::integration dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay
+────────────
+     Summary [  28.564s] 48 tests run: 41 passed, 7 failed, 9262 skipped
+        FAIL [   6.273s] ( 4/48) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+        FAIL [  11.432s] (13/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+        FAIL [   9.193s] (22/48) phase-engine::integration dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+        FAIL [   5.504s] (25/48) phase-engine::integration dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+        FAIL [   6.496s] (28/48) phase-engine::integration dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard
+        FAIL [  10.486s] (34/48) phase-engine::integration dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+        FAIL [  11.063s] (37/48) phase-engine::integration dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+error: test run failed
+done rc=100

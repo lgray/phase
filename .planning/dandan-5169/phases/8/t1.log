@@ -1,0 +1,30 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: function `grave` is never used
+  --> crates/engine/tests/integration/dandan_read_sweep.rs:28:4
+   |
+28 | fn grave(state: &GameState) -> Vec<ObjectId> {
+   |    ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `format_of` is never used
+  --> crates/engine/tests/integration/dandan_read_sweep.rs:77:4
+   |
+77 | fn format_of(shared: bool) -> FormatConfig {
+   |    ^^^^^^^^^
+
+warning: function `island_pile` is never used
+  --> crates/engine/tests/integration/dandan_read_sweep.rs:85:4
+   |
+85 | fn island_pile(count: usize) -> Vec<(PlayerId, &'static str)> {
+   |    ^^^^^^^^^^^
+
+warning: `phase-engine` (test "integration") generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 12s
+────────────
+ Nextest run ID 9d7320c7-8289-416f-952d-39b7bb6e3d3f with nextest profile: default
+    Starting 1 test across 1 binary (9262 tests skipped)
+        PASS [   2.027s] (1/1) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+────────────
+     Summary [   2.037s] 1 test run: 1 passed, 9262 skipped
+done rc=0
