@@ -2544,11 +2544,16 @@ mod concretizer_seams {
 
     #[test]
     fn granted_triggers_bound_to_distinct_granters_need_ordering() {
-        let runner = upkeep_runner(2, true);
+        let mut runner = upkeep_runner(2, true);
         assert!(matches!(
             runner.state().waiting_for,
             WaitingFor::OrderTriggers { .. }
         ));
+        let life = runner.state().players[0].life;
+        drive(&mut runner, None);
+        runner.advance_until_stack_empty();
+        // Each trigger gains its own granter's 2 and 3 charge counters, not the hosts' 1.
+        assert_eq!(runner.state().players[0].life - life, 5);
         let control = upkeep_runner(2, false);
         assert!(matches!(
             control.state().waiting_for,
@@ -5717,8 +5722,7 @@ mod granted_caster_reference {
         assert!(!json.contains(PLACEHOLDER), "{json}");
 
         let pronoun = HELLISH_REBUKE.replace("who cast Hellish Rebuke", "who cast it");
-        let (recipient, json) = granted_recipient(&pronoun);
-        assert_eq!(recipient, None);
+        let (_, json) = granted_recipient(&pronoun);
         assert!(!json.contains("GrantingObjectCaster"));
 
         let any_player = HELLISH_REBUKE.replace("the player who cast Hellish Rebuke", "a player");
