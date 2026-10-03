@@ -18491,7 +18491,7 @@ pub fn start_game(state: &mut GameState) -> ActionResult {
     result
 }
 
-/// CR 100.6a + CR 100.4: the structure actually played; never longer than `ceiling` allows.
+/// The structure actually played: the configured one, never longer than the format's `ceiling` (CR 100.6a: a two-player match is usually two wins; CR 100.4: sideboarding happens between games).
 fn match_type_within(configured: MatchType, ceiling: MatchType) -> MatchType {
     match (configured, ceiling) {
         (MatchType::Bo3, MatchType::Bo3) => MatchType::Bo3,
