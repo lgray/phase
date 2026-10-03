@@ -1,0 +1,1 @@
+Decision: S8 AI consumer rerouting. Scope adds `crates/phase-ai/src/policies/tests/mill_payoff.rs` (test-only; home of the mill_scale policy harness). Every charter decision stands. 2026-10-03.

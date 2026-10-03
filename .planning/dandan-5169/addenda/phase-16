@@ -1,0 +1,1 @@
+Decision: S7 frontend shared-pile display. Scope adds `client/src/components/zone/ZoneViewer.tsx` (delete the seat gate; engine already supplies delve actions) and the client test files named in phases/16/plan.md "Charter scope additions". Every charter decision stands. 2026-10-03.

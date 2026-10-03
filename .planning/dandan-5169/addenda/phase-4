@@ -1,0 +1,1 @@
+Decision: PREREQ-0 Memory Lapse swallow check. Upstream/main independently landed the same Counter countered_spell_zone carrier handling in swallow_check.rs (merge b2203e3047 took upstream's file); Phase 4's commit 67cd221e is superseded by upstream with identical effect. No later phase depended on Phase 4's own text. 2026-10-03.

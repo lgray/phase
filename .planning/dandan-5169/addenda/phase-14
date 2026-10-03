@@ -1,0 +1,1 @@
+Decision: S4c in-game dealer + S6. Scope adds `crates/engine/tests/integration/deterministic_game_state_serde.rs` (test-forced census row for `DrawDealerSeat.applied`). Every charter decision stands. 2026-10-03.

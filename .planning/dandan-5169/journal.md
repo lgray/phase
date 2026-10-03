@@ -44,3 +44,8 @@
 
 ## J8 Phase 5 finished, PARKED (USER park amendment)
 - Phase 5 resumed from the stopped executor's tree, completed, reviewed (r1 approve + text/test fix, completion gate fix for check-parser-combinators, r2 approve) and accepted at 772c18d1. feat/dandan-format pushed. No WIP patch remains.
+
+## J9 local resume (2026-10-03)
+- Driver Sonnet 5.5 local; worktree /home/lgray/vibe-coding/dandan-run/wt-dandan, target ../target-dandan. Merged upstream/main (77 behind) -> b2203e3047, conflicts resolved: protocol restack = upstream 103/lobby 15/wire 85 + delta -> 105/16/87 (MIN_LOBBY_PROTOCOL_FOR_DANDAN frozen 16); swallow_check.rs and integration_cards.json.gz taken from upstream (Phase 4 superseded upstream; fixture to be regenerated from merged-tree card data).
+- Charter scope additions for 12/14/16/17 written as addenda (addenda/phase-N); no re-charter (all drift leaves decisions standing).
+- Each remaining phase plan's protocol bump numbers are stale: executor step 0 re-derives upstream+delta at PHASE_BASE.
