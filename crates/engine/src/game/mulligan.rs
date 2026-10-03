@@ -681,28 +681,24 @@ fn shuffle_hand_into_library(state: &mut GameState, player: PlayerId, events: &m
         crate::game::zone_pipeline::move_object(state, req, events);
     }
 
-    // Shuffle library
+    // Shuffle library. CR 103.5 + CR 400.1: the pile's holder, which is `player`
+    // unless the format shares the library.
+    let holder = state.zone_storage_seat(Zone::Library, player);
     let GameState { players, rng, .. } = state;
     let player_data = players
         .iter_mut()
-        .find(|p| p.id == player)
+        .find(|p| p.id == holder)
         .expect("player exists");
     crate::util::im_ext::shuffle_vector(&mut player_data.library, rng);
 }
 
 fn draw_n(state: &mut GameState, player_id: PlayerId, count: usize, events: &mut Vec<GameEvent>) {
     for _ in 0..count {
-        let player = state
-            .players
-            .iter()
-            .find(|p| p.id == player_id)
-            .expect("player exists");
-
-        if player.library.is_empty() {
+        // CR 103.5 + CR 121.1: the top of the player's library, which is the
+        // shared pile's top in a shared-library format.
+        let Some(&top_card) = state.library_of(player_id).front() else {
             break;
-        }
-
-        let top_card = player.library[0];
+        };
         // CR 103.5: pregame draw — route through the pipeline under the
         // `PregameProcedure` exempt cause.
         let req = crate::game::zone_pipeline::ZoneMoveRequest::pregame(top_card, Zone::Hand);

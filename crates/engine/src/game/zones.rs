@@ -853,13 +853,8 @@ fn zone_container_len(
     object_id: ObjectId,
 ) -> usize {
     match zone {
-        Zone::Library => state
-            .players
-            .iter()
-            .find(|player| player.id == owner)
-            .expect("zone command owner exists")
-            .library
-            .len(),
+        // CR 400.1 + CR 400.3: a shared pile is measured in its holder's container.
+        Zone::Library => state.library_of(owner).len(),
         Zone::Hand => state
             .players
             .iter()
@@ -867,13 +862,7 @@ fn zone_container_len(
             .expect("zone command owner exists")
             .hand
             .len(),
-        Zone::Graveyard => state
-            .players
-            .iter()
-            .find(|player| player.id == owner)
-            .expect("zone command owner exists")
-            .graveyard
-            .len(),
+        Zone::Graveyard => state.graveyard_of(owner).len(),
         Zone::Battlefield => state.battlefield.len(),
         Zone::Stack => state.stack.len(),
         Zone::Exile => state.exile.len(),
@@ -2235,19 +2224,11 @@ pub(crate) fn reorder_within_library(
     ordered: &[ObjectId],
     index: Option<usize>,
 ) {
-    let player_state = state
-        .players
-        .iter_mut()
-        .find(|candidate| candidate.id == player)
-        .expect("player exists");
-    player_state.library.retain(|id| !ordered.contains(id));
-    let insert_index = index
-        .unwrap_or(player_state.library.len())
-        .min(player_state.library.len());
+    let library = state.library_of_mut(player);
+    library.retain(|id| !ordered.contains(id));
+    let insert_index = index.unwrap_or(library.len()).min(library.len());
     for (offset, &object_id) in ordered.iter().enumerate() {
-        player_state
-            .library
-            .insert(insert_index + offset, object_id);
+        library.insert(insert_index + offset, object_id);
     }
     state.advance_library_knowledge_epoch(player);
 
@@ -2353,17 +2334,13 @@ pub fn move_to_library_at_index(
     }
 
     // Place at specified index or push to end (bottom)
-    let player = state
-        .players
-        .iter_mut()
-        .find(|p| p.id == owner)
-        .expect("owner exists");
+    let library = state.library_of_mut(owner);
     match index {
         Some(i) => {
-            let clamped = i.min(player.library.len());
-            player.library.insert(clamped, object_id);
+            let clamped = i.min(library.len());
+            library.insert(clamped, object_id);
         }
-        None => player.library.push_back(object_id),
+        None => library.push_back(object_id),
     }
     state.advance_library_knowledge_epoch(owner);
 
@@ -2417,19 +2394,15 @@ pub fn move_to_library_at_index(
 /// Remove an ObjectId from the appropriate zone collection (CR 400.1).
 pub fn remove_from_zone(state: &mut GameState, object_id: ObjectId, zone: Zone, owner: PlayerId) {
     match zone {
-        Zone::Library | Zone::Hand | Zone::Graveyard => {
-            let player = state
-                .players
-                .iter_mut()
-                .find(|p| p.id == owner)
-                .expect("owner exists");
-            match zone {
-                Zone::Library => player.library.retain(|id| *id != object_id),
-                Zone::Hand => player.hand.retain(|id| *id != object_id),
-                Zone::Graveyard => player.graveyard.retain(|id| *id != object_id),
-                _ => unreachable!(),
-            }
-        }
+        Zone::Library => state.library_of_mut(owner).retain(|id| *id != object_id),
+        Zone::Graveyard => state.graveyard_of_mut(owner).retain(|id| *id != object_id),
+        Zone::Hand => state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .expect("owner exists")
+            .hand
+            .retain(|id| *id != object_id),
         Zone::Battlefield => state.battlefield.retain(|id| *id != object_id),
         Zone::Stack => {
             // A unique id, so at most ONE entry matches. Routed through the
@@ -2549,19 +2522,15 @@ pub fn apply_resolved_object_cease(
 /// Add an ObjectId to the appropriate zone collection.
 pub fn add_to_zone(state: &mut GameState, object_id: ObjectId, zone: Zone, owner: PlayerId) {
     match zone {
-        Zone::Library | Zone::Hand | Zone::Graveyard => {
-            let player = state
-                .players
-                .iter_mut()
-                .find(|p| p.id == owner)
-                .expect("owner exists");
-            match zone {
-                Zone::Library => player.library.push_back(object_id),
-                Zone::Hand => player.hand.push_back(object_id),
-                Zone::Graveyard => player.graveyard.push_back(object_id),
-                _ => unreachable!(),
-            }
-        }
+        Zone::Library => state.library_of_mut(owner).push_back(object_id),
+        Zone::Graveyard => state.graveyard_of_mut(owner).push_back(object_id),
+        Zone::Hand => state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .expect("owner exists")
+            .hand
+            .push_back(object_id),
         // CR 400.4a: Instants/sorceries blocked by early check in move_to_zone.
         Zone::Battlefield => state.battlefield.push_back(object_id),
         Zone::Stack => {} // Stack entries are managed separately via StackEntry

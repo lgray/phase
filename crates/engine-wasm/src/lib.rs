@@ -1901,10 +1901,9 @@ fn initialize_game_impl(
         // ends up with a deck while a missing seat would silently have an
         // empty library). Surface it as a hard error instead of starting.
         let empty_seats: Vec<u8> = state
-            .players
-            .iter()
-            .filter(|p| p.library.is_empty())
-            .map(|p| p.id.0)
+            .seats_with_empty_library()
+            .into_iter()
+            .map(|seat| seat.0)
             .collect();
         if !empty_seats.is_empty() {
             return to_js(&serde_json::json!({

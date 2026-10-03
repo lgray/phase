@@ -254,6 +254,7 @@ mod custom_format_schema;
 mod cut_a_deal_draw_this_way_count;
 mod cybership_combat_damage_manifest;
 mod dalkovan_encampment_attack_trigger;
+mod dandan_shared_pile_storage;
 mod daretti_emblem_simultaneous_death;
 mod dark_confidant_upkeep;
 mod dark_depths_thespian_stage;

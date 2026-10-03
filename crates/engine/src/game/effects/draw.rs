@@ -210,13 +210,16 @@ pub(crate) fn select_cards_to_draw(
     player_id: crate::types::player::PlayerId,
     count: usize,
 ) -> Vec<crate::types::identifiers::ObjectId> {
-    let Some(player) = state.players.iter().find(|p| p.id == player_id) else {
+    if !state.players.iter().any(|p| p.id == player_id) {
         return Vec::new();
-    };
+    }
+    // CR 121.1 + CR 400.1: the drawing player's library, which is the shared
+    // pile in a shared-library format.
+    let library = state.library_of(player_id);
     if draws_from_bottom(state, player_id) {
-        player.library.iter().rev().take(count).copied().collect()
+        library.iter().rev().take(count).copied().collect()
     } else {
-        player.library.iter().take(count).copied().collect()
+        library.iter().take(count).copied().collect()
     }
 }
 

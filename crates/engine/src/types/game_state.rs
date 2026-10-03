@@ -33,7 +33,7 @@ use super::events::{
     EventAttachmentSnapshot, EventCombatSnapshot, EventObjectHistorySnapshot,
     EventObjectRelationSnapshot, EventObjectSnapshot, GameEvent, PlayerActionKind,
 };
-use super::format::FormatConfig;
+use super::format::{FormatConfig, ZoneScope};
 use super::identifiers::{
     CardId, DelayedInstallIdentity, DelayedTriggerOrigin, ExtraPhaseId, LogicalZoneChangeGroupId,
     ObjectId, ObjectIdentityBinding, ObjectIncarnationRef, ResolutionCastOfferId, TrackedSetId,
@@ -8164,6 +8164,99 @@ impl PendingCast {
 }
 
 impl GameState {
+    /// CR 400.1 as modified by a format's shared-zone axis: the seat whose
+    /// container holds every shared-zone card. The lowest `PlayerId`; the seat
+    /// set never shrinks, so it is fixed for the life of the game.
+    pub fn canonical_seat(&self) -> PlayerId {
+        self.players
+            .iter()
+            .map(|player| player.id)
+            .min()
+            .expect("a game has at least one seat")
+    }
+
+    /// The seat holding `zone`'s shared container, or `None` when each seat
+    /// keeps its own. Exhaustive over `Zone`: only library and graveyard can
+    /// be shared.
+    fn shared_zone_holder(&self, zone: Zone) -> Option<PlayerId> {
+        let shared = self.format_config.format.shared_zones();
+        let scope = match zone {
+            Zone::Library => shared.library,
+            Zone::Graveyard => shared.graveyard,
+            Zone::Hand | Zone::Battlefield | Zone::Stack | Zone::Exile | Zone::Command => {
+                ZoneScope::PerPlayer
+            }
+        };
+        match scope {
+            ZoneScope::Shared => Some(self.canonical_seat()),
+            ZoneScope::PerPlayer => None,
+        }
+    }
+
+    /// CR 400.1 + CR 400.3: the seat whose container stores `seat`'s `zone`
+    /// cards. Identity unless the format shares that zone.
+    pub fn zone_storage_seat(&self, zone: Zone, seat: PlayerId) -> PlayerId {
+        self.shared_zone_holder(zone).unwrap_or(seat)
+    }
+
+    fn player_at_seat(&self, seat: PlayerId) -> &Player {
+        self.players
+            .iter()
+            .find(|player| player.id == seat)
+            .expect("seat exists")
+    }
+
+    fn player_at_seat_mut(&mut self, seat: PlayerId) -> &mut Player {
+        self.players
+            .iter_mut()
+            .find(|player| player.id == seat)
+            .expect("seat exists")
+    }
+
+    /// CR 400.1: `seat`'s library, resolved through the format's shared-zone axis.
+    pub fn library_of(&self, seat: PlayerId) -> &im::Vector<ObjectId> {
+        &self
+            .player_at_seat(self.zone_storage_seat(Zone::Library, seat))
+            .library
+    }
+
+    pub fn library_of_mut(&mut self, seat: PlayerId) -> &mut im::Vector<ObjectId> {
+        let holder = self.zone_storage_seat(Zone::Library, seat);
+        // allow-raw-zone: the storage accessor itself; callers own the zone semantics (CR 400.1).
+        &mut self.player_at_seat_mut(holder).library
+    }
+
+    /// CR 400.1: `seat`'s graveyard, resolved through the format's shared-zone axis.
+    pub fn graveyard_of(&self, seat: PlayerId) -> &im::Vector<ObjectId> {
+        &self
+            .player_at_seat(self.zone_storage_seat(Zone::Graveyard, seat))
+            .graveyard
+    }
+
+    pub fn graveyard_of_mut(&mut self, seat: PlayerId) -> &mut im::Vector<ObjectId> {
+        let holder = self.zone_storage_seat(Zone::Graveyard, seat);
+        // allow-raw-zone: the storage accessor itself; callers own the zone semantics (CR 400.1).
+        &mut self.player_at_seat_mut(holder).graveyard
+    }
+
+    /// The deck pool backing `seat`'s library: the pile holder's pool when the
+    /// format shares the library, the seat's own otherwise.
+    pub fn deck_pool_of(&self, seat: PlayerId) -> Option<&PlayerDeckPool> {
+        let holder = self.zone_storage_seat(Zone::Library, seat);
+        self.deck_pools.iter().find(|pool| pool.player == holder)
+    }
+
+    /// Seats whose library is empty after deck load.
+    pub fn seats_with_empty_library(&self) -> Vec<PlayerId> {
+        self.players
+            .iter()
+            .map(|player| player.id)
+            .filter(|&seat| self.library_of(seat).is_empty())
+            .collect()
+    }
+}
+
+impl GameState {
     /// Mint the nonzero producer identity for one paid resolution-cast offer.
     /// The allocator is persisted so a restored offer never shares authority
     /// with a later one, even when their card/source fields collide.
@@ -8241,6 +8334,10 @@ impl GameState {
     }
 
     pub(crate) fn advance_library_knowledge_epoch(&mut self, owner: PlayerId) {
+        // CR 400.1: knowledge is keyed by the library's storage seat, so a
+        // shared pile has one epoch whichever seat reorders it.
+        let holder = self.shared_zone_holder(Zone::Library);
+        let owner = holder.unwrap_or(owner);
         let index = owner.0 as usize;
         if self
             .product_knowledge_state
@@ -8274,11 +8371,12 @@ impl GameState {
         // rather than retaining stale generations in authoritative state.
         self.product_knowledge_state
             .facts
-            .retain(|fact| !(fact.owner == owner && fact.zone == Zone::Library));
+            .retain(|fact| !(holder.unwrap_or(fact.owner) == owner && fact.zone == Zone::Library));
         self.canonicalize_library_knowledge_epoch(owner);
     }
 
     pub(crate) fn library_knowledge_epoch(&self, owner: PlayerId) -> u64 {
+        let owner = self.zone_storage_seat(Zone::Library, owner);
         self.product_knowledge_state
             .library_epochs
             .get(owner.0 as usize)
@@ -8287,6 +8385,7 @@ impl GameState {
     }
 
     pub(crate) fn library_knowledge_boundary_generation(&self, owner: PlayerId) -> u64 {
+        let owner = self.zone_storage_seat(Zone::Library, owner);
         self.product_knowledge_state
             .action_library_knowledge_generations
             .get(owner.0 as usize)
@@ -8297,9 +8396,11 @@ impl GameState {
     /// Removes an epoch once no current library fact relies on it, keeping
     /// equivalent product-knowledge states equal and serialized identically.
     fn canonicalize_library_knowledge_epoch(&mut self, owner: PlayerId) {
+        let holder = self.shared_zone_holder(Zone::Library);
+        let owner = holder.unwrap_or(owner);
         let current_epoch = self.library_knowledge_epoch(owner);
         let has_live_library_fact = self.product_knowledge_state.facts.iter().any(|fact| {
-            fact.owner == owner
+            holder.unwrap_or(fact.owner) == owner
                 && fact.zone == Zone::Library
                 && fact.library_epoch == Some(current_epoch)
         });
@@ -26027,12 +26128,13 @@ impl GameState {
     /// at one exact zone-change occurrence. The record has already received its
     /// stable `(turn, index)` key when this is called.
     pub(crate) fn record_zone_change_library_knowledge_stamp(&mut self, record: &ZoneChangeRecord) {
+        let library_owner = self.zone_storage_seat(Zone::Library, record.owner);
         let source = (record.from_zone == Some(Zone::Library)).then(|| LibraryKnowledgeStamp {
-            library_owner: record.owner,
+            library_owner,
             boundary_generation: self.library_knowledge_boundary_generation(record.owner),
         });
         let destination = (record.to_zone == Zone::Library).then(|| LibraryKnowledgeStamp {
-            library_owner: record.owner,
+            library_owner,
             boundary_generation: self.library_knowledge_boundary_generation(record.owner),
         });
         if source.is_none() && destination.is_none() {
@@ -43866,5 +43968,58 @@ mod stack_bound_reveal_tests {
             state != leased,
             "a lease difference alone makes states unequal"
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_zone_storage_tests {
+    use super::{GameState, ZoneChangeRecord};
+    use crate::types::format::FormatConfig;
+    use crate::types::identifiers::ObjectId;
+    use crate::types::player::PlayerId;
+    use crate::types::zones::Zone;
+
+    const P0: PlayerId = PlayerId(0);
+    const P1: PlayerId = PlayerId(1);
+
+    #[test]
+    fn storage_seat_resolves_only_the_shared_zones() {
+        let dandan = GameState::new(FormatConfig::dandan(), 2, 1);
+        let standard = GameState::new_two_player(1);
+        for (zone, shared) in [
+            (Zone::Library, true),
+            (Zone::Graveyard, true),
+            (Zone::Hand, false),
+            (Zone::Battlefield, false),
+            (Zone::Stack, false),
+            (Zone::Exile, false),
+            (Zone::Command, false),
+        ] {
+            assert_eq!(
+                dandan.zone_storage_seat(zone, P1),
+                if shared { P0 } else { P1 },
+                "{zone:?}"
+            );
+            assert_eq!(standard.zone_storage_seat(zone, P1), P1, "{zone:?}");
+        }
+    }
+
+    #[test]
+    fn library_stamp_names_the_storage_seat() {
+        let record = ZoneChangeRecord {
+            owner: P1,
+            ..ZoneChangeRecord::test_minimal(ObjectId(1), Some(Zone::Hand), Zone::Library)
+        };
+        for (state, expected) in [
+            (GameState::new(FormatConfig::dandan(), 2, 1), P0),
+            (GameState::new_two_player(1), P1),
+        ] {
+            let mut state = state;
+            state.record_zone_change_library_knowledge_stamp(&record);
+            let stamp = state
+                .library_knowledge_stamp_for_zone_change(&record, false)
+                .expect("destination stamp recorded");
+            assert_eq!(stamp.library_owner, expected);
+        }
     }
 }
