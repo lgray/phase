@@ -2268,7 +2268,7 @@ fn unmask_keyword_action_walker_names(text: String, originals: &[String]) -> Str
 /// reds it), `parser::oracle::tests::render_net_reaches_every_nested_description_carrier`
 /// (a new description-bearing FIELD on an existing carrier reds it), and the
 /// corpus-wide `serde_json` leak guards.
-pub(crate) const GRANTING_SELF_PLACEHOLDER: &str = "\u{E0002}";
+pub(crate) const GRANTING_SELF_PLACEHOLDER: &str = "\u{E0004}";
 
 /// CR 201.5a + CR 201.5c: Render a granting-object self-reference for DISPLAY.
 ///
@@ -3578,6 +3578,25 @@ mod tests {
                 "Equipped creature has \"{{T}}, Unattach ~: Attach {GRANTING_SELF_PLACEHOLDER} to target creature.\""
             )
         );
+    }
+
+    /// CR 201.5a: a granter reference ahead of a named-token literal keeps its own marker,
+    /// and the literal is restored in place.
+    #[test]
+    fn granter_reference_before_a_named_literal_restores_both() {
+        for verb in ["Tap", "Sacrifice"] {
+            assert_eq!(
+                normalize_card_name_refs(
+                    &format!(
+                        "Equipped creature has \"{verb} Foo Bar: Create a Treasure token named Gold.\""
+                    ),
+                    "Foo Bar",
+                ),
+                format!(
+                    "Equipped creature has \"{verb} {GRANTING_SELF_PLACEHOLDER}: Create a Treasure token named Gold.\""
+                )
+            );
+        }
     }
 
     /// H1 — CR 201.5b: a host self-reference (`~`) is NOT a granter reference and

@@ -10478,7 +10478,7 @@ fn render_effect_descriptions(effect: &mut Effect, card_name: &str) {
         }
         // CR 201.5a: a copy-except SELF-grant nests the granted body's description
         // inside the copy effect's payload (Sakashima the Impostor). MEASURED
-        // load-bearing: without this arm the raw U+E0002 marker ships into
+        // load-bearing: without this arm the raw U+E0004 marker ships into
         // `client/public/card-data.json` for that card.
         Effect::BecomeCopy {
             additional_modifications,
@@ -10517,7 +10517,7 @@ fn render_effect_descriptions(effect: &mut Effect, card_name: &str) {
         }
         // CR 611.2 + CR 111.1: a resolution-time grant onto a target, and a created
         // token's own statics. MEASURED: the GenericEffect route leaks a raw
-        // U+E0002 at BASE_SHA today; the Token route regresses without this arm.
+        // U+E0004 at BASE_SHA today; the Token route regresses without this arm.
         Effect::GenericEffect {
             static_abilities, ..
         }

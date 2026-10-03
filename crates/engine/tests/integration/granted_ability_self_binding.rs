@@ -493,8 +493,8 @@ fn granted_def_from(
         .expect("card must grant an activated ability")
 }
 
-/// The private-use masker placeholder (U+E0002). Must NEVER survive into the AST.
-const PLACEHOLDER: char = '\u{E0002}';
+/// The private-use masker placeholder (U+E0004). Must NEVER survive into the AST.
+const PLACEHOLDER: char = '\u{E0004}';
 
 // ---------------------------------------------------------------------------
 // CR 201.5a class corpus: exported cards whose quoted granted body names the
@@ -698,7 +698,7 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
     (HELLISH_REBUKE, "Hellish Rebuke", &["Instant"], &[]),
 ];
 
-/// CR 201.5a: no raw U+E0002 may survive into ANY string reachable from
+/// CR 201.5a: no raw U+E0004 may survive into ANY string reachable from
 /// `ParsedAbilities`' four top-level vectors through the render net's descend
 /// set — including the outer static/trigger DESCRIPTION strings that embed the
 /// raw quoted text (a granted body's "…has \"…Sacrifice <self>…\"" description).
@@ -709,7 +709,7 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
 /// vacuous:
 ///
 /// 1. **`serde_json`, not `format!("{:?}")`.** `Debug` ESCAPES the raw
-///    private-use char to the literal text `\u{e0002}`, so searching a `Debug`
+///    private-use char to the literal text `\u{e0004}`, so searching a `Debug`
 ///    dump for the real character was ALWAYS false — the guard could not fail.
 ///    `serde_json` emits it raw, at every `String`, at every depth, which is
 ///    strictly stronger than any hand-written `visit_*` walk.
@@ -727,7 +727,7 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
 /// Non-vacuity is proved by `placeholder_leak_guard_reports_a_planted_marker`.
 ///
 /// Revert-to-red: remove the render net from `parse_oracle_text` → every card's
-/// outer static description carries the raw U+E0002 char.
+/// outer static description carries the raw U+E0004 char.
 #[test]
 fn placeholder_never_leaks_into_any_description() {
     for &(oracle, name, types, subtypes) in CLASS_CORPUS {
@@ -748,7 +748,7 @@ fn placeholder_never_leaks_into_any_description() {
         assert!(
             !json.contains(PLACEHOLDER),
             "{name}: the masker placeholder must render to the granting card's \
-             printed name in every description; a raw U+E0002 leaked"
+             printed name in every description; a raw U+E0004 leaked"
         );
     }
 }
@@ -930,7 +930,7 @@ fn r4_counter_channel_targets_the_granter() {
             "{name}: the PutCounter target names the granting equipment → GrantingObject"
         );
         // `serde_json`, not `format!("{:?}")`: `Debug` ESCAPES the raw private-use
-        // char to the literal text `\u{e0002}`, so a Debug search for the real
+        // char to the literal text `\u{e0004}`, so a Debug search for the real
         // character is always false and this negative would be vacuous.
         assert!(
             !serde_json::to_string(&def)

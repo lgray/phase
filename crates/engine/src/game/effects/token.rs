@@ -9362,7 +9362,7 @@ mod tests {
 
         // NOTE: check the actual `description` fields directly, NOT a
         // `{:?}`-formatted dump of the tree — `Debug` escapes the raw private-use
-        // char to the literal text `\u{e0002}`, so searching a Debug string for
+        // char to the literal text `\u{e0004}`, so searching a Debug string for
         // the real character is always false regardless of whether scrubbing ran.
         let placeholder = crate::parser::oracle_util::GRANTING_SELF_PLACEHOLDER;
         let leaked = static_definitions.iter().any(|def| {
@@ -9406,7 +9406,7 @@ mod tests {
     /// this arm of the corpus property has to live here.
     ///
     /// `serde_json` rather than `format!("{:?}")` is deliberate: `Debug` escapes
-    /// the raw private-use char to the literal text `\u{e0002}`, so a `Debug`
+    /// the raw private-use char to the literal text `\u{e0004}`, so a `Debug`
     /// search for the real character is always false and the guard would be
     /// vacuous. `serde_json` emits it raw, at every depth.
     ///
