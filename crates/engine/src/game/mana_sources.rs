@@ -2613,39 +2613,81 @@ fn group_profiles_by_object(
     grouped.into_iter().collect()
 }
 
+/// CR 106.1 + CR 601.2g: The colored shards one activation can cover, with the
+/// units it places there, leaving later sources the remainder; an application
+/// placing none is the caller's skip.
 fn profile_applications(
     profile: &ActivatableManaProfileKind,
     requirements: &[Vec<ManaType>],
 ) -> Vec<(Vec<Vec<ManaType>>, u32)> {
-    match profile {
+    // Interchangeable units beyond the shard count can only be surplus.
+    let placeable = |count: &u32| (*count as usize).min(requirements.len());
+    let unit_lists: Vec<Vec<&[ManaType]>> = match profile {
         ActivatableManaProfileKind::Exact(types) => {
-            let mut remaining = requirements.to_vec();
-            for mana_type in types {
-                let Some(pos) = remaining.iter().position(|opts| opts.contains(mana_type)) else {
-                    return Vec::new();
-                };
-                remaining.remove(pos);
-            }
-            vec![(remaining, types.len() as u32)]
+            vec![types.iter().map(std::slice::from_ref).collect()]
         }
         ActivatableManaProfileKind::AnyOneColor { count, options } => options
             .iter()
-            .flat_map(|&color| {
-                combination_assignments(*count, std::slice::from_ref(&color), requirements)
-            })
+            .map(|color| vec![std::slice::from_ref(color); placeable(count)])
             .collect(),
         ActivatableManaProfileKind::AnyCombination { count, options } => {
-            combination_assignments(*count, options, requirements)
+            vec![vec![options.as_slice(); placeable(count)]]
         }
         ActivatableManaProfileKind::CombinationChoices(choices) => choices
             .iter()
-            .flat_map(|choice| {
-                profile_applications(
-                    &ActivatableManaProfileKind::Exact(choice.clone()),
-                    requirements,
-                )
-            })
+            .map(|choice| choice.iter().map(std::slice::from_ref).collect())
             .collect(),
+    };
+    let mut applications = Vec::new();
+    for units in &unit_lists {
+        place_units(units, requirements.to_vec(), 0, 0, &mut applications);
+    }
+    applications.retain(|(_, consumed)| *consumed > 0);
+    applications
+}
+
+/// CR 106.4 + CR 107.4b: Each unit takes a remaining shard one of its types
+/// pays; a unit no remaining shard takes is surplus that still pays generic
+/// mana, so only placed units are consumed.
+fn place_units(
+    units: &[&[ManaType]],
+    requirements: Vec<Vec<ManaType>>,
+    from: usize,
+    consumed: u32,
+    applications: &mut Vec<(Vec<Vec<ManaType>>, u32)>,
+) {
+    let Some((unit, rest)) = units.split_first().filter(|_| !requirements.is_empty()) else {
+        if !applications
+            .iter()
+            .any(|(remaining, placed)| *placed == consumed && *remaining == requirements)
+        {
+            applications.push((requirements, consumed));
+        }
+        return;
+    };
+    // An identical next unit takes only later shards, so each placement set is
+    // enumerated once rather than once per ordering.
+    let next_from = |index: usize| if rest.first() == Some(unit) { index } else { 0 };
+    let mut placed = false;
+    for (index, payment_options) in requirements.iter().enumerate().skip(from) {
+        if payment_options
+            .iter()
+            .any(|mana_type| unit.contains(mana_type))
+        {
+            placed = true;
+            let mut remaining = requirements.clone();
+            remaining.remove(index);
+            place_units(
+                rest,
+                remaining,
+                next_from(index),
+                consumed + 1,
+                applications,
+            );
+        }
+    }
+    if !placed {
+        place_units(rest, requirements, next_from(from), consumed, applications);
     }
 }
 
@@ -2677,43 +2719,6 @@ fn assign_profiles_to_requirements(
     None
 }
 
-/// CR 106.1 + CR 601.2g: Enumerate the colored shards one flexible source can
-/// cover, allowing later sources to cover the remainder. A one-mana
-/// `AnyOneColor` source must not be rejected simply because the spell has two
-/// colored shards; Relic of Legends plus a dual land is the common case.
-fn combination_assignments(
-    count: u32,
-    options: &[ManaType],
-    requirements: &[Vec<ManaType>],
-) -> Vec<(Vec<Vec<ManaType>>, u32)> {
-    if requirements.is_empty() {
-        // All shards are covered; any leftover `count` is simply surplus mana
-        // the player never produces (or lets drain). Rejecting over-production
-        // here would falsely mark e.g. a power-3 combination source as unable
-        // to pay a two-shard cost.
-        return vec![(Vec::new(), 0)];
-    }
-    if count == 0 {
-        return vec![(requirements.to_vec(), 0)];
-    }
-    let mut applications = Vec::new();
-    for (index, payment_options) in requirements.iter().enumerate() {
-        for &color in payment_options {
-            if !options.contains(&color) {
-                continue;
-            }
-            let mut next_requirements = requirements.to_vec();
-            next_requirements.remove(index);
-            for (remaining, inner) in
-                combination_assignments(count - 1, options, &next_requirements)
-            {
-                applications.push((remaining, 1 + inner));
-            }
-        }
-    }
-    applications
-}
-
 fn assign_profiles_to_shards(
     profiles: &[ActivatableManaProfile],
     shards: &[ManaCostShard],
@@ -2733,9 +2738,9 @@ fn assign_profiles_to_shards(
 /// activating currently legal mana abilities (non-tap sources like Vivi
 /// Ornitier's {0} combination mana, unrestricted discard mana, etc.).
 ///
-/// Returns `(covered, consumed_pips)` where `consumed_pips` is the total mana
-/// produced by activations used for shard coverage — callers must subtract
-/// this from generic capacity to avoid double-counting one activation.
+/// Returns `(covered, consumed_pips)` where `consumed_pips` counts the units
+/// applied to shards — callers must subtract this from generic capacity to
+/// avoid double-counting one activation.
 pub(crate) fn can_cover_shards_with_activatable_mana(
     state: &GameState,
     player: PlayerId,
