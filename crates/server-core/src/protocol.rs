@@ -3380,8 +3380,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_103_for_format_derived_dungeon_pool() {
-        assert_eq!(PROTOCOL_VERSION, 103);
+    fn protocol_version_is_104_for_delve_payment_state_shape() {
+        assert_eq!(PROTOCOL_VERSION, 104);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3392,7 +3392,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_103_for_format_derived_dungeon_pool` stays
+    /// `protocol_version_is_104_for_delve_payment_state_shape` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

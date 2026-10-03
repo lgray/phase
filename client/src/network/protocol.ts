@@ -106,6 +106,10 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  86 — game_setup and state_update carry GameState, whose PendingCast
+ *       gains delved_cards and whose pending cost-move resume swaps
+ *       DelveManaPayment for FinalizeDelvedCast (#9400). Bumped in lockstep
+ *       with full-game protocol 104.
  *  85 — game_setup and state_update carry GameState, whose FormatConfig
  *       loses allow_experimental_dungeons: the Wilderness pool is
  *       format-derived now, so a v84 peer would fail it closed in freeform
@@ -532,7 +536,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 85 as const;
+export const WIRE_PROTOCOL_VERSION = 86 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {
