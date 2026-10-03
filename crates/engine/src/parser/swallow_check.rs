@@ -36,10 +36,11 @@ use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ActivationRestriction, CastingPermission,
     ChooseFromZoneConstraint, Comparator, ContinuousModification, CopyRetargetPermission,
     DamageModification, DelayedTriggerCondition, Duration, Effect, FilterProp, ManaProduction,
-    ModalSelectionConstraint, OpponentMayScope, ParsedCondition, PlayerFilter, QuantityExpr,
-    QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode, RestrictionExpiry,
-    SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, TargetFilter,
-    TriggerCondition, TriggerConstraint, TriggerDefinition, UnlessPayScaling,
+    ModalSelectionConstraint, OpponentMayScope, ParsedCondition, PerPlayerScope, PlayerFilter,
+    QuantityExpr, QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode,
+    RestrictionExpiry, SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition,
+    TargetFilter, TriggerCondition, TriggerConstraint, TriggerDefinition, UnlessPayScaling,
+    ZoneOwner,
 };
 use crate::types::ability_visit::{
     visit_ability_def, visit_replacement, visit_static, visit_trigger,
@@ -1769,6 +1770,23 @@ fn effect_is_replacement_carrier(effect: &Effect) -> bool {
         // Feather return / Lilah plot parameterization is a second consequence
         // folded into the same carrier, so it stays exempt either way).
         | Effect::ExileResolvingSpellInsteadOfGraveyard { .. } => true,
+        // CR 614.1a: a resolution-created permission whose granted static carries
+        // the replacement ("If a spell cast this way would be put into a
+        // graveyard, exile it instead" folded into a graveyard cast permission —
+        // The Great Work). The granted static answers the same question it does
+        // when printed on a permanent.
+        Effect::GenericEffect {
+            static_abilities, ..
+        } => static_abilities
+            .iter()
+            .flat_map(|grant| grant.modifications.iter())
+            .any(|modification| {
+                matches!(
+                    modification,
+                    ContinuousModification::GrantStaticAbility { definition }
+                        if static_is_replacement_carrier(definition)
+                )
+            }),
         _ => false,
     }
 }
@@ -2745,25 +2763,86 @@ fn def_tree_distinct_card_type_constraint_count(def: &AbilityDefinition) -> usiz
 /// within the one-line granularity `AuditUnit` accepts, when split roots of one
 /// ability diverge and only some of them carry every printed constraint.
 fn distinct_card_type_constraint_count(scoped: &ParsedAbilities) -> usize {
-    scoped
-        .abilities
-        .iter()
-        .map(def_tree_distinct_card_type_constraint_count)
-        .sum::<usize>()
+    root_aware_count(scoped, def_tree_distinct_card_type_constraint_count)
+}
+
+/// CR 113.2c: sum `per_def` over the unit's spell-ability roots, and
+/// take its max over the trigger roots and over the replacement roots — see
+/// [`distinct_card_type_constraint_count`] for why split trigger and replacement
+/// roots of one printed ability count once.
+fn root_aware_count(scoped: &ParsedAbilities, per_def: fn(&AbilityDefinition) -> usize) -> usize {
+    scoped.abilities.iter().map(per_def).sum::<usize>()
         + scoped
             .triggers
             .iter()
             .filter_map(|t| t.execute.as_deref())
-            .map(def_tree_distinct_card_type_constraint_count)
+            .map(per_def)
             .max()
             .unwrap_or(0)
         + scoped
             .replacements
             .iter()
             .filter_map(|r| r.execute.as_deref())
-            .map(def_tree_distinct_card_type_constraint_count)
+            .map(per_def)
             .max()
             .unwrap_or(0)
+}
+
+/// CR 102.2 + CR 608.2c: the number of per-opponent choices `def`'s tree
+/// represents, one per `ChooseFromZone { zone_owner: Each(Opponents) }`.
+///
+/// "For each opponent, choose an artifact or land that player controls"
+/// (Ultimate Magic: Meteor) realizes its per-opponent iteration as the
+/// choice's population, not as a `QuantityExpr`, so the generic quantity probes
+/// cannot see it.
+fn def_tree_per_opponent_choice_count(def: &AbilityDefinition) -> usize {
+    let mut count = 0usize;
+    let _ = visit_ability_def(def, &mut |effect| {
+        if matches!(
+            effect,
+            Effect::ChooseFromZone {
+                zone_owner: ZoneOwner::Each(PerPlayerScope::Opponents),
+                ..
+            }
+        ) {
+            count += 1;
+        }
+        ControlFlow::Continue(())
+    });
+    count
+}
+
+/// CR 102.2 + CR 608.2c: true when every `"for each "` occurrence the line
+/// raises opens a "for each opponent, choose …" clause and each is represented
+/// by its own per-opponent `ChooseFromZone`. Occurrence-counted like
+/// [`for_each_card_type_constraints_cover_all_for_each_markers`]: a second,
+/// unrepresented `"for each "` in the unit still warns, and a raised occurrence
+/// with any other continuation belongs to a clause this carrier does not
+/// represent.
+fn per_opponent_choices_cover_all_for_each_markers(
+    cleaned: &str,
+    markers: &[&'static str],
+    scoped: &ParsedAbilities,
+) -> bool {
+    if markers.len() != 1 || markers[0] != "for each " {
+        return false;
+    }
+    let mut raised = 0usize;
+    // allow-noncombinator: swallow detector marker scan on classified text
+    for (idx, _) in cleaned.match_indices("for each ") {
+        let rest = &cleaned[idx + "for each ".len()..];
+        let opens_choice = alt((
+            tag::<_, _, nom::error::Error<&str>>("opponent, choose "),
+            tag("opponent choose "),
+        ))
+        .parse(rest)
+        .is_ok();
+        if !opens_choice {
+            return false;
+        }
+        raised += 1;
+    }
+    raised > 0 && root_aware_count(scoped, def_tree_per_opponent_choice_count) >= raised
 }
 
 /// CR 205.2 + CR 608.2c/d: true when every `"for each "` occurrence the line
@@ -3137,6 +3216,12 @@ fn detect_dynamic_qty(
     // "for each " occurrence (`for_each_card_type_constraints_cover_all_for_each_markers`),
     // so a sibling unrepresented "for each " in the same unit still warns.
     if for_each_card_type_constraints_cover_all_for_each_markers(cleaned, &markers, scoped) {
+        return;
+    }
+    // CR 102.2 + CR 608.2c: "For each opponent, choose …" (Ultimate Magic:
+    // Meteor) realizes its iteration as a per-opponent `ChooseFromZone`
+    // population; one choice discharges one raised "for each " occurrence.
+    if per_opponent_choices_cover_all_for_each_markers(cleaned, &markers, scoped) {
         return;
     }
     // CR 608.2c: each printed "For each <population>," is represented by its own
@@ -7921,6 +8006,35 @@ If you sang a song the whole time you were searching and shuffling, you may unta
         assert!(!has_swallowed_detector(&parsed, "Replacement_Instead"));
     }
 
+    /// CR 614.1a: The Great Work's chapter III folds "If a spell cast this way would
+    /// be put into a graveyard, exile it instead" into the graveyard cast
+    /// permission it grants, so the clause is represented. The same grant with a
+    /// destination the permission cannot carry (a library) is not folded and must
+    /// keep warning.
+    #[test]
+    fn replacement_instead_accepts_a_granted_graveyard_permission_rider() {
+        let folded = parse_named(
+            "Until end of turn, you may cast instant and sorcery spells from any graveyard. \
+             If a spell cast this way would be put into a graveyard, exile it instead.",
+            "Folded Grant",
+            &["Sorcery"],
+        );
+        assert!(!has_swallowed_detector(&folded, "Replacement_Instead"));
+
+        let unfolded = parse_named(
+            "Until end of turn, you may cast instant and sorcery spells from any graveyard. \
+             If a spell cast this way would be put into a graveyard, put it on the bottom of \
+             its owner's library instead.",
+            "Unfolded Grant",
+            &["Sorcery"],
+        );
+        assert!(
+            has_swallowed_detector(&unfolded, "Replacement_Instead"),
+            "{:?}",
+            unfolded.parse_warnings
+        );
+    }
+
     #[test]
     fn replacement_instead_accepts_power_pack_delayed_payload_rider() {
         let parsed = parse_named(
@@ -12572,6 +12686,7 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             extra_cost: None,
             enters_with_counter: Some(CounterType::Finality),
             required_cast_keyword: None,
+            pool: crate::types::statics::GraveyardPermissionPool::OwnGraveyard,
         });
         let parsed = crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),
@@ -12658,6 +12773,7 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             extra_cost: None,
             enters_with_counter: Some(CounterType::Finality),
             required_cast_keyword: None,
+            pool: crate::types::statics::GraveyardPermissionPool::OwnGraveyard,
         });
         let parsed = crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),
@@ -13346,7 +13462,77 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
         assert_eq!(swallows_for(&parsed, "DynamicQty").len(), 1);
     }
 
-    /// Typed positive: the co-scoped pair represents the iteration.
+    /// CR 102.2 + CR 608.2c: Ultimate Magic: Meteor's "for each opponent,
+    /// choose …" is represented by its per-opponent `ChooseFromZone`, so it
+    /// raises no `DynamicQty`.
+    #[test]
+    fn per_opponent_choice_represents_its_for_each() {
+        let parsed = parse_named(
+            "Ultimate Magic: Meteor deals 7 damage to each creature. If this spell was cast from exile, for each opponent, choose an artifact or land that player controls. Destroy the chosen permanents.",
+            "Ultimate Magic: Meteor",
+            &["Sorcery"],
+        );
+        let swallows = swallows_for(&parsed, "DynamicQty");
+        assert!(swallows.is_empty(), "{swallows:?}");
+        // Reach: the parse the detector saw is the full per-opponent chain, not
+        // a gap the card-wide `Unimplemented` guard would have excused.
+        assert_eq!(
+            crate::parser::swallow_check::root_aware_count(
+                &parsed,
+                crate::parser::swallow_check::def_tree_per_opponent_choice_count,
+            ),
+            1,
+            "exactly one ChooseFromZone {{ Each(Opponents) }}: {:#?}",
+            parsed.abilities
+        );
+        let mut unimplemented = false;
+        for def in &parsed.abilities {
+            let _ = crate::types::ability_visit::visit_ability_def(def, &mut |effect| {
+                if matches!(effect, Effect::Unimplemented { .. }) {
+                    unimplemented = true;
+                }
+                std::ops::ControlFlow::<()>::Continue(())
+            });
+        }
+        assert!(!unimplemented, "{:#?}", parsed.abilities);
+    }
+
+    /// Occurrence-counted: one per-opponent choice discharges one raised
+    /// "for each opponent, choose", and a "for each " that opens anything else
+    /// is not discharged at all.
+    #[test]
+    fn per_opponent_choice_does_not_discharge_a_second_for_each() {
+        let one_choice = parse_named(
+            "For each opponent, choose a creature that player controls. Destroy the chosen permanents.",
+            "Probe",
+            &["Sorcery"],
+        );
+        let markers = ["for each "];
+        assert!(
+            crate::parser::swallow_check::per_opponent_choices_cover_all_for_each_markers(
+                "for each opponent, choose a creature that player controls.",
+                &markers,
+                &one_choice,
+            ),
+            "reach: one raised occurrence, one represented choice"
+        );
+        assert!(
+            !crate::parser::swallow_check::per_opponent_choices_cover_all_for_each_markers(
+                "for each opponent, choose a creature that player controls. for each opponent, choose a land that player controls.",
+                &markers,
+                &one_choice,
+            ),
+            "two raised occurrences, one represented choice"
+        );
+        assert!(
+            !crate::parser::swallow_check::per_opponent_choices_cover_all_for_each_markers(
+                "for each opponent, choose a creature that player controls. you gain 1 life for each creature you control.",
+                &markers,
+                &one_choice,
+            ),
+            "a for each that opens something else is not this carrier's"
+        );
+    }
     #[test]
     fn co_scoped_parent_target_iteration_is_represented() {
         assert!(
@@ -13915,6 +14101,7 @@ mod detect_condition_if_replacement_exemption_tests {
             extra_cost: None,
             enters_with_counter: Some(CounterType::Finality),
             required_cast_keyword: None,
+            pool: crate::types::statics::GraveyardPermissionPool::OwnGraveyard,
         });
         let parsed = crate::parser::oracle::ParsedAbilities {
             abilities: Vec::new(),

@@ -72,6 +72,13 @@ pub struct QuantityContext {
     /// (`resolve_quantity_with_targets_and_damage_source`); `None` in every
     /// non-batch context (a null read → 0, fail-closed).
     pub damage_source: Option<ObjectId>,
+    /// CR 205.2a + CR 607.2a: The spell being cost-modified, whose own card
+    /// types are intersected against a `QuantityRef::SharedCardTypes` population
+    /// (Cemetery Prowler: "for each card type they share with cards exiled with
+    /// ~"). `None` outside cast-time cost-modifier resolution. A
+    /// [`QuantityRef::SharedCardTypes`] read without this authority fails closed
+    /// to zero rather than treating the static source as the grammatical subject.
+    pub spell: Option<ObjectId>,
     /// CR 121.2a + CR 614.1a: The amount carried by the proposed event a
     /// replacement condition is being evaluated against — the draw count a
     /// count-form antecedent ("would draw two or more cards") compares. Set
@@ -94,6 +101,7 @@ impl QuantityContext {
             recipient: None,
             scoped_player: None,
             damage_source: None,
+            spell: None,
             event_amount: None,
             granting_object: None,
         }
@@ -1658,6 +1666,28 @@ pub fn resolve_quantity_with_recipient(
     )
 }
 
+/// CR 205.2a + CR 607.2a: Resolve a quantity for a cast-time cost modifier,
+/// carrying the spell being cast as the `SharedCardTypes` intersection subject.
+/// `source_id` remains the static's source permanent (the exile link anchor),
+/// while `spell_id` supplies the spell-side card types.
+pub fn resolve_quantity_with_spell(
+    state: &GameState,
+    expr: &QuantityExpr,
+    controller: PlayerId,
+    source_id: ObjectId,
+    spell_id: ObjectId,
+) -> i32 {
+    resolve_quantity_with_ctx(
+        state,
+        expr,
+        controller,
+        QuantityContext {
+            spell: Some(spell_id),
+            ..QuantityContext::new(source_id)
+        },
+    )
+}
+
 /// True when the QuantityExpr needs a per-object recipient binding to resolve
 /// an anaphoric quantity such as "for each Aura attached to it" or "for each
 /// word in its name."
@@ -1698,6 +1728,9 @@ pub(crate) fn quantity_expr_uses_recipient(expr: &QuantityExpr) -> bool {
             | QuantityRef::ObjectCountDistinct { filter, .. }
             | QuantityRef::ObjectCountBySharedQuality { filter, .. }
             | QuantityRef::DistinctCardTypes {
+                source: CardTypeSetSource::Objects { filter },
+            }
+            | QuantityRef::SharedCardTypes {
                 source: CardTypeSetSource::Objects { filter },
             }
             | QuantityRef::DistinctSubtypes {
@@ -2191,6 +2224,7 @@ fn quantity_ref_uses_unspent_mana(qty: &QuantityRef) -> bool {
         | QuantityRef::TargetZoneCardCount { .. }
         | QuantityRef::Devotion { .. }
         | QuantityRef::DistinctCardTypes { .. }
+        | QuantityRef::SharedCardTypes { .. }
         | QuantityRef::DistinctSubtypes { .. }
         | QuantityRef::CardsExiledBySource
         | QuantityRef::ExiledCardPower { .. }
@@ -2489,6 +2523,7 @@ fn quantity_ref_uses_object_count(qty: &QuantityRef) -> bool {
         // "does this entered object join the population?", which is what keeps
         // the two functions' `false` arms aligned.
         QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::SharedCardTypes { source }
         | QuantityRef::DistinctSubtypes { source, .. }
         | QuantityRef::DistinctColorsAmong { source } => {
             characteristic_source_reads_object_count(source)
@@ -2737,6 +2772,7 @@ fn quantity_ref_characteristic_reads(qty: &QuantityRef, depth: u32) -> Character
         // CR 205.2a / CR 205.3: the object-filter and journal-filter sources read
         // a live filter; the zone / linked-exile / tracked-set sources do not.
         QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::SharedCardTypes { source }
         | QuantityRef::DistinctSubtypes { source, .. } => {
             CharacteristicKinds::CARD_TYPES.union(characteristic_source_reads_at(source, depth))
         }
@@ -3032,6 +3068,7 @@ fn entered_object_perturbs_quantity_ref(
             matches_target_filter(state, entered.id, filter, ctx)
         }
         QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::SharedCardTypes { source }
         | QuantityRef::DistinctSubtypes { source, .. }
         | QuantityRef::DistinctColorsAmong { source } => {
             characteristic_source_perturbed_by_entry(state, entered, ctx, source)
@@ -5225,6 +5262,43 @@ fn resolve_ref(
                 },
             );
             usize_to_i32_saturating(seen.len())
+        }
+        // CR 205.2a + CR 607.2a: Count the distinct card types the spell being
+        // cost-modified (carried in `ctx.spell`) shares with the population — the
+        // intersection "they share with" requires, not the population's own
+        // distinct-type count (Cemetery Prowler #6898). This quantity has no
+        // grammatical subject outside cast-time cost determination, so it fails
+        // closed before scanning when that authority is absent.
+        QuantityRef::SharedCardTypes { source } => {
+            let Some(subject_id) = ctx.spell else {
+                return 0;
+            };
+            let subject_types: HashSet<CoreType> =
+                characteristic_view_for_object(state, subject_id)
+                    .map(|view| view.core_types().to_vec())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+            let mut shared = HashSet::new();
+            visit_characteristic_source(
+                state,
+                source,
+                ctx.clone(),
+                CharacteristicFilterContexts {
+                    base: &filter_ctx,
+                    scoped_owned_exile: None,
+                },
+                controller,
+                controller,
+                &mut |_, view, _| {
+                    for ct in view.core_types() {
+                        if subject_types.contains(ct) {
+                            shared.insert(*ct);
+                        }
+                    }
+                },
+            );
+            usize_to_i32_saturating(shared.len())
         }
         // CR 205.3 + CR 604.3: Count distinct subtype VALUES across the same
         // `CardTypeSetSource` scan as `DistinctCardTypes`, but reading
@@ -11672,6 +11746,40 @@ mod tests {
         );
     }
 
+    /// CR 205.2a + CR 611.3a: `SharedCardTypes` over an `Objects { filter }`
+    /// population is recipient-dependent when its filter reads the recipient
+    /// (e.g. `AttachedToRecipient`), mirroring its `DistinctCardTypes` sibling.
+    /// The wildcard `quantity_expr_uses_recipient` classifier must include it so
+    /// the layer evaluator re-resolves per recipient instead of reusing one
+    /// value for every affected object.
+    #[test]
+    fn shared_card_types_over_recipient_filter_uses_recipient() {
+        let recipient_relative = QuantityExpr::Ref {
+            qty: QuantityRef::SharedCardTypes {
+                source: CardTypeSetSource::Objects {
+                    filter: TargetFilter::Typed(
+                        TypedFilter::card().properties(vec![FilterProp::AttachedToRecipient]),
+                    ),
+                },
+            },
+        };
+        assert!(
+            quantity_expr_uses_recipient(&recipient_relative),
+            "SharedCardTypes over Objects{{AttachedToRecipient}} is recipient-dependent"
+        );
+
+        // Paired negative: ExiledBySource is fixed per source, never recipient-relative.
+        let source_fixed = QuantityExpr::Ref {
+            qty: QuantityRef::SharedCardTypes {
+                source: CardTypeSetSource::ExiledBySource,
+            },
+        };
+        assert!(
+            !quantity_expr_uses_recipient(&source_fixed),
+            "SharedCardTypes over ExiledBySource reads no recipient and must not force re-resolution"
+        );
+    }
+
     /// CR 700.8 + CR 700.8b: party size — building-block test exercising
     /// `compute_party_size` directly across the full assignment surface.
     /// Verifies that the bipartite-matching maximizes the count for creatures
@@ -15786,6 +15894,65 @@ mod tests {
             },
         };
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), source), 2);
+    }
+
+    /// CR 205.2a + CR 607.2a + CR 601.2f: `SharedCardTypes` has two distinct
+    /// authorities. The static source selects its linked-exile population, while
+    /// the spell being cast supplies the other side of the card-type intersection.
+    #[test]
+    fn shared_card_types_requires_explicit_spell_authority() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(0),
+            "Cemetery Prowler".to_string(),
+            Zone::Battlefield,
+        );
+        let linked = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Linked Creature".to_string(),
+            Zone::Exile,
+        );
+        let spell = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Creature Spell".to_string(),
+            Zone::Hand,
+        );
+        for object_id in [linked, spell] {
+            state
+                .objects
+                .get_mut(&object_id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+        state.exile_links.push(ExileLink {
+            source_id: source,
+            exiled_id: linked,
+            kind: ExileLinkKind::TrackedBySource,
+        });
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::SharedCardTypes {
+                source: CardTypeSetSource::ExiledBySource,
+            },
+        };
+        assert_eq!(
+            resolve_quantity(&state, &expr, PlayerId(0), source),
+            0,
+            "without a spell subject, SharedCardTypes must fail closed rather than use the source"
+        );
+        assert_eq!(
+            resolve_quantity_with_spell(&state, &expr, PlayerId(0), source, spell),
+            1,
+            "the exact spell subject shares Creature with the source-linked exile population"
+        );
     }
 
     // CR 406.6 + CR 607.1: CardsExiledBySource counts distinct exiled objects

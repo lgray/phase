@@ -41,6 +41,7 @@ use super::lower::{
     attach_cast_cost_modifier_to_prior_cast_from_zone,
     attach_graveyard_redirect_rider_to_prior_cast_from_zone,
     attach_graveyard_redirect_rider_to_prior_free_cast_from_zones,
+    attach_graveyard_redirect_rider_to_prior_graveyard_cast_grant,
     attach_land_enters_tapped_to_previous_play_from_exile, cast_cost_modifier_rider,
     chain_references_chosen_card, clone_would_transplant_gated_referent,
     consolidate_die_and_coin_defs, definition_targets_self_source,
@@ -59,13 +60,13 @@ use super::lower::{
     parse_same_zone_owner_target_constraint, parse_total_mana_value_target_constraint,
     patch_choose_from_zone_counter_continuation_target, patch_population_head_tap_anaphor,
     patch_self_ref_head_tap_anaphor, rebind_zone_changed_this_way_pronoun_to_moved_object,
-    relink_gated_token_referent_consumers, resolve_populated_token_anaphors,
-    resolve_populated_unsuspect_anaphors, resolve_those_tokens_anaphors,
-    rewire_result_anchored_subchain, rewrite_counter_instead_target_from_antecedent,
-    rewrite_else_event_context_to_stable, rewrite_else_parent_target_to_self_ref,
-    rewrite_player_anaphor_targets_in_definition, rewrite_those_tokens_from_antecedent,
-    rewrite_two_target_counter_chain, target_choice_timing_for_clause,
-    thread_chosen_damage_source_into_oneshot_effects,
+    relink_gated_token_referent_consumers, relink_gated_tracked_set_consumers,
+    resolve_populated_token_anaphors, resolve_populated_unsuspect_anaphors,
+    resolve_those_tokens_anaphors, rewire_result_anchored_subchain,
+    rewrite_counter_instead_target_from_antecedent, rewrite_else_event_context_to_stable,
+    rewrite_else_parent_target_to_self_ref, rewrite_player_anaphor_targets_in_definition,
+    rewrite_those_tokens_from_antecedent, rewrite_two_target_counter_chain,
+    target_choice_timing_for_clause, thread_chosen_damage_source_into_oneshot_effects,
 };
 use super::sequence::{apply_clause_continuation, def_bears_retargetable_copy};
 use super::{
@@ -2689,6 +2690,10 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                 .unwrap_or_default()
                 .to_lowercase(),
         ) {
+            if attach_graveyard_redirect_rider_to_prior_graveyard_cast_grant(&mut defs, &dest) {
+                prev_boundary = clause_ir.boundary;
+                continue;
+            }
             if attach_graveyard_redirect_rider_to_prior_free_cast_from_zones(
                 &mut defs,
                 dest.clone(),
@@ -3983,6 +3988,10 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
     // Must run AFTER the anaphor rewrites above, which are what bind the
     // referent it looks for.
     relink_gated_token_referent_consumers(&mut defs);
+
+    // CR 608.2c + CR 609.3: the same rule for a gated zone choice's tracked set
+    // ("If …, for each opponent, choose …. Destroy the chosen permanents.").
+    relink_gated_tracked_set_consumers(&mut defs);
 
     // CR 707.12: "Copy [a card]. You may cast the copy ..." is not a stack
     // copy (CR 707.10). It creates a card copy in the source zone, then casts

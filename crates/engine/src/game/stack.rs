@@ -28,27 +28,39 @@ use crate::types::zones::Zone;
 use std::collections::BTreeMap;
 
 use super::ability_utils::{
-    build_target_slots, flatten_specified_targets_in_chain, flatten_targets_in_chain,
-    illegal_declared_target_slots, validate_targets_in_chain,
+    build_target_slots, clear_illegal_local_target_slots, flatten_specified_targets_in_chain,
+    flatten_targets_in_chain, illegal_declared_target_slots, validate_targets_in_chain,
 };
 use super::effects;
 use super::targeting;
 use super::zone_pipeline::{self, ZoneMoveRequest, ZoneMoveResult};
 
+/// A second carrier cannot begin while one is installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ResolutionCarrierError {
+    #[error("a resolution carrier is already installed")]
+    AlreadyResolving,
+}
+
 /// Transfers an already-popped stack entry into the active resolution carrier.
+///
+/// CR 608.2: Exactly one stack object resolves at a time. Refuses, leaving the
+/// installed carrier and its firing untouched, when one is already resolving.
 pub(super) fn begin_resolving_stack_entry(
     state: &mut GameState,
     entry: StackEntry,
     firing: Option<TriggerFiring>,
-) {
-    debug_assert!(state.resolving_stack_entry.is_none());
-    debug_assert!(state.resolving_trigger_firing.is_none());
+) -> Result<(), ResolutionCarrierError> {
+    if state.resolving_stack_entry.is_some() || state.resolving_trigger_firing.is_some() {
+        return Err(ResolutionCarrierError::AlreadyResolving);
+    }
     debug_assert_eq!(
         matches!(&entry.kind, StackEntryKind::TriggeredAbility { .. }),
         firing.is_some()
     );
     state.resolving_stack_entry = Some(entry);
     state.resolving_trigger_firing = firing;
+    Ok(())
 }
 
 /// Settles the active resolution carrier after its owning resolution completes.
@@ -85,7 +97,7 @@ pub(super) fn finish_resolving_stack_entry(
 /// reads here as a pruned slot. No printed card combines that re-seeding with
 /// a `ParentTargetSlot` consumer; writing the seeded copy back into the carrier
 /// would make the two agree.
-fn record_illegal_target_slots(state: &mut GameState, validated: Option<&ResolvedAbility>) {
+fn record_illegal_target_slots(state: &mut GameState, validated: Option<&mut ResolvedAbility>) {
     if let Some(root) = state
         .resolving_stack_entry
         .as_mut()
@@ -1466,12 +1478,17 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // begin resolving. A parked continuation remains live and therefore still
     // fails the invariant below rather than being silently cleared.
     super::engine::settle_resolving_stack_entry_after_continuation_resume(state);
-    // CR 707.10: A prior resolution must have settled before another stack
-    // object can begin resolving. A parked continuation owns its carrier until
-    // its own completion or abort path; silently clearing it here would lose a
-    // receipt-eligible delayed firing.
-    debug_assert!(state.resolving_stack_entry.is_none());
-    debug_assert!(state.resolving_trigger_firing.is_none());
+    // CR 608.2c + CR 608.2m: A prior resolution must finish its instructions
+    // before another stack object begins resolving. A parked continuation owns
+    // its carrier until its own completion or abort path; silently clearing it here would
+    // lose a receipt-eligible delayed firing. This holds in release builds too:
+    // with a live carrier the top entry stays on the stack and nothing begins.
+    if state.resolving_stack_entry.is_some() || state.resolving_trigger_firing.is_some() {
+        tracing::error!(
+            "resolve_top refused: a resolution carrier is still installed; the stack top was not popped"
+        );
+        return;
+    }
     // CR 400.7j: the self-move re-latch is resolution-scoped; clear it alongside
     // `resolving_stack_entry` so it never leaks into the next resolution.
     state.resolution_source_relatch = None;
@@ -1493,7 +1510,8 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
     };
     // CR 603.4 + CR 608.2b: transfer the exact firing before any branch can
     // abort, resolve, or park this popped triggered ability.
-    begin_resolving_stack_entry(state, entry.clone(), trigger_firing);
+    begin_resolving_stack_entry(state, entry.clone(), trigger_firing)
+        .expect("the carrier slot was checked empty before popping");
 
     // CR 113.3b: Activated keyword abilities (Equip / Crew / Saddle / Station)
     // resolve via their typed payload — they have no ResolvedAbility/targets
@@ -1810,7 +1828,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // Only run targeting validation and effect execution when an ability exists.
     // Permanent spells with no spell ability (ability is None) skip straight to
     // zone-change handling below.
-    if let Some(ref ability) = ability {
+    if let Some(ability) = ability.as_mut() {
         // CR 608.2b + CR 115.10a: count only the targets the spell SPECIFIED, not
         // anaphoric snapshots an inheriting rider carries — see
         // `flatten_specified_targets_in_chain`. BOTH sides use it: an all-anaphoric
@@ -1837,7 +1855,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             && !bestow_reverted_at_resolution
             && !mutate_reverted_at_resolution
         {
-            let validated = validate_targets_in_chain(state, ability);
+            let mut validated = validate_targets_in_chain(state, ability);
             let legal_targets = flatten_specified_targets_in_chain(&validated);
             if targeting::check_fizzle(&original_targets, &legal_targets) {
                 // CR 608.2b: Fizzle — all targets illegal, spell is countered on resolution.
@@ -1893,10 +1911,12 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                 state.resolution_source_relatch = None;
                 return;
             }
-            record_illegal_target_slots(state, Some(&validated));
+            record_illegal_target_slots(state, Some(&mut validated));
+            let _ = illegal_declared_target_slots(ability, &mut validated);
             execute_effect(state, &validated, events);
         } else {
             record_illegal_target_slots(state, None);
+            clear_illegal_local_target_slots(ability);
             execute_effect(state, ability, events);
         }
     }
@@ -3805,6 +3825,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         activation_cost_reduction: _,
         activation_record: _,
         illegal_target_slots: _, // CR 608.2b resolution legality stamp; batch candidacy is shape-only
+        illegal_local_target_slots: _, // CR 608.2b node-local legality stamp; batch candidacy is shape-only
         controller: _,
         original_controller,
         scoped_player,
@@ -4048,6 +4069,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         activation_cost_reduction: _,
         activation_record: _,
         illegal_target_slots: _, // CR 608.2b resolution legality stamp; batch candidacy is shape-only
+        illegal_local_target_slots: _, // CR 608.2b node-local legality stamp; batch candidacy is shape-only
         controller: _,
         original_controller: _,
         scoped_player,
@@ -4271,6 +4293,7 @@ fn fixed_opponent_effect_ability_is_batch_candidate(ability: &ResolvedAbility) -
         activation_cost_reduction: _,
         activation_record: _,
         illegal_target_slots: _, // CR 608.2b resolution legality stamp; batch candidacy is shape-only
+        illegal_local_target_slots: _, // CR 608.2b node-local legality stamp; batch candidacy is shape-only
         controller: _,
         original_controller: _,
         scoped_player,
@@ -4817,6 +4840,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         activation_cost_reduction: a_activation_cost_reduction,
         activation_record: a_activation_record,
         illegal_target_slots: a_illegal_target_slots,
+        illegal_local_target_slots: a_illegal_local_target_slots,
     } = a;
     let ResolvedAbility {
         effect: b_effect,
@@ -4898,6 +4922,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         activation_cost_reduction: b_activation_cost_reduction,
         activation_record: b_activation_record,
         illegal_target_slots: b_illegal_target_slots,
+        illegal_local_target_slots: b_illegal_local_target_slots,
     } = b;
 
     a_effect == b_effect
@@ -4918,6 +4943,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         && a_activation_cost_reduction == b_activation_cost_reduction
         && a_activation_record == b_activation_record
         && a_illegal_target_slots == b_illegal_target_slots
+        && a_illegal_local_target_slots == b_illegal_local_target_slots
         && a_controller == b_controller
         && a_scoped_player == b_scoped_player
         && a_kind == b_kind
@@ -5443,6 +5469,68 @@ mod tests {
 
     fn setup() -> GameState {
         GameState::new_two_player(42)
+    }
+
+    #[test]
+    fn residual_trigger_firing_refuses_resolution_without_popping_the_stack() {
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Pending spell".to_string(),
+            Zone::Stack,
+        );
+        state.stack.push_back(StackEntry {
+            id: source,
+            source_id: source,
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(1),
+                ability: Some(Box::new(ResolvedAbility::new(
+                    Effect::NoOp,
+                    Vec::new(),
+                    source,
+                    PlayerId(0),
+                ))),
+                casting_variant: CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+        // Exercise the existing residual continuation-firing boundary, not a
+        // claim that ordinary play creates an incoherent carrier.
+        crate::game::effects::restore_continuation_trigger_firing(
+            &mut state,
+            Some(TriggerFiring::Ordinary),
+        );
+        assert!(state.resolving_stack_entry.is_none());
+        assert_eq!(
+            state.resolving_trigger_firing,
+            Some(TriggerFiring::Ordinary)
+        );
+        let mut events = Vec::new();
+
+        resolve_top(&mut state, &mut events);
+
+        assert_eq!(state.stack.len(), 1);
+        assert_eq!(state.stack.back().unwrap().id, source);
+        assert_eq!(state.objects[&source].zone, Zone::Stack);
+        assert_eq!(
+            state.resolving_trigger_firing,
+            Some(TriggerFiring::Ordinary)
+        );
+        assert!(events.is_empty());
+
+        // Paired reach control: this same spell resolves once the admission
+        // slots are empty, so refusal did not pass by using an empty stack.
+        state.resolving_trigger_firing = None;
+        resolve_top(&mut state, &mut events);
+        assert!(state.stack.is_empty());
+        assert_eq!(state.objects[&source].zone, Zone::Graveyard);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            GameEvent::StackResolved { object_id } if *object_id == source
+        )));
     }
 
     #[test]

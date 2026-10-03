@@ -5611,6 +5611,7 @@ mod tests {
             .expect("the fixture emits an authoritative departure record");
         let exploit = GameEvent::CreatureExploited {
             exploiter,
+            exploiter_incarnation: None,
             sacrificed: victim,
             record,
         };
@@ -7736,6 +7737,8 @@ mod tests {
                 ability: Box::new(choose_from_zone),
                 remaining_players: Vec::new(),
                 accumulated: false,
+                current: None,
+                nominee: None,
             },
         );
         crate::game::effects::choose_from_zone::drain_active_per_player_zone_choice(

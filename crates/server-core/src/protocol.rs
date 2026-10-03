@@ -3320,8 +3320,24 @@ mod tests {
 
     /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
     /// `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
-    /// `PlayerFilter::GrantingObjectCaster` and the `granting_object` stamp; v97 state
-    /// cannot decode as v98 state, so it must be refused before state delivery.
+    /// `PlayerFilter::GrantingObjectCaster` and the `granting_object` stamp; v102 state
+    /// cannot decode as v103 state, so it must be refused before state delivery.
+    /// `GameEvent::AbilityActivated` now carries `kind: "Mana"` for mana-ability
+    /// activations and an optional `departed_source_lki`; a v100 peer cannot
+    /// parse the `Mana` kind, so it must be refused before it receives v101 state.
+    /// `Effect::AdditionalPhase` now carries a `TurnSegment` in place of its
+    /// `phase` field and an `ExtraPhaseRecipient` in place of its `target`
+    /// field; a v99 peer cannot parse it, so it must be refused before it
+    /// receives v100 state.
+    /// `GraveyardCastPermission.pool` (CR 404.1 + CR 601.3) is new in serialized
+    /// full-game state; a v98 peer would default it to the own graveyard and
+    /// refuse a cast from any graveyard the permission allows, so it must be
+    /// refused before it receives v99 state.
+    /// `ZoneOpponentChooserPurpose::PerPlayerChoiceOrder` (CR 101.4c) and
+    /// `SubstituteChooser` (CR 800.4g), the per-player frame's `current` and
+    /// `nominee` fields, and `PerPlayerScope::Opponents` (CR 102.2 + CR 102.3)
+    /// are serialized; a v97 peer cannot deserialize them, so it must be
+    /// refused before it receives v98 state.
     /// `ResolvedAbility.target_reads` and `AbilityDefinition.target_reads`
     /// (`TargetReadOrigin`, CR 115.1 + CR 608.2c) are serialized; a v96 peer
     /// would default the field and rebuild a target slot the rules do not
@@ -3368,8 +3384,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_98_for_granter_binding() {
-        assert_eq!(PROTOCOL_VERSION, 98);
+    fn protocol_version_is_103_for_granter_binding() {
+        assert_eq!(PROTOCOL_VERSION, 103);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3380,7 +3396,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_98_for_granter_binding` stays
+    /// `protocol_version_is_103_for_granter_binding` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
