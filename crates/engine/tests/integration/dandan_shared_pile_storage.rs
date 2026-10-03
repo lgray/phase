@@ -136,6 +136,22 @@ fn v1_pile_stays_in_the_lowest_seat_when_another_seat_starts() {
 #[test]
 fn v1_non_shared_formats_keep_per_seat_libraries() {
     let Some(db) = shared_card_db() else { return };
+    let snow_basics: std::collections::BTreeSet<String> = [
+        "Snow-Covered Plains",
+        "Snow-Covered Island",
+        "Snow-Covered Swamp",
+        "Snow-Covered Mountain",
+        "Snow-Covered Forest",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(
+        momir_fixed_deck_names()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        snow_basics
+    );
     let mut momir = GameState::new(FormatConfig::momir(), 2, 7);
     load_and_hydrate_decks(&mut momir, &DeckPayload::default(), Some(db));
     assert_eq!(momir.players[0].library.len(), 60);
