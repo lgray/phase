@@ -3332,7 +3332,6 @@ impl FormatConfig {
             default_deck_copy_limit: GameFormat::Dandan.default_deck_copy_limit(),
             supplies_fixed_deck: true,
             allow_debug_actions: false,
-            allow_experimental_dungeons: false,
             custom_rules: None,
         }
     }

@@ -428,6 +428,8 @@ fn rewrite_resolved_ability(substitution: &TextSubstitution, ability: &mut Resol
         selected_target_incarnations: _,
         activation_record: _,
         illegal_target_slots: _,
+        illegal_local_target_slots: _,
+        target_reads: _,
         controller: _,
         original_controller: _,
         scoped_player: _,
