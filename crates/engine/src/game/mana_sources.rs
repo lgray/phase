@@ -1243,7 +1243,7 @@ pub(crate) fn has_untap_component(cost: &Option<AbilityCost>) -> bool {
 /// fails the whole-tree check and is correctly rejected, so its `Discard`
 /// prompt is never bypassed. It stays off the auto-tap path and remains
 /// reachable only through
-/// `has_activatable_non_tap_mana_ability_for_payment`'s manual-payment flow.
+/// `has_activatable_player_choice_mana_ability_for_payment`'s manual-payment flow.
 ///
 /// The tree is additionally ARITY-BOUNDED: exactly one self-sacrifice leaf and
 /// at most one `{T}` leaf, counted over the FLATTENED tree, with no nested
@@ -2342,10 +2342,12 @@ pub(crate) fn feasible_mana_capacity(
 }
 
 /// CR 117.1d + CR 601.2g: True when cost payment can involve a currently
-/// activatable non-tap mana ability that auto-tap cannot choose for the player
-/// (Treasure/Spawn/KCI-style sacrifice mana, unrestricted discard mana,
-/// pay-life mana abilities, etc.).
-pub(crate) fn has_activatable_non_tap_mana_ability_for_payment(
+/// activatable mana ability that auto-tap cannot activate for the player: a
+/// non-tap ability (Treasure/Spawn/KCI-style sacrifice mana, unrestricted
+/// discard mana, pay-life mana abilities, etc.), or a `{T}` ability whose cost
+/// asks the player to choose an object (Phyrexian Tower's sacrifice, Holdout
+/// Settlement's tapped creature).
+pub(crate) fn has_activatable_player_choice_mana_ability_for_payment(
     state: &GameState,
     controller: PlayerId,
     exclude: Option<ObjectId>,
@@ -2365,11 +2367,15 @@ pub(crate) fn has_activatable_non_tap_mana_ability_for_payment(
             if ability.kind != AbilityKind::Activated || !mana_abilities::is_mana_ability(ability) {
                 return false;
             }
-            // Tap-cost and unambiguous self-sacrifice abilities (Gold, Treasure)
-            // need no player choice, so `is_active_tap_mana_ability` already
-            // covers them on the auto-tap path — only ambiguous non-tap costs
-            // (KCI's "Sacrifice an artifact", discard, pay-life) belong here.
-            if has_tap_component(&ability.cost)
+            // Choice-free tap-cost and unambiguous self-sacrifice abilities
+            // (Sol Ring, Gold, Treasure) are already covered by
+            // `is_active_tap_mana_ability` on the auto-tap path; a tap cost that
+            // chooses an object (CR 605.3a) belongs here with the ambiguous
+            // non-tap costs (KCI's "Sacrifice an artifact", discard, pay-life).
+            if (has_tap_component(&ability.cost)
+                && !mana_abilities::cost_requires_object_choice(
+                    state, controller, object_id, ability,
+                ))
                 || has_unambiguous_self_sacrifice_component(&ability.cost)
             {
                 return false;

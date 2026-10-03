@@ -5278,6 +5278,27 @@ fn sacrifice_cost_choice(
     Some((count as usize, permanents))
 }
 
+/// CR 601.2g + CR 605.3a: Whether paying this mana ability's cost asks the
+/// player to choose an object (a card to discard, a creature to tap, a card to
+/// exile, a permanent to sacrifice, evidence to collect), exactly the prompts
+/// `advance_mana_ability_activation` raises. Auto-tap never makes these choices.
+pub(crate) fn cost_requires_object_choice(
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    ability: &AbilityDefinition,
+) -> bool {
+    discard_cost_choice(state, player, source_id, ability).is_some()
+        || tap_creature_cost_choice(state, player, source_id, ability).is_some()
+        || exile_cost_choice(state, player, source_id, ability).is_some()
+        || sacrifice_cost_choice(state, player, source_id, ability).is_some()
+        || ability
+            .cost
+            .as_ref()
+            .and_then(collect_evidence_cost_amount)
+            .is_some()
+}
+
 /// CR 118.3 + CR 608.2h: The objects a mana ability's exile or sacrifice cost
 /// could be paid with, as its own choice prompts offer them: the candidates for
 /// the cost-paid object its yield may read. `None` when the cost chooses no

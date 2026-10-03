@@ -816,3 +816,99 @@ const PAID_OBJECT_SIZING: &[Row] = &[
     ("s/food-chain+bears/swashbuckler", "Food Chain", "", &[("Grizzly Bears", B, 'f'), ("Mountain", B, 'p'), ("Plains", B, 'p')], &[], "Fearless Swashbuckler", true, "tt/BF"),
     ("c/food-chain+memnite/swashbuckler", "Food Chain", "", &[("Memnite", B, 'f'), ("Mountain", B, 'p'), ("Plains", B, 'p')], &[], "Fearless Swashbuckler", true, "tt/BF"),
 ];
+
+/// CR 601.2g + CR 605.3a + CR 117.1d: a `{T}` mana ability whose cost chooses
+/// an object (a permanent to sacrifice or tap, a card to discard or exile) can
+/// be activated while the cast is paid.
+#[test]
+fn object_choosing_tap_ability_pays_the_cast() {
+    check(OBJECT_CHOOSING_TAP);
+}
+
+#[rustfmt::skip]
+const OBJECT_CHOOSING_TAP: &[Row] = &[
+    ("m/bog-witch+swamp/corpse", "Bog Witch", "{B}, {T}, Discard a card: Add {B}{B}{B}.", &[("Swamp", B, 'p'), ("Grizzly Bears", H, 'f')], &[], "Walking Corpse", true, "tt/BF"),
+    ("t/lake-of-the-dead", "Lake of the Dead", "{T}, Sacrifice a Swamp: Add {B}{B}{B}{B}.", &[("Swamp", B, 'f')], &[], "Gravedigger", true, "tt/BF"),
+    ("t/phyrexian-tower", "Phyrexian Tower", "{T}, Sacrifice a creature: Add {B}{B}.", &[("Grizzly Bears", B, 'f')], &[], "Walking Corpse", true, "tt/BF"),
+    ("t/bog-witch", "Bog Witch", "{B}, {T}, Discard a card: Add {B}{B}{B}.", &[("Swamp", B, 'p'), ("Grizzly Bears", H, 'f')], &[], "Walking Corpse", true, "tt/BF"),
+    ("t/bolgs-company", "Bolg's Company", "{T}, Sacrifice another Goblin: Add {B}{R}.", &[("Goblin Piker", B, 'f')], &[], "Walking Corpse", true, "tt/BF"),
+    ("t/citanul-stalwart", "Citanul Stalwart", "{T}, Tap an untapped artifact or creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/dragonbroods-relic", "Dragonbroods' Relic", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/evendo-brushrazer", "Evendo Brushrazer", "{T}, Sacrifice a land: Add {R}{R}.", &[("Maze of Ith", B, 'f')], &[], "Lightning Bolt", true, "tt/GY"),
+    ("t/gene-pollinator", "Gene Pollinator", "{T}, Tap an untapped permanent you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/gilded-goose", "Gilded Goose", "{T}, Sacrifice a Food: Add one mana of any color.", &[("Tough Cookie", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/goblin-clearcutter", "Goblin Clearcutter", "{T}, Sacrifice a Forest: Add three mana in any combination of {R} and/or {G}.", &[("Forest", B, 'f')], &[], "Goblin Piker", true, "tt/BF"),
+    ("t/holdout-settlement", "Holdout Settlement", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/jaspera-sentinel", "Jaspera Sentinel", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/krark-clan-stoker", "Krark-Clan Stoker", "{T}, Sacrifice an artifact: Add {R}{R}.", &[("Memnite", B, 'f')], &[], "Goblin Piker", true, "tt/BF"),
+    ("t/lazotep-quarry", "Lazotep Quarry", "{T}, Sacrifice a creature: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/loam-dryad", "Loam Dryad", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/molt-tender", "Molt Tender", "{T}, Exile a card from your graveyard: Add one mana of any color.", &[("Grizzly Bears", G, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/moonsnare-prototype", "Moonsnare Prototype", "{T}, Tap an untapped artifact or creature you control: Add {C}.", &[("Memnite", B, 'f')], &[], "Signal Pest", true, "tt/BF"),
+    ("t/orcish-lumberjack", "Orcish Lumberjack", "{T}, Sacrifice a Forest: Add three mana in any combination of {R} and/or {G}.", &[("Forest", B, 'f')], &[], "Goblin Piker", true, "tt/BF"),
+    ("t/pep", "Pep, Raucous Raider", "{T}, Sacrifice an artifact: Add three mana of any one color.", &[("Memnite", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("t/saruli-caretaker", "Saruli Caretaker", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/scene-of-the-crime", "Scene of the Crime", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/springleaf-drum", "Springleaf Drum", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/survivors-encampment", "Survivors' Encampment", "{T}, Tap an untapped creature you control: Add one mana of any color.", &[("Grizzly Bears", B, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/golden-throne", "The Golden Throne", "A Thousand Souls Die Every Day — {T}, Sacrifice a creature: Add three mana in any combination of colors.", &[("Grizzly Bears", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("t/transmogrant-altar", "Transmogrant Altar", "{B}, {T}, Sacrifice a creature: Add {C}{C}{C}.", &[("Swamp", B, 'p'), ("Grizzly Bears", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("t/tower+bears/muck-rats", "Phyrexian Tower", "{T}, Sacrifice a creature: Add {B}{B}.", &[("Grizzly Bears", B, 'f')], &[], "Muck Rats", true, "tt/BF"),
+    ("m/Transmogrant Altar", "Transmogrant Altar", "{B}, {T}, Sacrifice a creature: Add {C}{C}{C}.", &[("Swamp", B, 'p'), ("Grizzly Bears", B, 'f')], &[], "Metallic Sliver", true, "tt/BF"),
+    ("s/adnate+szeras", "Soldevi Adnate", "", &[("Illuminor Szeras", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("s/furgul+giant", "Furgul, Quag Nurturer", "", &[("Hill Giant", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+    ("s/szeras+giant", "Illuminor Szeras", "", &[("Hill Giant", B, 'f')], &[], "Eternal Scourge", true, "tt/BF"),
+];
+
+/// Boards this change leaves payable, or no worse: casts payable before it,
+/// and members whose readings rest on rules outside it (Grinning Ignus's
+/// sorcery timing, yields sized by a paid amount, mana that can never pay the
+/// listed spell, abilities the payment step does not offer).
+#[test]
+fn unchanged_boards_read_as_before() {
+    check(UNCHANGED);
+}
+
+#[rustfmt::skip]
+const UNCHANGED: &[Row] = &[
+    ("t/cryptex", "Cryptex", "{T}, Collect evidence 3: Add one mana of any color. Put an unlock counter on ~.", &[("Hill Giant", G, 'f')], &[], "Llanowar Elves", true, "tt/BF"),
+    ("t/master-of-dark-rites", "Master of Dark Rites", "{T}, Sacrifice another creature: Add {B}{B}{B}. Spend this mana only to cast Vampire, Cleric, and/or Demon spells.", &[("Grizzly Bears", B, 'f')], &[], "Vampire Nighthawk", false, "ff/H"),
+    ("t/rubble-rouser", "Rubble Rouser", "{T}, Exile a card from your graveyard: Add {R}. When you do, ~ deals 1 damage to each opponent.", &[("Grizzly Bears", G, 'f')], &[], "Lightning Bolt", true, "ft/H"),
+    ("t/springjack-pasture", "Springjack Pasture", "{T}, Sacrifice X Goats: Add X mana of any one color. You gain X life.", &[("Mountain Goat", B, 'f')], &[], "Llanowar Elves", false, "ff/H"),
+    ("t/thornvault-forager", "Thornvault Forager", "{T}, Forage: Add two mana in any combination of colors.", &[("Hill Giant", G, 'f'), ("Hill Giant", G, 'f'), ("Hill Giant", G, 'f')], &[], "Grizzly Bears", false, "ff/H"),
+    ("x/Eldrazi Temple", "Eldrazi Temple", "{T}: Add {C}{C}. Spend this mana only to cast colorless Eldrazi spells or activate abilities of colorless Eldrazi.", &[("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Glaring Fleshraker", true, "tt/BF"),
+    ("x/Rafi, Retro Racer", "Rafi, Retro Racer", "{R}, Sacrifice ~: Each player adds {R}{R}{R}.", &[("Mountain", B, 'p')], &[], "Fearless Halberdier", true, "tt/BF"),
+    ("x/Satyr Hedonist", "Satyr Hedonist", "{R}, Sacrifice ~: Add {R}{R}{R}.", &[("Mountain", B, 'p')], &[], "Fearless Halberdier", true, "tt/BF"),
+    ("x/Vessel of Volatility", "Vessel of Volatility", "{1}{R}, Sacrifice ~: Add {R}{R}{R}{R}.", &[("Mountain", B, 'p'), ("Wastes", B, 'p')], &[], "Barbarian Horde", true, "tt/BF"),
+    ("e/Archaeomancer's Spade#spellgy", "Archaeomancer's Spade", "{T}: Add {R}{W}. This mana can't be spent to cast spells from your hand.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Electric Revelation", true, "ft/GY"),
+    ("e/Cloudpost", "Cloudpost", "{T}: Add {C} for each Locus on the battlefield.", &[("Glimmerpost", B, 'p'), ("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Glaring Fleshraker", true, "tt/BF"),
+    ("e/Codsworth, Handy Helper", "Codsworth, Handy Helper", "{T}: Add {W}{W}. Spend this mana only to cast Aura and/or Equipment spells.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Suppression Bonds", false, "ff/H"),
+    ("e/Elfhame Druid", "Elfhame Druid", "{T}: Add {G}{G}. Spend this mana only to cast kicked spells.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Axebane Beast", false, "ff/H"),
+    ("e/Fanatic of Rhonas", "Fanatic of Rhonas", "Ferocious — {T}: Add {G}{G}{G}{G}. Activate only if you control a creature with power 4 or greater.", &[("Craw Wurm", B, 'p'), ("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Barbtooth Wurm", true, "tt/BF"),
+    ("e/Fíli and Kíli, Joyous", "Fíli and Kíli, Joyous", "{T}: Add {R}{R}. Spend this mana only to cast Dwarf, Equipment, and Saga spells.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Dwarven Driller", false, "ff/H"),
+    ("e/Grinning Ignus", "Grinning Ignus", "{R}, Return ~ to its owner's hand: Add {C}{C}{R}. Activate only as a sorcery.", &[("Mountain", B, 'p'), ("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Bonebreaker Giant", true, "tt/H"),
+    ("e/Lavinia, Foil to Conspiracy", "Lavinia, Foil to Conspiracy", "{T}: Add {C}{C}. Activate only during an opponent's turn.", &[("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Glaring Fleshraker", false, "ff/H"),
+    ("e/Mage-Ring Network", "Mage-Ring Network", "{T}, Remove any number of storage counters from ~: Add {C} for each storage counter removed this way.", &[("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[("member", "storage", 2)], "Glaring Fleshraker", false, "ff/H"),
+    ("e/Muraganda Raceway#speed4", "Muraganda Raceway", "Max speed — {T}: Add {C}{C}.", &[("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Glaring Fleshraker", true, "tt/BF"),
+    ("e/Orochi Merge-Keeper", "Orochi Merge-Keeper", "{T}: Add {G}{G}.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[("member", "P1P1", 1)], "Axebane Beast", true, "tt/BF"),
+    ("e/Quinjet Technician", "Quinjet Technician", "{T}: Add {R}{R}. Spend this mana only to activate power-up abilities.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Barbarian Horde", false, "ff/H"),
+    ("e/Rasputin, the Oneiromancer", "Rasputin, the Oneiromancer", "{T}, Remove one or more dream counters from ~: Add that much {C}.", &[("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[("member", "dream", 2)], "Glaring Fleshraker", true, "ff/H"),
+    ("e/Shrine of the Forsaken Gods", "Shrine of the Forsaken Gods", "{T}: Add {C}{C}. Spend this mana only to cast colorless spells. Activate only if you control seven or more lands.", &[("Maze of Ith", B, 'p'), ("Maze of Ith", B, 'p'), ("Maze of Ith", B, 'p'), ("Maze of Ith", B, 'p'), ("Maze of Ith", B, 'p'), ("Maze of Ith", B, 'p'), ("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Glaring Fleshraker", true, "tt/BF"),
+    ("e/Tablet of Discovery", "Tablet of Discovery", "{T}: Add {R}{R}. Spend this mana only to cast instant and sorcery spells.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Throes of Chaos", true, "tt/GY"),
+    ("e/Troyan, Gutsy Explorer", "Troyan, Gutsy Explorer", "{T}: Add {G}{U}. Spend this mana only to cast spells with mana value 5 or greater or spells with {X} in their mana costs.", &[("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f'), ("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Axebane Beast", false, "ff/H"),
+    ("e/Urza's Workshop", "Urza's Workshop", "Metalcraft — {T}: Add {C} for each Urza's land you control. Activate only if you control three or more artifacts.", &[("Urza's Mine", B, 'p'), ("Memnite", B, 'p'), ("Memnite", B, 'p'), ("Phyrexian Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Glaring Fleshraker", true, "tt/BF"),
+    ("e/Whisperer of the Wilds", "Whisperer of the Wilds", "Ferocious — {T}: Add {G}{G}. Activate only if you control a creature with power 4 or greater.", &[("Craw Wurm", B, 'p'), ("Ashnod's Altar", B, 'a'), ("Grizzly Bears", B, 'f')], &[], "Axebane Beast", true, "tt/BF"),
+    ("t/hazel+2tokens", "Hazel of the Rootbloom", "{T}, Pay 2 life, Tap X untapped tokens you control: Add X mana in any combination of colors.", &[("Grizzly Bears", B, 'T'), ("Grizzly Bears", B, 'T')], &[], "Walking Corpse", true, "ff/H"),
+    ("m/Codie, Vociferous Codex", "Codie, Vociferous Codex", "{4}, {T}: Add {W}{U}{B}{R}{G}. When you next cast a spell this turn, exile cards from the top of your library until you exile an instant or sorcery card with lesser mana value. Until end of turn, you may cast that card without paying its mana cost. Put each other card exiled this way on the bottom of your library in a random order.", &[("Wastes", B, 'p'), ("Wastes", B, 'p'), ("Wastes", B, 'p'), ("Wastes", B, 'p')], &[], "Metallic Sliver", false, "ff/H"),
+    ("m/Grinning Ignus", "Grinning Ignus", "{R}, Return ~ to its owner's hand: Add {C}{C}{R}. Activate only as a sorcery.", &[("Mountain", B, 'p')], &[], "Metallic Sliver", true, "tt/BF"),
+    ("m/Jack-o'-Lantern#membergy", "Jack-o'-Lantern", "{1}, Exile this card from your graveyard: Add one mana of any color.", &[("Wastes", B, 'p')], &[], "Metallic Sliver", true, "tt/BF"),
+    ("m/Vivi Ornitier", "Vivi Ornitier", "{0}: Add X mana in any combination of {U} and/or {R}, where X is ~'s power. Activate only during your turn and only once each turn.", &[], &[], "Metallic Sliver", false, "ff/H"),
+    ("m/Wizard's Rockets", "Wizard's Rockets", "{X}, {T}, Sacrifice ~: Add X mana in any combination of colors.", &[("Wastes", B, 'p')], &[], "Metallic Sliver", false, "tt/BF"),
+    ("e/Lavinia, Foil to Conspiracy#oppturn", "Lavinia, Foil to Conspiracy", "{T}: Add {C}{C}. Activate only during an opponent's turn.", &[], &[], "Spatial Contortion", true, "tt/GY"),
+    ("h/ignus+mountain/gray-ogre", "Grinning Ignus", "{R}, Return ~ to its owner's hand: Add {C}{C}{R}. Activate only as a sorcery.", &[("Mountain", B, 'p')], &[], "Gray Ogre", true, "ft/H"),
+    ("m/ignus+mountain/gray-ogre", "Grinning Ignus", "{R}, Return ~ to its owner's hand: Add {C}{C}{R}. Activate only as a sorcery.", &[("Mountain", B, 'p')], &[], "Gray Ogre", true, "ft/H"),
+    ("h/ignus+mountain/bronze-sable", "Grinning Ignus", "{R}, Return ~ to its owner's hand: Add {C}{C}{R}. Activate only as a sorcery.", &[("Mountain", B, 'p')], &[], "Bronze Sable", true, "ft/H"),
+    ("m/ignus+mountain/bronze-sable", "Grinning Ignus", "{R}, Return ~ to its owner's hand: Add {C}{C}{R}. Activate only as a sorcery.", &[("Mountain", B, 'p')], &[], "Bronze Sable", true, "ft/H"),
+    ("m/Jack-o'-Lantern (2)#membergy", "Jack-o'-Lantern", "{1}, Exile this card from your graveyard: Add one mana of any color.", &[("Wastes", B, 'p')], &[], "Llanowar Elves", true, "ff/H"),
+    ("m/Wizard's Rockets (2)", "Wizard's Rockets", "{X}, {T}, Sacrifice ~: Add X mana in any combination of colors.", &[("Wastes", B, 'p')], &[], "Llanowar Elves", false, "ff/H"),
+];
