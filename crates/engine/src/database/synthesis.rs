@@ -7918,18 +7918,25 @@ pub fn synthesize_backup(face: &mut CardFace) {
 /// ("Goblin or Shaman") is the union of both types.
 ///
 /// `FilterProp::Another` enforces the "another" clause (CR 109.1): the
-/// championing permanent itself can never be the exiled creature.
+/// championing permanent itself can never be the exiled permanent.
 fn champion_type_filter(type_str: &str) -> TargetFilter {
-    let mut filter = TypedFilter::creature()
-        .controller(ControllerRef::You)
-        .properties(vec![FilterProp::Another]);
-    if let Some(union) = crate::parser::oracle_target::parse_type_phrase_union(type_str, &filter) {
+    let any_creature = type_str.eq_ignore_ascii_case("creature");
+    // CR 109.2 + CR 205.3m: a creature type names any permanent with that
+    // type, kindreds included; only "a creature" is scoped to creatures.
+    let scope = if any_creature {
+        TypedFilter::creature()
+    } else {
+        TypedFilter::permanent()
+    }
+    .controller(ControllerRef::You)
+    .properties(vec![FilterProp::Another]);
+    if any_creature {
+        return TargetFilter::Typed(scope);
+    }
+    if let Some(union) = crate::parser::oracle_target::parse_type_phrase_union(type_str, &scope) {
         return union;
     }
-    if !type_str.eq_ignore_ascii_case("creature") {
-        filter = filter.subtype(type_str.to_string());
-    }
-    TargetFilter::Typed(filter)
+    TargetFilter::Typed(scope.subtype(type_str.to_string()))
 }
 
 fn champion_has_eligible_object_condition(type_str: &str) -> AbilityCondition {
@@ -25654,7 +25661,12 @@ mod champion_synthesis_tests {
                             .type_filters
                             .iter()
                             .any(|f| matches!(f, TypeFilter::Subtype(s) if s == "Elf")));
+                        // CR 109.2 + CR 205.3m: an Elf permanent, kindreds included.
                         assert!(tf
+                            .type_filters
+                            .iter()
+                            .any(|f| matches!(f, TypeFilter::Permanent)));
+                        assert!(!tf
                             .type_filters
                             .iter()
                             .any(|f| matches!(f, TypeFilter::Creature)));

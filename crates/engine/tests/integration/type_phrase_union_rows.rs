@@ -465,3 +465,199 @@ fn champion_union_payloads() {
         assert_eq!(champion_end(member, others), expected, "{tag}");
     }
 }
+
+#[allow(clippy::too_many_arguments)]
+const fn championer(
+    name: &'static str,
+    text: &'static str,
+    subtypes: &'static [&'static str],
+    pt: (i32, i32),
+    cost: &'static [ManaCostShard],
+    generic: u32,
+    land: &'static str,
+    lands: usize,
+) -> Championer {
+    Championer {
+        name,
+        text,
+        subtypes,
+        pt,
+        cost,
+        generic,
+        land,
+        lands,
+    }
+}
+
+const MOB: &str = "Champion a Goblin (When this enters, sacrifice it unless you exile another Goblin you control. When this leaves the battlefield, that card returns to the battlefield.)\nWhenever a Goblin you control deals combat damage to a player, you may create a 1/1 black Goblin Rogue creature token.";
+const NOVA: &str = "Trample\nChampion an Elemental (When this enters, sacrifice it unless you exile another Elemental you control. When this leaves the battlefield, that card returns to the battlefield.)";
+const EXEMPLAR: &str = "Flying\nChampion an Elemental (When this enters, sacrifice it unless you exile another Elemental you control. When this leaves the battlefield, that card returns to the battlefield.)";
+const TRIO: &str = "First strike, vigilance\nChampion a Kithkin (When this enters, sacrifice it unless you exile another Kithkin you control. When this leaves the battlefield, that card returns to the battlefield.)\nThis creature can block any number of creatures.";
+const PROPHETS: &str = "Champion a Merfolk (When this enters, sacrifice it unless you exile another Merfolk you control. When this leaves the battlefield, that card returns to the battlefield.)\nWhenever this creature deals combat damage to a player, you may sacrifice a Merfolk. If you do, take an extra turn after this one.";
+const PACKMASTER: &str = "Champion an Elf (When this creature enters, sacrifice it unless you exile another Elf you control. When this creature leaves the battlefield, that card returns to the battlefield.)\n{2}{G}: Create a 2/2 green Wolf creature token.\nWolves you control have deathtouch.";
+const HERO: &str = "Changeling (This card is every creature type.)\nChampion a creature (When this enters, sacrifice it unless you exile another creature you control. When this leaves the battlefield, that card returns to the battlefield.)\nLifelink (Damage dealt by this creature also causes you to gain that much life.)";
+
+/// CR 702.72a + CR 109.2 + CR 205.3m: a Champion payload naming a creature type
+/// exiles another permanent of that type you control, kindred enchantments and
+/// artifacts included; "Champion a creature" still needs a creature.
+#[test]
+fn champion_kindred_permanents() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    use ManaCostShard::{Black, Blue, Green, Red, White};
+    use Zone::{Battlefield as Bf, Exile as Ex, Graveyard as Gy};
+    let hero = championer(
+        "Changeling Hero",
+        HERO,
+        &["Shapeshifter"],
+        (4, 4),
+        &[White],
+        4,
+        "Plains",
+        5,
+    );
+    // Reach: "Champion a creature" exiles a creature on this driver.
+    assert_eq!(
+        champion_end(&hero, &[(P0, "Grizzly Bears")]),
+        (Bf, vec![Ex])
+    );
+    let mob = championer(
+        "Boggart Mob",
+        MOB,
+        &["Goblin", "Warrior"],
+        (5, 5),
+        &[Black],
+        3,
+        "Swamp",
+        4,
+    );
+    let nova = championer(
+        "Nova Chaser",
+        NOVA,
+        &["Elemental", "Warrior"],
+        (10, 2),
+        &[Red],
+        3,
+        "Mountain",
+        4,
+    );
+    let exemplar = championer(
+        "Supreme Exemplar",
+        EXEMPLAR,
+        &["Elemental"],
+        (10, 10),
+        &[Blue],
+        6,
+        "Island",
+        7,
+    );
+    let trio = championer(
+        "Thoughtweft Trio",
+        TRIO,
+        &["Kithkin", "Soldier"],
+        (5, 5),
+        &[White, White],
+        2,
+        "Plains",
+        4,
+    );
+    let prophets = championer(
+        "Wanderwine Prophets",
+        PROPHETS,
+        &["Merfolk", "Wizard"],
+        (4, 4),
+        &[Blue, Blue],
+        4,
+        "Island",
+        6,
+    );
+    let packmaster = championer(
+        "Wren's Run Packmaster",
+        PACKMASTER,
+        &["Elf", "Warrior"],
+        (5, 5),
+        &[Green],
+        3,
+        "Forest",
+        4,
+    );
+    let kindred = (Bf, vec![Ex]);
+    let rows: [ChampionRow<'_>; 12] = [
+        (
+            "clique + Bitterblossom",
+            &CLIQUE_MEMBER,
+            &[(P0, "Bitterblossom")],
+            kindred.clone(),
+        ),
+        (
+            "crafter + Boggart Shenanigans",
+            &CRAFTER_MEMBER,
+            &[(P0, "Boggart Shenanigans")],
+            kindred.clone(),
+        ),
+        (
+            "mob + Boggart Shenanigans",
+            &mob,
+            &[(P0, "Boggart Shenanigans")],
+            kindred.clone(),
+        ),
+        (
+            "crafter + Thornbite Staff",
+            &CRAFTER_MEMBER,
+            &[(P0, "Thornbite Staff")],
+            kindred.clone(),
+        ),
+        (
+            "nova + Eyes of the Wisent",
+            &nova,
+            &[(P0, "Eyes of the Wisent")],
+            kindred.clone(),
+        ),
+        (
+            "exemplar + Eyes of the Wisent",
+            &exemplar,
+            &[(P0, "Eyes of the Wisent")],
+            kindred.clone(),
+        ),
+        (
+            "trio + Militia's Pride",
+            &trio,
+            &[(P0, "Militia's Pride")],
+            kindred.clone(),
+        ),
+        (
+            "prophets + Merrow Commerce",
+            &prophets,
+            &[(P0, "Merrow Commerce")],
+            kindred.clone(),
+        ),
+        (
+            "packmaster + Prowess of the Fair",
+            &packmaster,
+            &[(P0, "Prowess of the Fair")],
+            kindred.clone(),
+        ),
+        (
+            "ash + Obsidian Battle-Axe",
+            &ASH_MEMBER,
+            &[(P0, "Obsidian Battle-Axe")],
+            kindred.clone(),
+        ),
+        (
+            "clique + opponent's Bitterblossom",
+            &CLIQUE_MEMBER,
+            &[(P1, "Bitterblossom")],
+            (Gy, vec![Bf]),
+        ),
+        (
+            "hero + Bitterblossom",
+            &hero,
+            &[(P0, "Bitterblossom")],
+            (Gy, vec![Bf]),
+        ),
+    ];
+    for (tag, member, others, expected) in rows {
+        assert_eq!(champion_end(member, others), expected, "{tag}");
+    }
+}
