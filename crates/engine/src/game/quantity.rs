@@ -23927,6 +23927,7 @@ mod dandan_scoped_zone_tests {
     use crate::game::zones::create_object;
     use crate::types::ability::{AggregateFunction, Comparator, PlayerRelation};
     use crate::types::format::FormatConfig;
+    use crate::types::game_state::ZoneChangeRecord;
     use crate::types::identifiers::CardId;
 
     const P0: PlayerId = PlayerId(0);
@@ -24014,6 +24015,40 @@ mod dandan_scoped_zone_tests {
         });
         assert_eq!(resolve_quantity(&shared, &opponents, P1, ObjectId(1)), 5);
         assert_eq!(resolve_quantity(&split, &opponents, P1, ObjectId(1)), 5);
+    }
+
+    fn graveyard_power_leaving_this_turn(state: &GameState, owner: PlayerId) -> i32 {
+        let mut state = state.clone();
+        state.zone_changes_this_turn.push_back(ZoneChangeRecord {
+            owner,
+            power: Some(3),
+            ..ZoneChangeRecord::test_minimal(ObjectId(50), Some(Zone::Graveyard), Zone::Hand)
+        });
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ZoneChangeAggregateThisTurn {
+                from: Some(Zone::Graveyard),
+                to: Some(Zone::Hand),
+                filter: TargetFilter::Typed(TypedFilter::default().properties(vec![
+                    FilterProp::Owned {
+                        controller: ControllerRef::You,
+                    },
+                ])),
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::Power,
+            },
+        };
+        resolve_quantity(&state, &expr, P0, ObjectId(1))
+    }
+
+    /// "Your graveyard" is the shared pile, so a card leaving it left every seat's graveyard.
+    #[test]
+    fn zone_change_aggregate_from_the_shared_graveyard_claims_the_pile() {
+        let shared = dandan();
+        assert_eq!(graveyard_power_leaving_this_turn(&shared, P0), 3, "reach");
+        assert_eq!(graveyard_power_leaving_this_turn(&shared, P1), 3);
+        let split = standard();
+        assert_eq!(graveyard_power_leaving_this_turn(&split, P0), 3, "reach");
+        assert_eq!(graveyard_power_leaving_this_turn(&split, P1), 0);
     }
 
     fn graveyards_with_seven(state: &GameState, relation: PlayerRelation) -> i32 {

@@ -514,18 +514,19 @@ fn v17_an_artifact_card_in_your_graveyard_in_standard_offers_only_your_own() {
 // V18: zone named by the quantity's `from`, not the filter (Relic Retriever)
 // ---------------------------------------------------------------------------
 
-/// P0 casts `spell` over a graveyard holding one Grizzly Bears owned by `pile_owner` while
-/// controlling Relic Retriever; returns the Bears and P0's Treasure count after the end step.
-/// `targeted` spells are aimed at the Bears.
-fn retriever_run(
+/// P0 controls `watcher` and casts `spell` over a graveyard holding one Grizzly Bears owned by
+/// `pile_owner`, then plays to the end step; returns the runner and the Bears. `targeted`
+/// spells are aimed at the Bears.
+fn pile_run(
     format: FormatConfig,
+    watcher: &str,
     spell: &str,
     targeted: bool,
     pile_owner: PlayerId,
-) -> (GameRunner, ObjectId, usize) {
+) -> (GameRunner, ObjectId) {
     let db = shared_card_db().expect("card db");
     let mut sc = scenario(format);
-    sc.add_real_card(P0, "Relic Retriever", Zone::Battlefield, db);
+    sc.add_real_card(P0, watcher, Zone::Battlefield, db);
     let spell = sc.add_real_card(P0, spell, Zone::Hand, db);
     let bears = stage(
         &mut sc,
@@ -558,12 +559,26 @@ fn retriever_run(
             }
         }
     }
+    (runner, bears)
+}
+
+fn battlefield_named(runner: &GameRunner, name: &str) -> usize {
     let state = runner.state();
-    let treasures = state
+    state
         .battlefield
         .iter()
-        .filter(|id| state.objects[id].name == "Treasure")
-        .count();
+        .filter(|id| state.objects[id].name == name)
+        .count()
+}
+
+fn retriever_run(
+    format: FormatConfig,
+    spell: &str,
+    targeted: bool,
+    pile_owner: PlayerId,
+) -> (GameRunner, ObjectId, usize) {
+    let (runner, bears) = pile_run(format, "Relic Retriever", spell, targeted, pile_owner);
+    let treasures = battlefield_named(&runner, "Treasure");
     (runner, bears, treasures)
 }
 
@@ -603,4 +618,55 @@ fn v18_in_standard_only_your_own_graveyard_counts() {
         "reach: the opponent's card left the opponent's graveyard"
     );
     assert_eq!(treasures, 0);
+}
+
+// ---------------------------------------------------------------------------
+// V19: trigger whose zone is the trigger's origin, not the filter (Chalk Outline)
+// ---------------------------------------------------------------------------
+
+fn detectives(format: FormatConfig, spell: &str, targeted: bool, pile_owner: PlayerId) -> usize {
+    let (runner, bears) = pile_run(format, "Chalk Outline", spell, targeted, pile_owner);
+    assert_eq!(
+        runner.state().objects[&bears].zone,
+        if spell == "Regrowth" {
+            Zone::Hand
+        } else {
+            Zone::Exile
+        },
+        "reach: the pile card left the graveyard"
+    );
+    battlefield_named(&runner, "Detective")
+}
+
+#[test]
+fn v19_a_creature_card_leaving_the_shared_graveyard_left_your_graveyard() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        detectives(dandan(), "Regrowth", true, P0),
+        1,
+        "paired: P0's own card"
+    );
+    assert_eq!(
+        detectives(dandan(), "Regrowth", true, P1),
+        1,
+        "the pile is every seat's graveyard, P0's included"
+    );
+}
+
+#[test]
+fn v19_in_standard_only_your_own_graveyard_triggers() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        detectives(FormatConfig::standard(), "Regrowth", true, P0),
+        1,
+        "reach: the trigger fires for P0's own card"
+    );
+    assert_eq!(
+        detectives(FormatConfig::standard(), "Release to Memory", false, P1),
+        0
+    );
 }

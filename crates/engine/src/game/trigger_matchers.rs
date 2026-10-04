@@ -1216,7 +1216,25 @@ fn zone_change_clause_matches(
         let matches = if *to == Zone::Battlefield && state.objects.contains_key(&record.object_id) {
             super::filter::matches_target_filter(state, record.object_id, filter, &ctx)
         } else {
-            super::filter::matches_target_filter_on_zone_change_record(state, record, filter, &ctx)
+            // CR 400.1: the zone the record leaves is the origin the trigger names, not a
+            // property of `valid_card`, so it is claimed for the shared-zone owner axis.
+            let origin_zones: &[Zone] = match origin {
+                OriginConstraint::Equals(zone) if *zone != Zone::Battlefield => {
+                    std::slice::from_ref(zone)
+                }
+                OriginConstraint::OneOf(zones) => zones,
+                OriginConstraint::Equals(_)
+                | OriginConstraint::NotEquals(_)
+                | OriginConstraint::Any => &[],
+            };
+            let claimed = (!origin_zones.is_empty())
+                .then(|| super::filter::claim_scan_zones(filter.clone(), origin_zones));
+            super::filter::matches_target_filter_on_zone_change_record(
+                state,
+                record,
+                claimed.as_ref().unwrap_or(filter),
+                &ctx,
+            )
         };
         if !matches {
             return false;
