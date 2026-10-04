@@ -2547,8 +2547,11 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 if !(recurs
                     && delta.is_net_progress()
                     && has_no_loss_axis(&delta)
-                    && crate::analysis::loop_check::classify_win_kind(controller, &delta)
-                        == crate::analysis::loop_check::WinKind::Advantage)
+                    && crate::analysis::loop_check::classify_win_kind(
+                        controller,
+                        &delta,
+                        Some(state),
+                    ) == crate::analysis::loop_check::WinKind::Advantage)
                 {
                     return None;
                 }
@@ -2652,7 +2655,11 @@ fn build_cert(
     };
     crate::analysis::loop_check::LoopCertificate {
         unbounded: delta.unbounded_axes_for(winner),
-        win_kind: crate::analysis::loop_check::classify_win_kind(winner, &win_kind_delta),
+        win_kind: crate::analysis::loop_check::classify_win_kind(
+            winner,
+            &win_kind_delta,
+            Some(state),
+        ),
         // The offer is only reached for an OPTIONAL loop.
         mandatory: false,
         residual_board_delta: crate::analysis::resource::board_delta(prior, state),
@@ -3181,7 +3188,7 @@ fn certified_bounded_cycle_offer<'a>(
     // (5) CR 732.2a: the conjunct that proves this class is DISJOINT from Path C's
     // revocable-∞ advantage mark. An `Advantage` cycle drives nobody toward a CR 704
     // threshold, so it has no bound to state and belongs to the other seam.
-    if crate::analysis::loop_check::classify_win_kind(proposer, &periodic.delta)
+    if crate::analysis::loop_check::classify_win_kind(proposer, &periodic.delta, Some(state))
         == crate::analysis::loop_check::WinKind::Advantage
     {
         return Err(BoundedOfferRefusal::AdvantageOnlyCycle);

@@ -176,12 +176,14 @@ fn v8_card_name_candidates_come_from_the_pile() {
         let mut sc = scenario(shared);
         sc.add_real_card(actor, "Island", Zone::Library, db);
         sc.add_real_card(actor, "Brainstorm", Zone::Library, db);
+        sc.add_real_card(actor, "Memory Lapse", Zone::Graveyard, db);
         let spell = sc.add_real_card(actor, "Predict", Zone::Hand, db);
         let mut runner = start(sc, actor, true);
         runner.state_mut().all_card_names = std::sync::Arc::from([
             "Control Magic".to_string(),
             "Island".to_string(),
             "Brainstorm".to_string(),
+            "Memory Lapse".to_string(),
         ]);
 
         runner.cast(spell).target_player(actor).resolve();
@@ -202,8 +204,12 @@ fn v8_card_name_candidates_come_from_the_pile() {
             .collect();
         assert_eq!(
             names,
-            vec!["Island".to_string(), "Brainstorm".to_string()],
-            "{shared} {actor:?}: the pile's names, not the fallback"
+            vec![
+                "Memory Lapse".to_string(),
+                "Island".to_string(),
+                "Brainstorm".to_string()
+            ],
+            "{shared} {actor:?}: the pile's graveyard then library names, not the fallback"
         );
     }
 }
