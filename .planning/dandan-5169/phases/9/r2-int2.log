@@ -1,0 +1,507 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.19s
+────────────
+ Nextest run ID 70331483-b94a-46bb-924d-1c6ecdd16af9 with nextest profile: default
+    Starting 390 tests across 1 binary (8923 tests skipped)
+        PASS [   0.034s] (  1/390) phase-engine::integration combo_infinite_pile::loop_collapse_axis_from_materializations_maps_each_shape
+        PASS [   0.050s] (  2/390) phase-engine::integration combat_lifelink_replacement_ordering::a_batch_that_moves_no_life_retains_the_loop_ring
+        PASS [   0.052s] (  3/390) phase-engine::integration chicago_loop_pay_speed_x_mana::chicago_loop_pay_speed_zero_when_no_speed
+        PASS [   0.054s] (  4/390) phase-engine::integration chicago_loop_pay_speed_x_mana::chicago_loop_pay_speed_x_produces_x_mana_and_pays_x_speed
+        PASS [   0.055s] (  5/390) phase-engine::integration chicago_loop_pay_speed_x_mana::chicago_loop_pay_speed_x_is_per_activation
+        PASS [   0.071s] (  6/390) phase-engine::integration combat_lifelink_replacement_ordering::parked_batch_invalidates_the_loop_ring_against_the_pre_batch_snapshot
+        PASS [   0.050s] (  7/390) phase-engine::integration cost_zone_pipeline::cascade_exile_loop_stays_synchronous_without_replacements
+        PASS [   0.027s] (  8/390) phase-engine::integration custom_format_schema::from_lobby_config_rejects_dandan_source
+        PASS [   0.324s] (  9/390) phase-engine::integration activation_cost_reduction_election::a_reversed_activation_records_no_loop_step
+        PASS [   0.353s] ( 10/390) phase-engine::integration activation_cost_reduction_election::an_elected_activation_appends_its_loop_step_exactly_once
+        PASS [   0.371s] ( 11/390) phase-engine::integration activation_cost_reduction_election::an_x_lock_reversal_restores_the_mana_undo_window_and_the_loop_period
+        PASS [   0.384s] ( 12/390) phase-engine::integration activation_cost_reduction_election::an_x_lock_election_records_its_loop_step_exactly_once
+        PASS [   0.423s] ( 13/390) phase-engine::integration activation_cost_target_settlement::an_unaffordable_target_reversal_keeps_the_loop_period_and_mana_undo_window
+        PASS [   0.499s] ( 14/390) phase-engine::integration activation_cost_reduction_election::an_elected_activation_seeds_its_loop_step_once_after_the_election
+        PASS [   1.212s] ( 15/390) phase-engine::integration combo_infinite_pile::real_4p_basalt_mana_loop_boundary_drains_and_derealizes
+        PASS [   1.291s] ( 16/390) phase-engine::integration combo_infinite_pile::real_4p_basalt_mana_loop_boundary_does_not_prompt_collapse
+        PASS [   1.996s] ( 17/390) phase-engine::integration combo_infinite_pile::loop_collapse_prompt_labels_counter_axis_counters
+        PASS [   2.121s] ( 18/390) phase-engine::integration combo_infinite_pile::loop_collapse_prompt_labels_life_axis_life
+        PASS [   2.142s] ( 19/390) phase-engine::integration combo_infinite_pile::loop_collapse_prompt_labels_token_axis_tokens
+        PASS [   2.403s] ( 20/390) phase-engine::integration combo_infinite_pile::loop_collapse_prompt_labels_multi_axis_mixed
+        PASS [   3.565s] ( 21/390) phase-engine::integration best_of_three_ceiling::r1_dandan_bo3_plays_as_bo1_and_never_enters_between_games
+        PASS [   3.585s] ( 22/390) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+        PASS [   4.035s] ( 23/390) phase-engine::integration combo_infinite_pile::real_4p_untapped_witherbloom_sprout_swarm_offers_object_growth_loop
+        PASS [   3.725s] ( 24/390) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+        PASS [   4.012s] ( 25/390) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+        PASS [   4.275s] ( 26/390) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+        PASS [   4.344s] ( 27/390) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        PASS [   4.402s] ( 28/390) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+        PASS [   4.531s] ( 29/390) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+        PASS [   3.655s] ( 30/390) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+        PASS [   3.816s] ( 31/390) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+        PASS [   3.691s] ( 32/390) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+        PASS [   3.949s] ( 33/390) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+        PASS [   4.269s] ( 34/390) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+        PASS [   4.447s] ( 35/390) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+        PASS [   3.848s] ( 36/390) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+        PASS [   4.025s] ( 37/390) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+        PASS [   3.824s] ( 38/390) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+        PASS [   3.158s] ( 39/390) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+        PASS [   4.093s] ( 40/390) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+        PASS [   3.910s] ( 41/390) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+        PASS [   4.484s] ( 42/390) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+        PASS [   4.765s] ( 43/390) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+        PASS [   4.310s] ( 44/390) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+        PASS [   4.241s] ( 45/390) phase-engine::integration dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+        PASS [   4.662s] ( 46/390) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+        PASS [   9.459s] ( 47/390) phase-engine::integration combo_infinite_pile::loop_collapse_large_mint_does_not_overflow_small_stack
+        PASS [   4.193s] ( 48/390) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+        PASS [   4.092s] ( 49/390) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+        PASS [   4.136s] ( 50/390) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+        PASS [   4.820s] ( 51/390) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+        PASS [   3.593s] ( 52/390) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+        PASS [   3.166s] ( 53/390) phase-engine::integration dandan_read_sweep::v5_doomsday_searches_the_pile_library_and_graveyard
+        PASS [   3.568s] ( 54/390) phase-engine::integration dandan_read_sweep::v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat
+        PASS [   3.696s] ( 55/390) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+        PASS [   3.152s] ( 56/390) phase-engine::integration dandan_read_sweep::v6_kylox_voltstrider_collects_evidence_from_the_pile_graveyard
+        PASS [   4.436s] ( 57/390) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+        PASS [   3.625s] ( 58/390) phase-engine::integration dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+        PASS [   3.821s] ( 59/390) phase-engine::integration dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+        PASS [   0.052s] ( 60/390) phase-engine::integration dandan_shared_pile_storage::shuffling_the_empty_seat_consumes_no_entropy
+        PASS [   3.471s] ( 61/390) phase-engine::integration dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+        PASS [   0.031s] ( 62/390) phase-engine::integration dandan_shared_pile_storage::v14_wasm_boot_guard_reads_the_library_accessor
+        PASS [   3.768s] ( 63/390) phase-engine::integration dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard
+        PASS [   4.427s] ( 64/390) phase-engine::integration dandan_read_sweep::v6_corpseberry_cultivator_forages_from_the_pile_graveyard
+        PASS [   4.338s] ( 65/390) phase-engine::integration dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+        PASS [   3.570s] ( 66/390) phase-engine::integration dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+        PASS [   3.574s] ( 67/390) phase-engine::integration dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+        PASS [   3.495s] ( 68/390) phase-engine::integration dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type
+        PASS [   4.128s] ( 69/390) phase-engine::integration dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom
+        PASS [   4.121s] ( 70/390) phase-engine::integration dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top
+        PASS [   3.735s] ( 71/390) phase-engine::integration dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+        PASS [   3.483s] ( 72/390) phase-engine::integration dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+        PASS [   3.520s] ( 73/390) phase-engine::integration dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard
+        PASS [   3.930s] ( 74/390) phase-engine::integration dandan_read_sweep::v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+        PASS [   3.523s] ( 75/390) phase-engine::integration dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay
+        PASS [   3.923s] ( 76/390) phase-engine::integration dandan_shared_pile_storage::v10_pool_resolver_maps_both_seats_to_the_pile_holder
+        PASS [   4.548s] ( 77/390) phase-engine::integration dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size
+        PASS [   3.754s] ( 78/390) phase-engine::integration dandan_shared_pile_storage::v15_scry_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   4.143s] ( 79/390) phase-engine::integration dandan_shared_pile_storage::v15_dig_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   4.064s] ( 80/390) phase-engine::integration dandan_shared_pile_storage::v15_surveil_keeps_cards_on_top_of_the_pile_for_the_non_canonical_seat
+        PASS [   0.424s] ( 81/390) phase-engine::integration dromokas_command_spell_prevention::dromokas_command_mode_one_source_scoped_prevent_puts_counter_once_no_loop
+        PASS [   4.505s] ( 82/390) phase-engine::integration dandan_shared_pile_storage::v15_library_placement_by_the_zone_pipeline_targets_the_pile
+        PASS [   3.291s] ( 83/390) phase-engine::integration dandan_shared_pile_storage::v1_pile_stays_in_the_lowest_seat_when_another_seat_starts
+        PASS [   3.908s] ( 84/390) phase-engine::integration dandan_shared_pile_storage::v1_boot_loads_one_pile_into_the_canonical_seat
+        PASS [   3.837s] ( 85/390) phase-engine::integration dandan_shared_pile_storage::v1_non_shared_formats_keep_per_seat_libraries
+        PASS [   2.991s] ( 86/390) phase-engine::integration dandan_shared_pile_storage::v4_opening_deal_draws_both_hands_from_the_pile
+        PASS [   2.974s] ( 87/390) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+        PASS [   4.370s] ( 88/390) phase-engine::integration dandan_shared_pile_storage::v2_fixed_list_resolves_against_the_real_database
+        PASS [   3.224s] ( 89/390) phase-engine::integration dandan_shared_pile_storage::v5_v6_standard_format_cycles_in_the_owners_own_zones
+        PASS [   3.369s] ( 90/390) phase-engine::integration dandan_shared_pile_storage::v8_library_shuffle_acts_on_the_pile_and_replays
+        PASS [   4.349s] ( 91/390) phase-engine::integration dandan_shared_pile_storage::v3_mulligan_by_either_seat_shuffles_the_pile
+        PASS [   3.609s] ( 92/390) phase-engine::integration dandan_shared_pile_storage::v7_conjure_into_the_library_lands_in_the_pile_only
+        PASS [   3.593s] ( 93/390) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+        PASS [   4.206s] ( 94/390) phase-engine::integration dandan_shared_pile_storage::v9_library_boundary_by_either_seat_forgets_the_looked_at_pile
+        PASS [   3.158s] ( 95/390) phase-engine::integration fantastic_four_bounded_loop::c0_the_unrehydrated_tracked_f4_dump_still_panics
+        PASS [   4.959s] ( 96/390) phase-engine::integration dandan_shared_pile_storage::v9_standard_shuffle_keeps_the_other_players_library_knowledge
+        PASS [   4.108s] ( 97/390) phase-engine::integration fantastic_four_bounded_loop::c0_the_tracked_f4_dump_restores_a_coherent_rng_stream
+        PASS [   3.657s] ( 98/390) phase-engine::integration fantastic_four_bounded_loop::c1_every_ring_clear_site_also_clears_the_loop_answer_journal
+        PASS [  23.644s] ( 99/390) phase-engine::integration fantastic_four_bounded_loop::c1_row2b_one_seat_answering_one_source_two_ways_latches_conflicted
+        PASS [  32.007s] (100/390) phase-engine::integration fantastic_four_bounded_loop::c1_row7b_the_may_journal_follows_the_ring_on_the_same_receiver
+        PASS [  34.075s] (101/390) phase-engine::integration fantastic_four_bounded_loop::a_template_free_declaration_is_admitted_only_by_the_proposers_own_period
+        PASS [  33.902s] (102/390) phase-engine::integration fantastic_four_bounded_loop::c1_row2b_sibling_an_identical_second_answer_stays_uniform
+        PASS [  42.242s] (103/390) phase-engine::integration fantastic_four_bounded_loop::an_order_pin_is_not_an_answer_to_the_f4_offers_published_choices
+        PASS [   0.046s] (104/390) phase-engine::integration fantastic_four_bounded_loop::e4_the_bounded_repetition_channel_is_additive_in_both_directions
+        PASS [  44.591s] (105/390) phase-engine::integration fantastic_four_bounded_loop::c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_key
+        PASS [  43.551s] (106/390) phase-engine::integration fantastic_four_bounded_loop::c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
+        PASS [  52.793s] (107/390) phase-engine::integration fantastic_four_bounded_loop::a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused
+        PASS [  49.600s] (108/390) phase-engine::integration fantastic_four_bounded_loop::c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone
+        PASS [  52.245s] (109/390) phase-engine::integration fantastic_four_bounded_loop::c2a_row_t1p_the_journalled_pin_follows_the_announced_seat_not_a_constant
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::b5f_the_declared_term_can_suppress_an_otherwise_legal_offer
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::both_answered_optional_decisions_reach_the_responder_with_their_own_answers
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::c1_row7c_the_may_journal_does_not_cross_save_load
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
+        PASS [  63.059s] (110/390) phase-engine::integration fantastic_four_bounded_loop::c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot
+        PASS [  69.672s] (111/390) phase-engine::integration fantastic_four_bounded_loop::c1_row7c_the_may_journal_does_not_cross_save_load
+        PASS [  58.385s] (112/390) phase-engine::integration fantastic_four_bounded_loop::d1p_sib_the_published_pin_provenance_is_not_specific_to_one_second_seat
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::d1p_the_published_pin_follows_the_journal_not_a_constant
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel
+        PASS [  62.214s] (113/390) phase-engine::integration fantastic_four_bounded_loop::d1p_the_published_pin_follows_the_journal_not_a_constant
+        PASS [  67.007s] (114/390) phase-engine::integration fantastic_four_bounded_loop::d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling
+        PASS [   8.516s] (115/390) phase-engine::integration fantastic_four_bounded_loop::r18_the_name_resolver_fails_loud_in_both_directions
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e7_the_published_bound_is_the_count_pickers_own_ceiling
+        PASS [ 105.651s] (116/390) phase-engine::integration fantastic_four_bounded_loop::both_answered_optional_decisions_reach_the_responder_with_their_own_answers
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::m1_the_users_stored_auto_choice_board_offers_and_the_grant_commits_on_every_axis
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1b_an_authored_non_canonical_distribution_is_accepted
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced
+        PASS [  50.880s] (117/390) phase-engine::integration fantastic_four_bounded_loop::p4_row_2_a_later_segment_that_went_illegal_refuses_the_whole_declaration
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::b5f_the_declared_term_can_suppress_an_otherwise_legal_offer
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
+        PASS [   6.814s] (118/390) phase-engine::integration fantastic_four_bounded_loop::r27_a1_the_f4_dumps_recorded_sample_keeps_a_live_half_normalization_would_have_erased
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::published_point_names_panics_when_a_points_source_is_absent
+        PASS [ 138.881s] (119/390) phase-engine::integration fantastic_four_bounded_loop::a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis
+        PASS [  66.896s] (120/390) phase-engine::integration fantastic_four_bounded_loop::published_point_names_panics_when_a_points_source_is_absent
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r16_the_f4_offering_beats_probe_demand_is_exactly_measured
+        PASS [  65.350s] (121/390) phase-engine::integration fantastic_four_bounded_loop::r16_the_f4_offering_beats_probe_demand_is_exactly_measured
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel
+        PASS [  54.550s] (122/390) phase-engine::integration fantastic_four_bounded_loop::r1b_the_published_point_set_is_exactly_what_the_retained_window_announces
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r1_the_bounded_offer_fires_on_the_real_f4_dump
+        PASS [  60.707s] (123/390) phase-engine::integration fantastic_four_bounded_loop::r1_the_bounded_offer_fires_on_the_real_f4_dump
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling
+        PASS [  59.406s] (124/390) phase-engine::integration fantastic_four_bounded_loop::r23_5_reach_no_may_beat_of_the_f4_drive_carries_a_construction_cursor
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e7_the_published_bound_is_the_count_pickers_own_ceiling
+        PASS [ 113.674s] (125/390) phase-engine::integration fantastic_four_bounded_loop::p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::m1_the_users_stored_auto_choice_board_offers_and_the_grant_commits_on_every_axis
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1b_an_authored_non_canonical_distribution_is_accepted
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::b5f_the_declared_term_can_suppress_an_otherwise_legal_offer
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_announced
+        PASS [ 187.365s] (126/390) phase-engine::integration fantastic_four_bounded_loop::d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_hexproofed_one
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r3_placement_a_restored_foreign_owner_declaration_is_refused
+        PASS [  68.290s] (127/390) phase-engine::integration fantastic_four_bounded_loop::r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_hexproofed_one
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared
+        PASS [  70.675s] (128/390) phase-engine::integration fantastic_four_bounded_loop::r3_placement_a_restored_foreign_owner_declaration_is_refused
+        PASS [ 165.284s] (129/390) phase-engine::integration fantastic_four_bounded_loop::m1_the_users_stored_auto_choice_board_offers_and_the_grant_commits_on_every_axis
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel
+        PASS [  55.531s] (130/390) phase-engine::integration fantastic_four_bounded_loop::r9_the_offer_refuses_on_a_derived_replacement_obligation_not_on_a_definition_name
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r3b_driven_a_loop_choice_carrier_survives_a_whole_accepted_f4_drive
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling
+        PASS [  74.350s] (131/390) phase-engine::integration fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_declared
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e7_the_published_bound_is_the_count_pickers_own_ceiling
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::t2_reach_guard_a_same_seat_schedule_shape_already_commits_its_whole_count
+        PASS [  70.594s] (132/390) phase-engine::integration fantastic_four_bounded_loop::r3b_driven_a_loop_choice_carrier_survives_a_whole_accepted_f4_drive
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1b_an_authored_non_canonical_distribution_is_accepted
+        SLOW [>180.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced
+        SLOW [>240.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::b5f_the_declared_term_can_suppress_an_otherwise_legal_offer
+        PASS [ 197.868s] (133/390) phase-engine::integration fantastic_four_bounded_loop::e7_the_published_bound_is_the_count_pickers_own_ceiling
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_announced
+        PASS [ 247.358s] (134/390) phase-engine::integration fantastic_four_bounded_loop::b5f_the_declared_term_can_suppress_an_otherwise_legal_offer
+        PASS [  40.949s] (135/390) phase-engine::integration fantastic_four_bounded_loop::the_f4_offer_splits_each_published_count_over_its_announced_candidates
+        PASS [   0.069s] (136/390) phase-engine::integration interaction_contract::loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_seat
+        PASS [   0.057s] (137/390) phase-engine::integration interaction_contract::loop_shortcut_narrowed_max_iterations_bounds_the_picker
+        PASS [   0.056s] (138/390) phase-engine::integration interaction_contract::loop_shortcut_number_schema_accepts_a_fixed_count_above_one
+        PASS [   0.049s] (139/390) phase-engine::integration interaction_contract::loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count
+        PASS [   0.058s] (140/390) phase-engine::integration interaction_contract::loop_shortcut_preview_never_routes_through_the_clone_apply_previewer
+        PASS [   0.052s] (141/390) phase-engine::integration interaction_contract::loop_shortcut_preview_states_the_finished_magnitude_for_the_declared_count
+        PASS [   0.048s] (142/390) phase-engine::integration interaction_contract::loop_shortcut_schema_and_materializer_cover_every_decision_point_kind
+        PASS [   0.035s] (143/390) phase-engine::integration interaction_contract::loop_shortcut_zero_max_iterations_is_rejected_not_clamped
+        PASS [   0.226s] (144/390) phase-engine::integration issue_2899_tainted_pact::tainted_pact_empty_library_is_a_mandatory_loop_draw
+        PASS [   0.025s] (145/390) phase-engine::integration issue_2899_tainted_pact::until_stop_conditions_with_a_non_pausing_body_draws_in_loop
+        PASS [   0.126s] (146/390) phase-engine::integration issue_8183_static_gate_fail_open::dandan_attack_legality_follows_the_defending_players_board
+        PASS [   0.151s] (147/390) phase-engine::integration issue_8183_static_gate_fail_open::dandan_parses_a_condition_gated_cant_attack_static
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::t3_the_published_token_rate_is_delivered_by_the_accepted_drive
+        PASS [ 221.375s] (148/390) phase-engine::integration fantastic_four_bounded_loop::e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_closed
+        PASS [ 142.108s] (149/390) phase-engine::integration fantastic_four_bounded_loop::r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_announced
+        PASS [   1.133s] (150/390) phase-engine::integration loop_counter_growth::plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry
+        PASS [   0.668s] (151/390) phase-engine::integration loop_counter_growth::plus_one_counter_growth_registers_its_infinity_display_target
+        PASS [   0.039s] (152/390) phase-engine::integration loop_counter_growth::two_seats_collapse_the_shared_pair_and_keep_the_distinct_one
+        PASS [ 103.753s] (153/390) phase-engine::integration fantastic_four_bounded_loop::t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_declared
+        PASS [   0.623s] (154/390) phase-engine::integration loop_counter_growth::unbounded_counter_row_dies_with_its_bearer_but_the_store_does_not
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain
+        SLOW [>240.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel
+        PASS [   7.973s] (155/390) phase-engine::integration loop_only_dependency_fallback::curse_newer_than_the_loop_applies_after_it
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::the_responder_reads_the_declared_partition_and_its_per_seat_magnitudes
+        PASS [ 241.995s] (156/390) phase-engine::integration fantastic_four_bounded_loop::e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel
+        PASS [  61.108s] (157/390) phase-engine::integration fantastic_four_bounded_loop::the_responder_reads_the_declared_partition_and_its_per_seat_magnitudes
+        PASS [   9.211s] (158/390) phase-engine::integration loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+        PASS [  88.088s] (159/390) phase-engine::integration fantastic_four_bounded_loop::t3_the_published_token_rate_is_delivered_by_the_accepted_drive
+        PASS [ 115.244s] (160/390) phase-engine::integration fantastic_four_bounded_loop::t2_reach_guard_a_same_seat_schedule_shape_already_commits_its_whole_count
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::the_responders_element_agrees_with_the_producers_other_two_call_sites
+        PASS [   7.108s] (161/390) phase-engine::integration loop_only_dependency_fallback::curse_on_another_player_leaves_the_loop_recipients_untouched
+        PASS [   8.934s] (162/390) phase-engine::integration loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members
+        PASS [   1.401s] (163/390) phase-engine::integration loop_shortcut::a_declared_target_made_illegal_mid_drive_stops_short_and_never_retargets
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::u2_the_published_victim_domain_gates_the_committed_drive
+        PASS [  12.328s] (164/390) phase-engine::integration loop_only_dependency_fallback::loop_alone_applies_every_member
+        SLOW [>240.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1b_an_authored_non_canonical_distribution_is_accepted
+        PASS [  70.976s] (165/390) phase-engine::integration fantastic_four_bounded_loop::the_responders_element_agrees_with_the_producers_other_two_call_sites
+        PASS [  32.680s] (166/390) phase-engine::integration loop_counter_growth::live_optional_charge_growth_marks_counter_advantage_no_gameover
+        SLOW [>240.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced
+        PASS [  13.674s] (167/390) phase-engine::integration loop_shortcut::a_cycle_that_does_not_match_the_published_period_is_dropped
+        PASS [  22.201s] (168/390) phase-engine::integration loop_shortcut::a_clearing_beat_rebuilds_the_ring_inside_the_same_beat
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::u6_the_declare_owner_firewall_holds_on_the_real_f4_offer
+        SLOW [> 60.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_measured
+        PASS [ 250.873s] (169/390) phase-engine::integration fantastic_four_bounded_loop::p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced
+        PASS [  63.178s] (170/390) phase-engine::integration fantastic_four_bounded_loop::u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_measured
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_counter_growth::live_charge_growth_off_never_marks
+        PASS [  71.523s] (171/390) phase-engine::integration fantastic_four_bounded_loop::u6_the_declare_owner_firewall_holds_on_the_real_f4_offer
+        PASS [  65.611s] (172/390) phase-engine::integration loop_counter_growth::live_charge_growth_off_never_marks
+        PASS [   0.058s] (173/390) phase-engine::integration loop_shortcut::a_zero_count_declaration_validates_over_an_empty_range_but_still_checks_cardinality
+        PASS [  39.157s] (174/390) phase-engine::integration loop_shortcut::a_co_departure_the_prediction_does_not_name_is_refused
+        PASS [   0.603s] (175/390) phase-engine::integration loop_shortcut::ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_published
+        PASS [ 114.589s] (176/390) phase-engine::integration fantastic_four_bounded_loop::t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_closed
+        PASS [   0.952s] (177/390) phase-engine::integration loop_shortcut::an_aborted_until_lethal_drive_discards_only_the_proposers_own_driving_period
+        PASS [  27.587s] (178/390) phase-engine::integration loop_shortcut::a_recorded_loop_detect_sample_keeps_a_live_half_normalization_would_have_erased
+        PASS [ 117.475s] (179/390) phase-engine::integration fantastic_four_bounded_loop::the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain
+        PASS [   0.963s] (180/390) phase-engine::integration loop_shortcut::an_accepted_until_lethal_grant_drains_even_with_a_foreign_period_in_state
+        PASS [  44.373s] (181/390) phase-engine::integration loop_shortcut::a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer
+        PASS [  14.273s] (182/390) phase-engine::integration loop_shortcut::ai_bounded_declare_candidate_is_generated_legal_and_drives
+        PASS [  41.136s] (183/390) phase-engine::integration loop_shortcut::a_proposers_own_driving_period_mints_no_bounded_offer
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::a_count_of_zero_performs_nothing_and_takes_the_shortcut_on_either_response
+        PASS [  32.641s] (184/390) phase-engine::integration loop_shortcut::a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::a_departure_on_an_iteration_the_prediction_did_not_name_is_refused
+        SLOW [>120.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::u2_the_published_victim_domain_gates_the_committed_drive
+        PASS [   2.335s] (185/390) phase-engine::integration loop_shortcut::an_over_cap_count_is_refused_at_consumption_and_at_the_responders_seam
+        SLOW [>300.000s] (───────) phase-engine::integration fantastic_four_bounded_loop::p4_row_1b_an_authored_non_canonical_distribution_is_accepted
+        PASS [  65.694s] (186/390) phase-engine::integration loop_shortcut::a_departure_on_an_iteration_the_prediction_did_not_name_is_refused
+        PASS [   1.484s] (187/390) phase-engine::integration loop_shortcut::an_unsigned_proposal_takes_no_per_offer_ceiling
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::a_shortened_unsigned_drive_seats_the_shortener_only_where_it_reached_the_named_place
+        PASS [  50.677s] (188/390) phase-engine::integration loop_shortcut::a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not
+        PASS [   2.505s] (189/390) phase-engine::integration loop_shortcut::b3_declare_refuses_a_schedule_breaking_inside_the_declared_count
+        PASS [   3.180s] (190/390) phase-engine::integration loop_shortcut::b3_firewall_abort_incarnation_guard
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load
+        PASS [ 138.798s] (191/390) phase-engine::integration fantastic_four_bounded_loop::u2_the_published_victim_domain_gates_the_committed_drive
+        PASS [  61.446s] (192/390) phase-engine::integration loop_shortcut::a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load
+        PASS [   2.645s] (193/390) phase-engine::integration loop_shortcut::b3_materialize_cross_lethal
+        PASS [   1.480s] (194/390) phase-engine::integration loop_shortcut::b3_materialize_stop_short
+        PASS [   2.063s] (195/390) phase-engine::integration loop_shortcut::basis_a_bounded_fixed_count_commits_exactly_n_periods
+        PASS [ 318.704s] (196/390) phase-engine::integration fantastic_four_bounded_loop::p4_row_1b_an_authored_non_canonical_distribution_is_accepted
+        PASS [   6.084s] (197/390) phase-engine::integration loop_shortcut::b5_2_enabler_departure_clears_the_mark
+        PASS [  51.754s] (198/390) phase-engine::integration loop_shortcut::an_accepted_bounded_grant_drains_even_with_a_foreign_period_in_state
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::accepted_fixed_count_bounds_the_boundary_collapse_prompt
+        PASS [  56.358s] (199/390) phase-engine::integration loop_shortcut::an_absent_prediction_admits_no_departure
+        PASS [  87.838s] (200/390) phase-engine::integration loop_shortcut::a_shortened_unsigned_drive_seats_the_shortener_only_where_it_reached_the_named_place
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::an_emptied_charge_preserves_the_published_count
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::an_emptied_charge_still_bounds_the_drive_at_the_guard
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [   6.432s] (201/390) phase-engine::integration loop_shortcut::bounded_offer_on_a_within_turn_draw_drain_is_basis_b
+        PASS [   0.116s] (202/390) phase-engine::integration loop_shortcut::c2a_row_t1b_both_trigger_target_selection_arms_route_through_the_single_writer
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::an_over_bound_count_is_refused_at_consumption
+        PASS [   1.436s] (203/390) phase-engine::integration loop_shortcut::combat_damage_step_ledger_observer_still_suppresses_offer
+        PASS [  19.661s] (204/390) phase-engine::integration loop_shortcut::bounded_fixed_drive_stops_at_the_first_lethal_cycle
+        PASS [   0.177s] (205/390) phase-engine::integration loop_shortcut::d7_a_pre_declaration_save_decodes_with_no_declaration
+        PASS [   3.083s] (206/390) phase-engine::integration loop_shortcut::creature_only_combat_damage_leaves_the_loop_ring_intact
+        PASS [  28.672s] (207/390) phase-engine::integration loop_shortcut::bounded_cycle_pin_slots_enumerates_the_emblem_slot
+        PASS [   2.398s] (208/390) phase-engine::integration loop_shortcut::declare_and_respond_authorization
+        PASS [   0.152s] (209/390) phase-engine::integration loop_shortcut::declared_count_beyond_the_published_schedule_window_is_refused
+        PASS [   0.088s] (210/390) phase-engine::integration loop_shortcut::declared_count_shorter_than_the_rotation_is_not_over_refused
+        PASS [   1.473s] (211/390) phase-engine::integration loop_shortcut::declare_illegal_pin_falls_back_legal_ingests
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::a_count_of_zero_performs_nothing_and_takes_the_shortcut_on_either_response
+        PASS [  68.236s] (212/390) phase-engine::integration loop_shortcut::an_emptied_charge_still_bounds_the_drive_at_the_guard
+        PASS [  31.366s] (213/390) phase-engine::integration loop_shortcut::bloodloop_mandatory_draw_cascade_offers_at_2p_3p_and_4p
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::an_unsigned_proposal_commits_the_cycle_a_seat_departs_on
+        PASS [  11.747s] (214/390) phase-engine::integration loop_shortcut::defuse_hook_inert_under_off
+        PASS [   0.559s] (215/390) phase-engine::integration loop_shortcut::drain_offer_schema_is_empty_until_lethal
+        PASS [  97.017s] (216/390) phase-engine::integration loop_shortcut::accepted_fixed_count_bounds_the_boundary_collapse_prompt
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
+        PASS [  66.203s] (217/390) phase-engine::integration loop_shortcut::an_unsigned_proposal_commits_the_cycle_a_seat_departs_on
+        PASS [   2.290s] (218/390) phase-engine::integration loop_shortcut::driver_own_unproposed_activated_ability_is_relieved
+        PASS [  81.378s] (219/390) phase-engine::integration loop_shortcut::an_over_bound_count_is_refused_at_consumption
+        PASS [  61.485s] (220/390) phase-engine::integration loop_shortcut::answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed
+        PASS [   1.724s] (221/390) phase-engine::integration loop_shortcut::end_step_window_end_step_observer_still_suppresses_offer
+        PASS [   1.436s] (222/390) phase-engine::integration loop_shortcut::foreign_mana_ability_still_vetoes
+        PASS [   1.469s] (223/390) phase-engine::integration loop_shortcut::foreign_object_second_surface_still_vetoes_after_x1
+        PASS [   1.511s] (224/390) phase-engine::integration loop_shortcut::injected_3p_one_faller_no_crown
+        PASS [  91.722s] (225/390) phase-engine::integration loop_shortcut::an_emptied_charge_preserves_the_published_count
+        PASS [   1.156s] (226/390) phase-engine::integration loop_shortcut::interactive_3p_optional_cascade_apnap_accept_win
+        PASS [   4.372s] (227/390) phase-engine::integration loop_shortcut::injected_3p_unequal_life_pin_all_no_crown
+        PASS [   0.809s] (228/390) phase-engine::integration loop_shortcut::interactive_offer_separates_priority_proposer_from_predicted_winner
+        PASS [   2.114s] (229/390) phase-engine::integration loop_shortcut::interactive_3p_subset_lethal_does_not_crown
+        PASS [   1.292s] (230/390) phase-engine::integration loop_shortcut::interactive_optional_drain_decline_restores_priority_no_reoffer
+        PASS [   0.843s] (231/390) phase-engine::integration loop_shortcut::interactive_poison_axis_surfaces_in_offer_certificate
+        PASS [   2.129s] (232/390) phase-engine::integration loop_shortcut::interactive_proposer_concede_mid_apnap_does_not_crown_departed
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::b5_optional_beneficial_marks_revocable_unbounded
+        PASS [   4.193s] (233/390) phase-engine::integration loop_shortcut::interactive_queued_opponent_concede_no_deadlock
+        PASS [   2.190s] (234/390) phase-engine::integration loop_shortcut::interactive_shorten_hands_priority_and_breaks_loop
+        PASS [   0.137s] (235/390) phase-engine::integration loop_shortcut::loop_shortcut_acting_player_reads_proposer
+        PASS [   0.124s] (236/390) phase-engine::integration loop_shortcut::loop_shortcut_schema_redacts_hidden_targets_for_non_controller
+        PASS [   0.679s] (237/390) phase-engine::integration loop_shortcut::loop_shortcut_serializes_schema_under_data
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::bounded_fixed_count_commits_exactly_n_periods
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat
+        PASS [   7.664s] (238/390) phase-engine::integration loop_shortcut::interactive_recurring_poison_is_not_drawn
+        PASS [   3.839s] (239/390) phase-engine::integration loop_shortcut::low2_smart_shortcut_self_preservation
+        PASS [   4.351s] (240/390) phase-engine::integration loop_shortcut::multiplayer_pure_life_drain_offers_at_three_and_four_players
+        PASS [   1.765s] (241/390) phase-engine::integration loop_shortcut::noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer
+        PASS [  41.511s] (242/390) phase-engine::integration loop_shortcut::dina_offering_beat_certifies_through_basis_b_and_exempts_nothing
+        PASS [   0.647s] (243/390) phase-engine::integration loop_shortcut::noncombat_damage_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer
+        PASS [   0.633s] (244/390) phase-engine::integration loop_shortcut::object_growth_51st_sprout_swarm_covers_and_offers
+        PASS [   1.469s] (245/390) phase-engine::integration loop_shortcut::object_growth_51st_accept_marks_unbounded_and_mints_no_tokens
+        PASS [  45.024s] (246/390) phase-engine::integration loop_shortcut::declared_count_above_the_offered_bound_is_handed_back
+        PASS [   1.338s] (247/390) phase-engine::integration loop_shortcut::object_growth_advantage_untillethal_no_crown
+        PASS [   1.080s] (248/390) phase-engine::integration loop_shortcut::object_growth_interruptibility_defused_opponent_responds_no_grant
+        PASS [ 165.154s] (249/390) phase-engine::integration loop_shortcut::a_count_of_zero_performs_nothing_and_takes_the_shortcut_on_either_response
+        PASS [   0.550s] (250/390) phase-engine::integration loop_shortcut::object_growth_no_buyback_does_not_offer
+        PASS [   1.600s] (251/390) phase-engine::integration loop_shortcut::object_growth_interruptibility_undefused_opponent_passes_grants
+        PASS [   1.921s] (252/390) phase-engine::integration loop_shortcut::object_growth_library_observer_does_not_suppress_offer
+        PASS [   1.915s] (253/390) phase-engine::integration loop_shortcut::object_growth_no_affinity_does_not_offer
+        PASS [   1.838s] (254/390) phase-engine::integration loop_shortcut::object_growth_offer_schema_has_live_convoke_taps
+        PASS [   0.822s] (255/390) phase-engine::integration loop_shortcut::object_growth_public_zone_observer_does_not_suppress_offer
+        PASS [   2.025s] (256/390) phase-engine::integration loop_shortcut::object_growth_offer_survives_a_face_down_permanent_under_either_controller
+        PASS [   1.671s] (257/390) phase-engine::integration loop_shortcut::object_growth_phase_unreachable_ledger_observer_does_not_suppress_offer
+        PASS [   1.541s] (258/390) phase-engine::integration loop_shortcut::object_growth_sprout_swarm_decline_restores_priority_no_reoffer
+        PASS [   1.647s] (259/390) phase-engine::integration loop_shortcut::object_growth_self_damage_recast_does_not_offer
+        PASS [   2.144s] (260/390) phase-engine::integration loop_shortcut::object_growth_random_recast_body_does_not_offer
+        PASS [   0.460s] (261/390) phase-engine::integration loop_shortcut::over_cap_fixed_count_hands_back_with_no_drive
+        PASS [   0.750s] (262/390) phase-engine::integration loop_shortcut::on_shortcut_byte_identical_to_pre_pr7_golden
+        PASS [   1.891s] (263/390) phase-engine::integration loop_shortcut::off_mode_capture_leaves_recast_context_none
+        PASS [   0.978s] (264/390) phase-engine::integration loop_shortcut::phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer
+        PASS [   1.825s] (265/390) phase-engine::integration loop_shortcut::off_natural_death_no_shortcut
+        PASS [   1.103s] (266/390) phase-engine::integration loop_shortcut::predicted_winner_concede_mid_apnap_does_not_drive
+        PASS [   1.840s] (267/390) phase-engine::integration loop_shortcut::phase_reachable_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [  82.539s] (268/390) phase-engine::integration loop_shortcut::bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat
+        PASS [  56.208s] (269/390) phase-engine::integration loop_shortcut::dina_untargeted_drain_4p_offers_at_three_live_opponents
+        PASS [   1.551s] (270/390) phase-engine::integration loop_shortcut::r28_a_an_empty_schema_offer_is_not_short_circuited_past_the_declare_gates
+        PASS [   1.573s] (271/390) phase-engine::integration loop_shortcut::r28_a_declared_template_owning_another_seat_is_refused_at_declare
+        PASS [   0.096s] (272/390) phase-engine::integration loop_shortcut::recorded_loop_pins_are_redacted_for_a_viewer_who_cannot_see_the_pinned_object
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::declining_a_shortcut_discards_only_the_decliners_own_driving_period
+        PASS [   0.098s] (273/390) phase-engine::integration loop_shortcut::respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers
+        PASS [   3.492s] (274/390) phase-engine::integration loop_shortcut::r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consumption
+        PASS [   1.820s] (275/390) phase-engine::integration loop_shortcut::smugglers_share_end_step_observer_does_not_suppress_offer
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::drawgo_ring_spans_turns_but_never_offers
+        PASS [  57.480s] (276/390) phase-engine::integration loop_shortcut::dump_c_still_crowns_at_one_living_opponent_after_pause_retention
+        PASS [   0.233s] (277/390) phase-engine::integration loop_shortcut::template_none_against_a_pin_consuming_schema_falls_back_to_manual_play
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redacted
+        PASS [  24.372s] (278/390) phase-engine::integration loop_shortcut::prydwen_artifact_matcher_bystander_does_not_suppress_offer
+        SLOW [>180.000s] (───────) phase-engine::integration loop_shortcut::a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed
+        PASS [  64.569s] (279/390) phase-engine::integration loop_shortcut::drawgo_ring_spans_turns_but_never_offers
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::interactive_3p_mandatory_no_loss_draw
+        PASS [  30.960s] (280/390) phase-engine::integration loop_shortcut::r16v_a_ring_warmup_beat_spends_nothing
+        PASS [  33.704s] (281/390) phase-engine::integration loop_shortcut::r16_the_offering_beats_probe_demand_is_exactly_measured
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::b5_optional_beneficial_marks_revocable_unbounded
+        PASS [  40.566s] (282/390) phase-engine::integration loop_shortcut::r15_a_zero_probe_budget_refuses_the_bounded_offer
+        PASS [  77.557s] (283/390) phase-engine::integration loop_shortcut::exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redacted
+        PASS [  10.058s] (284/390) phase-engine::integration loop_shortcut::the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::bounded_fixed_count_commits_exactly_n_periods
+        PASS [  21.351s] (285/390) phase-engine::integration loop_shortcut::the_bridge_shares_one_current_side_projection_across_its_mandatory_ring_walk
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::migrated_dump_decodes_through_both_decoders_and_unmigrated_through_neither
+        PASS [   2.245s] (286/390) phase-engine::integration loop_shortcut::unblocked_attacker_damage_clears_the_loop_ring_with_no_window
+        PASS [  98.766s] (287/390) phase-engine::integration loop_shortcut::declining_a_shortcut_discards_only_the_decliners_own_driving_period
+        PASS [   7.257s] (288/390) phase-engine::integration loop_shortcut::the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_last_opponent
+        PASS [   0.454s] (289/390) phase-engine::integration loop_shortcut::vito_2p_optional_offer_declare_crowns
+        PASS [   0.406s] (290/390) phase-engine::integration loop_shortcut::vito_bond_conqueror_2p_determinate_win
+        PASS [   0.590s] (291/390) phase-engine::integration loop_shortcut::vito_interruptibility_defused_opponent_responds_no_grant
+        PASS [   0.860s] (292/390) phase-engine::integration loop_shortcut::vito_interruptibility_undefused_opponent_passes_grants
+        PASS [  70.365s] (293/390) phase-engine::integration loop_shortcut::migrated_dump_decodes_through_both_decoders_and_unmigrated_through_neither
+        PASS [ 135.796s] (294/390) phase-engine::integration loop_shortcut::bounded_fixed_count_commits_exactly_n_periods
+        SLOW [>180.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [   5.446s] (295/390) phase-engine::integration loop_shortcut_activation::activation_interruptibility_undefused_opponent_passes_grants
+        PASS [  96.535s] (296/390) phase-engine::integration loop_shortcut::interactive_3p_mandatory_no_loss_draw
+        PASS [  10.741s] (297/390) phase-engine::integration loop_shortcut_activation::activation_interruptibility_defused_opponent_responds_no_grant
+        PASS [  15.529s] (298/390) phase-engine::integration loop_shortcut::witherbloom_lumaret_4p_offers_with_opponent_utility_lands
+        PASS [  57.472s] (299/390) phase-engine::integration loop_shortcut::scheduled_collapse_still_renders_the_unbounded_badge
+        PASS [   5.928s] (300/390) phase-engine::integration loop_shortcut_activation::activation_loop_gond_intruder_alarm_captures_and_sustains
+        PASS [  59.291s] (301/390) phase-engine::integration loop_shortcut::stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store
+        PASS [   7.863s] (302/390) phase-engine::integration loop_shortcut_activation::activation_loop_without_grant_source_does_not_offer
+        PASS [  10.429s] (303/390) phase-engine::integration loop_shortcut_activation::activation_loop_gond_intruder_alarm_offers_shortcut
+        PASS [   9.496s] (304/390) phase-engine::integration loop_shortcut_activation::activation_loop_without_untapper_does_not_offer
+        PASS [  11.802s] (305/390) phase-engine::integration loop_shortcut_activation::activation_loop_off_mode_is_byte_identical
+        PASS [   8.519s] (306/390) phase-engine::integration loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing
+        PASS [   0.037s] (307/390) phase-engine::integration loop_shortcut_drain_boards::only_a_published_targets_slot_off_the_charged_set_is_unbacked
+        PASS [ 163.663s] (308/390) phase-engine::integration loop_shortcut::b5_optional_beneficial_marks_revocable_unbounded
+        PASS [  35.536s] (309/390) phase-engine::integration loop_shortcut::until_lethal_against_a_bounded_offer_is_rejected
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::the_bridge_shares_one_current_side_projection_across_its_ring_walk
+        SLOW [>240.000s] (───────) phase-engine::integration loop_shortcut::a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save
+        PASS [  10.006s] (310/390) phase-engine::integration loop_shortcut_drain_boards::the_two_restored_offers_disagree_on_declarability
+        PASS [  10.037s] (311/390) phase-engine::integration loop_shortcut_mana_engine::a_hidden_library_hojo_does_not_block_the_mana_engine_shortcut
+        PASS [  20.136s] (312/390) phase-engine::integration loop_shortcut_cast_route::replay_collapse_names_every_deferred_axis_the_loop_marked
+        PASS [   0.088s] (313/390) phase-engine::integration loop_shortcut_mana_engine::loop_action_sequence_conditional_load_migration
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::the_detector_separates_into_sized_parts_against_a_detector_off_leg
+        PASS [   5.622s] (314/390) phase-engine::integration loop_shortcut_mana_engine::a_revealed_hojo_does_not_block_the_mana_engine_shortcut
+        PASS [   6.281s] (315/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_accept_marks_infinite_mana_independent_of_count
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::two_site_retention_survives_a_prompt_and_its_answer
+        PASS [   9.573s] (316/390) phase-engine::integration loop_shortcut_mana_engine::cond_a_nontargeted_opponent_depletion_noops_at_exhaustion_not_abort
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut::unregistered_axis_still_renders_its_infinity_badge
+        PASS [  60.925s] (317/390) phase-engine::integration loop_shortcut::unregistered_axis_still_renders_its_infinity_badge
+        PASS [  31.650s] (318/390) phase-engine::integration loop_shortcut_cast_route::two_accepts_one_phase_one_batched_one_replay_share_one_boundary
+        PASS [   7.779s] (319/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_accept_still_renders_its_infinity_badge
+        PASS [  31.831s] (320/390) phase-engine::integration loop_shortcut_drain_boards::lethal_lifegain_loss_board_live_offer_is_self_consistent
+        PASS [  14.948s] (321/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_accept_records_no_collapse_bound
+        PASS [   8.671s] (322/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_accept_writes_no_pile_but_marks_mana
+        PASS [   5.888s] (323/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_accumulates_both_beats
+        PASS [   7.722s] (324/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_interruptibility_defused_opponent_responds_no_grant
+        PASS [   9.589s] (325/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_controller_change_resets_accumulator
+        PASS [   7.190s] (326/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_off_mode_is_byte_identical
+        PASS [   0.072s] (327/390) phase-engine::integration loop_shortcut_offer_writer_census::the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses
+        PASS [  13.927s] (328/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_basalt_power_offers_mana_advantage_shortcut
+        PASS [   0.087s] (329/390) phase-engine::integration loop_shortcut_ranking::r2d_a_ranked_seat_is_judged_as_a_target_while_the_choice_class_keeps_existence_only
+        PASS [   0.047s] (330/390) phase-engine::integration loop_shortcut_ranking::r3b_a_loop_choice_carrier_survives_the_batch_boundary_and_is_owner_scoped_per_viewer
+        PASS [  10.555s] (331/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_interruptibility_undefused_opponent_passes_grants
+        PASS [   0.035s] (332/390) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_counts_occurrences_and_not_lines
+        PASS [   0.043s] (333/390) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_ignores_a_trailing_comment_mention
+        PASS [   0.045s] (334/390) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_instrument_reports_both_answers_on_planted_input
+        SLOW [>240.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [  10.792s] (335/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_partial_period_does_not_offer
+        PASS [   9.841s] (336/390) phase-engine::integration loop_shortcut_mana_engine::mana_engine_without_power_does_not_offer
+        PASS [   9.999s] (337/390) phase-engine::integration loop_shortcut_mana_engine::scheduled_drive_still_renders_the_already_spendable_mana_badge
+        PASS [  48.394s] (338/390) phase-engine::integration loop_shortcut_drain_boards::weird_drain_board_live_offer_is_self_consistent
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut_cast_route::cast_trigger_board_routes_to_replay_untouched_board_stays_batched
+        PASS [  10.620s] (339/390) phase-engine::integration loop_shortcut_seat_pin_census::no_target_class_producer_constructs_a_choice_class_player_pin
+        PASS [  64.520s] (340/390) phase-engine::integration loop_shortcut_cast_route::cast_trigger_board_routes_to_replay_untouched_board_stays_batched
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut_drain_boards::declarable_victims_are_empty_when_restored_and_populated_when_live
+        PASS [ 115.230s] (341/390) phase-engine::integration loop_shortcut::the_bridge_shares_one_current_side_projection_across_its_ring_walk
+        PASS [  10.715s] (342/390) phase-engine::integration loop_shortcut_shortening::a_refusal_does_not_advance_the_poll
+        PASS [   5.926s] (343/390) phase-engine::integration loop_shortcut_shortening::a_shortened_mana_engine_is_performed_while_an_accepted_one_is_marked_unbounded
+        PASS [  18.871s] (344/390) phase-engine::integration loop_shortcut_shortening::a_bystander_seat_is_untouched_by_the_length_a_responder_names
+        PASS [  14.979s] (345/390) phase-engine::integration loop_shortcut_shortening::a_place_at_the_proposed_count_is_refused_and_the_place_below_it_is_answered
+        PASS [   3.519s] (346/390) phase-engine::integration loop_shortcut_shortening::a_zero_count_proposal_admits_no_place_while_accept_still_answers
+        PASS [ 298.203s] (347/390) phase-engine::integration loop_shortcut::a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed
+        PASS [   3.274s] (348/390) phase-engine::integration loop_shortcut_shortening::an_in_cap_place_drives_its_cycles_and_crowns_only_the_named_seat
+        PASS [   0.455s] (349/390) phase-engine::integration loop_shortcut_shortening::the_engine_driven_seat_can_answer_a_window_whose_range_is_empty
+        PASS [   0.463s] (350/390) phase-engine::integration loop_shortcut_shortening::the_largest_place_an_until_lethal_proposal_admits_is_refused_at_the_responders_seam
+        PASS [  25.964s] (351/390) phase-engine::integration loop_shortcut_offer_writer_census::the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_validates_pins
+        PASS [   0.070s] (352/390) phase-engine::integration resolution_optional_payments::resolution_optional_oneof_decline_clears_loop_ring_and_cannot_replay
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save
+        PASS [  72.901s] (353/390) phase-engine::integration loop_shortcut_drain_boards::declarable_victims_are_empty_when_restored_and_populated_when_live
+        PASS [  26.378s] (354/390) phase-engine::integration loop_shortcut_shortening::a_foreign_owner_template_is_answered_at_the_seam_and_refused_at_consumption
+        PASS [   0.362s] (355/390) phase-engine::integration turn_control_game_end::control_ends_when_a_loop_draw_ends_the_game
+        PASS [  11.552s] (356/390) phase-engine::integration loop_shortcut_shortening::place_zero_is_answered_on_every_proposal_whose_range_holds_a_place
+        PASS [  12.857s] (357/390) phase-engine::integration loop_shortcut_shortening::a_zero_place_takes_the_empty_shortcut_while_a_named_place_polls_on
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::the_detector_separates_into_sized_parts_against_a_detector_off_leg
+        PASS [  10.082s] (358/390) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS [   7.813s] (359/390) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS [  12.837s] (360/390) phase-engine::integration loop_shortcut_shortening::the_second_shortener_narrows_the_range_and_holds_the_ending_point
+        PASS [ 115.145s] (361/390) phase-engine::integration loop_shortcut::two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count
+        PASS [  15.908s] (362/390) phase-engine::integration loop_shortcut_shortening::the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it
+        SLOW [>120.000s] (───────) phase-engine::integration loop_shortcut::two_site_retention_survives_a_prompt_and_its_answer
+        PASS [  13.839s] (363/390) phase-engine::integration wba_loop_firewall_interposition::an_interposer_free_zero_delivery_collapse_ends_where_a_seat_can_act
+        PASS [  25.301s] (364/390) phase-engine::integration wba_loop_firewall_interposition::a_mandatory_choice_free_interposer_delivers_the_whole_count
+        PASS [  29.352s] (365/390) phase-engine::integration wba_loop_firewall_interposition::a_graveyard_diverting_replacement_vetoes_and_a_real_tapland_does_not
+        PASS [  23.320s] (366/390) phase-engine::integration wba_loop_firewall_interposition::an_accepted_mill_collapse_moves_cards_and_retires_its_marks
+        PASS [  22.266s] (367/390) phase-engine::integration wba_loop_firewall_interposition::an_interposer_truncates_the_collapse_to_a_whole_period_prefix
+        SLOW [>300.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [ 149.262s] (368/390) phase-engine::integration loop_shortcut::the_detector_separates_into_sized_parts_against_a_detector_off_leg
+        PASS [  27.437s] (369/390) phase-engine::integration wba_loop_firewall_interposition::an_interposer_free_mill_collapse_declines_in_proportion_to_the_accepted_count
+        PASS [  53.906s] (370/390) phase-engine::integration loop_shortcut_shortening::a_restored_over_cap_proposal_refuses_what_it_cannot_drive_and_admits_the_repairing_place
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut_shortening::a_place_the_engine_cannot_drive_is_refused_and_the_next_answer_ends_the_loop
+        PASS [  47.358s] (371/390) phase-engine::integration loop_shortcut_shortening::shortening_to_a_place_reaches_the_board_declaring_it_outright_reaches
+        PASS [  70.957s] (372/390) phase-engine::integration loop_shortcut_shortening::a_place_the_engine_cannot_drive_is_refused_and_the_next_answer_ends_the_loop
+        SLOW [> 60.000s] (───────) phase-engine::integration loop_shortcut_shortening::the_loop_edge_that_looks_like_the_answer_leaves_the_loop_standing
+        PASS [  22.145s] (373/390) phase-engine::integration wba_loop_firewall_interposition::mill_base_offers_the_shortcut
+        SLOW [>180.000s] (───────) phase-engine::integration loop_shortcut::the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save
+        PASS [  55.406s] (374/390) phase-engine::integration wba_loop_firewall_interposition::a_hand_mill_observer_vetoes_only_in_the_proposers_own_hand
+        PASS [   0.863s] (375/390) phase-engine::integration wilhelt_decayed_intervening_if_5937::wilhelt_token_death_does_not_loop
+        PASS [  57.007s] (376/390) phase-engine::integration wba_loop_firewall_interposition::a_milled_cards_own_window_and_permanent_type_reach_the_drive_through_neither_channel
+        PASS [  71.647s] (377/390) phase-engine::integration loop_shortcut_shortening::the_loop_edge_that_looks_like_the_answer_leaves_the_loop_standing
+        PASS [ 189.754s] (378/390) phase-engine::integration loop_shortcut::the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save
+        PASS [  22.005s] (379/390) phase-engine::integration wba_loop_firewall_interposition::the_mill_flips_a_non_empty_batched_period_onto_the_replay
+        SLOW [>180.000s] (───────) phase-engine::integration loop_shortcut::two_site_retention_survives_a_prompt_and_its_answer
+        PASS [  52.907s] (380/390) phase-engine::integration wba_loop_firewall_interposition::caster_side_and_declinable_mills_are_not_certified
+        PASS [  48.990s] (381/390) phase-engine::integration wba_loop_firewall_interposition::chocobo_camp_offers_untapped_and_tapped
+        PASS [  47.518s] (382/390) phase-engine::integration wba_loop_firewall_interposition::the_delivered_prefix_tracks_the_interposers_depth
+        PASS [  47.565s] (383/390) phase-engine::integration wba_loop_firewall_interposition::the_interposers_window_reaches_the_milled_player_and_the_offer_re_arms
+        SLOW [> 60.000s] (───────) phase-engine::integration wba_loop_firewall_interposition::check_lands_still_offer_with_the_subtype_arm_repaired
+        PASS [ 197.054s] (384/390) phase-engine::integration loop_shortcut::two_site_retention_survives_a_prompt_and_its_answer
+        SLOW [> 60.000s] (───────) phase-engine::integration wba_loop_firewall_interposition::departure_observing_triggers_keep_the_veto
+        SLOW [>360.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [  57.229s] (385/390) phase-engine::integration wba_loop_firewall_interposition::the_each_player_mill_declines_the_casters_library_and_the_may_mill_declines_nothing_extra
+        SLOW [> 60.000s] (───────) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+        PASS [  65.874s] (386/390) phase-engine::integration wba_loop_firewall_interposition::check_lands_still_offer_with_the_subtype_arm_repaired
+        PASS [  65.183s] (387/390) phase-engine::integration wba_loop_firewall_interposition::departure_observing_triggers_keep_the_veto
+        PASS [  66.800s] (388/390) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+        PASS [  51.431s] (389/390) phase-engine::integration wba_loop_firewall_interposition::unactivated_ability_relief_offers_on_three_real_census_lands
+        SLOW [>420.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        SLOW [>480.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        SLOW [>540.000s] (───────) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+        PASS [ 548.822s] (390/390) phase-engine::integration loop_shortcut::an_evicting_beat_mints_without_growing_the_ring
+────────────
+     Summary [ 900.949s] 390 tests run: 390 passed (67 slow), 8923 skipped
+done rc=0

@@ -9,5 +9,5 @@
     Checking draft-wasm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-wasm)
     Checking engine-wasm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
     Checking phase-server v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-server)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21m 16s
-done rc=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9m 25s
+clippy rc=0

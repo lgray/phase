@@ -1,0 +1,8 @@
+sha=1acc74bca68775098b9a9c8700700c2a3815446f
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=0
+     Summary [2893.714s] 37251 tests run: 37251 passed (150 slow), 51 skipped
+done rc=0

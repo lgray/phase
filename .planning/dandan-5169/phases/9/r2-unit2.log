@@ -1,0 +1,754 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 02s
+────────────
+ Nextest run ID 47ff91a1-65e3-43a1-b827-6bd90c1d6aaf with nextest profile: default
+    Starting 747 tests across 1 binary (22421 tests skipped)
+        PASS [   0.035s] (  1/747) phase-engine ai_support::candidates::tests::crew_eligibility_scanned_once_regardless_of_vehicle_count
+        PASS [   0.037s] (  2/747) phase-engine ai_support::candidates::tests::candidate_actions_broad_keeps_fixed_tap_creatures_exact
+        PASS [   0.038s] (  3/747) phase-engine ai_support::candidates::tests::ai_does_not_pin_pool_mana_during_mana_payment
+        PASS [   0.039s] (  4/747) phase-engine ai_support::candidates::tests::balanced_partition_candidate_present_and_deterministic
+        PASS [   0.040s] (  5/747) phase-engine ai_support::candidates::tests::attacker_candidates_sweep_attackable_players_once
+        PASS [   0.043s] (  6/747) phase-engine ai_support::candidates::tests::candidate_actions_broad_generates_variable_x_range
+        PASS [   0.043s] (  7/747) phase-engine ai_support::candidates::tests::cant_become_tapped_creature_is_not_crew_eligible
+        PASS [   0.044s] (  8/747) phase-engine ai_support::candidates::tests::convoke_offers_only_cost_relevant_colored_taps
+        PASS [   0.045s] (  9/747) phase-engine ai_support::candidates::tests::choose_objects_candidates_respect_bounds_and_distinctness
+        PASS [   0.045s] ( 10/747) phase-engine ai_support::candidates::tests::crew_candidates_escalate_to_size_two_when_needed
+        PASS [   0.039s] ( 11/747) phase-engine ai_support::candidates::tests::choose_from_zone_choice_large_pool_is_bounded
+        PASS [   0.039s] ( 12/747) phase-engine ai_support::candidates::tests::crew_offered_only_with_eligible_other_creature
+        PASS [   0.059s] ( 13/747) phase-engine ai_support::candidates::tests::crew_candidates_emit_minimal_cover_only
+        PASS [   0.063s] ( 14/747) phase-engine ai_support::candidates::tests::ai_land_front_adventure_generates_only_spell_face_choice
+        PASS [   0.068s] ( 15/747) phase-engine ai_support::candidates::tests::cant_crew_creatures_block_crew_but_not_saddle
+        PASS [   0.043s] ( 16/747) phase-engine ai_support::candidates::tests::crew_self_exclusion_when_vehicle_is_only_untapped_creature
+        PASS [   0.038s] ( 17/747) phase-engine ai_support::candidates::tests::effect_zone_choice_up_to_large_pool_is_bounded
+        PASS [   0.044s] ( 18/747) phase-engine ai_support::candidates::tests::d6n_a_points_carrying_offer_without_a_declaration_enumerates_only_decline
+        PASS [   0.037s] ( 19/747) phase-engine ai_support::candidates::tests::every_issued_search_selection_is_structurally_valid
+        PASS [   0.049s] ( 20/747) phase-engine ai_support::candidates::tests::declare_attackers_forced_assignment_respects_must_attack_player
+        PASS [   0.043s] ( 21/747) phase-engine ai_support::candidates::tests::graveyard_activated_ability_offered_when_affordable
+        PASS [   0.045s] ( 22/747) phase-engine ai_support::candidates::tests::graveyard_mana_ability_offered_when_affordable
+        PASS [   0.054s] ( 23/747) phase-engine ai_support::candidates::tests::declare_attackers_includes_pass_and_all_attack
+        PASS [   0.051s] ( 24/747) phase-engine ai_support::candidates::tests::exact_selection_count_above_pool_cap_keeps_progress_candidate
+        PASS [   0.059s] ( 25/747) phase-engine ai_support::candidates::tests::declare_attackers_offers_every_target_for_each_attacker
+        PASS [   0.051s] ( 26/747) phase-engine ai_support::candidates::tests::graveyard_sorcery_without_keywords_not_castable
+        PASS [   0.066s] ( 27/747) phase-engine ai_support::candidates::tests::entry_controller_choice_issues_each_opponent_once
+        PASS [   0.038s] ( 28/747) phase-engine ai_support::candidates::tests::lethal_first_distribution_candidate_present
+        PASS [   0.070s] ( 29/747) phase-engine ai_support::candidates::tests::declare_attackers_offers_legal_mixed_assignment_for_multi_goad
+        PASS [   0.038s] ( 30/747) phase-engine ai_support::candidates::tests::mana_payment_actions_exclude_lands_without_activatable_mana
+        PASS [   0.039s] ( 31/747) phase-engine ai_support::candidates::tests::mana_payment_actions_include_no_tap_sacrifice_mana_abilities
+        PASS [   0.070s] ( 32/747) phase-engine ai_support::candidates::tests::legal_actions_include_sacrifice_mana_activation_during_mana_payment
+        PASS [   0.056s] ( 33/747) phase-engine ai_support::candidates::tests::loop_shortcut_candidates_include_decline
+        PASS [   0.048s] ( 34/747) phase-engine ai_support::candidates::tests::priority_actions_do_not_offer_lands_as_cast_spells
+        PASS [   0.059s] ( 35/747) phase-engine ai_support::candidates::tests::named_card_choice_uses_bounded_in_game_names
+        PASS [   0.055s] ( 36/747) phase-engine ai_support::candidates::tests::pay_amount_loop_collapse_offers_only_default_one
+        PASS [   0.059s] ( 37/747) phase-engine ai_support::candidates::tests::priority_actions_enumerate_cast_prepared_copy_for_prepared_creatures
+        PASS [   0.056s] ( 38/747) phase-engine ai_support::candidates::tests::priority_actions_exclude_activated_ability_with_unmet_restriction
+        PASS [   0.051s] ( 39/747) phase-engine ai_support::candidates::tests::priority_actions_include_spell_castable_via_multiversal_passage_chosen_swamp
+        PASS [   0.064s] ( 40/747) phase-engine ai_support::candidates::tests::priority_actions_include_spell_castable_via_gloomlake_verge_blue_mana
+        PASS [   0.053s] ( 41/747) phase-engine ai_support::candidates::tests::priority_actions_suppressed_by_split_second_on_stack
+        PASS [   0.050s] ( 42/747) phase-engine ai_support::candidates::tests::reveal_until_bottom_order_ai_candidates_include_alternate_permutations
+        PASS [   0.056s] ( 43/747) phase-engine ai_support::candidates::tests::search_choice_candidates_filter_distinct_names
+        PASS [   0.046s] ( 44/747) phase-engine ai_support::candidates::tests::sideboard_context_submits_current_lists
+        PASS [   0.071s] ( 45/747) phase-engine ai_support::candidates::tests::priority_actions_skip_cast_prepared_copy_when_cost_unpayable
+        PASS [   0.042s] ( 46/747) phase-engine ai_support::candidates::tests::target_selection_does_not_revive_stale_slot_targets
+        PASS [   0.045s] ( 47/747) phase-engine ai_support::candidates::tests::structural_search_selection_refuses_what_the_submission_guard_refuses
+        PASS [   0.055s] ( 48/747) phase-engine ai_support::candidates::tests::search_choice_distinct_names_caps_large_pool_to_unique_names
+        PASS [   0.066s] ( 49/747) phase-engine ai_support::candidates::tests::two_hg_priority_actions_offer_single_pass_for_team_representative
+        PASS [   0.106s] ( 50/747) phase-engine ai_support::candidates::tests::priority_actions_include_unlock_room_door_for_locked_room
+        PASS [   0.081s] ( 51/747) phase-engine ai_support::candidates::tests::search_choice_single_card_search_issues_the_whole_pool
+        PASS [   0.039s] ( 52/747) phase-engine ai_support::combat_withdrawal::tests::rejects_hostile_actor_and_noncurrent_target_without_slot_fallback
+        PASS [   0.057s] ( 53/747) phase-engine ai_support::combat_withdrawal::tests::parent_target_removal_reports_exact_blocker_fact
+        PASS [   0.108s] ( 54/747) phase-engine ai_support::candidates::tests::priority_actions_offer_runtime_granted_typecycling_from_homing_sliver
+        PASS [   0.043s] ( 55/747) phase-engine ai_support::combat_withdrawal::tests::rejects_stale_pending_source_incarnation_and_unblocked_attacker
+        PASS [   0.059s] ( 56/747) phase-engine ai_support::combat_withdrawal::tests::rejects_conditional_or_sibling_removal_paths
+        PASS [   0.093s] ( 57/747) phase-engine ai_support::combat_withdrawal::tests::direct_target_reports_exact_attacker_fact_without_mutating_state
+        PASS [   0.060s] ( 58/747) phase-engine ai_support::combat_withdrawal::tests::single_member_rejects_empty_and_multi_member_slices
+        PASS [   0.082s] ( 59/747) phase-engine ai_support::combat_withdrawal::tests::real_activation_target_selection_replays_through_the_facade
+        PASS [   0.067s] ( 60/747) phase-engine ai_support::context::tests::ai_pass_uses_the_ordinary_boundary_during_committed_stack_resolution
+        PASS [   0.072s] ( 61/747) phase-engine ai_support::context::tests::build_decision_context_canonicalizes_candidate_action_order
+        PASS [   0.073s] ( 62/747) phase-engine ai_support::context::tests::decision_contract_accepts_an_issued_card_selection_in_any_order
+        PASS [   0.044s] ( 63/747) phase-engine ai_support::copy::tests::typed_copy_limit_sets_copy_ceiling
+        PASS [   0.045s] ( 64/747) phase-engine ai_support::context::tests::stale_stack_pass_proposal_is_not_a_rejected_ai_decision
+        PASS [   0.065s] ( 65/747) phase-engine ai_support::copy::tests::generic_clone_text_has_no_mana_ceiling
+        PASS [   0.068s] ( 66/747) phase-engine ai_support::copy::tests::detects_copy_effects_that_add_flying
+        PASS [   0.065s] ( 67/747) phase-engine ai_support::filter::tests::basic_legality_is_subset_of_simulation
+        PASS [   0.065s] ( 68/747) phase-engine ai_support::filter::tests::choose_target_filter_safety_gate
+        PASS [   0.058s] ( 69/747) phase-engine ai_support::filter::tests::declare_blocker_single_keys_and_ringbearer_distinguishes
+        PASS [   0.050s] ( 70/747) phase-engine ai_support::filter::tests::default_pipeline_registered_filters_ordered_by_cost
+        PASS [   0.182s] ( 71/747) phase-engine ai_support::candidates::tests::web_slinging_candidates_are_cast_actions_grouped_under_hand_object
+        PASS [   0.074s] ( 72/747) phase-engine ai_support::filter::tests::condition_classifier_dynamic_unsafe
+        PASS [   0.106s] ( 73/747) phase-engine ai_support::copy::tests::typed_copy_limit_zero_stamp_is_some_zero_not_unconstrained
+        PASS [   0.117s] ( 74/747) phase-engine ai_support::context::tests::decision_contract_requires_an_exact_issued_action
+        PASS [   0.072s] ( 75/747) phase-engine ai_support::filter::tests::declare_attacker_single_keys_multi_and_banded_none
+        PASS [   0.096s] ( 76/747) phase-engine ai_support::filter::tests::attachment_forces_none_fingerprint
+        PASS [   0.178s] ( 77/747) phase-engine ai_support::filter::tests::controller_is_part_of_fingerprint
+        PASS [   0.107s] ( 78/747) phase-engine ai_support::filter::tests::mana_role_poison_scan_extends_without_tightening
+        PASS [   0.188s] ( 79/747) phase-engine ai_support::filter::tests::combat_role_is_folded_into_key
+        PASS [   0.132s] ( 80/747) phase-engine ai_support::filter::tests::filterprop_classifier_partition
+        PASS [   0.108s] ( 81/747) phase-engine ai_support::filter::tests::pass_priority_hatch_is_wired_into_both_simulation_filter_methods
+        PASS [   0.110s] ( 82/747) phase-engine ai_support::filter::tests::pass_priority_hatch_defers_when_a_payment_root_is_parked
+        PASS [   0.214s] ( 83/747) phase-engine ai_support::filter::tests::activation_count_is_folded_into_key
+        PASS [   0.129s] ( 84/747) phase-engine ai_support::filter::tests::fingerprint_membership_guards_name_owner_manacost
+        PASS [   0.205s] ( 85/747) phase-engine ai_support::filter::tests::pass_priority_hatch_honors_the_divergence_latch_owner
+        PASS [   0.209s] ( 86/747) phase-engine ai_support::filter::tests::memo_dedups_identical_activate_ability_to_one_clone
+        PASS [   0.203s] ( 87/747) phase-engine ai_support::filter::tests::pass_priority_hatch_rejects_a_mismatched_candidate_actor
+        PASS [   0.222s] ( 88/747) phase-engine ai_support::filter::tests::legal_actions_excludes_a_pass_blocked_by_the_divergence_latch
+        PASS [   0.327s] ( 89/747) phase-engine ai_support::context::tests::stack_pass_proposal_uses_the_verified_recheck_seam
+        PASS [   0.104s] ( 90/747) phase-engine ai_support::filter::tests::simulation_uses_live_turn_controller_already_latched_in_candidate_metadata
+        PASS [   0.108s] ( 91/747) phase-engine ai_support::filter::tests::simulation_filter_accepts_pass_priority_at_opening_state
+        PASS [   0.264s] ( 92/747) phase-engine ai_support::filter::tests::dynamic_activation_cost_poisons_activation_memo
+        PASS [   0.111s] ( 93/747) phase-engine ai_support::filter::tests::simulation_does_not_remap_latched_search_controller_through_live_turn_control
+        PASS [   0.109s] ( 94/747) phase-engine ai_support::filter::tests::structurally_valid_priority_cast_rejects_split_second_and_falls_back
+        PASS [   0.114s] ( 95/747) phase-engine ai_support::filter::tests::quantity_classifier_fixed_vs_ref
+        PASS [   0.121s] ( 96/747) phase-engine ai_support::filter::tests::simulation_uses_ordinary_search_actor_without_remapping
+        PASS [   0.236s] ( 97/747) phase-engine ai_support::filter::tests::pass_priority_hatch_accepts_only_what_the_simulation_accepts
+        PASS [   0.135s] ( 98/747) phase-engine ai_support::filter::tests::structurally_valid_priority_cast_manual_payment_uses_fallback
+        PASS [   0.041s] ( 99/747) phase-engine ai_support::payment_continuation::tests::direct_mana_payment_without_a_live_root_fails_closed
+        PASS [   0.031s] (100/747) phase-engine ai_support::prospective_mana::tests::terminal_search_branches_share_the_precharged_route_allowance_but_not_each_other
+        PASS [   0.045s] (101/747) phase-engine ai_support::payment_continuation::tests::resolution_optional_sacrifice_cursor_is_not_a_cast_root
+        PASS [   0.144s] (102/747) phase-engine ai_support::filter::tests::structurally_valid_priority_cast_short_circuits_auto_targetless_spell
+        PASS [   0.046s] (103/747) phase-engine ai_support::payment_continuation::tests::unsupported_payment_batch_does_not_apply_actions
+        PASS [   0.053s] (104/747) phase-engine ai_support::prospective_mana::tests::pact_plan_remains_dormant_while_matching_trigger_is_deferred
+        PASS [   0.057s] (105/747) phase-engine ai_support::prospective_mana::tests::actionless_pact_priority_pass_uses_the_normal_interaction_boundary
+        PASS [   0.064s] (106/747) phase-engine ai_support::prospective_mana::tests::forced_progress_permit_burns_its_budget_before_a_stale_apply_fails
+        PASS [   0.068s] (107/747) phase-engine ai_support::prospective_mana::tests::route_owner_may_submit_its_own_normal_pass_without_forcing_an_opponent
+        PASS [   0.044s] (108/747) phase-engine ai_support::shortcut_efficacy::tests::composite_filters_prove_ownership_by_set_logic
+        PASS [   0.046s] (109/747) phase-engine ai_support::shortcut_efficacy::tests::every_gated_card_face_field_reaches_the_gate_through_printed_cards
+        PASS [   0.043s] (110/747) phase-engine ai_support::shortcut_efficacy::tests::every_printed_rules_field_is_either_folded_or_gated
+        PASS [   0.079s] (111/747) phase-engine ai_support::shortcut_efficacy::tests::a_destination_is_confined_only_when_the_seat_cannot_act_on_what_lands_there
+        PASS [   0.100s] (112/747) phase-engine ai_support::prospective_mana::tests::route_never_forces_an_opponents_actionable_priority_window
+        PASS [   0.038s] (113/747) phase-engine ai_support::shortcut_efficacy::tests::t2_10_the_relieved_mode_set_is_exactly_this_list
+        PASS [   0.076s] (114/747) phase-engine ai_support::shortcut_efficacy::tests::an_unrecognized_container_with_confined_branches_is_still_interference
+        PASS [   0.032s] (115/747) phase-engine ai_support::shortcut_efficacy::tests::t2_3_the_carve_out_rejects_the_typed_you_shape_that_filter_is_actor_owned_accepts
+        PASS [   0.035s] (116/747) phase-engine ai_support::shortcut_efficacy::tests::t2_4b_an_empty_trigger_zones_list_means_battlefield_not_nowhere
+        PASS [   0.034s] (117/747) phase-engine ai_support::shortcut_efficacy::tests::t2_6_a_mode_the_predicate_cannot_classify_keeps_its_veto
+        PASS [   0.032s] (118/747) phase-engine ai_support::shortcut_efficacy::tests::t2_7_a_disjunctive_zone_change_trigger_is_not_relieved_by_its_scalar_valid_card
+        PASS [   0.040s] (119/747) phase-engine ai_support::shortcut_efficacy::tests::t2_5_each_relieved_family_is_relieved_and_its_siblings_are_not
+        PASS [   0.125s] (120/747) phase-engine ai_support::shortcut_efficacy::tests::a_foreign_library_search_is_confined_alone_then_absorbed
+        PASS [   0.039s] (121/747) phase-engine ai_support::shortcut_efficacy::tests::t3_2_a_transform_carries_the_displayed_faces_parse_diagnostics
+        PASS [   0.044s] (122/747) phase-engine ai_support::shortcut_efficacy::tests::unresolvable_action_subjects_are_interference
+        PASS [   0.039s] (123/747) phase-engine ai_support::swarm::tests::the_declaration_cap_is_admitted_and_only_the_count_past_it_is_refused
+        PASS [   0.027s] (124/747) phase-engine ai_support::targeted_exchange::tests::a_pending_layer_grant_falls_open
+        PASS [   0.169s] (125/747) phase-engine ai_support::shortcut_efficacy::tests::a_battlefield_entry_must_be_provably_tapped_actor_controlled_and_not_attacking
+        PASS [   0.033s] (126/747) phase-engine ai_support::targeted_exchange::tests::a_second_ability_carrying_the_shape_still_admits
+        PASS [   0.080s] (127/747) phase-engine ai_support::shortcut_efficacy::tests::t3_1_a_parse_diagnostic_gates_an_otherwise_confined_object
+        PASS [   0.193s] (128/747) phase-engine ai_support::shortcut_efficacy::tests::a_battlefield_entry_is_confined_only_from_a_library
+        PASS [   0.028s] (129/747) phase-engine ai_support::targeted_exchange::tests::damage_all_from_a_target_source_is_admitted
+        PASS [   0.034s] (130/747) phase-engine ai_support::targeted_exchange::tests::cleave_variant_only_shape_still_admits
+        PASS [   0.171s] (131/747) phase-engine ai_support::shortcut_efficacy::tests::deathrite_and_terramorphic_are_separated_only_by_the_owner_axis
+        PASS [   0.038s] (132/747) phase-engine ai_support::targeted_exchange::tests::alternative_face_only_shape_still_admits
+        PASS [   0.040s] (133/747) phase-engine ai_support::targeted_exchange::tests::activation_beyond_printed_abilities_falls_open
+        PASS [   0.189s] (134/747) phase-engine ai_support::shortcut_efficacy::tests::an_object_whose_rules_content_this_module_cannot_read_is_never_confined
+        PASS [   0.173s] (135/747) phase-engine ai_support::shortcut_efficacy::tests::mana_production_is_reach_not_a_confined_own_resource
+        PASS [   0.054s] (136/747) phase-engine ai_support::targeted_exchange::tests::base_abilities_only_shape_still_admits
+        PASS [   0.041s] (137/747) phase-engine ai_support::targeted_exchange::tests::direct_card_cast_variants_are_targeted_exchange_roots
+        PASS [   0.030s] (138/747) phase-engine ai_support::targeted_exchange::tests::non_root_action_short_circuits_before_the_guard
+        PASS [   0.057s] (139/747) phase-engine ai_support::targeted_exchange::tests::fight_inside_choose_one_of_branches_is_admitted
+        PASS [   0.044s] (140/747) phase-engine ai_support::targeted_exchange::tests::plain_spell_sourced_damage_is_not_an_adverse_exchange_shape
+        PASS [   0.048s] (141/747) phase-engine ai_support::targeted_exchange::tests::installing_a_layer_six_grant_marks_the_lattice_dirty
+        PASS [   0.053s] (142/747) phase-engine ai_support::targeted_exchange::tests::missing_source_object_falls_open
+        PASS [   0.039s] (143/747) phase-engine ai_support::targeted_exchange::tests::shape_behind_else_or_mode_branch_still_admits
+        PASS [   0.041s] (144/747) phase-engine ai_support::targeted_exchange::tests::source_with_no_abilities_cannot_reject
+        PASS [   0.045s] (145/747) phase-engine ai_support::targeted_exchange::tests::self_damage_exchange_ignores_an_opposing_source_that_destroys_a_friendly_recipient
+        PASS [   0.067s] (146/747) phase-engine ai_support::targeted_exchange::tests::predicate_sees_a_fight_in_every_nested_carrier
+        PASS [   0.042s] (147/747) phase-engine ai_support::tests::auto_pass_classifies_mana_added_triggers_by_triggered_mana_rules
+        PASS [   0.176s] (148/747) phase-engine ai_support::shortcut_efficacy::tests::t3_4_a_search_filter_that_matches_nothing_is_unanswerable_not_confined
+        PASS [   0.044s] (149/747) phase-engine ai_support::tests::auto_pass_does_not_skip_non_mana_land_ability
+        PASS [   0.043s] (150/747) phase-engine ai_support::tests::auto_pass_false_for_meaningful_action_on_opponents_upkeep
+        PASS [   0.046s] (151/747) phase-engine ai_support::tests::auto_pass_false_for_meaningful_noncast_action_on_own_upkeep
+        PASS [   0.037s] (152/747) phase-engine ai_support::tests::auto_pass_false_for_opponent_spell_on_top_with_meaningful_action
+        PASS [   0.042s] (153/747) phase-engine ai_support::tests::auto_pass_fires_for_bare_sac_for_mana_on_opponents_turn_repro
+        PASS [   0.040s] (154/747) phase-engine ai_support::tests::auto_pass_fires_for_bare_sac_for_mana_opponents_turn
+        PASS [   0.040s] (155/747) phase-engine ai_support::tests::auto_pass_holds_for_forbidden_orchard_token_via_grouped_mana
+        PASS [   0.052s] (156/747) phase-engine ai_support::tests::auto_pass_fires_for_bare_sac_for_mana_own_turn
+        PASS [   0.033s] (157/747) phase-engine ai_support::tests::auto_pass_recommended_false_on_empty_stack_phase_stop
+        PASS [   0.038s] (158/747) phase-engine ai_support::tests::auto_pass_holds_for_mana_tap_trigger_on_opponents_turn_via_grouped_mana
+        PASS [   0.078s] (159/747) phase-engine ai_support::tests::auto_pass_false_for_opponent_spell_on_top_with_castable_instant
+        PASS [   0.044s] (160/747) phase-engine ai_support::tests::auto_pass_holds_when_tapping_land_for_mana_would_queue_non_mana_trigger
+        PASS [   0.047s] (161/747) phase-engine ai_support::tests::auto_pass_recommended_phase_stop_per_player_isolation
+        PASS [   0.040s] (162/747) phase-engine ai_support::tests::auto_pass_recommended_true_for_yielded_top
+        PASS [   0.036s] (163/747) phase-engine ai_support::tests::auto_pass_recommended_true_when_stack_nonempty_despite_stop
+        PASS [   0.055s] (164/747) phase-engine ai_support::tests::auto_pass_recommended_true_when_phase_not_stopped
+        PASS [   0.044s] (165/747) phase-engine ai_support::tests::auto_pass_releases_priority_for_lone_mana_on_opponents_turn
+        PASS [   0.046s] (166/747) phase-engine ai_support::tests::auto_pass_true_for_bare_own_upkeep_via_gated_fast_path
+        PASS [   0.052s] (167/747) phase-engine ai_support::tests::auto_pass_skips_pure_triggered_mana_bonus_when_no_mana_is_spendable
+        PASS [   0.037s] (168/747) phase-engine ai_support::tests::auto_passes_initial_upkeep_and_draw_priority_with_instant_speed_actions
+        PASS [   0.099s] (169/747) phase-engine ai_support::tests::auto_pass_holds_priority_for_castable_spell_on_opponents_turn
+        PASS [   0.367s] (170/747) phase-engine ai_support::shortcut_efficacy::tests::an_untapped_fetch_is_reach_and_a_tapped_one_stays_confined
+        PASS [   0.042s] (171/747) phase-engine ai_support::tests::cheap_reject_candidate_accepts_up_to_search_counts
+        PASS [   0.028s] (172/747) phase-engine ai_support::tests::cheap_reject_candidate_permits_partial_constrained_search
+        PASS [   0.036s] (173/747) phase-engine ai_support::tests::cheap_reject_candidate_honors_variable_x_tap_creatures_range
+        PASS [   0.053s] (174/747) phase-engine ai_support::tests::auto_pass_true_for_own_spell_on_top_despite_meaningful_ability
+        PASS [   0.295s] (175/747) phase-engine ai_support::shortcut_efficacy::tests::t3_3_a_library_fetch_is_confined_only_while_every_selectable_card_is_inert
+        PASS [   0.086s] (176/747) phase-engine ai_support::tests::auto_pass_true_for_own_spell_on_top_despite_castable_instant
+        PASS [   0.042s] (177/747) phase-engine ai_support::tests::cheap_reject_candidate_preserves_exact_search_count
+        PASS [   0.035s] (178/747) phase-engine ai_support::tests::cheap_reject_candidate_rejects_out_of_range_replacement_choice
+        PASS [   0.032s] (179/747) phase-engine ai_support::tests::end_continuous_effect_offer_projection_preserves_engine_order_and_payload
+        PASS [   0.050s] (180/747) phase-engine ai_support::tests::cheap_reject_candidate_preserves_exact_fixed_tap_creatures_count
+        PASS [   0.055s] (181/747) phase-engine ai_support::tests::cheap_reject_candidate_preserves_ambiguous_priority_pass
+        PASS [   0.098s] (182/747) phase-engine ai_support::tests::auto_pass_true_for_own_instant_on_top_opponents_turn
+        PASS [   0.046s] (183/747) phase-engine ai_support::tests::delve_payment_skips_state_clone_per_graveyard_candidate
+        PASS [   0.041s] (184/747) phase-engine ai_support::tests::g1_auto_passes_when_source_already_tapped
+        PASS [   0.062s] (185/747) phase-engine ai_support::tests::g1_auto_passes_on_own_upkeep_wrong_phase
+        PASS [   0.069s] (186/747) phase-engine ai_support::tests::g1_auto_passes_for_opponent_controlled_source
+        PASS [   0.258s] (187/747) phase-engine ai_support::targeted_exchange::tests::root_replay_does_not_reject_opposing_source_and_friendly_recipient
+        PASS [   0.047s] (188/747) phase-engine ai_support::tests::g1_holds_for_beneficial_mana_tap_trigger_own_main
+        PASS [   0.086s] (189/747) phase-engine ai_support::tests::g1_auto_passes_for_manabarbs_shape
+        PASS [   0.062s] (190/747) phase-engine ai_support::tests::legal_actions_by_object_dedups_mana_ability_during_payment
+        PASS [   0.053s] (191/747) phase-engine ai_support::tests::legal_actions_by_object_exposes_no_tap_sacrifice_mana_abilities
+        PASS [   0.048s] (192/747) phase-engine ai_support::tests::legal_actions_by_object_exposes_nonland_mana_abilities_without_flat_actions
+        PASS [   0.063s] (193/747) phase-engine ai_support::tests::legal_actions_by_object_exposes_engine_mana_sources_without_flat_actions
+        PASS [   0.068s] (194/747) phase-engine ai_support::tests::legal_actions_by_object_exposes_filter_land_with_payable_mana_sub_cost
+        PASS [   0.076s] (195/747) phase-engine ai_support::tests::legal_actions_by_object_exposes_mana_actions_during_payment_states
+        PASS [   0.123s] (196/747) phase-engine ai_support::tests::emergence_zone_exposes_tap_for_mana
+        PASS [   0.079s] (197/747) phase-engine ai_support::tests::legal_actions_by_object_groups_flat_list_correctly
+        PASS [   0.073s] (198/747) phase-engine ai_support::tests::legal_actions_for_viewer_gates_on_non_priority_decision_points
+        PASS [   0.083s] (199/747) phase-engine ai_support::tests::legal_actions_for_viewer_returns_empty_when_not_acting
+        PASS [   0.101s] (200/747) phase-engine ai_support::tests::legal_actions_filter_out_reducer_illegal_priority_candidates
+        PASS [   0.081s] (201/747) phase-engine ai_support::tests::legal_actions_offers_only_cycling_when_land_drop_spent
+        PASS [   0.038s] (202/747) phase-engine ai_support::tests::low_use_window_mode_fast_passes_only_own_empty_upkeep_draw_and_end
+        PASS [   0.108s] (203/747) phase-engine ai_support::tests::legal_actions_offer_runtime_granted_typecycling_from_homing_sliver
+        PASS [   0.130s] (204/747) phase-engine ai_support::tests::legal_actions_for_viewer_empty_on_game_over
+        PASS [   0.117s] (205/747) phase-engine ai_support::tests::legal_actions_for_viewer_routes_to_turn_controller
+        PASS [   0.103s] (206/747) phase-engine ai_support::tests::legal_actions_offers_playland_and_cycling_for_land_with_cycling
+        PASS [   0.095s] (207/747) phase-engine ai_support::tests::legal_actions_preserve_reducer_legal_priority_candidates
+        PASS [   0.128s] (208/747) phase-engine ai_support::tests::legal_actions_offers_animate_dead_with_cross_player_graveyard_target
+        PASS [   0.144s] (209/747) phase-engine ai_support::tests::legal_actions_offer_cancel_cast_during_distribution_with_unpayable_pending_cost
+        PASS [   0.097s] (210/747) phase-engine ai_support::tests::mana_payment_shortcut_preserves_battlefield_order_and_omits_ambiguous_sources
+        PASS [   0.139s] (211/747) phase-engine ai_support::tests::legal_actions_priority_cast_probe_reuses_one_flushed_state_and_one_auto_tap_cache
+        PASS [   0.074s] (212/747) phase-engine ai_support::tests::sac_for_mana_auto_passes_with_only_non_leaving_trigger
+        PASS [   0.131s] (213/747) phase-engine ai_support::tests::low_use_window_mode_uses_only_the_authorized_submitters_phase_stops
+        PASS [   0.065s] (214/747) phase-engine ai_support::tests::spell_costs_apply_granted_affinity_from_battlefield_static
+        PASS [   0.118s] (215/747) phase-engine ai_support::tests::sac_for_mana_holds_with_downstream_mana_costed_activated_ability
+        PASS [   0.122s] (216/747) phase-engine ai_support::tests::sac_for_mana_holds_with_beneficial_death_trigger
+        PASS [   0.065s] (217/747) phase-engine ai_support::tests::spell_costs_include_commander_affinity_reduction_without_castability
+        PASS [   0.123s] (218/747) phase-engine ai_support::tests::sac_for_mana_holds_with_disjunctive_leaves_battlefield_clause_trigger
+        PASS [   0.127s] (219/747) phase-engine ai_support::tests::sac_for_mana_holds_with_downstream_castable_spell
+        PASS [   0.115s] (220/747) phase-engine ai_support::tests::sacrificial_mana_selection_auto_cast_remains_offered_and_reaches_source_selection
+        PASS [   0.078s] (221/747) phase-engine ai_support::tests::spell_costs_report_nocost_for_hand_spell_under_omniscience
+        PASS [   0.174s] (222/747) phase-engine ai_support::tests::pool_payable_and_no_cost_spells_keep_auto_mode_with_sacrificial_source_available
+        PASS [   0.048s] (223/747) phase-engine ai_support::tests::stuck_diagnostic_none_on_game_over
+        PASS [   0.164s] (224/747) phase-engine ai_support::tests::sacrificial_colored_requirement_preserves_source_choice_despite_generic_mana
+        PASS [   0.134s] (225/747) phase-engine ai_support::tests::sneak_with_only_sacrificial_mana_preserves_source_choice
+        PASS [   0.077s] (226/747) phase-engine ai_support::tests::stuck_diagnostic_fires_on_unsatisfiable_named_choice
+        PASS [   0.083s] (227/747) phase-engine ai_support::tests::stuck_diagnostic_none_on_normal_bottom_cards
+        PASS [   0.071s] (228/747) phase-engine ai_support::tests::stuck_diagnostic_none_on_priority
+        PASS [   0.086s] (229/747) phase-engine ai_support::tests::stuck_diagnostic_none_on_normal_mulligan_decision
+        PASS [   0.088s] (230/747) phase-engine ai_support::tests::target_selection_legal_actions_do_not_fall_back_to_stale_slot_targets
+        PASS [   0.116s] (231/747) phase-engine ai_support::tests::stuck_diagnostic_none_on_normal_target_selection
+        PASS [   0.095s] (232/747) phase-engine ai_support::tests::trigger_fires_on_leaving_battlefield_predicate_boundary
+        PASS [   0.095s] (233/747) phase-engine ai_support::tests::unless_pay_surfaces_pay_cost_prompt_despite_sac_for_mana_autopass
+        PASS [   0.058s] (234/747) phase-engine analysis::ability_graph::tests::any_counter_cost_matches_typed_counter_producer
+        PASS [   0.149s] (235/747) phase-engine ai_support::tests::stuck_diagnostic_none_on_normal_mana_payment
+        PASS [   0.063s] (236/747) phase-engine analysis::ability_graph::tests::axis_key_to_resource_resolves_player_by_net_sign
+        PASS [   0.036s] (237/747) phase-engine analysis::ability_graph::tests::change_zone_graveyard_to_hand_is_unmodeled
+        PASS [   0.064s] (238/747) phase-engine analysis::ability_graph::tests::change_zone_disambiguates_etb_death_ltb
+        PASS [   0.029s] (239/747) phase-engine analysis::ability_graph::tests::changes_zone_trigger_disambiguates_etb_vs_death_vs_ltb
+        PASS [   0.098s] (240/747) phase-engine ai_support::tests::viewer_wrapper_reaches_low_use_window_mode_only_for_authorized_submitter
+        PASS [   0.146s] (241/747) phase-engine ai_support::tests::target_selection_legal_actions_use_current_targets_with_reducer_validation
+        PASS [   0.340s] (242/747) phase-engine ai_support::tests::offer_side_auto_payment_phase_accounting_has_exact_clone_ownership
+        PASS [   0.045s] (243/747) phase-engine analysis::ability_graph::tests::collect_effects_skips_execute_none
+        PASS [   0.038s] (244/747) phase-engine analysis::ability_graph::tests::colored_mana_feeds_generic_cost_is_candidate
+        PASS [   0.109s] (245/747) phase-engine ai_support::tests::web_slinging_with_only_sacrificial_mana_preserves_source_choice
+        PASS [   0.048s] (246/747) phase-engine analysis::ability_graph::tests::collect_effects_descends_nested_effect_variants
+        PASS [   0.034s] (247/747) phase-engine analysis::ability_graph::tests::cost_position_counter_production_is_producer
+        PASS [   0.038s] (248/747) phase-engine analysis::ability_graph::tests::deal_damage_projects_opponent_damage
+        PASS [   0.166s] (249/747) phase-engine ai_support::tests::validated_candidates_are_cmp_stable_sorted
+        PASS [   0.030s] (250/747) phase-engine analysis::ability_graph::tests::event_triggers_require_their_axes
+        PASS [   0.031s] (251/747) phase-engine analysis::ability_graph::tests::extra_turn_and_combat_phase_project_their_axes
+        PASS [   0.036s] (252/747) phase-engine analysis::ability_graph::tests::dynamic_production_marks_axis_unbounded
+        PASS [   0.027s] (253/747) phase-engine analysis::ability_graph::tests::gain_life_projects_positive_controller_life
+        PASS [   0.054s] (254/747) phase-engine analysis::ability_graph::tests::draw_projects_cards_drawn
+        PASS [   0.035s] (255/747) phase-engine analysis::ability_graph::tests::life_lost_all_trigger_consumes_life_axis
+        PASS [   0.057s] (256/747) phase-engine analysis::ability_graph::tests::disjoint_producers_yield_no_candidate
+        PASS [   0.074s] (257/747) phase-engine analysis::ability_graph::tests::destroy_effect_produces_ltb_death_not_sac
+        PASS [   0.036s] (258/747) phase-engine analysis::ability_graph::tests::lifegain_feedback_loop_is_candidate
+        PASS [   0.040s] (259/747) phase-engine analysis::ability_graph::tests::mana_effect_projects_positive_mana
+        PASS [   0.088s] (260/747) phase-engine analysis::ability_graph::tests::dies_token_aristocrats_loop_is_candidate
+        PASS [   0.038s] (261/747) phase-engine analysis::ability_graph::tests::mill_projects_negative_opponent_library
+        PASS [   0.044s] (262/747) phase-engine analysis::ability_graph::tests::lose_life_projects_negative_player_split
+        PASS [   0.042s] (263/747) phase-engine analysis::ability_graph::tests::model_completeness_tracks_and_rolls_up_unmodeled
+        PASS [   0.035s] (264/747) phase-engine analysis::ability_graph::tests::one_of_cost_disjunctive_envelope_emits_candidate
+        PASS [   0.038s] (265/747) phase-engine analysis::ability_graph::tests::one_of_envelope_per_axis_max_and_requires_intersection
+        PASS [   0.040s] (266/747) phase-engine analysis::ability_graph::tests::net_negative_cycle_is_not_candidate
+        PASS [   0.041s] (267/747) phase-engine analysis::ability_graph::tests::pay_life_cost_is_negative_controller_life
+        PASS [   0.051s] (268/747) phase-engine analysis::ability_graph::tests::opponent_damage_cycle_classifies_lethal
+        PASS [   0.044s] (269/747) phase-engine analysis::ability_graph::tests::sacrifice_effect_produces_sac_ltb_death_gated_by_filter
+        PASS [   0.046s] (270/747) phase-engine analysis::ability_graph::tests::sacrifice_cost_produces_sac_and_ltb_events
+        PASS [   0.028s] (271/747) phase-engine analysis::ability_graph::tests::type_filter_excludes_creature_handles_composed_negation
+        PASS [   0.057s] (272/747) phase-engine analysis::ability_graph::tests::pt_and_control_stay_unmodeled
+        PASS [   0.057s] (273/747) phase-engine analysis::ability_graph::tests::put_and_remove_counter_sign_split
+        PASS [   0.046s] (274/747) phase-engine analysis::ability_graph::tests::set_tap_state_both_polarities
+        PASS [   0.050s] (275/747) phase-engine analysis::ability_graph::tests::token_projects_tokens_and_etb
+        PASS [   0.058s] (276/747) phase-engine analysis::ability_graph::tests::two_node_mana_counter_cycle_is_candidate
+        PASS [   0.030s] (277/747) phase-engine analysis::ability_graph::tests::untap_cost_node_produces_tap_and_closes_scc
+        PASS [   0.056s] (278/747) phase-engine analysis::ability_graph::tests::unbounded_production_covers_fixed_cost
+        PASS [   0.031s] (279/747) phase-engine analysis::corpus_tests::confirmed_drivers_match_expected
+        PASS [   0.049s] (280/747) phase-engine analysis::corpus_tests::classify_status_compares_against_spec_not_rubber_stamp
+        PASS [   0.069s] (281/747) phase-engine analysis::corpus_tests::classify_live_compares_winner_not_rubber_stamp
+        PASS [   0.054s] (282/747) phase-engine analysis::corpus_tests::corpus_table_shape_is_locked
+        PASS [   0.066s] (283/747) phase-engine analysis::corpus_tests::corpus_partition_is_locked
+        PASS [   0.107s] (284/747) phase-engine analysis::ability_graph::tests::unmodeled_effect_projects_nothing
+        PASS [   0.078s] (285/747) phase-engine analysis::corpus_tests::drive_board_change_is_not_a_loop
+        PASS [   0.529s] (286/747) phase-engine ai_support::tests::squirrel_girl_activation_submits_and_resolves_on_opponents_turn
+        PASS [   3.217s] (287/747) phase-engine ai_support::shortcut_efficacy::tests::window_reach_matches_the_measured_class_table
+        PASS [   4.902s] (288/747) phase-engine ai_support::shortcut_efficacy::tests::surveyors_scope_is_the_fetch_classs_fail_closed_member
+        PASS [   6.848s] (289/747) phase-engine ai_support::candidates::tests::collect_evidence_candidates_use_combined_split_mana_value
+        PASS [   0.044s] (290/747) phase-engine analysis::corpus_tests::drive_damage_loop_certificate
+        PASS [   6.072s] (291/747) phase-engine analysis::ability_graph::tests::corpus_priority_family_combo_yields_candidate
+        PASS [   6.175s] (292/747) phase-engine analysis::corpus_tests::drive_combo_10_priest_umbral_requires_untap
+        PASS [   6.209s] (293/747) phase-engine analysis::corpus_tests::drive_combo_10_priest_umbral
+        PASS [   6.210s] (294/747) phase-engine analysis::corpus_tests::drive_combo_11_faeburrow_pemmin
+        PASS [   6.113s] (295/747) phase-engine analysis::corpus_tests::drive_combo_14_marwyn_sword_requires_untap
+        PASS [   0.096s] (296/747) phase-engine analysis::corpus_tests::drive_finite_stack_keeps_ring_empty
+        PASS [   6.442s] (297/747) phase-engine analysis::corpus_tests::corpus_cards_present_and_implementation_status_matches_gating
+        PASS [   0.041s] (298/747) phase-engine analysis::corpus_tests::drive_idle_board_is_not_a_loop
+        PASS [   7.196s] (299/747) phase-engine analysis::corpus_tests::drive_combo_04_devoted_vizier
+        PASS [   7.236s] (300/747) phase-engine analysis::corpus_tests::drive_combo_14_marwyn_sword
+        PASS [   7.810s] (301/747) phase-engine analysis::corpus_tests::drive_combo_11_selvala_staff
+        PASS [   7.982s] (302/747) phase-engine analysis::corpus_tests::drive_bloodthirsty_conqueror_enduring_tenacity_wins_live
+        PASS [   8.227s] (303/747) phase-engine analysis::ability_graph::tests::corpus_lifegain_feedback_yields_candidate
+        PASS [   8.145s] (304/747) phase-engine analysis::corpus_tests::drive_combo_07_bloom_freed
+        PASS [   8.237s] (305/747) phase-engine analysis::corpus_tests::drive_combo_02_grim_power
+        PASS [   7.980s] (306/747) phase-engine analysis::corpus_tests::drive_combo_47_spike_archangel
+        PASS [   5.538s] (307/747) phase-engine analysis::corpus_tests::drive_drain_idx18_legal_actions_terminates_bounded
+        PASS [   0.035s] (308/747) phase-engine analysis::corpus_tests::mp_unbreakable_net_zero_mandatory_loop_whole_game_draw
+        PASS [   6.238s] (309/747) phase-engine analysis::corpus_tests::drive_drain_idx17_targeted_wins_live
+        PASS [   5.808s] (310/747) phase-engine analysis::corpus_tests::drive_drain_idx18_single_trigger_has_no_order_beat
+        PASS [   0.035s] (311/747) phase-engine analysis::corpus_tests::pr6_gate_config_provenance_and_immutability
+        PASS [   0.036s] (312/747) phase-engine analysis::corpus_tests::pr6_gate_loop_detection_excluded_from_equality
+        PASS [   0.041s] (313/747) phase-engine analysis::corpus_tests::pr6_gate_loop_detection_serde_defaults_off
+        PASS [   6.078s] (314/747) phase-engine analysis::corpus_tests::drive_drain_idx18_wins_live
+        PASS [   8.635s] (315/747) phase-engine analysis::corpus_tests::drive_combo_d2_kilo_freed_relic
+        PASS [   6.517s] (316/747) phase-engine analysis::corpus_tests::drive_heliod_ballista_certificate
+        PASS [   0.036s] (317/747) phase-engine analysis::decision_template::tests::a_dead_player_pin_is_illegal
+        PASS [   0.034s] (318/747) phase-engine analysis::decision_template::tests::a_phased_out_player_pin_is_illegal
+        PASS [   0.038s] (319/747) phase-engine analysis::decision_template::tests::a_shrouded_seat_is_untargetable_yet_still_choosable_at_the_pin_recheck
+        PASS [   0.036s] (320/747) phase-engine analysis::decision_template::tests::allcopies_resolves_deterministically
+        PASS [   0.033s] (321/747) phase-engine analysis::decision_template::tests::an_order_pin_resolves_from_the_command_zone_and_still_fails_closed_elsewhere
+        PASS [   0.033s] (322/747) phase-engine analysis::decision_template::tests::convoke_pin_resolves_minimal_set_and_fails_closed
+        PASS [   0.040s] (323/747) phase-engine analysis::decision_template::tests::decision_point_kind_convoke_taps_serde_shape
+        PASS [   0.031s] (324/747) phase-engine analysis::decision_template::tests::gate_coverage_is_kind_aware
+        PASS [   0.029s] (325/747) phase-engine analysis::decision_template::tests::gate_rejects_unpinned_choice
+        PASS [   0.022s] (326/747) phase-engine analysis::decision_template::tests::r1a_a_one_element_ranking_is_the_old_constant_and_every_variant_resolves_its_head
+        PASS [   0.036s] (327/747) phase-engine analysis::decision_template::tests::r1b_an_illegal_head_refuses_even_when_a_later_entry_is_legal
+        PASS [   0.035s] (328/747) phase-engine analysis::decision_template::tests::r1d_two_ranked_slots_on_one_source_do_not_inherit_each_others_answer
+        PASS [   0.029s] (329/747) phase-engine analysis::decision_template::tests::r1f_an_empty_or_duplicated_ranking_fails_the_load
+        PASS [   0.036s] (330/747) phase-engine analysis::decision_template::tests::r1ghi_a_ranked_seat_resolves_from_battlefield_and_command_but_fails_closed_elsewhere
+        PASS [   0.035s] (331/747) phase-engine analysis::decision_template::tests::reentry_incarnation_invalidates_thisobject
+        PASS [   0.042s] (332/747) phase-engine analysis::decision_template::tests::resolve_mana_color_pin_copies_through
+        PASS [   0.038s] (333/747) phase-engine analysis::decision_template::tests::scheduled_piecewise_switches
+        PASS [   0.039s] (334/747) phase-engine analysis::decision_template::tests::scheduled_roundrobin_cycles_targets
+        PASS [   0.035s] (335/747) phase-engine analysis::decision_template::tests::shortcut_decision_schema_round_trips_and_defaults
+        PASS [   0.036s] (336/747) phase-engine analysis::decision_template::tests::static_order_pin_removed_source_yields_missing_source_400_7
+        PASS [   7.344s] (337/747) phase-engine analysis::corpus_tests::drive_drain_idx18_victim_with_out_is_not_eliminated
+        PASS [   0.062s] (338/747) phase-engine analysis::decision_template::tests::static_targets_pin_removed_target_yields_illegal_target_608_2b
+        PASS [   0.040s] (339/747) phase-engine analysis::decision_template::tests::static_template_reproduces_order
+        PASS [   0.031s] (340/747) phase-engine analysis::decision_template::tests::target_schedule_predictability_firewall_is_exhaustive
+        PASS [   0.068s] (341/747) phase-engine analysis::loop_check::tests::ballista_mp_all_opponents_distributed_ping_wins
+        PASS [   0.040s] (342/747) phase-engine analysis::loop_check::tests::ballista_mp_single_opponent_ping_no_false_win
+        PASS [   0.035s] (343/747) phase-engine analysis::loop_check::tests::covers_is_superset_semantics
+        PASS [   0.038s] (344/747) phase-engine analysis::loop_check::tests::classify_win_kind_controller_only_damage_is_not_lethal
+        PASS [   0.043s] (345/747) phase-engine analysis::loop_check::tests::detect_loop_finding2_mill_uses_caller_controller_not_board_presence
+        PASS [   0.045s] (346/747) phase-engine analysis::loop_check::tests::detect_loop_finding2_drain_uses_caller_controller_not_board_presence
+        PASS [   0.045s] (347/747) phase-engine analysis::loop_check::tests::detects_extra_turns_loop
+        PASS [   0.047s] (348/747) phase-engine analysis::loop_check::tests::detects_heliod_ballista_lethal_damage
+        PASS [   0.041s] (349/747) phase-engine analysis::loop_check::tests::detects_mana_engine_as_advantage
+        PASS [   0.041s] (350/747) phase-engine analysis::loop_check::tests::detects_opponent_mill_as_decking
+        PASS [   0.036s] (351/747) phase-engine analysis::loop_check::tests::detects_poison_loop_as_poison_loss
+        PASS [   6.029s] (352/747) phase-engine analysis::corpus_tests::drive_multi_trigger_ring_survives_order_triggers_beat
+        PASS [   0.039s] (353/747) phase-engine analysis::loop_check::tests::detects_proliferate_loop_via_trigger_axis
+        PASS [   0.040s] (354/747) phase-engine analysis::loop_check::tests::live_winner_advantage_no_faller_is_none
+        PASS [   0.044s] (355/747) phase-engine analysis::loop_check::tests::detects_token_engine_as_advantage
+        PASS [   0.051s] (356/747) phase-engine analysis::loop_check::tests::live_winner_all_players_poisoned_is_none
+        PASS [   0.026s] (357/747) phase-engine analysis::loop_check::tests::live_winner_dual_faller_library_is_none
+        PASS [   0.025s] (358/747) phase-engine analysis::loop_check::tests::live_winner_faller_cant_lose_is_none
+        PASS [   0.046s] (359/747) phase-engine analysis::loop_check::tests::live_winner_board_change_is_none
+        PASS [   0.042s] (360/747) phase-engine analysis::loop_check::tests::live_winner_mutual_drain_is_none
+        PASS [   0.032s] (361/747) phase-engine analysis::loop_check::tests::live_winner_net_zero_is_none
+        PASS [   0.041s] (362/747) phase-engine analysis::loop_check::tests::live_winner_names_poison_faller
+        PASS [   0.045s] (363/747) phase-engine analysis::loop_check::tests::live_winner_positive_life_drain
+        PASS [   0.040s] (364/747) phase-engine analysis::loop_check::tests::live_winner_pure_mill_is_none
+        PASS [   0.044s] (365/747) phase-engine analysis::loop_check::tests::live_winner_same_player_life_and_poison_is_determinate
+        PASS [   0.042s] (366/747) phase-engine analysis::loop_check::tests::live_winner_three_player_is_none
+        PASS [   0.050s] (367/747) phase-engine analysis::loop_check::tests::live_winner_staggered_absolute_poison_is_none
+        PASS [   0.053s] (368/747) phase-engine analysis::loop_check::tests::live_winner_winner_cant_win_is_none
+        PASS [   0.053s] (369/747) phase-engine analysis::loop_check::tests::mp_partial_net_progress_drain_no_premature_gameover
+        PASS [   0.049s] (370/747) phase-engine analysis::loop_check::tests::n2_controller_also_falls_is_none
+        PASS [   0.052s] (371/747) phase-engine analysis::loop_check::tests::n2_faller_cant_lose_is_none
+        PASS [   0.021s] (372/747) phase-engine analysis::loop_check::tests::n2_four_player_static_bystander_is_none
+        PASS [   0.023s] (373/747) phase-engine analysis::loop_check::tests::n2_unequal_faller_deltas_is_none
+        PASS [   6.885s] (374/747) phase-engine analysis::corpus_tests::drive_multi_trigger_no_refiller_is_finite
+        PASS [   0.033s] (375/747) phase-engine analysis::loop_check::tests::n5_fallers_lives_pairwise_equal
+        PASS [   0.064s] (376/747) phase-engine analysis::loop_check::tests::n2_three_player_all_opponent_drain_growing_stack
+        PASS [   0.040s] (377/747) phase-engine analysis::loop_check::tests::n5_winner_life_never_dips
+        PASS [   0.035s] (378/747) phase-engine analysis::loop_check::tests::residual_empty_for_constant_depth
+        PASS [   0.049s] (379/747) phase-engine analysis::loop_check::tests::object_growth_inert_loop_yields_certificate_with_residual
+        PASS [   0.041s] (380/747) phase-engine analysis::loop_check::tests::self_mill_is_advantage_not_decking
+        PASS [   0.033s] (381/747) phase-engine analysis::loop_check::tests::shared_pile_drain_is_advantage_per_seat_drain_is_decking
+        PASS [   0.057s] (382/747) phase-engine analysis::loop_check::tests::soundness_board_change_yields_no_certificate
+        PASS [   0.039s] (383/747) phase-engine analysis::loop_check::tests::soundness_no_progress_yields_no_certificate
+        PASS [   0.046s] (384/747) phase-engine analysis::loop_check::tests::t_b1i_detect_loop_rejects_convoke_fodder_pair
+        PASS [   0.079s] (385/747) phase-engine analysis::loop_check::tests::soundness_net_negative_mana_yields_no_certificate
+        PASS [   0.030s] (386/747) phase-engine analysis::resource::tests::_projected_player_axes_is_total
+        PASS [   0.039s] (387/747) phase-engine analysis::resource::tests::_projected_player_maps_is_total
+        PASS [   0.052s] (388/747) phase-engine analysis::resource::tests::a_caster_side_decline_is_never_certified
+        PASS [   0.062s] (389/747) phase-engine analysis::resource::tests::a_certificate_relieves_only_the_ids_it_names
+        PASS [   0.055s] (390/747) phase-engine analysis::resource::tests::a_charge_refuses_an_aim_outside_its_own_legal_set
+        PASS [   0.036s] (391/747) phase-engine analysis::resource::tests::a_conditioned_cost_static_in_a_zone_the_window_never_casts_from_does_not_observe
+        PASS [   0.028s] (392/747) phase-engine analysis::resource::tests::a_cost_static_on_a_card_the_loop_recasts_still_vetoes
+        PASS [   0.041s] (393/747) phase-engine analysis::resource::tests::a_declared_charge_lands_a_slot_only_where_its_pin_moves_it
+        PASS [   0.129s] (394/747) phase-engine analysis::resource::tests::a5_a_stored_accept_relieves_gate_six_and_a_stored_decline_does_not
+        PASS [   0.032s] (395/747) phase-engine analysis::resource::tests::a_declared_out_of_zone_definition_does_not_observe_token_growth
+        PASS [   0.034s] (396/747) phase-engine analysis::resource::tests::a_departure_that_ends_back_in_its_library_is_not_certified
+        PASS [   0.042s] (397/747) phase-engine analysis::resource::tests::a_draw_is_refused_on_the_action_record_not_the_destination
+        PASS [   0.040s] (398/747) phase-engine analysis::resource::tests::a_forced_target_is_not_a_published_decision_point
+        PASS [   0.020s] (399/747) phase-engine analysis::resource::tests::a_foreign_mana_ability_reading_a_creature_census_still_vetoes
+        PASS [   0.084s] (400/747) phase-engine analysis::resource::tests::a_dormant_first_activation_modifier_keeps_the_journal_in_the_loop_key
+        PASS [   0.036s] (401/747) phase-engine analysis::resource::tests::a_foreign_driving_period_proves_nothing_about_this_proposers_casting
+        PASS [   0.042s] (402/747) phase-engine analysis::resource::tests::a_non_extension_of_the_draw_journal_refuses_the_period
+        PASS [   0.115s] (403/747) phase-engine analysis::resource::tests::a_first_activation_row_is_kept_for_every_possible_controller
+        PASS [   0.052s] (404/747) phase-engine analysis::resource::tests::a_populated_per_cycle_proposal_survives_the_production_persistence_boundary
+        PASS [   0.037s] (405/747) phase-engine analysis::resource::tests::a_slot_leaving_a_seat_keeps_that_seats_reserved_charge
+        PASS [   0.043s] (406/747) phase-engine analysis::resource::tests::a_repeated_slots_victim_lists_are_unioned_not_first_wins
+        PASS [   6.442s] (407/747) phase-engine analysis::corpus_tests::drive_row_classifies_corpus_via_shared_pipeline
+        PASS [   0.036s] (408/747) phase-engine analysis::resource::tests::a_slot_that_cannot_name_a_seat_moves_nothing_onto_or_off_it
+        PASS [   0.094s] (409/747) phase-engine analysis::resource::tests::a_pinned_slot_skips_gate_three_and_six
+        PASS [   0.038s] (410/747) phase-engine analysis::resource::tests::a_withheld_forced_announcement_is_charged_like_a_published_one
+        PASS [   0.043s] (411/747) phase-engine analysis::resource::tests::activated_once_per_game_gate_breaks_modulo_equality
+        PASS [   0.041s] (412/747) phase-engine analysis::resource::tests::activated_once_per_turn_gate_breaks_modulo_equality
+        PASS [   0.041s] (413/747) phase-engine analysis::resource::tests::activation_gate_predicates_partition_restrictions
+        PASS [   0.027s] (414/747) phase-engine analysis::resource::tests::activator_filter_does_not_block_the_proposal_argument
+        PASS [   0.094s] (415/747) phase-engine analysis::resource::tests::a_spent_first_activation_discount_breaks_modulo_equality
+        PASS [   0.030s] (416/747) phase-engine analysis::resource::tests::an_etb_observer_matching_an_off_battlefield_id_moves_under_the_keep_set
+        PASS [   0.050s] (417/747) phase-engine analysis::resource::tests::an_empty_derivation_does_not_vacuously_discharge_the_cr_616_1_obligation
+        PASS [   0.056s] (418/747) phase-engine analysis::resource::tests::an_announcement_the_proposer_does_not_make_is_withheld_but_still_charged
+        PASS [   0.069s] (419/747) phase-engine analysis::resource::tests::an_accounted_arrival_is_still_refused_when_it_is_not_inert
+        PASS [   0.037s] (420/747) phase-engine analysis::resource::tests::an_unaccounted_graveyard_arrival_refuses_the_period
+        PASS [   0.035s] (421/747) phase-engine analysis::resource::tests::an_unpublishable_residual_axis_is_refused_by_the_relief_not_by_the_mint
+        PASS [   0.031s] (422/747) phase-engine analysis::resource::tests::beneficial_counter_and_life_deltas_capture_growth_only
+        PASS [   0.053s] (423/747) phase-engine analysis::resource::tests::an_id_preserving_library_to_battlefield_arrival_is_admitted_only_when_accounted
+        PASS [   0.056s] (424/747) phase-engine analysis::resource::tests::block3_condition_relief_does_not_carry_the_execute_surface
+        PASS [   0.045s] (425/747) phase-engine analysis::resource::tests::block3_floating_condition_keeps_the_veto
+        PASS [   0.034s] (426/747) phase-engine analysis::resource::tests::board_delta_isolates_untapped_seed
+        PASS [   0.038s] (427/747) phase-engine analysis::resource::tests::board_delta_reports_tapped_split
+        PASS [   6.669s] (428/747) phase-engine analysis::corpus_tests::mp_each_opponent_drain_natural_win_continues_to_sole_survivor
+        PASS [   0.175s] (429/747) phase-engine analysis::resource::tests::block3_execute_surface_relief_fires_on_the_real_reveal_land
+        PASS [   0.214s] (430/747) phase-engine analysis::resource::tests::block3_execute_empty_class_relieves_nothing
+        PASS [   0.049s] (431/747) phase-engine analysis::resource::tests::bounded_cycle_pin_slots_legal_set_comes_from_the_announcement_authority
+        PASS [   0.242s] (432/747) phase-engine analysis::resource::tests::block3_execute_relief_does_not_carry_the_condition_surface
+        PASS [   0.040s] (433/747) phase-engine analysis::resource::tests::c2_mode_arm_fails_closed_on_an_unclassifiable_mode
+        PASS [   0.065s] (434/747) phase-engine analysis::resource::tests::bounded_cycle_pin_slots_requires_a_single_mandatory_announcement_slot
+        PASS [   0.035s] (435/747) phase-engine analysis::resource::tests::c2_refuses_a_functioning_milled_observer_on_its_own_arm
+        PASS [   0.249s] (436/747) phase-engine analysis::resource::tests::block3_floating_execute_keeps_the_veto
+        PASS [   0.043s] (437/747) phase-engine analysis::resource::tests::c2_refuses_a_graveyard_admitting_replacement_but_not_a_self_entry_land
+        PASS [   0.043s] (438/747) phase-engine analysis::resource::tests::c2_shape_arm_fails_closed_on_the_fields_it_cannot_read
+        PASS [   0.032s] (439/747) phase-engine analysis::resource::tests::c3a_loop_window_yield_pins_the_def_sequence_and_the_host_binding
+        PASS [   0.043s] (440/747) phase-engine analysis::resource::tests::c2_shape_arm_refuses_only_what_can_reach_the_certified_landing_zones
+        PASS [   0.046s] (441/747) phase-engine analysis::resource::tests::certificate_names_the_departed_id_and_its_victim
+        PASS [   0.044s] (442/747) phase-engine analysis::resource::tests::certificate_residual_compares_stored_containers
+        PASS [   0.046s] (443/747) phase-engine analysis::resource::tests::conforms_compares_two_pinned_slots_as_one_total
+        PASS [   0.044s] (444/747) phase-engine analysis::resource::tests::conforms_fails_closed_on_a_signature_deserialized_without_a_domain
+        PASS [   0.037s] (445/747) phase-engine analysis::resource::tests::conforms_lifts_nothing_without_a_targets_pin_on_a_charged_slot
+        PASS [   0.036s] (446/747) phase-engine analysis::resource::tests::conforms_refuses_a_relocation_outside_the_reserved_domain
+        PASS [   0.035s] (447/747) phase-engine analysis::resource::tests::conforms_refuses_everything_the_bound_did_not_reserve
+        PASS [   0.046s] (448/747) phase-engine analysis::resource::tests::consumed_shield_counter_breaks_modulo_equality_but_monotone_does_not
+        PASS [   0.023s] (449/747) phase-engine analysis::resource::tests::counter_growth_rejects_consumed_generic_charge
+        PASS [   0.043s] (450/747) phase-engine analysis::resource::tests::counter_growth_covers_strict_generic_charge_growth
+        PASS [   0.038s] (451/747) phase-engine analysis::resource::tests::counter_growth_rejects_non_generic_preserved_counter_growth
+        PASS [   0.028s] (452/747) phase-engine analysis::resource::tests::counter_is_beneficial_materializable_partition
+        PASS [   0.040s] (453/747) phase-engine analysis::resource::tests::counter_growth_rejects_stable_charge
+        PASS [   0.033s] (454/747) phase-engine analysis::resource::tests::different_tap_state_is_not_modulo_equal
+        PASS [   0.020s] (455/747) phase-engine analysis::resource::tests::draw_verdict_obligation_is_real_and_class_scoped
+        PASS [   0.130s] (456/747) phase-engine analysis::resource::tests::counters_on_source_gate_is_precise_and_fail_closed
+        PASS [   0.142s] (457/747) phase-engine analysis::resource::tests::cover_frame_projection_preserves_incarnation
+        PASS [   0.037s] (458/747) phase-engine analysis::resource::tests::elimination_bounds_aims_over_the_observed_loss_absorb_it_whole
+        PASS [   0.025s] (459/747) phase-engine analysis::resource::tests::elimination_bounds_charges_a_reachable_seat_the_window_never_aimed_at
+        PASS [   8.896s] (460/747) phase-engine analysis::corpus_tests::drive_kilo_freed_relic_ballista_certificate
+        PASS [   0.036s] (461/747) phase-engine analysis::resource::tests::elimination_bounds_charges_an_aimed_slot_once
+        PASS [   0.038s] (462/747) phase-engine analysis::resource::tests::elimination_bounds_conventions
+        PASS [   0.038s] (463/747) phase-engine analysis::resource::tests::elimination_bounds_mixed_loss_charges_both_terms
+        PASS [   0.040s] (464/747) phase-engine analysis::resource::tests::elimination_bounds_name_the_seat_the_relieved_count_crosses
+        PASS [   0.043s] (465/747) phase-engine analysis::resource::tests::elimination_bounds_publish_the_cap_when_no_seat_is_consumed
+        PASS [   0.042s] (466/747) phase-engine analysis::resource::tests::elimination_bounds_refuse_a_relief_that_would_mint_the_sentinel
+        PASS [   0.042s] (467/747) phase-engine analysis::resource::tests::elimination_bounds_relieve_only_a_unique_crossing
+        PASS [   0.051s] (468/747) phase-engine analysis::resource::tests::empty_loop_action_sequence_does_not_relieve
+        PASS [   0.037s] (469/747) phase-engine analysis::resource::tests::empty_loop_action_sequence_proves_nothing_about_casting
+        PASS [   0.045s] (470/747) phase-engine analysis::resource::tests::empty_sequence_keeps_the_projected_cost_veto_through_the_production_cover
+        PASS [   0.027s] (471/747) phase-engine analysis::resource::tests::etb_observer_gate_skips_only_provably_disjoint_observer
+        PASS [   0.086s] (472/747) phase-engine analysis::resource::tests::eq_except_growable_strips_the_accounted_id_from_its_zone_collection
+        PASS [   0.039s] (473/747) phase-engine analysis::resource::tests::event_and_sibling_axes_unchanged_for_typed
+        PASS [   0.029s] (474/747) phase-engine analysis::resource::tests::every_landing_zone_certifies_because_the_axis_is_a_library_size
+        PASS [   0.084s] (475/747) phase-engine analysis::resource::tests::extra_permanent_is_not_modulo_equal
+        PASS [   7.761s] (476/747) phase-engine analysis::corpus_tests::drive_pentad_prism_charge_growth_certificate
+        PASS [   0.048s] (477/747) phase-engine analysis::resource::tests::f2a_the_upfront_gate_authority_answers_the_two_shapes_the_third_copy_omitted
+        PASS [   0.027s] (478/747) phase-engine analysis::resource::tests::f2b_guard_b_withholds_a_pin_the_cr_603_5_gate_can_never_spend
+        PASS [   0.025s] (479/747) phase-engine analysis::resource::tests::floating_counter_doubler_must_be_observed
+        PASS [   0.034s] (480/747) phase-engine analysis::resource::tests::floating_store_stays_axis_scoped_and_liveness_gated
+        PASS [   0.040s] (481/747) phase-engine analysis::resource::tests::floating_life_doubler_must_be_observed
+        PASS [   0.038s] (482/747) phase-engine analysis::resource::tests::floating_token_doubler_must_be_observed
+        PASS [   0.052s] (483/747) phase-engine analysis::resource::tests::fodder_cover_heterogeneous_activation_context_rejects
+        PASS [   0.031s] (484/747) phase-engine analysis::resource::tests::fodder_cover_tapped_split_covers
+        PASS [   0.054s] (485/747) phase-engine analysis::resource::tests::fodder_cover_last_loop_action_sequence_two_sided
+        PASS [   0.035s] (486/747) phase-engine analysis::resource::tests::fodder_reject_stable_engine_drift
+        PASS [   0.054s] (487/747) phase-engine analysis::resource::tests::fodder_reject_grown_not_inert
+        PASS [   8.743s] (488/747) phase-engine analysis::corpus_tests::drive_kilo_freed_relic_ballista_x0_no_damage_axis
+        PASS [   0.020s] (489/747) phase-engine analysis::resource::tests::foreign_non_activated_ability_is_not_relieved_by_sole_driver
+        PASS [   0.028s] (490/747) phase-engine analysis::resource::tests::foreign_activator_filter_ability_is_not_relieved_by_sole_driver
+        PASS [   0.046s] (491/747) phase-engine analysis::resource::tests::fodder_reject_untapped_decrease
+        PASS [   0.042s] (492/747) phase-engine analysis::resource::tests::foreign_relief_still_keys_on_the_controller_for_a_proposed_ability
+        PASS [   0.043s] (493/747) phase-engine analysis::resource::tests::frame_wise_life_charge_is_the_endpoint_pair_on_a_single_leg
+        PASS [   0.045s] (494/747) phase-engine analysis::resource::tests::frame_wise_life_charge_leaves_a_mix_the_max_does_not_select_alone
+        PASS [   0.038s] (495/747) phase-engine analysis::resource::tests::frame_wise_life_charge_readmits_a_seat_whose_period_nets_a_gain
+        PASS [   0.034s] (496/747) phase-engine analysis::resource::tests::frame_wise_life_charge_shrinks_the_bound_on_a_mix_the_max_selects
+        PASS [   0.042s] (497/747) phase-engine analysis::resource::tests::frame_wise_life_charge_telescopes_and_reads_every_leg
+        PASS [   0.045s] (498/747) phase-engine analysis::resource::tests::gaeas_cradle_firewall_vetoes_via_count_path
+        PASS [   0.044s] (499/747) phase-engine analysis::resource::tests::identical_states_equal_under_both_comparisons
+        PASS [   0.033s] (500/747) phase-engine analysis::resource::tests::item6_still_vetoes_under_forced_unique_targets
+        PASS [   5.950s] (501/747) phase-engine analysis::corpus_tests::mp_targeted_drain_stops_for_opponent_choice
+        PASS [   0.100s] (502/747) phase-engine analysis::resource::tests::ledger_exclusion_requires_every_class_member
+        PASS [   8.201s] (503/747) phase-engine analysis::corpus_tests::drive_pentad_prism_zero_charge_has_no_counter_axis
+        PASS [   0.039s] (504/747) phase-engine analysis::resource::tests::loop_driving_activation_is_not_relieved
+        PASS [   0.030s] (505/747) phase-engine analysis::resource::tests::loop_driving_mana_activation_is_not_relieved
+        PASS [   0.189s] (506/747) phase-engine analysis::resource::tests::identity_unstable_ids_names_reentered_and_arrived_objects
+        PASS [   0.036s] (507/747) phase-engine analysis::resource::tests::loop_states_equal_last_loop_action_sequence_two_sided
+        PASS [   0.025s] (508/747) phase-engine analysis::resource::tests::mana_board_aggregate_firewall_vetoes
+        PASS [   0.036s] (509/747) phase-engine analysis::resource::tests::loyalty_activation_breaks_modulo_equality
+        PASS [   0.041s] (510/747) phase-engine analysis::resource::tests::modulo_equal_ignores_a_carried_life_total_reading
+        PASS [   0.037s] (511/747) phase-engine analysis::resource::tests::modulo_equal_ignores_volatile_stack_entry_id
+        PASS [   0.037s] (512/747) phase-engine analysis::resource::tests::modulo_projection_clears_the_step_tally
+        PASS [   0.033s] (513/747) phase-engine analysis::resource::tests::must_attack_defender_reads_growing_class_only_for_a_live_class
+        PASS [   0.035s] (514/747) phase-engine analysis::resource::tests::n1_a_extra_permanent_false
+        PASS [   0.038s] (515/747) phase-engine analysis::resource::tests::n1_b_grown_entry_targeted_false
+        PASS [   0.046s] (516/747) phase-engine analysis::resource::tests::n1_c_grown_entry_spell_false
+        PASS [   0.036s] (517/747) phase-engine analysis::resource::tests::n1_e_no_growth_false
+        PASS [   0.041s] (518/747) phase-engine analysis::resource::tests::n1_d_embedding_missing_kind_false
+        PASS [   0.051s] (519/747) phase-engine analysis::resource::tests::n1_f_wipe_pending_unoccupied_growth_false
+        PASS [   0.052s] (520/747) phase-engine analysis::resource::tests::n1_g_permutation_false
+        PASS [   0.058s] (521/747) phase-engine analysis::resource::tests::n1_forced_unique_targeted_cover_true
+        PASS [   0.028s] (522/747) phase-engine analysis::resource::tests::n1_j_journal_reader_false
+        PASS [   0.049s] (523/747) phase-engine analysis::resource::tests::n1_i_opponent_controlled_growth_false
+        PASS [   0.052s] (524/747) phase-engine analysis::resource::tests::n1_h_resource_read_false
+        PASS [   0.030s] (525/747) phase-engine analysis::resource::tests::n1_k_dormant_trigger_condition_false
+        PASS [   0.037s] (526/747) phase-engine analysis::resource::tests::n1_ks_dormant_static_condition_false
+        PASS [   0.056s] (527/747) phase-engine analysis::resource::tests::n1_kr_dormant_replacement_condition_false
+        PASS [   0.072s] (528/747) phase-engine analysis::resource::tests::n1_kg_dormant_granted_keyword_trigger_condition_false
+        PASS [   0.049s] (529/747) phase-engine analysis::resource::tests::n1_l_gained_life_journal_reader_false
+        PASS [   0.049s] (530/747) phase-engine analysis::resource::tests::n1_m_object_counter_rider_false
+        PASS [   0.050s] (531/747) phase-engine analysis::resource::tests::n1_n_player_counter_reader_false
+        PASS [   0.042s] (532/747) phase-engine analysis::resource::tests::n1_o_grown_choice_opening_proliferate_false
+        PASS [   0.047s] (533/747) phase-engine analysis::resource::tests::n1_open_target_growing_still_rejected
+        PASS [   0.054s] (534/747) phase-engine analysis::resource::tests::n1_p1_homogeneous_cover_true
+        PASS [   0.047s] (535/747) phase-engine analysis::resource::tests::n1_p2_interleaved_subsequence_cover_true
+        PASS [   0.437s] (536/747) phase-engine analysis::resource::tests::mana_ability_is_not_relieved_by_the_proposal_argument
+        PASS [   0.056s] (537/747) phase-engine analysis::resource::tests::n1_q_ungrown_choice_opening_entry_false
+        PASS [   0.067s] (538/747) phase-engine analysis::resource::tests::n1_r_life_replacement_environment_false
+        PASS [   0.059s] (539/747) phase-engine analysis::resource::tests::n1_s_resolution_timing_targets_false
+        PASS [   0.058s] (540/747) phase-engine analysis::resource::tests::n1_trigger_firings_follow_normalized_stack_entries
+        PASS [   0.061s] (541/747) phase-engine analysis::resource::tests::net_progress_classification
+        PASS [   0.069s] (542/747) phase-engine analysis::resource::tests::n3_b_a_live_carried_pair_is_still_discharged_by_the_first_call
+        PASS [   0.112s] (543/747) phase-engine analysis::resource::tests::n3_a_replacement_installed_after_the_frame_was_captured_refuses_certification
+        PASS [   0.036s] (544/747) phase-engine analysis::resource::tests::object_growth_adv3_delegating_hole_reaches_firewall
+        PASS [   0.046s] (545/747) phase-engine analysis::resource::tests::non_activated_ability_kinds_are_not_relieved
+        PASS [   0.050s] (546/747) phase-engine analysis::resource::tests::object_growth_adv5_relaxed_settap_body_covers
+        PASS [   0.033s] (547/747) phase-engine analysis::resource::tests::object_growth_c1_inert_token_engine_covers
+        PASS [   0.056s] (548/747) phase-engine analysis::resource::tests::object_growth_adv6_each_source_damage_body_vetoes
+        PASS [   0.044s] (549/747) phase-engine analysis::resource::tests::object_growth_c2_multi_token_growth_covers
+        PASS [   0.029s] (550/747) phase-engine analysis::resource::tests::object_growth_r_a2_nongrown_drift_rejects
+        PASS [   0.035s] (551/747) phase-engine analysis::resource::tests::object_growth_r_a3_extra_offbattlefield_object_rejects
+        PASS [   0.063s] (552/747) phase-engine analysis::resource::tests::object_growth_k_offline_convoke_rejects
+        PASS [   0.042s] (553/747) phase-engine analysis::resource::tests::object_growth_r_a_shrink_rejects
+        PASS [   0.029s] (554/747) phase-engine analysis::resource::tests::object_growth_r_c_gamestate_field_drift_rejects
+        PASS [   0.035s] (555/747) phase-engine analysis::resource::tests::object_growth_r_b_grown_not_inert_keyword_rejects
+        PASS [   0.035s] (556/747) phase-engine analysis::resource::tests::object_growth_r_e2_modifycost_dynamic_rejects
+        PASS [   0.050s] (557/747) phase-engine analysis::resource::tests::object_growth_r_d_new_class_growth_rejects
+        PASS [   0.274s] (558/747) phase-engine analysis::resource::tests::no_exempt_window_admits_a_cast
+        PASS [   0.048s] (559/747) phase-engine analysis::resource::tests::object_growth_r_e2_impose_additional_cost_rejects
+        PASS [   0.042s] (560/747) phase-engine analysis::resource::tests::object_growth_r_e2_reduce_ability_cost_rejects
+        PASS [   0.035s] (561/747) phase-engine analysis::resource::tests::object_growth_r_f_sibling_reading_ability_rejects
+        PASS [   0.042s] (562/747) phase-engine analysis::resource::tests::object_growth_r_g_grown_activated_ability_rejects
+        PASS [   0.056s] (563/747) phase-engine analysis::resource::tests::object_growth_r_e_cost_keyword_family
+        PASS [   0.047s] (564/747) phase-engine analysis::resource::tests::object_growth_r_s3_gamestate_accumulator_sync
+        PASS [   0.050s] (565/747) phase-engine analysis::resource::tests::object_growth_r_s4_chosen_attributes_two_sided
+        PASS [   0.038s] (566/747) phase-engine analysis::resource::tests::object_growth_r_s5_non_activated_ability_kind_rejects
+        PASS [   0.051s] (567/747) phase-engine analysis::resource::tests::object_growth_r_s4_objfield_intensity_two_sided
+        PASS [   1.725s] (568/747) phase-engine analysis::resource::tests::empty_class_member_set_does_not_relieve
+        PASS [   0.035s] (569/747) phase-engine analysis::resource::tests::offline_classifier_verdict_is_unchanged
+        PASS [   0.041s] (570/747) phase-engine analysis::resource::tests::observedness_callers_literal_expectation
+        PASS [   0.033s] (571/747) phase-engine analysis::resource::tests::period_counts_minted_tokens_not_battlefield_growth
+        PASS [   0.022s] (572/747) phase-engine analysis::resource::tests::persistent_axis_growth_is_observed_routes_on_observer
+        PASS [   0.040s] (573/747) phase-engine analysis::resource::tests::probe_budget_grants_exactly_its_cap_then_latches_the_denial
+        PASS [   0.042s] (574/747) phase-engine analysis::resource::tests::periodic_delta_survives_the_serde_json_wire
+        PASS [   0.031s] (575/747) phase-engine analysis::resource::tests::projected_reading_modification_still_vetoes_the_firewall
+        PASS [   0.042s] (576/747) phase-engine analysis::resource::tests::projection_retains_activation_counts_an_ability_gates_itself_on
+        PASS [   0.165s] (577/747) phase-engine analysis::resource::tests::object_id_for_scope_source_is_the_sources_own_identity_on_both_branches
+        PASS [   0.055s] (578/747) phase-engine analysis::resource::tests::pump_payload_decides_the_veto_at_blocks_one_b_and_two
+        PASS [   0.226s] (579/747) phase-engine analysis::resource::tests::projected_sibling_surface_vetoes_though_the_pump_leg_is_relieved
+        PASS [   5.826s] (580/747) phase-engine analysis::corpus_tests::pr6_gate_on_drain_marks_unbounded_resources
+        PASS [   0.017s] (581/747) phase-engine analysis::resource::tests::pure_mill_delta_is_net_progress
+        PASS [   0.038s] (582/747) phase-engine analysis::resource::tests::r14_the_degenerate_window_announces_the_current_stack_element_for_element
+        PASS [   3.348s] (583/747) phase-engine analysis::resource::tests::board_trigger_class_matches_reads_its_class_argument
+        PASS [   3.806s] (584/747) phase-engine analysis::resource::tests::board_has_functioning_cast_trigger_reads_the_zone_gate
+        PASS [   0.045s] (585/747) phase-engine analysis::resource::tests::r19_the_relief_vector_varies_only_with_slots_and_the_cached_value_is_slots_free
+        PASS [   6.265s] (586/747) phase-engine analysis::corpus_tests::pr6_gate_shortcut_guard_isolated_by_flag
+        PASS [   6.683s] (587/747) phase-engine analysis::corpus_tests::pr6_gate_off_drain_is_pre_feature
+        PASS [   1.503s] (588/747) phase-engine analysis::resource::tests::pump_target_axis_is_not_blind
+        PASS [   0.048s] (589/747) phase-engine analysis::resource::tests::r21_b_placement_s_the_frozen_skip_is_read_once_and_only_below_item_six
+        PASS [   0.050s] (590/747) phase-engine analysis::resource::tests::r22_conjunct3_a_memo_over_a_different_frame_set_refuses_certification
+        PASS [   0.056s] (591/747) phase-engine analysis::resource::tests::r22_conjunct4_the_effective_key_carries_the_containers_proposer
+        PASS [   1.770s] (592/747) phase-engine analysis::resource::tests::projected_pump_still_vetoes_at_block_one_b_on_the_some_class_members_arm
+        PASS [   0.056s] (593/747) phase-engine analysis::resource::tests::r22_control_at_window_offset_zero_the_two_key_arithmetics_agree
+        PASS [   0.042s] (594/747) phase-engine analysis::resource::tests::r22_the_verdict_door_is_total_frame_correct_and_proposer_correct
+        PASS [   0.132s] (595/747) phase-engine analysis::resource::tests::r27_b_a_stored_may_auto_choice_survives_the_ring
+        PASS [   0.085s] (596/747) phase-engine analysis::resource::tests::r27_c_an_intervening_if_binds_with_the_retained_samples_trigger_source
+        PASS [   1.885s] (597/747) phase-engine analysis::resource::tests::pump_target_projected_read_is_not_relieved
+        PASS [   0.053s] (598/747) phase-engine analysis::resource::tests::r29_the_cr_603_3c_cursor_is_read_from_the_pairs_carrying_frame
+        PASS [   2.143s] (599/747) phase-engine analysis::resource::tests::pump_aggregate_relieves_real_pyreswipe_hawk_on_wba_dump
+        PASS [   0.048s] (600/747) phase-engine analysis::resource::tests::r31_completeness_an_announced_off_stack_pair_is_still_scanned_by_conjunct_six
+        PASS [   0.253s] (601/747) phase-engine analysis::resource::tests::r27_e_the_discharge_reads_the_pairs_carrying_frame_not_the_live_board
+        PASS [   0.057s] (602/747) phase-engine analysis::resource::tests::r32_the_announcement_disjunct_reads_the_carrying_frame_not_the_live_board
+        PASS [   0.054s] (603/747) phase-engine analysis::resource::tests::r7_the_frozen_prefix_is_an_index_id_identity_never_a_presence_count
+        PASS [   0.044s] (604/747) phase-engine analysis::resource::tests::read_free_pump_under_a_granted_trigger_no_longer_vetoes_block_four
+        PASS [   0.552s] (605/747) phase-engine analysis::resource::tests::r27_a3_a_retained_sample_derives_the_live_boards_event_set
+        PASS [   0.059s] (606/747) phase-engine analysis::resource::tests::revert_probe_projection_is_load_bearing
+        PASS [   0.079s] (607/747) phase-engine analysis::resource::tests::ring_delta_signature_certifies_only_a_period_seen_twice
+        PASS [   4.416s] (608/747) phase-engine analysis::resource::tests::dina_untargeted_drain_4p_cover_is_not_vetoed_by_a_library_cost_static
+        PASS [   0.154s] (609/747) phase-engine analysis::resource::tests::residual_probe_refuses_a_def_with_a_projected_read_elsewhere
+        PASS [   2.431s] (610/747) phase-engine analysis::resource::tests::pump_aggregate_gate_is_precise_and_fail_closed
+        PASS [   0.129s] (611/747) phase-engine analysis::resource::tests::s3_arm_keeps_its_veto_for_a_restriction_or_a_class_reading_else_ability
+        PASS [   0.028s] (612/747) phase-engine analysis::resource::tests::s4_arm_empty_class_relieves_nothing
+        PASS [   0.029s] (613/747) phase-engine analysis::resource::tests::s4_arm_fails_closed_on_a_member_absent_from_the_frame
+        PASS [   0.171s] (614/747) phase-engine analysis::resource::tests::s3_arm_refuses_an_ability_whose_mana_target_reads_the_growing_class
+        PASS [   0.045s] (615/747) phase-engine analysis::resource::tests::s4_arm_keeps_the_creature_veto
+        PASS [   0.050s] (616/747) phase-engine analysis::resource::tests::s4_arm_keeps_the_veto_when_an_opponent_controlled_land_joins_the_class
+        PASS [   0.052s] (617/747) phase-engine analysis::resource::tests::s4_arm_relieves_the_real_opponent_controlled_tapland
+        PASS [   0.053s] (618/747) phase-engine analysis::resource::tests::s4_arm_relieves_the_real_taplands
+        PASS [   8.469s] (619/747) phase-engine analysis::corpus_tests::one_ring_burden_growth_certificate
+        PASS [   0.046s] (620/747) phase-engine analysis::resource::tests::s4_compound_population_independent_filter_now_relieves
+        PASS [   0.070s] (621/747) phase-engine analysis::resource::tests::s4_s5_bare_resolution_local_anaphor_keeps_the_veto
+        PASS [   8.537s] (622/747) phase-engine analysis::corpus_tests::one_ring_zero_burden_has_no_counter_axis
+        PASS [   0.182s] (623/747) phase-engine analysis::resource::tests::s4_s5_compound_condition_keeps_the_veto
+        PASS [   0.247s] (624/747) phase-engine analysis::resource::tests::s4_s5_controller_axis_keeps_the_veto
+        PASS [   0.257s] (625/747) phase-engine analysis::resource::tests::s4_s5_nested_resolution_local_anaphor_keeps_the_veto
+        PASS [   0.298s] (626/747) phase-engine analysis::resource::tests::s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto
+        PASS [   0.244s] (627/747) phase-engine analysis::resource::tests::s4_s5_player_axis_board_census_keeps_the_veto
+        PASS [   0.234s] (628/747) phase-engine analysis::resource::tests::s4_s5_player_matching_crossing_keeps_the_veto
+        PASS [   0.289s] (629/747) phase-engine analysis::resource::tests::s4_s5_population_dependent_filter_property_keeps_the_veto
+        PASS [   0.217s] (630/747) phase-engine analysis::resource::tests::s4_s5_relational_prop_keeps_the_veto
+        PASS [   0.162s] (631/747) phase-engine analysis::resource::tests::s4_s5_relieve_a_population_independent_property_outside_the_old_allowlist
+        PASS [   0.247s] (632/747) phase-engine analysis::resource::tests::s4_s5_population_dependent_prop_behind_an_untraversed_filter_bearing_prop_keeps_the_veto
+        PASS [   0.147s] (633/747) phase-engine analysis::resource::tests::s5_arm_counts_the_source_itself
+        PASS [   0.142s] (634/747) phase-engine analysis::resource::tests::s5_arm_relieves_the_real_taplands
+        PASS [   0.195s] (635/747) phase-engine analysis::resource::tests::s5_arm_empty_class_relieves_nothing
+        PASS [   0.200s] (636/747) phase-engine analysis::resource::tests::s5_arm_keeps_the_creature_veto
+        PASS [   0.148s] (637/747) phase-engine analysis::resource::tests::s6_arm_fails_closed_when_the_controller_has_no_player_entry
+        PASS [   0.273s] (638/747) phase-engine analysis::resource::tests::s6_arm_fails_closed_on_a_member_absent_from_the_frame
+        PASS [   0.160s] (639/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_a_board_reading_decline_target
+        PASS [   0.152s] (640/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_a_noncanonical_decline_axis
+        PASS [   0.238s] (641/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_an_arrival_mutable_reveal_filter
+        PASS [   0.249s] (642/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_a_resolution_local_ledger_leaf_in_the_decline_branch
+        PASS [   0.248s] (643/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census
+        PASS [   0.141s] (644/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_when_a_member_is_in_the_controllers_hand
+        PASS [   0.288s] (645/747) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census
+        PASS [   0.022s] (646/747) phase-engine analysis::resource::tests::same_board_different_resources_is_modulo_equal_but_strictly_unequal
+        PASS [   0.242s] (647/747) phase-engine analysis::resource::tests::s6_arm_refuses_the_sibling_nested_ability_carriers
+        PASS [   0.069s] (648/747) phase-engine analysis::resource::tests::scoped_wrappers_are_identity
+        PASS [   0.044s] (649/747) phase-engine analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+        PASS [   0.042s] (650/747) phase-engine analysis::resource::tests::selfref_life_replacement_is_inert_but_the_same_unfiltered_def_is_observed
+        PASS [   0.039s] (651/747) phase-engine analysis::resource::tests::selfref_prevent_counter_replacement_must_stay_observed
+        PASS [   0.037s] (652/747) phase-engine analysis::resource::tests::sign_check_all_non_decreasing_passes
+        PASS [   0.031s] (653/747) phase-engine analysis::resource::tests::sign_check_damage_marked_increase_rejects
+        PASS [   0.040s] (654/747) phase-engine analysis::resource::tests::sign_check_damage_marked_heal_not_vetoed
+        PASS [   0.041s] (655/747) phase-engine analysis::resource::tests::sign_check_monotone_history_increase_passes
+        PASS [   0.045s] (656/747) phase-engine analysis::resource::tests::sign_check_energy_decrease_rejects
+        PASS [   0.044s] (657/747) phase-engine analysis::resource::tests::sign_check_opponent_damage_marked_increase_not_vetoed
+        PASS [   0.048s] (658/747) phase-engine analysis::resource::tests::sign_check_object_counter_decrease_rejects
+        PASS [   0.053s] (659/747) phase-engine analysis::resource::tests::sign_check_opponent_object_counter_decrease_not_vetoed
+        PASS [   0.052s] (660/747) phase-engine analysis::resource::tests::sign_check_player_counter_decrease_rejects
+        PASS [   0.032s] (661/747) phase-engine analysis::resource::tests::slot_charged_life_is_bounded_ordered_losses_only_and_undefined_at_a_tie
+        PASS [   0.045s] (662/747) phase-engine analysis::resource::tests::sign_check_poison_decrease_rejects
+        PASS [   0.044s] (663/747) phase-engine analysis::resource::tests::slot_charged_life_resolves_a_tie_that_spans_the_domain_boundary
+        PASS [   0.052s] (664/747) phase-engine analysis::resource::tests::snapshot_and_delta_measure_known_changes
+        PASS [   0.049s] (665/747) phase-engine analysis::resource::tests::snapshot_counts_queued_whole_combat_phases_only
+        PASS [   0.050s] (666/747) phase-engine analysis::resource::tests::snapshot_reads_extra_combat_phases
+        PASS [   0.051s] (667/747) phase-engine analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+        PASS [   0.104s] (668/747) phase-engine analysis::resource::tests::spent_self_entry_does_not_relieve_a_graveyard_destination
+        PASS [   6.552s] (669/747) phase-engine analysis::resource::tests::exiled_colors_gate_is_precise_and_fail_closed
+        PASS [   0.093s] (670/747) phase-engine analysis::resource::tests::spent_self_entry_does_not_relieve_a_typed_valid_card
+        PASS [   0.187s] (671/747) phase-engine analysis::resource::tests::spent_self_entry_does_not_relieve_a_non_entry_event
+        PASS [   0.282s] (672/747) phase-engine analysis::resource::tests::spent_self_entry_does_not_relieve_a_host_absent_from_the_prior_frame
+        PASS [   0.061s] (673/747) phase-engine analysis::resource::tests::spent_self_entry_does_not_relieve_when_the_source_is_a_class_member
+        PASS [   0.121s] (674/747) phase-engine analysis::resource::tests::spent_self_entry_empty_class_member_set_does_not_relieve
+        PASS [   0.079s] (675/747) phase-engine analysis::resource::tests::spent_self_entry_relief_carries_the_execute_surface
+        PASS [   0.153s] (676/747) phase-engine analysis::resource::tests::spent_self_entry_floating_def_does_not_relieve
+        PASS [   0.192s] (677/747) phase-engine analysis::resource::tests::spent_self_entry_relieves_the_stable_host_and_not_the_blinked_one
+        PASS [   0.024s] (678/747) phase-engine analysis::resource::tests::tapland_only_board_is_unobserved_but_the_same_board_with_a_doubler_is_observed
+        PASS [   6.526s] (679/747) phase-engine analysis::resource::tests::ledger_exclusion_is_precise_and_fail_closed
+        PASS [   0.026s] (680/747) phase-engine analysis::resource::tests::tapped_fodder_members_returns_only_controllers_tapped_fodder
+        PASS [   0.035s] (681/747) phase-engine analysis::resource::tests::the_consumption_divisor_floors_an_emptied_publication
+        PASS [   0.286s] (682/747) phase-engine analysis::resource::tests::spent_self_entry_relieves_a_board_censusing_entry_condition
+        PASS [   0.040s] (683/747) phase-engine analysis::resource::tests::the_cycled_arm_is_load_bearing
+        PASS [   0.104s] (684/747) phase-engine analysis::resource::tests::the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for
+        PASS [   0.077s] (685/747) phase-engine analysis::resource::tests::the_cover_admits_a_certified_departure_and_only_a_certified_one
+        PASS [   0.052s] (686/747) phase-engine analysis::resource::tests::the_keep_test_does_not_relieve_a_genuine_battlefield_class_reader
+        PASS [   0.028s] (687/747) phase-engine analysis::resource::tests::the_probe_resolves_on_resolve_tops_board_with_scope_bound_and_603_4_rechecked
+        PASS [   0.023s] (688/747) phase-engine analysis::resource::tests::the_recipient_conjunct_reads_the_board_but_can_never_move_a_published_offer
+        PASS [   0.419s] (689/747) phase-engine analysis::resource::tests::subtype_check_land_makes_counter_growth_observed
+        PASS [   0.030s] (690/747) phase-engine analysis::resource::tests::the_restriction_is_inert_on_a_predicate_with_no_battlefield_axis
+        PASS [   1.566s] (691/747) phase-engine analysis::resource::tests::s6_arm_relieves_the_dumps_real_necroblossom_snarl
+        PASS [   0.047s] (692/747) phase-engine analysis::resource::tests::token_growth_is_observed_reads_every_mint_event_and_only_those
+        PASS [   0.039s] (693/747) phase-engine analysis::resource::tests::trigger_max_times_per_turn_gate_breaks_modulo_equality
+        PASS [   0.046s] (694/747) phase-engine analysis::resource::tests::trigger_once_per_turn_gate_breaks_modulo_equality
+        PASS [   0.122s] (695/747) phase-engine analysis::resource::tests::two_first_activation_definitions_on_one_object_are_projected_separately
+        PASS [   0.027s] (696/747) phase-engine analysis::resource::tests::typed_filter_cmc_lifetotal_still_reads
+        PASS [   0.392s] (697/747) phase-engine analysis::resource::tests::the_hand_quantified_arm_moves_from_veto_to_relief_under_the_keep_set
+        PASS [   0.036s] (698/747) phase-engine analysis::resource::tests::typed_filter_counters_put_this_turn_conservative
+        PASS [   0.036s] (699/747) phase-engine analysis::resource::tests::typed_filter_ptcomparison_lifetotal_still_reads
+        PASS [   0.036s] (700/747) phase-engine analysis::resource::tests::typed_filter_pure_controller_not_projected
+        PASS [   0.048s] (701/747) phase-engine analysis::resource::tests::unactivated_ability_relief_does_not_survive_a_reentered_host
+        PASS [   0.034s] (702/747) phase-engine analysis::resource::tests::unbounded_components_names_growing_axes
+        PASS [   0.034s] (703/747) phase-engine analysis::resource::tests::unbounded_mark_kind_classifies_every_axis_by_termination_authority
+        PASS [   0.041s] (704/747) phase-engine analysis::resource::tests::window_scope_is_fail_closed_on_a_heterogeneous_window
+        PASS [   0.049s] (705/747) phase-engine analysis::resource::tests::without_certified_departure_reduces_by_the_certified_count_and_no_further
+        PASS [   0.041s] (706/747) phase-engine analysis::resource::tests::worst_seat_life_loss_is_the_max_seat_never_the_sum
+        PASS [   0.037s] (707/747) phase-engine analysis::sim::tests::accumulate_events_feeds_every_axis
+        PASS [   0.027s] (708/747) phase-engine analysis::sim::tests::accumulate_events_no_events_is_noop
+        PASS [   0.037s] (709/747) phase-engine analysis::sim::tests::accumulate_events_non_proliferate_player_action_ignored
+        PASS [   0.035s] (710/747) phase-engine analysis::sim::tests::accumulate_events_within_battlefield_is_not_etb_or_ltb
+        PASS [   0.044s] (711/747) phase-engine analysis::sim::tests::extra_combat_survives_consumption
+        PASS [   0.046s] (712/747) phase-engine analysis::sim::tests::extra_combat_creation_feeds_axis
+        PASS [   0.038s] (713/747) phase-engine analysis::sim::tests::extra_turn_creation_feeds_axis
+        PASS [   0.073s] (714/747) phase-engine analysis::sim::tests::loop_probe_feeds_damage_from_real_pipeline
+        PASS [   0.045s] (715/747) phase-engine analysis::sim::tests::loop_probe_state_readable_axis_independent_of_event_feed
+        PASS [   0.106s] (716/747) phase-engine analysis::sim::tests::loop_probe_iteration_delta_isolates_each_iteration
+        PASS [   0.049s] (717/747) phase-engine analysis::sim::tests::multi_push_extra_combats_counted
+        PASS [   0.056s] (718/747) phase-engine analysis::sim::tests::natural_begin_combat_is_not_extra_combat
+        PASS [   0.059s] (719/747) phase-engine analysis::sim::tests::natural_next_turn_is_not_extra_turn
+        PASS [   0.052s] (720/747) phase-engine analysis::sim::tests::no_op_additional_phase_not_counted
+        PASS [   2.917s] (721/747) phase-engine analysis::resource::tests::s6_arm_fails_closed_on_any_noncanonical_execute_axis
+        PASS [   0.049s] (722/747) phase-engine analysis::sim::tests::non_combat_extra_phase_not_counted
+        PASS [   0.053s] (723/747) phase-engine game::coverage::tests::canonical_gap_merge_keeps_analysis_and_warning_findings_in_one_result
+        PASS [   0.048s] (724/747) phase-engine game::gap_analysis::tests::a_family_fixes_alone_only_the_cards_whose_every_gap_is_in_it
+        PASS [   0.047s] (725/747) phase-engine game::gap_analysis::tests::a_gap_with_several_verdicts_counts_once_per_family_and_once_per_category
+        PASS [   0.027s] (726/747) phase-engine game::gap_analysis::tests::families_rank_by_fixes_alone_then_reach_then_key_and_card_lists_by_name
+        PASS [   0.035s] (727/747) phase-engine game::gap_analysis::tests::a_resolver_gap_is_its_own_layer_and_never_inflates_a_parser_family
+        PASS [   0.057s] (728/747) phase-engine game::gap_analysis::tests::gap_class_labels_are_distinct_and_round_trip
+        PASS [   0.052s] (729/747) phase-engine game::gap_analysis::tests::parser_families_key_on_the_coverage_pattern_normalizer
+        PASS [   0.948s] (730/747) phase-engine analysis::resource::tests::token_and_gainlife_projected_reads_veto_at_blocks_one_b_and_two
+        PASS [   0.041s] (731/747) phase-engine game::gap_analysis::tests::results_sharing_a_name_pool_their_gaps
+        PASS [   0.039s] (732/747) phase-engine game::gap_analysis::tests::supported_cards_and_empty_input_contribute_nothing
+        PASS [   0.028s] (733/747) phase-engine game::gap_analysis::tests::the_report_serializes_every_tally_key_even_when_empty
+        PASS [   0.024s] (734/747) phase-engine game::gap_analysis::tests::undiagnosed_gaps_are_keyed_by_handler_not_by_text
+        PASS [   0.506s] (735/747) phase-engine game::gap_analysis::tests::recognized_verbs_parse_successfully
+        PASS [   1.581s] (736/747) phase-engine analysis::resource::tests::two_relief_authorities_one_projected_surface_still_vetoes
+        PASS [   6.282s] (737/747) phase-engine analysis::resource::tests::s2_arm_is_reached_through_the_production_class_constructor
+        PASS [   6.730s] (738/747) phase-engine analysis::resource::tests::s2_arm_refuses_an_ability_whose_mana_target_reads_the_growing_class
+        PASS [   6.810s] (739/747) phase-engine analysis::resource::tests::s2_arm_keeps_its_veto_for_a_restriction_or_a_class_reading_sibling_field
+        PASS [   5.843s] (740/747) phase-engine analysis::resource::tests::the_keep_test_drops_an_accounted_off_battlefield_departure
+        PASS [  16.102s] (741/747) phase-engine analysis::resource::tests::drawgo_turn_structure_yields_no_basis_b_signature
+        PASS [  21.254s] (742/747) phase-engine analysis::resource::tests::r33_frozen_exemption_is_keyed_to_the_certificate_on_the_real_dellian_window
+        PASS [  25.439s] (743/747) phase-engine analysis::resource::tests::r27_a2_every_announced_pair_carries_an_unnormalized_evaluation_board
+        PASS [  26.966s] (744/747) phase-engine analysis::resource::tests::r21_b_the_exemption_narrows_conjunct_six_by_exactly_the_frozen_set
+        PASS [  35.187s] (745/747) phase-engine analysis::resource::tests::r21_b_placement_b_item_four_scans_frozen_entries_that_conjunct_six_skips
+        PASS [  37.654s] (746/747) phase-engine analysis::resource::tests::r16_ii_b_a_non_offering_mintable_beat_saturates_the_probe_budget
+        PASS [  49.340s] (747/747) phase-engine analysis::resource::tests::r17_a_retired_stack_entry_id_never_returns_and_normalization_preserves_it
+────────────
+     Summary [  69.217s] 747 tests run: 747 passed, 22421 skipped

@@ -54,3 +54,4 @@
 - Merge defect found by Phase 7 executor: formatRegistry.ts Dandan entry still set allow_experimental_dungeons (removed upstream #9476) -> tsc TS2353. Fixed in a separate commit c1cf96cf63 before Phase 7's candidate; Phase 7 PHASE_BASE = that commit (1b112fdec9 + 1 client line).
 - Phase 7 ACCEPTED (e0d9cb1208). Phase 8 executor running speculatively on it.
 - Phase 8 ACCEPTED (e35fc63606).
+- Phase 9 ACCEPTED (1acc74bca6). Phase 10 executor running.

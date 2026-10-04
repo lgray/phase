@@ -1,0 +1,11 @@
+warning: unused variable: `library_holder`
+        FAIL [   0.010s] (1/1) phase-engine analysis::loop_check::tests::shared_pile_drain_is_advantage_per_seat_drain_is_decking
+    test analysis::loop_check::tests::shared_pile_drain_is_advantage_per_seat_drain_is_decking ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23167 filtered out; finished in 0.00s
+     Summary [   0.026s] 1 test run: 0 passed, 1 failed, 23167 skipped
+        FAIL [   0.010s] (1/1) phase-engine analysis::loop_check::tests::shared_pile_drain_is_advantage_per_seat_drain_is_decking
+        FAIL [   1.833s] (1/1) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+    test dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 1.82s
+     Summary [   1.840s] 1 test run: 0 passed, 1 failed, 9312 skipped
+        FAIL [   1.833s] (1/1) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile

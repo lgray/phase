@@ -1,0 +1,50 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 50s
+────────────
+ Nextest run ID 7d038bef-2657-45ba-9f44-01f0c0514d65 with nextest profile: default
+    Starting 43 tests across 1 binary (23125 tests skipped)
+        PASS [   0.023s] ( 1/43) phase-engine analysis::loop_check::tests::covers_is_superset_semantics
+        PASS [   0.026s] ( 2/43) phase-engine analysis::loop_check::tests::classify_win_kind_controller_only_damage_is_not_lethal
+        PASS [   0.026s] ( 3/43) phase-engine analysis::loop_check::tests::live_winner_all_players_poisoned_is_none
+        PASS [   0.026s] ( 4/43) phase-engine analysis::loop_check::tests::detect_loop_finding2_mill_uses_caller_controller_not_board_presence
+        PASS [   0.026s] ( 5/43) phase-engine analysis::loop_check::tests::detect_loop_finding2_drain_uses_caller_controller_not_board_presence
+        PASS [   0.027s] ( 6/43) phase-engine analysis::loop_check::tests::detects_proliferate_loop_via_trigger_axis
+        PASS [   0.027s] ( 7/43) phase-engine analysis::loop_check::tests::detects_extra_turns_loop
+        PASS [   0.027s] ( 8/43) phase-engine analysis::loop_check::tests::detects_opponent_mill_as_decking
+        PASS [   0.027s] ( 9/43) phase-engine analysis::loop_check::tests::ballista_mp_single_opponent_ping_no_false_win
+        PASS [   0.028s] (10/43) phase-engine analysis::loop_check::tests::detects_mana_engine_as_advantage
+        PASS [   0.028s] (11/43) phase-engine analysis::loop_check::tests::detects_heliod_ballista_lethal_damage
+        PASS [   0.028s] (12/43) phase-engine analysis::loop_check::tests::live_winner_board_change_is_none
+        PASS [   0.031s] (13/43) phase-engine analysis::loop_check::tests::detects_poison_loop_as_poison_loss
+        PASS [   0.040s] (14/43) phase-engine analysis::loop_check::tests::live_winner_advantage_no_faller_is_none
+        PASS [   0.047s] (15/43) phase-engine analysis::loop_check::tests::ballista_mp_all_opponents_distributed_ping_wins
+        PASS [   0.047s] (16/43) phase-engine analysis::loop_check::tests::detects_token_engine_as_advantage
+        PASS [   0.034s] (17/43) phase-engine analysis::loop_check::tests::live_winner_dual_faller_library_is_none
+        PASS [   0.033s] (18/43) phase-engine analysis::loop_check::tests::live_winner_faller_cant_lose_is_none
+        PASS [   0.031s] (19/43) phase-engine analysis::loop_check::tests::mp_partial_net_progress_drain_no_premature_gameover
+        PASS [   0.032s] (20/43) phase-engine analysis::loop_check::tests::live_winner_winner_cant_win_is_none
+        PASS [   0.033s] (21/43) phase-engine analysis::loop_check::tests::live_winner_positive_life_drain
+        PASS [   0.034s] (22/43) phase-engine analysis::loop_check::tests::live_winner_net_zero_is_none
+        PASS [   0.033s] (23/43) phase-engine analysis::loop_check::tests::live_winner_same_player_life_and_poison_is_determinate
+        PASS [   0.034s] (24/43) phase-engine analysis::loop_check::tests::live_winner_names_poison_faller
+        PASS [   0.033s] (25/43) phase-engine analysis::loop_check::tests::live_winner_staggered_absolute_poison_is_none
+        PASS [   0.036s] (26/43) phase-engine analysis::loop_check::tests::live_winner_mutual_drain_is_none
+        PASS [   0.037s] (27/43) phase-engine analysis::loop_check::tests::live_winner_pure_mill_is_none
+        PASS [   0.038s] (28/43) phase-engine analysis::loop_check::tests::live_winner_three_player_is_none
+        PASS [   0.040s] (29/43) phase-engine analysis::loop_check::tests::n2_controller_also_falls_is_none
+        PASS [   0.034s] (30/43) phase-engine analysis::loop_check::tests::n2_faller_cant_lose_is_none
+        PASS [   0.038s] (31/43) phase-engine analysis::loop_check::tests::n2_four_player_static_bystander_is_none
+        PASS [   0.040s] (32/43) phase-engine analysis::loop_check::tests::n2_three_player_all_opponent_drain_growing_stack
+        PASS [   0.029s] (33/43) phase-engine analysis::loop_check::tests::soundness_net_negative_mana_yields_no_certificate
+        PASS [   0.031s] (34/43) phase-engine analysis::loop_check::tests::n5_winner_life_never_dips
+        PASS [   0.030s] (35/43) phase-engine analysis::loop_check::tests::shared_pile_drain_is_advantage_per_seat_drain_is_decking
+        PASS [   0.031s] (36/43) phase-engine analysis::loop_check::tests::n5_fallers_lives_pairwise_equal
+        PASS [   0.031s] (37/43) phase-engine analysis::loop_check::tests::residual_empty_for_constant_depth
+        PASS [   0.030s] (38/43) phase-engine analysis::loop_check::tests::soundness_board_change_yields_no_certificate
+        PASS [   0.034s] (39/43) phase-engine analysis::loop_check::tests::n2_unequal_faller_deltas_is_none
+        PASS [   0.032s] (40/43) phase-engine analysis::loop_check::tests::self_mill_is_advantage_not_decking
+        PASS [   0.032s] (41/43) phase-engine analysis::loop_check::tests::object_growth_inert_loop_yields_certificate_with_residual
+        PASS [   0.031s] (42/43) phase-engine analysis::loop_check::tests::soundness_no_progress_yields_no_certificate
+        PASS [   0.016s] (43/43) phase-engine analysis::loop_check::tests::t_b1i_detect_loop_rejects_convoke_fodder_pair
+────────────
+     Summary [   0.104s] 43 tests run: 43 passed, 23125 skipped

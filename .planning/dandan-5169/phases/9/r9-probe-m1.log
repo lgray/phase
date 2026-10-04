@@ -1,0 +1,6 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/probe-r9/crates/engine)
+error: could not parse/generate dep info at: /home/lgray/vibe-coding/dandan-run/target-dandan/debug/deps/integration-d9a6e4feee5e9eab.d
+
+Caused by:
+  No such file or directory (os error 2)
+error: command `/home/lgray/.rustup/toolchains/nightly-2026-04-19-x86_64-unknown-linux-gnu/bin/cargo test --no-run --message-format json-render-diagnostics --package phase-engine --test integration` exited with code 101

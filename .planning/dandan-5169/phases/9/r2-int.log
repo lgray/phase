@@ -1,0 +1,13 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s
+────────────
+ Nextest run ID e34a142d-0992-4590-bf99-ddd3533603e0 with nextest profile: default
+    Starting 5 tests across 1 binary (9308 tests skipped)
+        PASS [   1.830s] (1/5) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        PASS [   1.834s] (2/5) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+        PASS [   1.853s] (3/5) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+        PASS [   1.861s] (4/5) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+        PASS [   1.865s] (5/5) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+────────────
+     Summary [   1.871s] 5 tests run: 5 passed, 9308 skipped
+done rc=0
