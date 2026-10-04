@@ -17643,7 +17643,7 @@ impl WaitingFor {
         self.has_pending_cast() && !matches!(self, WaitingFor::ManaSourceSelection { .. })
     }
 
-    /// CR 601.2a + CR 602.2a: Whether this prompt asks a player how to make a
+    /// CR 601.2 + CR 602.2b: Whether this prompt asks a player how to make a
     /// spell or activation the engine has not yet announced, so the play is
     /// already in progress.
     pub(crate) fn chooses_play_before_announcement(&self) -> bool {

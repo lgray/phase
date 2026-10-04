@@ -2137,7 +2137,7 @@ pub(crate) fn auto_tap_mana_options_gated(
     )
 }
 
-// Commented out: no production caller; kept for reference per the user.
+// Commented out: no production caller; kept for reference.
 // /// CR 107.1b + CR 601.2f: Maximum *net* mana a single battlefield object can
 // /// contribute to a cast — the largest net output of any one of its activatable
 // /// `{T}` mana abilities (only one can be activated per tap), where net output
@@ -3969,7 +3969,7 @@ mod tests {
         display_land_mana_pips(&state, id, PlayerId(0))
     }
 
-    // Commented out: no production caller; kept for reference per the user.
+    // Commented out: no production caller; kept for reference.
     // /// Build a single-ability `{T}`-cost producer with a given `ManaProduction`
     // /// and return its `max_mana_yield`.
     // fn yield_for_production(production: ManaProduction) -> u32 {
@@ -5872,7 +5872,7 @@ mod tests {
         );
     }
 
-    // Commented out: no production caller; kept for reference per the user.
+    // Commented out: no production caller; kept for reference.
     // /// Issue #4265: `max_mana_yield` counts the aura bonus so X-value
     // /// choosers know the enchanted land produces 2, not 1.
     // ///
