@@ -438,8 +438,8 @@ fn resolution_zone_candidates(
     let ctx = crate::game::filter::FilterContext::from_ability_with_controller(
         ability,
         filter_controller,
-    );
-    let target_filter = &crate::game::filter::claim_scan_zones(target_filter.clone(), scan_zones);
+    )
+    .with_claimed_zones(scan_zones);
     state
         .objects
         .iter()
@@ -2028,10 +2028,7 @@ pub fn resolve_all(
 
     let filter_controller =
         crate::game::effects::controller_for_relative_filter(state, ability, &target_filter);
-    let target_filter = crate::game::filter::claim_scan_zones(
-        owner_scoped_nonbattlefield_mass_filter(target_filter, &origin_zones),
-        &origin_zones,
-    );
+    let target_filter = owner_scoped_nonbattlefield_mass_filter(target_filter, &origin_zones);
 
     // Use a permissive default filter if the effect's target is None
     let effective_filter = if matches!(target_filter, crate::types::ability::TargetFilter::None) {
@@ -2114,7 +2111,8 @@ pub fn resolve_all(
     let ctx = crate::game::filter::FilterContext::from_ability_with_controller(
         ability,
         filter_controller,
-    );
+    )
+    .with_claimed_zones(&origin_zones);
     let matching: Vec<_> = if let Some(player) = player_scope {
         // Player-scoped mass move: select every card in any of the origin zones
         // belonging to the target player, regardless of type.

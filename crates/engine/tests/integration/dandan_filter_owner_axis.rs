@@ -670,3 +670,165 @@ fn v19_in_standard_only_your_own_graveyard_triggers() {
         0
     );
 }
+
+// ---------------------------------------------------------------------------
+// V20: the controller axis of a record read through the trigger's origin
+// ---------------------------------------------------------------------------
+
+fn goblin_armies(format: FormatConfig, spell: &str, targeted: bool, pile_owner: PlayerId) -> usize {
+    let (runner, bears) = pile_run(format, "Along the Crooked Way", spell, targeted, pile_owner);
+    assert_ne!(
+        runner.state().objects[&bears].zone,
+        Zone::Graveyard,
+        "reach: the pile card left the graveyard"
+    );
+    battlefield_named(&runner, "Goblin Army")
+}
+
+#[test]
+fn v20_a_controller_form_origin_trigger_reads_the_whole_shared_pile() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        goblin_armies(dandan(), "Regrowth", true, P0),
+        1,
+        "paired: P0's own card"
+    );
+    assert_eq!(
+        goblin_armies(dandan(), "Regrowth", true, P1),
+        1,
+        "the pile is every seat's graveyard, P0's included"
+    );
+}
+
+#[test]
+fn v20_in_standard_only_your_own_graveyard_triggers_the_controller_form() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        goblin_armies(FormatConfig::standard(), "Regrowth", true, P0),
+        1,
+        "reach: the trigger fires for P0's own card"
+    );
+    assert_eq!(
+        goblin_armies(FormatConfig::standard(), "Release to Memory", false, P1),
+        0
+    );
+}
+
+/// P0 controls `watcher` and casts `spell` aimed at `target` over a library of four
+/// `library_card`s owned by `pile_owner`.
+fn mill_run(
+    format: FormatConfig,
+    watcher: &str,
+    library_card: &str,
+    pile_owner: PlayerId,
+    target: PlayerId,
+) -> GameRunner {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario(format);
+    sc.add_real_card(P0, watcher, Zone::Battlefield, db);
+    let spell = sc.add_real_card(P0, "Thought Scour", Zone::Hand, db);
+    stage(&mut sc, db, Zone::Library, &[(pile_owner, library_card); 4]);
+    let mut runner = start(sc, P0);
+    runner.cast(spell).target_player(target).resolve();
+    runner
+}
+
+fn in_graveyard(runner: &GameRunner, name: &str) -> usize {
+    let state = runner.state();
+    state
+        .objects
+        .values()
+        .filter(|object| object.zone == Zone::Graveyard && object.name == name)
+        .count()
+}
+
+fn grave_reaver_bears(format: FormatConfig, pile_owner: PlayerId, target: PlayerId) -> usize {
+    let runner = mill_run(
+        format,
+        "Colossal Grave-Reaver",
+        "Grizzly Bears",
+        pile_owner,
+        target,
+    );
+    let on_battlefield = battlefield_named(&runner, "Grizzly Bears");
+    assert_eq!(
+        in_graveyard(&runner, "Grizzly Bears") + on_battlefield,
+        2,
+        "reach: two cards milled"
+    );
+    on_battlefield
+}
+
+#[test]
+fn v20_a_library_origin_controller_form_reads_the_whole_shared_library() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        grave_reaver_bears(dandan(), P0, P0),
+        1,
+        "paired: P0's own cards"
+    );
+    assert_eq!(
+        grave_reaver_bears(dandan(), P1, P0),
+        1,
+        "the library is every seat's, P0's included"
+    );
+}
+
+#[test]
+fn v20_in_standard_only_your_own_library_triggers_the_library_origin() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        grave_reaver_bears(FormatConfig::standard(), P0, P0),
+        1,
+        "reach: the trigger fires for P0's own library"
+    );
+    assert_eq!(grave_reaver_bears(FormatConfig::standard(), P1, P1), 0);
+}
+
+fn desert_warfare_triggers(format: FormatConfig, pile_owner: PlayerId, target: PlayerId) -> usize {
+    let runner = mill_run(format, "Desert Warfare", "Arid Archway", pile_owner, target);
+    assert_eq!(
+        in_graveyard(&runner, "Arid Archway"),
+        2,
+        "reach: two Deserts milled"
+    );
+    runner.state().delayed_triggers.len()
+}
+
+#[test]
+fn v20_a_one_of_origin_trigger_reads_the_whole_shared_library() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        desert_warfare_triggers(dandan(), P0, P0),
+        2,
+        "paired: P0's own Deserts"
+    );
+    assert_eq!(
+        desert_warfare_triggers(dandan(), P1, P0),
+        2,
+        "each Desert put into the shared graveyard from the shared library is P0's"
+    );
+}
+
+#[test]
+fn v20_in_standard_only_your_own_library_triggers_the_one_of_origin() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        desert_warfare_triggers(FormatConfig::standard(), P0, P0),
+        2,
+        "reach: the trigger fires for P0's own Deserts"
+    );
+    assert_eq!(desert_warfare_triggers(FormatConfig::standard(), P1, P1), 0);
+}

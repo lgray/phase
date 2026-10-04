@@ -1221,9 +1221,20 @@ pub struct FilterContext<'a> {
     /// the same storage id is recognized as the DIFFERENT object it is and is
     /// admitted to the "another" population.
     pub triggering_object: Option<TriggeringObjectRef>,
+    /// CR 400.1: Zones the caller scans on a field outside the filter; they license the
+    /// shared-zone player-axis collapse like the filter's own `InZone`/`InAnyZone`.
+    pub claimed_zones: &'a [Zone],
 }
 
 impl<'a> FilterContext<'a> {
+    /// CR 400.1: Rebind the zones this evaluation scans on the caller's behalf.
+    pub fn with_claimed_zones(&self, zones: &'a [Zone]) -> FilterContext<'a> {
+        FilterContext {
+            claimed_zones: zones,
+            ..*self
+        }
+    }
+
     /// CR 603.4 + CR 603.6a: Rebind the triggering-object referent for the
     /// duration of one intervening-`if` evaluation. Takes `&self` and returns a
     /// fresh value (the struct is `Copy`), so the caller's borrowed context is
@@ -1280,6 +1291,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1299,6 +1311,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1314,6 +1327,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1329,6 +1343,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1347,6 +1362,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1367,6 +1383,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: Some(recipient_id),
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1382,6 +1399,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1399,6 +1417,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: Some(recipient_id),
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 
@@ -1419,6 +1438,7 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
+            claimed_zones: &[],
         }
     }
 }
@@ -1525,74 +1545,20 @@ fn effective_controller(
     obj.controller
 }
 
-/// The zone a typed filter itself names via `InZone` / `InAnyZone` and the object
-/// (or record origin) actually occupies. "Your graveyard" is the filter's claim about
-/// a zone, so only a filter that makes that claim can have its player axis collapsed
-/// for a shared container; keying on the object's own zone would also collapse
-/// battlefield-controller observers whose subject has merely moved there.
-fn claimed_shared_zone(properties: &[FilterProp], object_zone: Option<Zone>) -> Option<Zone> {
+/// The zone whose shared-container player axis may collapse: one the filter names via
+/// `InZone`/`InAnyZone` or the caller claims, the battlefield never through `claimed`.
+fn claimed_shared_zone(
+    properties: &[FilterProp],
+    claimed: &[Zone],
+    object_zone: Option<Zone>,
+) -> Option<Zone> {
     let zone = object_zone?;
-    properties
-        .iter()
-        .any(|prop| match prop {
-            FilterProp::InZone { zone: named } => *named == zone,
-            FilterProp::InAnyZone { zones } => zones.contains(&zone),
-            _ => false,
-        })
-        .then_some(zone)
-}
-
-/// Names `zones` on every typed leaf that names none, for callers whose zone comes from an
-/// effect or quantity field rather than from the filter; this is what lets
-/// [`claimed_shared_zone`] license the collapse there. Battlefield scans are left alone.
-pub(crate) fn claim_scan_zones(filter: TargetFilter, zones: &[Zone]) -> TargetFilter {
-    if zones.is_empty() || zones.contains(&Zone::Battlefield) {
-        return filter;
-    }
-    match filter {
-        TargetFilter::Typed(mut typed) => {
-            let names_zone = typed.properties.iter().any(|prop| {
-                matches!(
-                    prop,
-                    FilterProp::InZone { .. } | FilterProp::InAnyZone { .. }
-                )
-            });
-            if !names_zone {
-                typed.properties.push(match zones {
-                    [zone] => FilterProp::InZone { zone: *zone },
-                    _ => FilterProp::InAnyZone {
-                        zones: zones.to_vec(),
-                    },
-                });
-            }
-            TargetFilter::Typed(typed)
-        }
-        TargetFilter::And { filters } => TargetFilter::And {
-            filters: filters
-                .into_iter()
-                .map(|inner| claim_scan_zones(inner, zones))
-                .collect(),
-        },
-        TargetFilter::Or { filters } => TargetFilter::Or {
-            filters: filters
-                .into_iter()
-                .map(|inner| claim_scan_zones(inner, zones))
-                .collect(),
-        },
-        TargetFilter::Not { filter } => TargetFilter::Not {
-            filter: Box::new(claim_scan_zones(*filter, zones)),
-        },
-        TargetFilter::TrackedSetFiltered {
-            id,
-            filter,
-            caused_by,
-        } => TargetFilter::TrackedSetFiltered {
-            id,
-            filter: Box::new(claim_scan_zones(*filter, zones)),
-            caused_by,
-        },
-        other => other,
-    }
+    let named = properties.iter().any(|prop| match prop {
+        FilterProp::InZone { zone: named } => *named == zone,
+        FilterProp::InAnyZone { zones } => zones.contains(&zone),
+        _ => false,
+    });
+    (named || (zone != Zone::Battlefield && claimed.contains(&zone))).then_some(zone)
 }
 
 /// CR 400.1 as modified by a shared-zone format: a player-axis comparison holds when it
@@ -3392,6 +3358,7 @@ pub fn matches_target_filter_including_phased_out(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOnly,
     )
 }
@@ -3729,6 +3696,7 @@ pub fn matches_target_filter_in_owner_zone(
             ctx.recipient_id,
             ctx.scoped_iteration_player,
             ctx.triggering_object,
+            ctx.claimed_zones,
             ControllerLookup::LiveOnly,
         );
     }
@@ -3747,6 +3715,7 @@ pub fn matches_target_filter_in_owner_zone(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOnly,
     )
 }
@@ -3854,6 +3823,7 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
+                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 );
             }
@@ -3880,6 +3850,7 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
+                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 )
             } else if let Some(entry) = state.liminal_entries.get(object_id) {
@@ -3895,6 +3866,7 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
+                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 )
             } else {
@@ -3915,6 +3887,7 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
+                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 )
             })
@@ -3938,6 +3911,7 @@ pub fn matches_target_filter_on_battlefield_entry(
                 ctx.recipient_id,
                 ctx.scoped_iteration_player,
                 ctx.triggering_object,
+                ctx.claimed_zones,
                 ControllerLookup::LiveOrLki,
             )
         }
@@ -3999,6 +3973,7 @@ pub fn matches_target_filter_on_counter_added_record(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4045,6 +4020,7 @@ pub fn matches_target_filter_on_attack_declaration_record(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4095,6 +4071,7 @@ pub fn matches_target_filter_on_damage_record_source(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4334,6 +4311,7 @@ pub(crate) fn matches_target_filter_on_event_snapshot(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOnly,
     )
 }
@@ -4488,6 +4466,7 @@ fn filter_inner(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
+        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4505,6 +4484,7 @@ fn filter_inner_for_object(
     recipient_id: Option<ObjectId>,
     scoped_iteration_player: Option<PlayerId>,
     triggering_object: Option<TriggeringObjectRef>,
+    claimed_zones: &[Zone],
     controller_lookup: ControllerLookup,
 ) -> bool {
     match filter {
@@ -4559,7 +4539,7 @@ fn filter_inner_for_object(
                     return false;
                 }
             }
-            let licensed = claimed_shared_zone(properties, Some(obj.zone));
+            let licensed = claimed_shared_zone(properties, claimed_zones, Some(obj.zone));
             // Controller check
             //
             // CR 109.4 + CR 608.2h + CR 400.7: All ControllerRef arms compare
@@ -4787,6 +4767,7 @@ fn filter_inner_for_object(
             recipient_id,
             scoped_iteration_player,
             triggering_object,
+            claimed_zones,
             controller_lookup,
         ),
         TargetFilter::Or { filters } => filters.iter().any(|f| {
@@ -4802,6 +4783,7 @@ fn filter_inner_for_object(
                 recipient_id,
                 scoped_iteration_player,
                 triggering_object,
+                claimed_zones,
                 controller_lookup,
             )
         }),
@@ -4818,6 +4800,7 @@ fn filter_inner_for_object(
                 recipient_id,
                 scoped_iteration_player,
                 triggering_object,
+                claimed_zones,
                 controller_lookup,
             )
         }),
@@ -4836,6 +4819,7 @@ fn filter_inner_for_object(
                     recipient_id,
                     scoped_iteration_player,
                     triggering_object,
+                    claimed_zones,
                 },
             )
         }
@@ -5037,6 +5021,7 @@ fn filter_inner_for_object(
                     recipient_id,
                     scoped_iteration_player,
                     triggering_object,
+                    claimed_zones,
                     controller_lookup,
                 )
         }
@@ -5182,6 +5167,7 @@ fn filter_inner_for_object(
                 recipient_id,
                 scoped_iteration_player,
                 triggering_object,
+                claimed_zones,
             };
             state
                 .last_chosen_damage_source
@@ -5328,17 +5314,21 @@ fn zone_change_filter_inner(
                 triggering_object,
             );
 
+            // CR 400.1 + CR 109.4: a zone without controllers answers the controller axis
+            // for every seat reading the same container, like the live-object door.
+            let licensed = claimed_shared_zone(properties, ctx.claimed_zones, record.from_zone);
             if let Some(ctrl) = controller {
+                let admits = |obj_ctrl: PlayerId| -> bool {
                 match ctrl {
-                    ControllerRef::You if source_controller != Some(record.controller) => {
+                    ControllerRef::You if source_controller != Some(obj_ctrl) => {
                         return false;
                     }
-                    ControllerRef::Opponent if source_controller == Some(record.controller) => {
+                    ControllerRef::Opponent if source_controller == Some(obj_ctrl) => {
                         return false;
                     }
                     ControllerRef::ScopedPlayer => {
                         match scoped_player_or_controller(state, ability, source_controller, None) {
-                            Some(pid) if pid == record.controller => {}
+                            Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
                     }
@@ -5348,14 +5338,14 @@ fn zone_change_filter_inner(
                     ControllerRef::TargetPlayer | ControllerRef::TargetOpponent => {
                         let target_player = target_player_from_ability_or_root(state, ability);
                         match target_player {
-                            Some(pid) if pid == record.controller => {}
+                            Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
                     }
                     ControllerRef::ParentTargetController => {
                         let target_player = parent_target_controller_player(state, ability);
                         match target_player {
-                            Some(pid) if pid == record.controller => {}
+                            Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
                     }
@@ -5363,7 +5353,7 @@ fn zone_change_filter_inner(
                     ControllerRef::EventTargetController => {
                         let target_player = event_target_controller_player(state, ability);
                         match target_player {
-                            Some(pid) if pid == record.controller => {}
+                            Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
                     }
@@ -5371,7 +5361,7 @@ fn zone_change_filter_inner(
                     // against the resolution-scoped chosen player.
                     ControllerRef::ChosenPlayer { index } => {
                         match ability.and_then(|a| a.chosen_players.get(*index as usize).copied()) {
-                            Some(pid) if pid == record.controller => {}
+                            Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
                     }
@@ -5381,15 +5371,19 @@ fn zone_change_filter_inner(
                     // CR 303.4b: Resolve enchanted player via source's attached_to.
                     ControllerRef::EnchantedPlayer => {
                         match source_enchanted_player(&source_ctx) {
-                            Some(pid) if pid == record.controller => {}
+                            Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
                     }
                     _ => {}
                 }
+                    true
+                };
+                if !zone_axis_admits(state, licensed, record.controller, admits) {
+                    return false;
+                }
             }
 
-            let licensed = claimed_shared_zone(properties, record.from_zone);
             properties.iter().all(|prop| match prop {
                 FilterProp::Owned { controller } => {
                     zone_axis_admits(state, licensed, record.owner, |owner| {
@@ -7016,6 +7010,7 @@ fn aura_can_enchant_referenced_target(
                 recipient_id: source.recipient_id,
                 scoped_iteration_player: None,
                 triggering_object: source.triggering_object,
+                claimed_zones: &[],
             };
             filter_inner(state, *target_id, enchant_filter, &ctx)
         }
@@ -9246,6 +9241,7 @@ fn object_shares_quality_with_reference_filter(
         // entrant and the exclusion is silently inert.
         scoped_iteration_player: None,
         triggering_object: source.triggering_object,
+        claimed_zones: &[],
     };
     // CR 109.2 + CR 205.3m: resolve a bare descriptive reference such as "a
     // creature you control" or "a creature card in your graveyard" to the zone
@@ -19794,8 +19790,82 @@ mod dandan_axis_collapse_tests {
         let controller_axis = typed(Some(ControllerRef::You), vec![in_zone(Zone::Graveyard)]);
         assert_eq!(
             record_admitted(&state, &record(Some(Zone::Graveyard)), &controller_axis),
+            BOTH,
+            "a pile record's controller is read through the shared container"
+        );
+        let battlefield_controller =
+            typed(Some(ControllerRef::You), vec![in_zone(Zone::Battlefield)]);
+        assert_eq!(
+            record_admitted(
+                &state,
+                &record(Some(Zone::Battlefield)),
+                &battlefield_controller
+            ),
             OWNER_ONLY,
-            "the record controller axis is the controller at departure"
+            "the controller at departure from a per-seat zone"
+        );
+    }
+
+    fn claimed_admitted(
+        state: &GameState,
+        record: &ZoneChangeRecord,
+        object: ObjectId,
+        filter: &TargetFilter,
+        claimed: &[Zone],
+    ) -> ([bool; 2], [bool; 2]) {
+        let ctx = |seat| {
+            FilterContext::from_source_with_controller(SOURCE, seat).with_claimed_zones(claimed)
+        };
+        (
+            [P0, P1].map(|seat| matches_target_filter(state, object, filter, &ctx(seat))),
+            [P0, P1].map(|seat| {
+                matches_target_filter_on_zone_change_record(state, record, filter, &ctx(seat))
+            }),
+        )
+    }
+
+    /// A caller's claim licenses both axes on both doors for the claimed shared zone only.
+    #[test]
+    fn caller_claimed_zones_license_exactly_the_claimed_shared_zone() {
+        let mut state = dandan();
+        let id = creature(&mut state, Zone::Graveyard);
+        let pile_record = record(Some(Zone::Graveyard));
+        let by_controller = typed(Some(ControllerRef::You), vec![]);
+        let by_owner = typed(None, vec![owned(ControllerRef::You)]);
+        for filter in [&by_controller, &by_owner] {
+            assert_eq!(
+                claimed_admitted(&state, &pile_record, id, filter, &[Zone::Graveyard]),
+                (BOTH, BOTH),
+                "claimed pile"
+            );
+            assert_eq!(
+                claimed_admitted(&state, &pile_record, id, filter, &[]),
+                (OWNER_ONLY, OWNER_ONLY),
+                "no claim"
+            );
+            assert_eq!(
+                claimed_admitted(&state, &pile_record, id, filter, &[Zone::Hand]),
+                (OWNER_ONLY, OWNER_ONLY),
+                "another zone claimed"
+            );
+            assert_eq!(
+                claimed_admitted(&state, &pile_record, id, filter, &[Zone::Battlefield]),
+                (OWNER_ONLY, OWNER_ONLY),
+                "the battlefield is never claimed"
+            );
+        }
+        let mut per_seat = standard();
+        let standard_id = creature(&mut per_seat, Zone::Graveyard);
+        assert_eq!(
+            claimed_admitted(
+                &per_seat,
+                &pile_record,
+                standard_id,
+                &by_owner,
+                &[Zone::Graveyard]
+            ),
+            (OWNER_ONLY, OWNER_ONLY),
+            "a per-seat format has no shared container to read"
         );
     }
 }
