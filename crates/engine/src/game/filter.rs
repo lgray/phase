@@ -1525,6 +1525,48 @@ fn effective_controller(
     obj.controller
 }
 
+/// The zone a typed filter itself names via `InZone` / `InAnyZone` and the object
+/// (or record origin) actually occupies. "Your graveyard" is the filter's claim about
+/// a zone, so only a filter that makes that claim can have its player axis collapsed
+/// for a shared container; keying on the object's own zone would also collapse
+/// battlefield-controller observers whose subject has merely moved there.
+fn claimed_shared_zone(properties: &[FilterProp], object_zone: Option<Zone>) -> Option<Zone> {
+    let zone = object_zone?;
+    properties
+        .iter()
+        .any(|prop| match prop {
+            FilterProp::InZone { zone: named } => *named == zone,
+            FilterProp::InAnyZone { zones } => zones.contains(&zone),
+            _ => false,
+        })
+        .then_some(zone)
+}
+
+/// CR 400.1 as modified by a shared-zone format: a player-axis comparison holds when it
+/// holds for `holder` or, when `licensed` names a zone, for any seat reading the same
+/// container as `holder` (every seat's "your graveyard" is the one shared pile).
+/// Unlicensed or per-seat zones try `holder` alone.
+fn zone_axis_admits(
+    state: &GameState,
+    licensed: Option<Zone>,
+    holder: PlayerId,
+    mut admits: impl FnMut(PlayerId) -> bool,
+) -> bool {
+    if admits(holder) {
+        return true;
+    }
+    let Some(zone) = licensed else {
+        return false;
+    };
+    let container = state.zone_storage_seat(zone, holder);
+    state
+        .players
+        .iter()
+        .map(|player| player.id)
+        .filter(|&seat| seat != holder && state.zone_storage_seat(zone, seat) == container)
+        .any(admits)
+}
+
 /// CR 608.2h + CR 704.5m/n: Is `candidate` attached to `referent`, as of the moment the
 /// question is asked?
 ///
@@ -4464,6 +4506,7 @@ fn filter_inner_for_object(
                     return false;
                 }
             }
+            let licensed = claimed_shared_zone(properties, Some(obj.zone));
             // Controller check
             //
             // CR 109.4 + CR 608.2h + CR 400.7: All ControllerRef arms compare
@@ -4475,7 +4518,8 @@ fn filter_inner_for_object(
             // `obj.controller` unchanged. See the helper for the LKI-fallback
             // rationale.
             if let Some(ctrl) = controller {
-                let obj_ctrl = effective_controller(state, obj, object_id, controller_lookup);
+                let holder = effective_controller(state, obj, object_id, controller_lookup);
+                let admits = |obj_ctrl: PlayerId| -> bool {
                 match ctrl {
                     ControllerRef::You => {
                         if source_controller != Some(obj_ctrl) {
@@ -4651,6 +4695,11 @@ fn filter_inner_for_object(
                         }
                     }
                 }
+                true
+                };
+                if !zone_axis_admits(state, licensed, holder, admits) {
+                    return false;
+                }
             }
             // All source-relative properties share the exact triggered-source
             // authority, when one exists. A current object with a recycled id
@@ -4664,9 +4713,14 @@ fn filter_inner_for_object(
                 recipient_id,
                 triggering_object,
             );
-            properties
-                .iter()
-                .all(|p| matches_filter_prop(p, state, obj, object_id, &source_ctx))
+            properties.iter().all(|p| match p {
+                FilterProp::Owned { controller } => {
+                    zone_axis_admits(state, licensed, obj.owner, |owner| {
+                        owned_axis_admits(state, &source_ctx, controller, owner)
+                    })
+                }
+                _ => matches_filter_prop(p, state, obj, object_id, &source_ctx),
+            })
         }
         TargetFilter::Not { filter: inner } => !filter_inner_for_object(
             state,
@@ -5282,9 +5336,15 @@ fn zone_change_filter_inner(
                 }
             }
 
-            properties
-                .iter()
-                .all(|prop| zone_change_record_matches_property(prop, state, record, &source_ctx))
+            let licensed = claimed_shared_zone(properties, record.from_zone);
+            properties.iter().all(|prop| match prop {
+                FilterProp::Owned { controller } => {
+                    zone_axis_admits(state, licensed, record.owner, |owner| {
+                        owned_axis_admits(state, &source_ctx, controller, owner)
+                    })
+                }
+                _ => zone_change_record_matches_property(prop, state, record, &source_ctx),
+            })
         }
         TargetFilter::Not { filter: inner } => !zone_change_filter_inner(state, record, inner, ctx),
         TargetFilter::Or { filters } => filters
@@ -7075,6 +7135,71 @@ fn filter_count_scope_actor_matches(
     }
 }
 
+/// CR 109.5: does `owner` stand in the relation `controller` names to the filter's
+/// source? The single authority for `FilterProp::Owned` on live objects and zone-change records.
+fn owned_axis_admits(
+    state: &GameState,
+    source: &SourceContext<'_>,
+    controller: &ControllerRef,
+    owner: PlayerId,
+) -> bool {
+    match controller {
+        ControllerRef::You => source.controller == Some(owner),
+        ControllerRef::Opponent => {
+            source.controller.is_some()
+                && source.controller != Some(owner)
+                && super::players::is_alive(state, owner)
+        }
+        ControllerRef::ScopedPlayer => {
+            scoped_player_or_controller(state, source.ability, source.controller, None)
+                .is_some_and(|pid| pid == owner)
+        }
+        // CR 109.5: Ownership relative to a chosen target player.
+        // Resolves against the first player target on the current node or
+        // its resolving root. TargetOpponent reads identically (the
+        // opponent constraint lives in the declared slot).
+        ControllerRef::TargetPlayer | ControllerRef::TargetOpponent => {
+            target_player_from_ability_or_root(state, source.ability)
+                .is_some_and(|pid| pid == owner)
+        }
+        ControllerRef::ParentTargetController => {
+            parent_target_controller_player(state, source.ability).is_some_and(|pid| pid == owner)
+        }
+        // CR 120.1 + CR 109.4: the damage recipient's controller.
+        ControllerRef::EventTargetController => {
+            event_target_controller_player(state, source.ability).is_some_and(|pid| pid == owner)
+        }
+        ControllerRef::ParentTargetOwner => {
+            parent_target_owner_player(state, source.ability).is_some_and(|pid| pid == owner)
+        }
+        ControllerRef::DefendingPlayer => {
+            source_defending_player(state, source).is_some_and(|pid| pid == owner)
+        }
+        // CR 613.1: Ownership relative to the source's persisted chosen player.
+        ControllerRef::SourceChosenPlayer => {
+            source_chosen_player(source).is_some_and(|pid| pid == owner)
+        }
+        // CR 608.2c + CR 109.4: Ownership relative to a resolution-chosen player.
+        ControllerRef::ChosenPlayer { index } => source
+            .ability
+            .and_then(|a| a.chosen_players.get(*index as usize).copied())
+            .is_some_and(|pid| pid == owner),
+        // CR 603.2 + CR 109.4: Ownership relative to the triggering player.
+        ControllerRef::TriggeringPlayer => {
+            crate::game::quantity::triggering_event_player(state).is_some_and(|pid| pid == owner)
+        }
+        // CR 303.4b: Resolve enchanted player via source's attached_to.
+        ControllerRef::EnchantedPlayer => {
+            source_enchanted_player(source).is_some_and(|pid| pid == owner)
+        }
+        // CR 102.1: Ownership relative to the active player (read live).
+        ControllerRef::ActivePlayer => state.active_player == owner,
+        // CR 109.4 + CR 611.2: a resolution-time snapshot player id — concrete with
+        // no ability/event context needed, unlike the fail-closed siblings above.
+        ControllerRef::SpecificPlayer { id } => *id == owner,
+    }
+}
+
 fn matches_filter_prop(
     prop: &FilterProp,
     state: &GameState,
@@ -7388,63 +7513,7 @@ fn matches_filter_prop(
             })
         }
         FilterProp::InZone { zone } => obj.zone == *zone,
-        FilterProp::Owned { controller } => match controller {
-            ControllerRef::You => source.controller == Some(obj.owner),
-            ControllerRef::Opponent => {
-                source.controller.is_some()
-                    && source.controller != Some(obj.owner)
-                    && super::players::is_alive(state, obj.owner)
-            }
-            ControllerRef::ScopedPlayer => {
-                scoped_player_or_controller(state, source.ability, source.controller, None)
-                    .is_some_and(|pid| pid == obj.owner)
-            }
-            // CR 109.5: Ownership relative to a chosen target player.
-            // Resolves against the first player target on the current node or
-            // its resolving root. TargetOpponent reads identically (the
-            // opponent constraint lives in the declared slot).
-            ControllerRef::TargetPlayer | ControllerRef::TargetOpponent => {
-                target_player_from_ability_or_root(state, source.ability)
-                    .is_some_and(|pid| pid == obj.owner)
-            }
-            ControllerRef::ParentTargetController => {
-                parent_target_controller_player(state, source.ability)
-                    .is_some_and(|pid| pid == obj.owner)
-            }
-            // CR 120.1 + CR 109.4: the damage recipient's controller.
-            ControllerRef::EventTargetController => {
-                event_target_controller_player(state, source.ability)
-                    .is_some_and(|pid| pid == obj.owner)
-            }
-            ControllerRef::ParentTargetOwner => parent_target_owner_player(state, source.ability)
-                .is_some_and(|pid| pid == obj.owner),
-            ControllerRef::DefendingPlayer => {
-                source_defending_player(state, source).is_some_and(|pid| pid == obj.owner)
-            }
-            // CR 613.1: Ownership relative to the source's persisted chosen player.
-            ControllerRef::SourceChosenPlayer => {
-                source_chosen_player(source).is_some_and(|pid| pid == obj.owner)
-            }
-            // CR 608.2c + CR 109.4: Ownership relative to a resolution-chosen player.
-            ControllerRef::ChosenPlayer { index } => source
-                .ability
-                .and_then(|a| a.chosen_players.get(*index as usize).copied())
-                .is_some_and(|pid| pid == obj.owner),
-            // CR 603.2 + CR 109.4: Ownership relative to the triggering player.
-            ControllerRef::TriggeringPlayer => {
-                crate::game::quantity::triggering_event_player(state)
-                    .is_some_and(|pid| pid == obj.owner)
-            }
-            // CR 303.4b: Resolve enchanted player via source's attached_to.
-            ControllerRef::EnchantedPlayer => {
-                source_enchanted_player(source).is_some_and(|pid| pid == obj.owner)
-            }
-            // CR 102.1: Ownership relative to the active player (read live).
-            ControllerRef::ActivePlayer => state.active_player == obj.owner,
-            // CR 109.4 + CR 611.2: a resolution-time snapshot player id — concrete with
-            // no ability/event context needed, unlike the fail-closed siblings above.
-            ControllerRef::SpecificPlayer { id } => *id == obj.owner,
-        },
+        FilterProp::Owned { controller } => owned_axis_admits(state, source, controller, obj.owner),
         // CR 303.4 + CR 301.5f: `EnchantedBy` is source-relative when the
         // source is an Aura ("enchanted creature gets +1/+1"). When the source
         // is NOT an Aura (e.g. Hateful Eidolon's "whenever an enchanted creature
@@ -8236,58 +8305,7 @@ fn zone_change_record_matches_property(
         // like "from the graveyard" that must not fire on tokens.
         FilterProp::InZone { zone } => record.from_zone == Some(*zone),
         // CR 109.5: Ownership relative to the source's controller.
-        FilterProp::Owned { controller } => match controller {
-            ControllerRef::You => source.controller == Some(record.owner),
-            ControllerRef::Opponent => {
-                source.controller.is_some()
-                    && source.controller != Some(record.owner)
-                    && super::players::is_alive(state, record.owner)
-            }
-            ControllerRef::ScopedPlayer => {
-                scoped_player_or_controller(state, source.ability, source.controller, None)
-                    .is_some_and(|pid| pid == record.owner)
-            }
-            // CR 109.5: Ownership relative to a chosen target player.
-            // TargetOpponent reads identically (opponent constraint lives in the slot).
-            ControllerRef::TargetPlayer | ControllerRef::TargetOpponent =>
-                target_player_from_ability_or_root(state, source.ability)
-                .is_some_and(|pid| pid == record.owner),
-            ControllerRef::ParentTargetController => {
-                parent_target_controller_player(state, source.ability)
-                    .is_some_and(|pid| pid == record.owner)
-            }
-            // CR 120.1 + CR 109.4: the damage recipient's controller.
-            ControllerRef::EventTargetController => {
-                event_target_controller_player(state, source.ability)
-                    .is_some_and(|pid| pid == record.owner)
-            }
-            ControllerRef::ParentTargetOwner => parent_target_owner_player(state, source.ability)
-                .is_some_and(|pid| pid == record.owner),
-            ControllerRef::DefendingPlayer => source_defending_player(state, source)
-                .is_some_and(|pid| pid == record.owner),
-            // CR 613.1: Ownership relative to the source's persisted chosen player.
-            ControllerRef::SourceChosenPlayer => {
-                source_chosen_player(source).is_some_and(|pid| pid == record.owner)
-            }
-            // CR 608.2c + CR 109.4: Ownership relative to a resolution-chosen player.
-            ControllerRef::ChosenPlayer { index } => source
-                .ability
-                .and_then(|a| a.chosen_players.get(*index as usize).copied())
-                .is_some_and(|pid| pid == record.owner),
-            // CR 603.2 + CR 109.4: Ownership relative to the triggering player.
-            ControllerRef::TriggeringPlayer => {
-                crate::game::quantity::triggering_event_player(state).is_some_and(|pid| pid == record.owner)
-            }
-            // CR 303.4b: Resolve enchanted player via source's attached_to.
-            ControllerRef::EnchantedPlayer => {
-                source_enchanted_player(source).is_some_and(|pid| pid == record.owner)
-            }
-            // CR 102.1: Ownership relative to the active player (read live).
-            ControllerRef::ActivePlayer => state.active_player == record.owner,
-            // CR 109.4 + CR 611.2: a resolution-time snapshot player id — concrete with
-            // no ability/event context needed, unlike the fail-closed siblings above.
-            ControllerRef::SpecificPlayer { id } => *id == record.owner,
-        },
+        FilterProp::Owned { controller } => owned_axis_admits(state, source, controller, record.owner),
         // CR 205.3e + CR 205.3m + CR 702.73a: Source's chosen creature type
         // applied to the snapshot subtypes, including changeling snapshots.
         FilterProp::IsChosenCreatureType => source.chosen_creature_type.as_ref().is_some_and(|chosen| {
@@ -19424,6 +19442,307 @@ mod characteristic_read_classification_tests {
         assert!(
             enlist.contains(CharacteristicKinds::CARD_TYPES),
             "CR 302.6: the creature-typeline guard is a layer-4 read"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dandan_axis_collapse_tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::ability::Effect;
+    use crate::types::card_type::CoreType;
+    use crate::types::format::FormatConfig;
+    use crate::types::game_state::ZoneChangeRecord;
+    use crate::types::identifiers::CardId;
+
+    const P0: PlayerId = PlayerId(0);
+    const P1: PlayerId = PlayerId(1);
+    const SOURCE: ObjectId = ObjectId(900);
+
+    fn dandan() -> GameState {
+        GameState::new(FormatConfig::dandan(), 2, 1)
+    }
+
+    fn standard() -> GameState {
+        GameState::new_two_player(1)
+    }
+
+    /// A P0-owned creature in `zone`.
+    fn creature(state: &mut GameState, zone: Zone) -> ObjectId {
+        let id = create_object(state, CardId(1), P0, "Bear".into(), zone);
+        state
+            .objects
+            .get_mut(&id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        id
+    }
+
+    fn typed(controller: Option<ControllerRef>, properties: Vec<FilterProp>) -> TargetFilter {
+        TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller,
+            properties,
+        })
+    }
+
+    fn in_zone(zone: Zone) -> FilterProp {
+        FilterProp::InZone { zone }
+    }
+
+    fn owned(controller: ControllerRef) -> FilterProp {
+        FilterProp::Owned { controller }
+    }
+
+    /// Which of (P0, P1), as the filter's source seat, admit `id` under `filter`.
+    fn admitted(state: &GameState, id: ObjectId, filter: &TargetFilter) -> [bool; 2] {
+        [P0, P1].map(|seat| {
+            let ctx = FilterContext::from_source_with_controller(SOURCE, seat);
+            matches_target_filter(state, id, filter, &ctx)
+        })
+    }
+
+    fn admitted_for_zone(
+        state: &GameState,
+        id: ObjectId,
+        zone: Zone,
+        filter: &TargetFilter,
+    ) -> [bool; 2] {
+        [P0, P1].map(|seat| {
+            let ctx = FilterContext::from_source_with_controller(SOURCE, seat);
+            matches_target_filter_for_zone(state, id, zone, filter, &ctx)
+        })
+    }
+
+    const BOTH: [bool; 2] = [true, true];
+    const OWNER_ONLY: [bool; 2] = [true, false];
+
+    /// CR 400.1 as modified by a shared-zone format: a filter that names the pile is satisfied
+    /// for every seat, on the controller axis and on `Owned`.
+    #[test]
+    fn a_filter_naming_the_shared_zone_admits_every_seat() {
+        for zone in [Zone::Graveyard, Zone::Library] {
+            let mut state = dandan();
+            let id = creature(&mut state, zone);
+            let you = Some(ControllerRef::You);
+            let opponent = Some(ControllerRef::Opponent);
+            assert_eq!(
+                admitted(&state, id, &typed(you.clone(), vec![in_zone(zone)])),
+                BOTH
+            );
+            assert_eq!(
+                admitted(&state, id, &typed(opponent, vec![in_zone(zone)])),
+                BOTH,
+                "an opponent's pile is the shared pile for every seat"
+            );
+            let owned_you = typed(None, vec![in_zone(zone), owned(ControllerRef::You)]);
+            assert_eq!(admitted(&state, id, &owned_you), BOTH);
+            let owned_opponent = typed(None, vec![in_zone(zone), owned(ControllerRef::Opponent)]);
+            assert_eq!(admitted(&state, id, &owned_opponent), BOTH);
+            let specific = typed(
+                Some(ControllerRef::SpecificPlayer { id: P1 }),
+                vec![in_zone(zone)],
+            );
+            assert_eq!(admitted(&state, id, &specific), BOTH);
+            let any_zone = typed(
+                you,
+                vec![FilterProp::InAnyZone {
+                    zones: vec![zone, Zone::Hand],
+                }],
+            );
+            assert_eq!(admitted(&state, id, &any_zone), BOTH);
+        }
+    }
+
+    /// The licence is the filter's own claim: without it the comparison stays single.
+    #[test]
+    fn an_unlicensed_filter_keeps_one_comparison() {
+        let mut state = dandan();
+        let id = creature(&mut state, Zone::Graveyard);
+        let you = Some(ControllerRef::You);
+        assert_eq!(
+            admitted(&state, id, &typed(you.clone(), vec![])),
+            OWNER_ONLY
+        );
+        assert_eq!(
+            admitted(&state, id, &typed(None, vec![owned(ControllerRef::You)])),
+            OWNER_ONLY
+        );
+        assert_eq!(
+            admitted_for_zone(&state, id, Zone::Graveyard, &typed(you, vec![])),
+            OWNER_ONLY,
+            "the explicit zone argument is not a licence"
+        );
+        let nested = typed(
+            None,
+            vec![
+                in_zone(Zone::Graveyard),
+                FilterProp::Not {
+                    prop: Box::new(owned(ControllerRef::You)),
+                },
+            ],
+        );
+        assert_eq!(
+            admitted(&state, id, &nested),
+            [false, true],
+            "a nested Owned stays a single comparison"
+        );
+    }
+
+    /// A player named by the ability (a chosen player) reads the shared pile too, so a pile card
+    /// owned by the other seat satisfies "the chosen player's graveyard".
+    #[test]
+    fn a_chosen_players_shared_graveyard_admits_every_owner() {
+        let mut state = dandan();
+        let ours = creature(&mut state, Zone::Graveyard);
+        let theirs = create_object(&mut state, CardId(2), P1, "Theirs".into(), Zone::Graveyard);
+        state
+            .objects
+            .get_mut(&theirs)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let ability_choosing = |player: PlayerId| {
+            let mut ability =
+                ResolvedAbility::new(Effect::unimplemented("probe", "probe"), vec![], SOURCE, P0);
+            ability.chosen_players = vec![player];
+            ability
+        };
+        let chosen = ControllerRef::ChosenPlayer { index: 0 };
+        let filter = typed(
+            Some(chosen.clone()),
+            vec![owned(chosen), in_zone(Zone::Graveyard)],
+        );
+        let admits = |ability: &ResolvedAbility, id| {
+            let mut ctx = FilterContext::from_source_with_controller(SOURCE, P0);
+            ctx.ability = Some(ability);
+            matches_target_filter_for_zone(&state, id, Zone::Graveyard, &filter, &ctx)
+        };
+        let reading_the_pile = ability_choosing(P1);
+        assert!(admits(&reading_the_pile, ours) && admits(&reading_the_pile, theirs));
+        assert!(
+            !admits(&ability_choosing(PlayerId(7)), ours),
+            "a chosen player who reads no pile seat admits nothing"
+        );
+    }
+
+    #[test]
+    fn a_per_seat_zone_never_collapses() {
+        let mut state = dandan();
+        let id = creature(&mut state, Zone::Battlefield);
+        let you = typed(Some(ControllerRef::You), vec![in_zone(Zone::Battlefield)]);
+        let opponent = typed(
+            Some(ControllerRef::Opponent),
+            vec![in_zone(Zone::Battlefield)],
+        );
+        assert_eq!(admitted(&state, id, &you), OWNER_ONLY);
+        assert_eq!(admitted(&state, id, &opponent), [false, true]);
+
+        let in_hand = creature(&mut state, Zone::Hand);
+        let owned_you = typed(None, vec![in_zone(Zone::Hand), owned(ControllerRef::You)]);
+        assert_eq!(admitted(&state, in_hand, &owned_you), OWNER_ONLY);
+    }
+
+    #[test]
+    fn a_per_seat_format_never_collapses() {
+        let mut state = standard();
+        let id = creature(&mut state, Zone::Graveyard);
+        let you = Some(ControllerRef::You);
+        assert_eq!(
+            admitted(&state, id, &typed(you, vec![in_zone(Zone::Graveyard)])),
+            OWNER_ONLY
+        );
+        let owned_you = typed(
+            None,
+            vec![in_zone(Zone::Graveyard), owned(ControllerRef::You)],
+        );
+        assert_eq!(admitted(&state, id, &owned_you), OWNER_ONLY);
+        let owned_opponent = typed(
+            None,
+            vec![in_zone(Zone::Graveyard), owned(ControllerRef::Opponent)],
+        );
+        assert_eq!(admitted(&state, id, &owned_opponent), [false, true]);
+    }
+
+    /// The owner-zone entry feeds the same licensed arm, including a pile card whose stored
+    /// controller is not its owner.
+    #[test]
+    fn the_owner_zone_entry_collapses_through_the_licensed_arm() {
+        let mut state = dandan();
+        let id = creature(&mut state, Zone::Graveyard);
+        state.objects.get_mut(&id).unwrap().controller = P1;
+        let filter = typed(Some(ControllerRef::You), vec![in_zone(Zone::Graveyard)]);
+        assert_eq!(
+            admitted_for_zone(&state, id, Zone::Graveyard, &filter),
+            BOTH
+        );
+    }
+
+    fn record(from: Option<Zone>) -> ZoneChangeRecord {
+        ZoneChangeRecord {
+            core_types: vec![CoreType::Creature],
+            owner: P0,
+            controller: P0,
+            ..ZoneChangeRecord::test_minimal(ObjectId(7), from, Zone::Hand)
+        }
+    }
+
+    fn record_admitted(
+        state: &GameState,
+        record: &ZoneChangeRecord,
+        filter: &TargetFilter,
+    ) -> [bool; 2] {
+        [P0, P1].map(|seat| {
+            let ctx = FilterContext::from_source_with_controller(SOURCE, seat);
+            matches_target_filter_on_zone_change_record(state, record, filter, &ctx)
+        })
+    }
+
+    /// The record door licenses on the origin zone the filter itself names.
+    #[test]
+    fn a_zone_change_record_collapses_only_for_a_named_shared_origin() {
+        let state = dandan();
+        let owned_you = |zone| typed(None, vec![in_zone(zone), owned(ControllerRef::You)]);
+        assert_eq!(
+            record_admitted(
+                &state,
+                &record(Some(Zone::Graveyard)),
+                &owned_you(Zone::Graveyard)
+            ),
+            BOTH
+        );
+        assert_eq!(
+            record_admitted(
+                &state,
+                &record(Some(Zone::Battlefield)),
+                &owned_you(Zone::Battlefield)
+            ),
+            OWNER_ONLY,
+            "a per-seat origin"
+        );
+        assert_eq!(
+            record_admitted(&state, &record(None), &owned_you(Zone::Graveyard)),
+            [false, false],
+            "token creation names no origin"
+        );
+        assert_eq!(
+            record_admitted(
+                &state,
+                &record(Some(Zone::Graveyard)),
+                &typed(None, vec![owned(ControllerRef::You)])
+            ),
+            OWNER_ONLY,
+            "no naming property"
+        );
+        let controller_axis = typed(Some(ControllerRef::You), vec![in_zone(Zone::Graveyard)]);
+        assert_eq!(
+            record_admitted(&state, &record(Some(Zone::Graveyard)), &controller_axis),
+            OWNER_ONLY,
+            "the record controller axis is the controller at departure"
         );
     }
 }
