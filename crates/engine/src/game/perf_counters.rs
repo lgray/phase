@@ -205,6 +205,50 @@ impl TakeCostCounters {
     }
 }
 
+/// Test-only counters for the play trace's work: action boundaries entered (outermost, nested,
+/// inside a probe), entries recorded, the trace's node-map and node-key work, whole-state copies
+/// its own code makes, and the windows and legality reads its naming makes.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlayTraceCounters {
+    pub boundary_entries: u64,
+    pub nested_applies: u64,
+    pub probe_entries: u64,
+    pub actions_recorded: u64,
+    pub resolutions_recorded: u64,
+    pub resolution_hooks_in_probe: u64,
+    pub node_map_reads: u64,
+    pub node_map_writes: u64,
+    pub node_key_compares: u64,
+    pub trace_state_copies: u64,
+    pub windows: u64,
+    pub legality_reads: u64,
+    pub legality_read_copies: u64,
+}
+
+#[cfg(feature = "test-support")]
+impl PlayTraceCounters {
+    /// The counts accrued since `earlier`, a snapshot taken on the same thread.
+    pub fn since(self, earlier: Self) -> Self {
+        Self {
+            boundary_entries: self.boundary_entries - earlier.boundary_entries,
+            nested_applies: self.nested_applies - earlier.nested_applies,
+            probe_entries: self.probe_entries - earlier.probe_entries,
+            actions_recorded: self.actions_recorded - earlier.actions_recorded,
+            resolutions_recorded: self.resolutions_recorded - earlier.resolutions_recorded,
+            resolution_hooks_in_probe: self.resolution_hooks_in_probe
+                - earlier.resolution_hooks_in_probe,
+            node_map_reads: self.node_map_reads - earlier.node_map_reads,
+            node_map_writes: self.node_map_writes - earlier.node_map_writes,
+            node_key_compares: self.node_key_compares - earlier.node_key_compares,
+            trace_state_copies: self.trace_state_copies - earlier.trace_state_copies,
+            windows: self.windows - earlier.windows,
+            legality_reads: self.legality_reads - earlier.legality_reads,
+            legality_read_copies: self.legality_read_copies - earlier.legality_read_copies,
+        }
+    }
+}
+
 /// One replay take: the count it was driven at, the cycles it delivered, the whole take's counts,
 /// and each delivered cycle's counts in order.
 #[cfg(feature = "test-support")]
@@ -383,6 +427,24 @@ thread_local! {
     };
     #[cfg(feature = "test-support")]
     static TAKE_COST_RECORDS: RefCell<Vec<TakeCostRecord>> = const { RefCell::new(Vec::new()) };
+    #[cfg(feature = "test-support")]
+    static PLAY_TRACE_COUNTERS: Cell<PlayTraceCounters> = const {
+        Cell::new(PlayTraceCounters {
+            boundary_entries: 0,
+            nested_applies: 0,
+            probe_entries: 0,
+            actions_recorded: 0,
+            resolutions_recorded: 0,
+            resolution_hooks_in_probe: 0,
+            node_map_reads: 0,
+            node_map_writes: 0,
+            node_key_compares: 0,
+            trace_state_copies: 0,
+            windows: 0,
+            legality_reads: 0,
+            legality_read_copies: 0,
+        })
+    };
     static LEGALITY_CLONE_PHASE: Cell<Option<LegalityClonePhase>> = const { Cell::new(None) };
 }
 
@@ -896,6 +958,20 @@ pub fn take_cost_snapshot() -> TakeCostCounters {
     TAKE_COST_COUNTERS.with(Cell::get)
 }
 
+#[cfg(feature = "test-support")]
+pub(crate) fn record_play_trace(f: impl FnOnce(&mut PlayTraceCounters)) {
+    PLAY_TRACE_COUNTERS.with(|cell| {
+        let mut counters = cell.get();
+        f(&mut counters);
+        cell.set(counters);
+    });
+}
+
+#[cfg(feature = "test-support")]
+pub fn play_trace_counters() -> PlayTraceCounters {
+    PLAY_TRACE_COUNTERS.with(Cell::get)
+}
+
 /// Every take recorded on this thread since the last [`reset`], in order.
 #[cfg(feature = "test-support")]
 pub fn take_cost_records() -> Vec<TakeCostRecord> {
@@ -966,4 +1042,6 @@ pub fn reset() {
     COMPLETION_WALK_WORK.with(|counters| counters.set(CompletionWalkWork::default()));
     #[cfg(feature = "test-support")]
     reset_take_cost();
+    #[cfg(feature = "test-support")]
+    PLAY_TRACE_COUNTERS.with(|counters| counters.set(PlayTraceCounters::default()));
 }

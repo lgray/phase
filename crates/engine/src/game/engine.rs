@@ -1350,6 +1350,7 @@ pub(super) fn apply_action_boundary_with_stack_limit(
     mode: PublicFinalizeMode,
     stack_resolution_limit: Option<u32>,
 ) -> Result<ActionResult, EngineError> {
+    let _boundary = super::play_trace::BoundaryDepth::enter();
     // A zero-count debug create is intentionally a true no-op. It still passes
     // both the ordinary action-authority check and the sandbox capability
     // gate, but must not enter an action lifecycle frame: doing so would bump
@@ -1362,15 +1363,21 @@ pub(super) fn apply_action_boundary_with_stack_limit(
             return Ok(ActionResult::applied(vec![], state.waiting_for.clone()));
         }
     }
-    let raw = apply_action_boundary_core(
+    let trace_snapshot = super::play_trace::begin_action(state, semantic_owner, &action);
+    let result = apply_action_boundary_core(
         state,
         authenticated_actor,
         semantic_owner,
         action,
         stack_resolution_limit,
         true,
-    )?;
-    finish_action_boundary(state, raw, mode)
+    )
+    .and_then(|raw| finish_action_boundary(state, raw, mode));
+    let applied = result
+        .as_ref()
+        .is_ok_and(|result| result.disposition.is_applied());
+    super::play_trace::end_action(state, trace_snapshot, applied);
+    result
 }
 
 struct RawActionApplication {
@@ -2156,6 +2163,7 @@ fn reconcile_terminal_sba(state: &mut GameState, result: &mut ActionResult) {
 /// recorded road. Evaluated once per priority frame: a boundary whose auto-pass loop did not
 /// advance re-runs only [`reconcile_terminal_sba`].
 fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
+    super::play_trace::name_window(state);
     // CR 732.2a + CR 704.5a: shortcut a NET-PROGRESS mandatory cascade to its
     // determinate single-opponent loss. Runs AFTER the CR 704 state-based actions
     // (CR 704.3 ordering), so a player ALREADY at 0 life loses via the real
@@ -4997,6 +5005,7 @@ fn end_shortcut_at_priority(
     state.loop_detect_ring.clear();
     // CR 603.5: the recorded "may" answers describe the window that just ended.
     state.loop_answer_journal = None;
+    state.play_trace = None;
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
         player: shortcut_ending_point_seat(state, proposal, reached_named_place),
@@ -5351,6 +5360,7 @@ fn until_lethal_fallback(
     state.loop_detect_ring.clear();
     // CR 603.5: the recorded "may" answers describe the window that just ended.
     state.loop_answer_journal = None;
+    state.play_trace = None;
     if state.loop_period_controller() == Some(proposer) {
         state.last_loop_action_sequence.clear();
     }
@@ -8875,6 +8885,7 @@ fn materialize_object_growth_shortcut(
     state.loop_detect_ring.clear();
     // CR 603.5: the recorded "may" answers describe the window that just ended.
     state.loop_answer_journal = None;
+    state.play_trace = None;
     state.last_loop_action_sequence.clear();
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
@@ -9408,6 +9419,7 @@ fn handle_decline_shortcut(
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
     let mut result = ActionResult::applied(std::mem::take(events), state.waiting_for.clone());
+    state.play_trace = None;
     // Seam 1 (loop_detect_ring) is already invalidated by `apply_action`'s deliberate-action
     // ring clear — see doc. Only Seam 2 is the handler's gap, and only
     // for the decliner's OWN period (CR 732.2a):

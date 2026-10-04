@@ -1292,6 +1292,7 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
         Some(viewer) => crate::game::payment_transaction::project_for_viewer(state, viewer),
         None => crate::game::payment_transaction::project_without_viewer(state),
     };
+    filtered.play_trace = None;
     let viewer_knows = |object_id: ObjectId| {
         viewer.is_some_and(|viewer| state.viewer_knows_card_identity(viewer, object_id))
     };

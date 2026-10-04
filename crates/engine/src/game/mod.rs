@@ -152,6 +152,12 @@ pub fn staged_payment_shadow_for_test(
 ) -> crate::types::game_state::GameState {
     payment_transaction::project(state)
 }
+pub(crate) mod play_trace;
+#[cfg(any(test, feature = "test-support"))]
+pub use play_trace::{
+    play_trace_view, AnswerOptionality, EntryKind, NamedSpan, NamingCause, PlayLocus,
+    PlayTraceView, TraceEntry,
+};
 pub mod preview;
 pub mod printed_cards;
 pub mod priority;

@@ -138,6 +138,25 @@ fn apply_u32_delta(value: u32, delta: i32) -> Result<u32, ResolvedPlayerEditRepl
     }
 }
 
+/// The printed identity of `source`'s printed trigger slot `printed_index`: the slot's carried
+/// origin when its copiable values come from several cards, else its own printed card's.
+pub(crate) fn printed_trigger_origin(
+    source: &GameObject,
+    printed_index: usize,
+) -> Option<crate::types::ability::TriggerPrintedOrigin> {
+    if source.base_trigger_printed_origins.is_empty() {
+        Some(crate::types::ability::TriggerPrintedOrigin {
+            printed_ref: source.base_printed_ref.clone()?,
+            printed_occurrence: printed_index,
+        })
+    } else {
+        source
+            .base_trigger_printed_origins
+            .get(printed_index)?
+            .clone()
+    }
+}
+
 pub(crate) fn is_zero_usize(value: &usize) -> bool {
     *value == 0
 }
@@ -17624,6 +17643,155 @@ impl WaitingFor {
         self.has_pending_cast() && !matches!(self, WaitingFor::ManaSourceSelection { .. })
     }
 
+    /// CR 601.2a + CR 602.2a: Whether this prompt asks a player how to make a
+    /// spell or activation the engine has not yet announced, so the play is
+    /// already in progress.
+    pub(crate) fn chooses_play_before_announcement(&self) -> bool {
+        match self {
+            WaitingFor::ModalFaceChoice { .. }
+            | WaitingFor::AlternativeCastChoice { .. }
+            | WaitingFor::CastingVariantChoice { .. }
+            | WaitingFor::ChoosePermanentTypeSlot { .. }
+            | WaitingFor::EquipTarget { .. }
+            | WaitingFor::CrewVehicle { .. }
+            | WaitingFor::StationTarget { .. }
+            | WaitingFor::SaddleMount { .. } => true,
+            WaitingFor::AbilityModeChoice { is_activated, .. } => *is_activated,
+            // Listed rather than `_` so a new prompt has to be classified.
+            WaitingFor::ChooseManaColor { .. }
+            | WaitingFor::PayCost { .. }
+            | WaitingFor::CollectEvidenceChoice { .. }
+            | WaitingFor::PayAmountChoice { .. }
+            | WaitingFor::PayManaAbilityMana { .. }
+            | WaitingFor::Priority { .. }
+            | WaitingFor::ResolveAllConsent { .. }
+            | WaitingFor::ResolveAllReady { .. }
+            | WaitingFor::MeldPairChoice { .. }
+            | WaitingFor::MeldAttackTargetChoice { .. }
+            | WaitingFor::EntryAttackTargetChoice { .. }
+            | WaitingFor::MulliganDecision { .. }
+            | WaitingFor::OpeningHandBottomCards { .. }
+            | WaitingFor::ManaPayment { .. }
+            | WaitingFor::ManaSourceSelection { .. }
+            | WaitingFor::AssistChoosePlayer { .. }
+            | WaitingFor::AssistPayment { .. }
+            | WaitingFor::ChooseXValue { .. }
+            | WaitingFor::TargetSelection { .. }
+            | WaitingFor::DeclareAttackers { .. }
+            | WaitingFor::DeclareBlockers { .. }
+            | WaitingFor::UntapChoice { .. }
+            | WaitingFor::ChooseUntapSubset { .. }
+            | WaitingFor::ExertChoice { .. }
+            | WaitingFor::EnlistChoice { .. }
+            | WaitingFor::GameOver { .. }
+            | WaitingFor::ReplacementChoice { .. }
+            | WaitingFor::EntryControllerChoice { .. }
+            | WaitingFor::OrderTriggers { .. }
+            | WaitingFor::CopyTargetChoice { .. }
+            | WaitingFor::ExploreChoice { .. }
+            | WaitingFor::ReturnAsAuraTarget { .. }
+            | WaitingFor::ScryChoice { .. }
+            | WaitingFor::RippleRevealChoice { .. }
+            | WaitingFor::RippleBottomOrder { .. }
+            | WaitingFor::RevealUntilBottomOrder { .. }
+            | WaitingFor::ArrangePlanarDeckTopChoice { .. }
+            | WaitingFor::RedistributeLifeTotals { .. }
+            | WaitingFor::CoinFlipKeepChoice { .. }
+            | WaitingFor::DieKeepChoice { .. }
+            | WaitingFor::DigChoice { .. }
+            | WaitingFor::DigRestSplitChoice { .. }
+            | WaitingFor::SurveilChoice { .. }
+            | WaitingFor::RevealChoice { .. }
+            | WaitingFor::SearchChoice { .. }
+            | WaitingFor::SearchPartitionChoice { .. }
+            | WaitingFor::OutsideGameChoice { .. }
+            | WaitingFor::ChooseFromZoneChoice { .. }
+            | WaitingFor::BeholdChoice { .. }
+            | WaitingFor::EmpowerJaceChoice { .. }
+            | WaitingFor::ChooseOneOfBranch { .. }
+            | WaitingFor::ConniveDiscard { .. }
+            | WaitingFor::DiscardChoice { .. }
+            | WaitingFor::EffectZoneChoice { .. }
+            | WaitingFor::DrawnThisTurnTopdeckChoice { .. }
+            | WaitingFor::LearnChoice { .. }
+            | WaitingFor::ManifestDreadChoice { .. }
+            | WaitingFor::TriggerTargetSelection { .. }
+            | WaitingFor::BetweenGamesSideboard { .. }
+            | WaitingFor::BetweenGamesChoosePlayDraw { .. }
+            | WaitingFor::NamedChoice { .. }
+            | WaitingFor::OpponentGuess { .. }
+            | WaitingFor::SpellbookDraft { .. }
+            | WaitingFor::DamageSourceChoice { .. }
+            | WaitingFor::ModeChoice { .. }
+            | WaitingFor::DiscardToHandSize { .. }
+            | WaitingFor::OptionalCostChoice { .. }
+            | WaitingFor::ChooseGiftRecipient { .. }
+            | WaitingFor::SpliceOffer { .. }
+            | WaitingFor::DefilerPayment { .. }
+            | WaitingFor::OrderCostReductions { .. }
+            | WaitingFor::CastOffer { .. }
+            | WaitingFor::MutateMergeChoice { .. }
+            | WaitingFor::CipherEncodeChoice { .. }
+            | WaitingFor::MultiTargetSelection { .. }
+            | WaitingFor::OptionalEffectChoice { .. }
+            | WaitingFor::ResolutionOptionalPaymentChoice { .. }
+            | WaitingFor::PairChoice { .. }
+            | WaitingFor::TributeChoice { .. }
+            | WaitingFor::MiracleReveal { .. }
+            | WaitingFor::OpponentMayChoice { .. }
+            | WaitingFor::LoopShortcut { .. }
+            | WaitingFor::RespondToShortcut { .. }
+            | WaitingFor::PrecastCopyShortcutOffer { .. }
+            | WaitingFor::RespondToPrecastCopyShortcut { .. }
+            | WaitingFor::UnlessPayment { .. }
+            | WaitingFor::UnlessPaymentChooseCost { .. }
+            | WaitingFor::WardDiscardChoice { .. }
+            | WaitingFor::WardSacrificeChoice { .. }
+            | WaitingFor::UnlessBounceChoice { .. }
+            | WaitingFor::ChooseRingBearer { .. }
+            | WaitingFor::ChooseRoomDoor { .. }
+            | WaitingFor::ChooseDungeon { .. }
+            | WaitingFor::ChooseDungeonRoom { .. }
+            | WaitingFor::SpecializeColor { .. }
+            | WaitingFor::ActivationCostOneOfChoice { .. }
+            | WaitingFor::CostTypeChoice { .. }
+            | WaitingFor::BlightChoice { .. }
+            | WaitingFor::HarmonizeTapChoice { .. }
+            | WaitingFor::RevealUntilKeptChoice { .. }
+            | WaitingFor::RepeatDecision { .. }
+            | WaitingFor::TopOrBottomChoice { .. }
+            | WaitingFor::PopulateChoice { .. }
+            | WaitingFor::ClashChooseOpponent { .. }
+            | WaitingFor::ChooseFromZoneOpponentChooser { .. }
+            | WaitingFor::ChooseAnnouncingOpponent { .. }
+            | WaitingFor::ClashCardPlacement { .. }
+            | WaitingFor::VoteChoice { .. }
+            | WaitingFor::SeparatePilesChooseOpponent { .. }
+            | WaitingFor::SeparatePilesPartition { .. }
+            | WaitingFor::SeparatePilesChoice { .. }
+            | WaitingFor::CompanionReveal { .. }
+            | WaitingFor::ChooseLegend { .. }
+            | WaitingFor::CommanderZoneChoice { .. }
+            | WaitingFor::BattleProtectorChoice { .. }
+            | WaitingFor::ProliferateChoice { .. }
+            | WaitingFor::TimeTravelChoice { .. }
+            | WaitingFor::ChooseObjectsSelection { .. }
+            | WaitingFor::CategoryChoice { .. }
+            | WaitingFor::EachPlayerCopyChosenSelection { .. }
+            | WaitingFor::KeepWithinTotalPowerChoice { .. }
+            | WaitingFor::KeepExactPermanentsChoice { .. }
+            | WaitingFor::CopyRetarget { .. }
+            | WaitingFor::AssignCombatDamage { .. }
+            | WaitingFor::AssignBlockerDamage { .. }
+            | WaitingFor::DistributeAmong { .. }
+            | WaitingFor::MoveCountersDistribution { .. }
+            | WaitingFor::RemoveCountersChoice { .. }
+            | WaitingFor::RetargetChoice { .. }
+            | WaitingFor::CombatTaxPayment { .. }
+            | WaitingFor::PhyrexianPayment { .. } => false,
+        }
+    }
+
     /// CR 605.3a + CR 605.3b: Whether this state continues a mana ability's
     /// activation — one of its cost choices, or the choice of which mana it
     /// adds. A mana ability doesn't use the stack and resolves immediately, so
@@ -20605,6 +20773,10 @@ declare_game_state! {
             >,
         >,
     >,
+    /// CR 732.2a: every play and answer of the current step. Live-only, like
+    /// `loop_answer_journal`: never persisted, compared, or shown to a viewer.
+    #[serde(skip, default)]
+    pub(crate) play_trace: Option<Box<crate::game::play_trace::PlayTrace>>,
     /// Live-only authority for the finite pre-cast shortcut. It is absent from
     /// raw/public serialization; trusted persistence uses the explicit codec
     /// envelope in `game::precast_copy_shortcut`.
@@ -27954,6 +28126,7 @@ impl GameState {
             static_mode_presence: crate::types::statics::StaticModePresence::all_present(),
             loop_detect_ring: std::collections::VecDeque::new(),
             loop_answer_journal: None,
+            play_trace: None,
             precast_shortcut_runtime: PrecastShortcutRuntime::default(),
             life_safety_probe: Box::default(),
             next_timestamp: 1,
@@ -28384,15 +28557,8 @@ impl GameState {
         }
         let (printed_ref, printed_occurrence) = match &definition_ref.occurrence {
             TriggerDefinitionOccurrenceRef::Printed { printed_index, .. } => {
-                if source.base_trigger_printed_origins.is_empty() {
-                    (source.base_printed_ref.clone()?, *printed_index)
-                } else {
-                    let origin = source
-                        .base_trigger_printed_origins
-                        .get(*printed_index)?
-                        .as_ref()?;
-                    (origin.printed_ref.clone(), origin.printed_occurrence)
-                }
+                let origin = printed_trigger_origin(source, *printed_index)?;
+                (origin.printed_ref, origin.printed_occurrence)
             }
             TriggerDefinitionOccurrenceRef::CopiedValue {
                 copy_effect,
@@ -29315,6 +29481,7 @@ impl GameState {
         // CR 603.5: the "may"-answer journal belongs to the LIVE window, not to a stored
         // position sample. Cleared with the ring, on this same receiver.
         clone.loop_answer_journal = None;
+        clone.play_trace = None;
         // Hidden-search privacy provenance is action-scoped event-filtering state,
         // not recurring game-position state. Keep it on the live state so the
         // current action can still apply its exact lineage receipts, but omit it
@@ -29714,6 +29881,7 @@ impl GameState {
         let mut clone = self.clone();
         clone.loop_detect_ring.clear();
         clone.loop_answer_journal = None;
+        clone.play_trace = None;
         clone
     }
 
@@ -30544,6 +30712,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         // covering pair: `project_out_resources` opens with `normalize_for_loop`, which
         // is one of the ring-clear sites this field follows, so the projection clears it.
         loop_answer_journal: _,
+        play_trace: _,
         precast_shortcut_runtime: _,
         life_safety_probe: _,
         next_timestamp: _,
@@ -41406,6 +41575,122 @@ mod tests {
         };
         assert!(!tap_mana.has_pending_cast());
         assert!(tap_mana.pending_cast_ref().is_none());
+    }
+
+    #[test]
+    fn chooses_play_before_announcement_covers_the_pre_announcement_prompts() {
+        let player = PlayerId(0);
+        let object_id = ObjectId(1);
+        let card_id = CardId(1);
+        let payment_mode = CastPaymentMode::Manual;
+        let mode_choice = |is_activated| WaitingFor::AbilityModeChoice {
+            player,
+            modal: ModalChoice::default(),
+            source_id: object_id,
+            mode_abilities: Vec::new(),
+            is_activated,
+            ability_index: None,
+            ability_cost: None,
+            activation_cost_snapshot: None,
+            unavailable_modes: Vec::new(),
+        };
+        let members = [
+            WaitingFor::ModalFaceChoice {
+                player,
+                object_id,
+                card_id,
+                payment_mode,
+                resolution_additional_cost: None,
+            },
+            WaitingFor::AlternativeCastChoice {
+                player,
+                object_id,
+                card_id,
+                payment_mode,
+                keyword: AlternativeCastKeyword::Evoke,
+                normal_cost: ManaCost::zero(),
+                alternative_cost: None,
+                alternative_additional_cost: None,
+                alternative_additional_cost_description: None,
+            },
+            WaitingFor::CastingVariantChoice {
+                player,
+                object_id,
+                card_id,
+                payment_mode,
+                options: Vec::new(),
+            },
+            WaitingFor::ChoosePermanentTypeSlot {
+                player,
+                object_id,
+                card_id,
+                source: object_id,
+                payment_mode,
+                available_slots: Vec::new(),
+                permission: None,
+            },
+            mode_choice(true),
+            WaitingFor::EquipTarget {
+                player,
+                equipment_id: object_id,
+                valid_targets: Vec::new(),
+            },
+            WaitingFor::CrewVehicle {
+                player,
+                vehicle_id: object_id,
+                crew_power: 1,
+                eligible_creatures: Vec::new(),
+                contributions: Vec::new(),
+            },
+            WaitingFor::StationTarget {
+                player,
+                spacecraft_id: object_id,
+                eligible_creatures: Vec::new(),
+            },
+            WaitingFor::SaddleMount {
+                player,
+                mount_id: object_id,
+                saddle_power: 1,
+                eligible_creatures: Vec::new(),
+                contributions: Vec::new(),
+            },
+        ];
+        for prompt in &members {
+            assert!(prompt.chooses_play_before_announcement(), "{prompt:?}");
+        }
+
+        let ability = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            object_id,
+            player,
+        );
+        let non_members = [
+            WaitingFor::Priority { player },
+            WaitingFor::ManaPayment {
+                player,
+                convoke_mode: None,
+            },
+            WaitingFor::TargetSelection {
+                player,
+                pending_cast: Box::new(PendingCast::new(
+                    object_id,
+                    card_id,
+                    ability,
+                    ManaCost::zero(),
+                )),
+                target_slots: Vec::new(),
+                mode_labels: Vec::new(),
+                selection: TargetSelectionProgress::default(),
+            },
+            mode_choice(false),
+        ];
+        for prompt in &non_members {
+            assert!(!prompt.chooses_play_before_announcement(), "{prompt:?}");
+        }
     }
 
     /// CR 605.3b + CR 704.3: a mana ability's own prompts are part of its

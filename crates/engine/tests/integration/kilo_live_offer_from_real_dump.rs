@@ -46,7 +46,7 @@ use engine::types::zones::Zone;
 const P0: PlayerId = PlayerId(0);
 const KILO: ObjectId = ObjectId(402);
 const FREED: ObjectId = ObjectId(403);
-const RELIC: ObjectId = ObjectId(404);
+pub(crate) const RELIC: ObjectId = ObjectId(404);
 const PENTAD: ObjectId = ObjectId(405);
 /// Relic of Legends ability index 1 = "Tap an untapped legendary creature you control: Add one
 /// mana of any color"; Freed from the Real ability index 1 = "{U}: Untap enchanted creature".
@@ -56,13 +56,13 @@ const FREED_UNTAP: usize = 1;
 /// The four loop permanents, per dump. Both real captures hold the same Kilo/Freed/Relic/Pentad
 /// board under P0; only the `ObjectId`s differ, so ONE drive authority serves both and the
 /// regression row cannot silently diverge from the rows that already pin this loop's behavior.
-struct LoopIds {
+pub(crate) struct LoopIds {
     kilo: ObjectId,
     freed: ObjectId,
     relic: ObjectId,
     pentad: ObjectId,
 }
-const FIXTURE_IDS: LoopIds = LoopIds {
+pub(crate) const FIXTURE_IDS: LoopIds = LoopIds {
     kilo: KILO,
     freed: FREED,
     relic: RELIC,
@@ -99,7 +99,7 @@ fn gunzip(gz: &[u8]) -> String {
 /// empty-stack `Priority` (NOT a shortcut window) — exactly the production load behavior. Reverting
 /// the migration (or its `Priority`-drops-it branch) leaves the 6 stale pinless steps intact ⇒ the
 /// `is_empty()` assertion below flips and `try_offer` aborts on the pinless `seq[0]`.
-fn load_migrated_dump() -> GameState {
+pub(crate) fn load_migrated_dump() -> GameState {
     let json = gunzip(include_bytes!(
         "../fixtures/kilo_freed_relic_pentad_4p.json.gz"
     ));
@@ -149,7 +149,7 @@ fn beat_actor(state: &GameState) -> PlayerId {
 /// fire live — this is NOT a simulation probe). Answers each fixed choice with the loop's demanded
 /// value (tap Kilo, Blue mana, proliferate Pentad), activates Freed once, and settles at the first
 /// of `{empty-stack Priority, LoopShortcut}` reached after Freed resolves.
-fn drive_one_live_cycle(state: &mut GameState, ids: &LoopIds) {
+pub(crate) fn drive_one_live_cycle(state: &mut GameState, ids: &LoopIds) {
     apply(
         state,
         P0,
