@@ -1542,6 +1542,59 @@ fn claimed_shared_zone(properties: &[FilterProp], object_zone: Option<Zone>) -> 
         .then_some(zone)
 }
 
+/// Names `zones` on every typed leaf that names none, for callers whose zone comes from an
+/// effect or quantity field rather than from the filter; this is what lets
+/// [`claimed_shared_zone`] license the collapse there. Battlefield scans are left alone.
+pub(crate) fn claim_scan_zones(filter: TargetFilter, zones: &[Zone]) -> TargetFilter {
+    if zones.is_empty() || zones.contains(&Zone::Battlefield) {
+        return filter;
+    }
+    match filter {
+        TargetFilter::Typed(mut typed) => {
+            let names_zone = typed.properties.iter().any(|prop| {
+                matches!(
+                    prop,
+                    FilterProp::InZone { .. } | FilterProp::InAnyZone { .. }
+                )
+            });
+            if !names_zone {
+                typed.properties.push(match zones {
+                    [zone] => FilterProp::InZone { zone: *zone },
+                    _ => FilterProp::InAnyZone {
+                        zones: zones.to_vec(),
+                    },
+                });
+            }
+            TargetFilter::Typed(typed)
+        }
+        TargetFilter::And { filters } => TargetFilter::And {
+            filters: filters
+                .into_iter()
+                .map(|inner| claim_scan_zones(inner, zones))
+                .collect(),
+        },
+        TargetFilter::Or { filters } => TargetFilter::Or {
+            filters: filters
+                .into_iter()
+                .map(|inner| claim_scan_zones(inner, zones))
+                .collect(),
+        },
+        TargetFilter::Not { filter } => TargetFilter::Not {
+            filter: Box::new(claim_scan_zones(*filter, zones)),
+        },
+        TargetFilter::TrackedSetFiltered {
+            id,
+            filter,
+            caused_by,
+        } => TargetFilter::TrackedSetFiltered {
+            id,
+            filter: Box::new(claim_scan_zones(*filter, zones)),
+            caused_by,
+        },
+        other => other,
+    }
+}
+
 /// CR 400.1 as modified by a shared-zone format: a player-axis comparison holds when it
 /// holds for `holder` or, when `licensed` names a zone, for any seat reading the same
 /// container as `holder` (every seat's "your graveyard" is the one shared pile).

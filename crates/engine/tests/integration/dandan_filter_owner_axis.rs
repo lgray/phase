@@ -400,3 +400,207 @@ fn v16_a_dies_observer_ignores_the_other_seats_creature_in_the_shared_graveyard(
     assert_eq!(runner.life(P1), 20);
     assert_eq!(runner.life(P0), 20);
 }
+
+// ---------------------------------------------------------------------------
+// V17: zone named by the effect's origin, not the filter (Release to Memory)
+// ---------------------------------------------------------------------------
+
+/// P0 casts Release to Memory over a graveyard holding a P0-owned and a P1-owned creature;
+/// returns the runner and the staged `(mine, theirs)`.
+fn release_to_memory_run(format: FormatConfig) -> (GameRunner, ObjectId, ObjectId) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario(format);
+    let release = sc.add_real_card(P0, "Release to Memory", Zone::Hand, db);
+    let cards = stage(
+        &mut sc,
+        db,
+        Zone::Graveyard,
+        &[(P0, "Grizzly Bears"), (P1, "Grizzly Bears")],
+    );
+    let mut runner = start(sc, P0);
+    runner.cast(release).resolve();
+    (runner, cards[0], cards[1])
+}
+
+#[test]
+fn v17_exile_all_opponents_graveyards_takes_the_whole_shared_pile() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    let (runner, mine, theirs) = release_to_memory_run(dandan());
+    assert_eq!(
+        runner.state().objects[&theirs].zone,
+        Zone::Exile,
+        "reach: the opponent-owned pile card is exiled"
+    );
+    assert_eq!(
+        runner.state().objects[&mine].zone,
+        Zone::Exile,
+        "every pile card is in an opponent's graveyard"
+    );
+}
+
+#[test]
+fn v17_exile_all_opponents_graveyards_in_standard_leaves_the_casters_own() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    let (runner, mine, theirs) = release_to_memory_run(FormatConfig::standard());
+    assert_eq!(runner.state().objects[&theirs].zone, Zone::Exile, "reach");
+    assert_eq!(runner.state().objects[&mine].zone, Zone::Graveyard);
+}
+
+/// P0's Cogwork Progenitor reaches its end-step "artifact card in your graveyard" choice over a
+/// graveyard holding two P0-owned artifacts (one would be chosen without a prompt) and a
+/// P1-owned one; returns the offered cards and the staged `(mine, theirs)`.
+fn cogwork_offer(format: FormatConfig) -> (Vec<ObjectId>, ObjectId, ObjectId) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario(format);
+    sc.add_real_card(P0, "Cogwork Progenitor", Zone::Battlefield, db);
+    let cards = stage(
+        &mut sc,
+        db,
+        Zone::Graveyard,
+        &[(P0, "Mind Stone"), (P0, "Sol Ring"), (P1, "Arcane Signet")],
+    );
+    let mut runner = start(sc, P0);
+    for _ in 0..40 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::OptionalEffectChoice { .. } => {
+                runner
+                    .act(GameAction::DecideOptionalEffect { accept: true })
+                    .expect("accept the may");
+            }
+            WaitingFor::EffectZoneChoice { cards: offered, .. } => {
+                return (offered, cards[0], cards[2]);
+            }
+            WaitingFor::DeclareAttackers { .. } => {
+                runner
+                    .act(GameAction::DeclareAttackers {
+                        attacks: vec![],
+                        bands: vec![],
+                    })
+                    .expect("declare no attackers");
+            }
+            _ => {
+                runner.act(GameAction::PassPriority).expect("pass priority");
+            }
+        }
+    }
+    panic!("the end-step choice never surfaced");
+}
+
+#[test]
+fn v17_an_artifact_card_in_your_graveyard_offers_the_whole_shared_pile() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    let (offered, mine, theirs) = cogwork_offer(dandan());
+    assert!(offered.contains(&mine), "reach: P0's own artifact");
+    assert!(offered.contains(&theirs), "the pile is P0's graveyard");
+}
+
+#[test]
+fn v17_an_artifact_card_in_your_graveyard_in_standard_offers_only_your_own() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    let (offered, mine, theirs) = cogwork_offer(FormatConfig::standard());
+    assert!(offered.contains(&mine), "reach");
+    assert!(!offered.contains(&theirs));
+}
+
+// ---------------------------------------------------------------------------
+// V18: zone named by the quantity's `from`, not the filter (Relic Retriever)
+// ---------------------------------------------------------------------------
+
+/// P0 casts `spell` over a graveyard holding one Grizzly Bears owned by `pile_owner` while
+/// controlling Relic Retriever; returns the Bears and P0's Treasure count after the end step.
+/// `targeted` spells are aimed at the Bears.
+fn retriever_run(
+    format: FormatConfig,
+    spell: &str,
+    targeted: bool,
+    pile_owner: PlayerId,
+) -> (GameRunner, ObjectId, usize) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario(format);
+    sc.add_real_card(P0, "Relic Retriever", Zone::Battlefield, db);
+    let spell = sc.add_real_card(P0, spell, Zone::Hand, db);
+    let bears = stage(
+        &mut sc,
+        db,
+        Zone::Graveyard,
+        &[(pile_owner, "Grizzly Bears")],
+    )[0];
+    let mut runner = start(sc, P0);
+    if targeted {
+        runner.cast(spell).target_object(bears).resolve();
+    } else {
+        runner.cast(spell).resolve();
+    }
+    for _ in 0..60 {
+        let state = runner.state();
+        if state.phase == Phase::End && state.stack.is_empty() {
+            break;
+        }
+        match state.waiting_for.clone() {
+            WaitingFor::DeclareAttackers { .. } => {
+                runner
+                    .act(GameAction::DeclareAttackers {
+                        attacks: vec![],
+                        bands: vec![],
+                    })
+                    .expect("declare no attackers");
+            }
+            _ => {
+                runner.act(GameAction::PassPriority).expect("pass priority");
+            }
+        }
+    }
+    let state = runner.state();
+    let treasures = state
+        .battlefield
+        .iter()
+        .filter(|id| state.objects[id].name == "Treasure")
+        .count();
+    (runner, bears, treasures)
+}
+
+#[test]
+fn v18_a_card_leaving_the_shared_graveyard_left_your_graveyard() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    let (runner, bears, treasures) = retriever_run(dandan(), "Regrowth", true, P1);
+    assert_eq!(
+        runner.state().objects[&bears].zone,
+        Zone::Hand,
+        "reach: the other seat's card left the pile"
+    );
+    assert_eq!(
+        treasures, 1,
+        "it left every seat's graveyard, P0's included"
+    );
+
+    let (_, _, treasures) = retriever_run(dandan(), "Regrowth", true, P0);
+    assert_eq!(treasures, 1, "paired: P0's own card");
+}
+
+#[test]
+fn v18_in_standard_only_your_own_graveyard_counts() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    let (_, _, treasures) = retriever_run(FormatConfig::standard(), "Regrowth", true, P0);
+    assert_eq!(treasures, 1, "reach: the trigger fires for P0's own card");
+
+    let (runner, bears, treasures) =
+        retriever_run(FormatConfig::standard(), "Release to Memory", false, P1);
+    assert_eq!(
+        runner.state().objects[&bears].zone,
+        Zone::Exile,
+        "reach: the opponent's card left the opponent's graveyard"
+    );
+    assert_eq!(treasures, 0);
+}

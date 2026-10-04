@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::arithmetic::{u32_to_i32_saturating, usize_to_i32_saturating};
 use crate::game::filter::{
-    matches_target_filter, matches_target_filter_on_attack_declaration_record,
+    claim_scan_zones, matches_target_filter, matches_target_filter_on_attack_declaration_record,
     matches_target_filter_on_counter_added_record, matches_target_filter_on_damage_record_source,
     matches_target_filter_on_zone_change_record, player_matches_target_filter_in_state,
     shared_quality_characteristic_reads, spell_record_matches_filter,
@@ -6052,22 +6052,25 @@ fn resolve_ref(
         }
         // CR 400.7 + CR 700.4: Count zone-change snapshots from this turn
         // using last-known characteristics for the moved object.
-        QuantityRef::ZoneChangeCountThisTurn { from, to, filter } => usize_to_i32_saturating(
-            state
-                .zone_changes_this_turn
-                .iter()
-                .filter(|record| {
-                    from.is_none_or(|zone| record.from_zone == Some(zone))
-                        && to.is_none_or(|zone| record.to_zone == zone)
-                        && matches_target_filter_on_zone_change_record(
-                            state,
-                            record,
-                            filter,
-                            &filter_ctx,
-                        )
-                })
-                .count(),
-        ),
+        QuantityRef::ZoneChangeCountThisTurn { from, to, filter } => {
+            let filter = &claim_scan_zones(filter.clone(), from.as_slice());
+            usize_to_i32_saturating(
+                state
+                    .zone_changes_this_turn
+                    .iter()
+                    .filter(|record| {
+                        from.is_none_or(|zone| record.from_zone == Some(zone))
+                            && to.is_none_or(|zone| record.to_zone == zone)
+                            && matches_target_filter_on_zone_change_record(
+                                state,
+                                record,
+                                filter,
+                                &filter_ctx,
+                            )
+                    })
+                    .count(),
+            )
+        }
         // CR 400.7 + CR 603.10a: Reduce `property` over this turn's matching
         // zone-change snapshots. Mirrors ZoneChangeCountThisTurn's population scan
         // but sums/maxes/mins the per-record P/T/MV (CR 208.1 / CR 202.3) instead
@@ -6079,6 +6082,7 @@ fn resolve_ref(
             function,
             property,
         } => {
+            let filter = &claim_scan_zones(filter.clone(), from.as_slice());
             let vals = state
                 .zone_changes_this_turn
                 .iter()

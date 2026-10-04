@@ -439,6 +439,7 @@ fn resolution_zone_candidates(
         ability,
         filter_controller,
     );
+    let target_filter = &crate::game::filter::claim_scan_zones(target_filter.clone(), scan_zones);
     state
         .objects
         .iter()
@@ -2027,7 +2028,10 @@ pub fn resolve_all(
 
     let filter_controller =
         crate::game::effects::controller_for_relative_filter(state, ability, &target_filter);
-    let target_filter = owner_scoped_nonbattlefield_mass_filter(target_filter, &origin_zones);
+    let target_filter = crate::game::filter::claim_scan_zones(
+        owner_scoped_nonbattlefield_mass_filter(target_filter, &origin_zones),
+        &origin_zones,
+    );
 
     // Use a permissive default filter if the effect's target is None
     let effective_filter = if matches!(target_filter, crate::types::ability::TargetFilter::None) {
