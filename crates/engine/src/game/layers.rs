@@ -6496,7 +6496,7 @@ fn gather_ring_emblem_continuous_effects(
     }
 }
 
-fn for_each_static_effect_source(
+pub(crate) fn for_each_static_effect_source(
     state: &GameState,
     mut visit: impl FnMut(&GameState, &crate::game::game_object::GameObject),
 ) {
@@ -10146,7 +10146,6 @@ mod tests {
     /// CR 201.5a: the predicate is true exactly for grant bodies that name their granter.
     #[test]
     fn granting_object_reference_decides_the_stamp() {
-        use crate::game::scenario::{GameScenario, P0};
         let grants = |body: &str| {
             let mut scenario = GameScenario::new();
             let granter = scenario
@@ -10189,9 +10188,6 @@ mod tests {
 
     #[test]
     fn stamp_granter_fills_every_node_and_keeps_an_existing_stamp() {
-        use crate::types::ability::{
-            AbilityDefinition, AbilityKind, Effect, ReplacementDefinition,
-        };
         let granter = ObjectIncarnationRef::of(ObjectId(5), 1);
         let earlier = ObjectIncarnationRef::of(ObjectId(9), 4);
         let destroy_granter = || Effect::Destroy {
@@ -10346,8 +10342,8 @@ mod tests {
         CommanderOwnership, Comparator, ContinuousModification, ControllerRef, CountScope,
         DamageChannel, DamageKindFilter, Duration, Effect, FilterProp, ManaProduction, ObjectScope,
         PlayerFilter, PlayerRelation, PlayerScope, PtStat, PtValueScope, QuantityExpr, QuantityRef,
-        SacrificeCost, StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
-        TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
+        ReplacementDefinition, SacrificeCost, StaticCondition, StaticDefinition, TargetFilter,
+        TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::counter::{CounterMatch, CounterType};

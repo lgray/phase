@@ -762,6 +762,76 @@ fn castability_follows_two_swamps_through_a_filter_land_payment() {
     assert!(state.pending_cast.is_none());
 }
 
+/// CR 601.2g + CR 605.3b: The producer -> filter-land routes a priority probe
+/// memoizes are spell-independent, so one probe must answer every cost the
+/// same way the uncached witness does, whichever cost explores the route tree
+/// first and whether a later query is served from the memo or resumes it.
+#[test]
+fn priority_probe_filter_land_route_memo_matches_the_uncached_witness() {
+    let mut state = setup_game_at_main_phase();
+    let spell =
+        create_generic_creature_in_hand(&mut state, 9_030, PlayerId(0), "Route Memo Stand-In", 0);
+    for name in ["First Swamp", "Second Swamp"] {
+        create_tap_mana_source(
+            &mut state,
+            name,
+            ManaProduction::Fixed {
+                colors: vec![ManaColor::Black],
+                contribution: ManaContribution::Base,
+            },
+        );
+    }
+    create_black_red_filter_land(&mut state, 9_031);
+    let colored = |shards: Vec<ManaCostShard>| ManaCost::Cost { shards, generic: 0 };
+    // Two Swamps plus a filter land net three mana: {B}{B}{R} is payable only
+    // through the filter-land route, {B}{B}{R}{R} is not payable at all.
+    let payable = colored(vec![
+        ManaCostShard::Black,
+        ManaCostShard::Black,
+        ManaCostShard::Red,
+    ]);
+    let unpayable = colored(vec![
+        ManaCostShard::Black,
+        ManaCostShard::Black,
+        ManaCostShard::Red,
+        ManaCostShard::Red,
+    ]);
+    assert!(can_feasibly_pay_mana_cost(
+        &state,
+        PlayerId(0),
+        Some(spell),
+        &payable
+    ));
+    assert!(!can_feasibly_pay_mana_cost(
+        &state,
+        PlayerId(0),
+        Some(spell),
+        &unpayable
+    ));
+
+    let feasible_with = |probe: &PriorityCastProbe, cost: &ManaCost| {
+        can_feasibly_pay_mana_cost_with_probe(
+            probe.state(),
+            PlayerId(0),
+            Some(spell),
+            cost,
+            Some(probe),
+        )
+    };
+
+    // Exhaust the route tree first, then answer from the memo.
+    let exhausted = PriorityCastProbe::new(&state, PlayerId(0));
+    assert!(!feasible_with(&exhausted, &unpayable));
+    assert!(feasible_with(&exhausted, &payable));
+    assert!(!feasible_with(&exhausted, &unpayable));
+
+    // Stop early on a payable cost, then resume the walk for an unpayable one.
+    let resumed = PriorityCastProbe::new(&state, PlayerId(0));
+    assert!(feasible_with(&resumed, &payable));
+    assert!(!feasible_with(&resumed, &unpayable));
+    assert!(feasible_with(&resumed, &payable));
+}
+
 #[test]
 fn castability_follows_a_manual_nonland_producer_through_a_filter_land_payment() {
     let mut state = setup_game_at_main_phase();
@@ -19787,6 +19857,10 @@ fn delve_exiles_graveyard_card_for_generic() {
     )
     .expect("delving a graveyard card is legal");
 
+    // CR 601.2h: selecting pays nothing; the card leaves with the total cost.
+    assert_eq!(state.objects.get(&gy).unwrap().zone, Zone::Graveyard);
+
+    apply_as_current(&mut state, GameAction::PassPriority).expect("commit the payment");
     // CR 702.66a: the delved card is exiled.
     assert_eq!(
         state.objects.get(&gy).unwrap().zone,
@@ -19822,6 +19896,7 @@ fn delve_records_exiled_with_casting_spell() {
         },
     )
     .expect("delving a graveyard card is legal");
+    apply_as_current(&mut state, GameAction::PassPriority).expect("commit the payment");
 
     assert!(
         state
@@ -19833,7 +19908,7 @@ fn delve_records_exiled_with_casting_spell() {
 }
 
 #[test]
-fn delve_cancel_cast_returns_exiled_cards_to_graveyard() {
+fn delve_cancel_cast_leaves_selected_cards_in_graveyard() {
     use super::super::engine::apply_as_current;
     let mut state = setup_game_at_main_phase();
     let obj_id = make_delve_spell(&mut state);
@@ -24171,6 +24246,47 @@ fn cancel_cast_uses_stamped_convoked_creatures_when_pending_snapshot_is_empty() 
         .convoked_creatures
         .is_empty());
     assert!(state.players[0].mana_pool.mana.is_empty());
+}
+
+#[test]
+fn terminal_cancel_with_fresh_pending_cast_drops_delve_markers() {
+    let mut state = setup_game_at_main_phase();
+    let fuel = create_object(
+        &mut state,
+        CardId(71),
+        PlayerId(0),
+        "Delve Fuel".to_string(),
+        Zone::Graveyard,
+    );
+    let spell = create_object(
+        &mut state,
+        CardId(72),
+        PlayerId(0),
+        "Delve Spell".to_string(),
+        Zone::Hand,
+    );
+    state.players[0]
+        .mana_pool
+        .add(ManaUnit::convoke_payment(ManaType::Colorless, fuel));
+    let pending = PendingCast::new(
+        spell,
+        CardId(72),
+        ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            spell,
+            PlayerId(0),
+        ),
+        ManaCost::generic(1),
+    );
+
+    handle_cancel_cast(&mut state, &pending, &mut Vec::new());
+
+    assert!(state.players[0].mana_pool.mana.is_empty());
+    assert_eq!(state.objects[&fuel].zone, Zone::Graveyard);
 }
 
 #[test]

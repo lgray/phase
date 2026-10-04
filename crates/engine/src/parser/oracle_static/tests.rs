@@ -15535,6 +15535,67 @@ fn persistent_exile_play_permission_evendo_sacrificed_permanent_gate() {
     );
 }
 
+/// CR 607.2a + CR 609.4b: "the exiled card" names the pool the card's own
+/// trigger exiled into (Null Summoner), the same pool as "cards exiled with ~".
+/// The threshold gate and the any-type concession ride the permission.
+#[test]
+fn persistent_exile_cast_permission_the_exiled_card_null_summoner() {
+    let card_text = "When this creature enters, if you cast it, target opponent reveals their hand. You choose a nonland card from it. Exile that card.\nThreshold — As long as there are seven or more cards in your graveyard, you may cast the exiled card, and mana of any type can be spent to cast that spell.";
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        card_text,
+        "Null Summoner",
+        &[],
+        &["Creature".to_string()],
+        &["Phyrexian".to_string(), "Wizard".to_string()],
+    );
+    let [def] = parsed.statics.as_slice() else {
+        panic!("expected exactly one static, got {:?}", parsed.statics);
+    };
+    assert_eq!(
+        def.mode,
+        StaticMode::ExileCastPermission {
+            frequency: CastFrequency::Unlimited,
+            play_mode: CardPlayMode::Cast,
+            cost: ExileCastCost::PayNormalCost,
+            pool: ExileCardPool::Persistent,
+            timing: ExileCastTiming::AnyTime,
+            mana_spend_permission: Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor),
+            grants_flash: false,
+            extra_cost: None,
+            enters_with_counter: None,
+            grantee: crate::types::statics::ExileCastGrantee::SourceController,
+        }
+    );
+    assert!(
+        matches!(
+            def.condition,
+            Some(StaticCondition::QuantityComparison {
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 7 },
+                ..
+            })
+        ),
+        "the threshold gate must stay on the permission, got {:?}",
+        def.condition
+    );
+
+    // The plural names the same pool.
+    assert!(matches!(
+        parse_static_line("You may cast the exiled cards.").map(|d| d.mode),
+        Some(StaticMode::ExileCastPermission {
+            pool: ExileCardPool::Persistent,
+            ..
+        })
+    ));
+
+    // A possessive object is not the pool: the "'s copy" tail is left over and
+    // the permission declines (green on main too, where the anchor was absent).
+    assert!(!matches!(
+        parse_static_line("You may cast the exiled card's copy.").map(|d| d.mode),
+        Some(StaticMode::ExileCastPermission { .. })
+    ));
+}
+
 /// CR 601.3f + CR 305.1: The "you may look at cards exiled with ~, and you may
 /// play lands and cast spells from among those cards." variant lowers to the
 /// same persistent Play permission, but without the your-turn timing gate.

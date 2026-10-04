@@ -2446,9 +2446,10 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
         // `last_effect_excess_amount` / `last_effect_counts_by_player` /
         // `clause_minimum_snapshot`, the last read FIRST (`game/quantity.rs`,
         // the `PreviousEffectAmount` arm) as the CR 608.2h frozen value. All are
-        // cleared at depth-0 chain entry (`resolve_ability_chain`); `apply()`
-        // additionally clears `last_effect_count` and the per-player table at
-        // every player action. None is a triggering-event characteristic
+        // cleared at depth-0 chain entry (`resolve_ability_chain`);
+        // `stack::resolve_top` additionally clears `last_effect_count` and the
+        // per-player table as each stack object begins resolving, and `apply()`
+        // at every player action. None is a triggering-event characteristic
         // (event), a board-scoped mutable aggregate a sibling copy could mutate
         // (sibling), or a player-level per-turn projected resource (projected).
         // Destructured without `..` so a future field forces re-classification.

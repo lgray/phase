@@ -3222,8 +3222,6 @@ mod tests {
     /// from the incarnation stamped on the paying ability, and not from a new object.
     #[test]
     fn remove_counter_cost_naming_the_granter_pays_from_the_stamped_granter() {
-        use crate::types::ability::{AbilityDefinition, AbilityKind};
-        use crate::types::identifiers::ObjectIncarnationRef;
         let charge = CounterType::Generic("charge".to_string());
         for stale in [false, true] {
             let mut scenario = GameScenario::new();

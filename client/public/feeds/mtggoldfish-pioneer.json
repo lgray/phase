@@ -5,7 +5,7 @@
   "icon": "G",
   "format": "pioneer",
   "version": 1,
-  "updated": "2026-10-02T00:00:00Z",
+  "updated": "2026-10-04T00:00:00Z",
   "source": "https://www.mtggoldfish.com/metagame/pioneer",
   "decks": [
     {
@@ -680,129 +680,6 @@
       ]
     },
     {
-      "name": "Rakdos Sacrifice",
-      "author": "MTGGoldfish",
-      "colors": [
-        "B",
-        "R"
-      ],
-      "tags": [
-        "metagame"
-      ],
-      "main": [
-        {
-          "count": 1,
-          "name": "Takenuma, Abandoned Mire"
-        },
-        {
-          "count": 1,
-          "name": "Sokenzan, Crucible of Defiance"
-        },
-        {
-          "count": 4,
-          "name": "Fatal Push"
-        },
-        {
-          "count": 4,
-          "name": "Bloodtithe Harvester"
-        },
-        {
-          "count": 4,
-          "name": "Cauldron Familiar"
-        },
-        {
-          "count": 3,
-          "name": "Claim the Firstborn"
-        },
-        {
-          "count": 4,
-          "name": "Deadly Dispute"
-        },
-        {
-          "count": 2,
-          "name": "Den of the Bugbear"
-        },
-        {
-          "count": 4,
-          "name": "Eyetwitch"
-        },
-        {
-          "count": 4,
-          "name": "Fable of the Mirror-Breaker"
-        },
-        {
-          "count": 4,
-          "name": "Blood Crypt"
-        },
-        {
-          "count": 4,
-          "name": "Mayhem Devil"
-        },
-        {
-          "count": 1,
-          "name": "Scavenger's Talent"
-        },
-        {
-          "count": 3,
-          "name": "Blightstep Pathway"
-        },
-        {
-          "count": 4,
-          "name": "Blazemire Verge"
-        },
-        {
-          "count": 3,
-          "name": "Swamp"
-        },
-        {
-          "count": 4,
-          "name": "Blackcleave Cliffs"
-        },
-        {
-          "count": 2,
-          "name": "The Sackville-Bagginses"
-        },
-        {
-          "count": 4,
-          "name": "Witch's Oven"
-        }
-      ],
-      "sideboard": [
-        {
-          "count": 1,
-          "name": "Abandon Attachments"
-        },
-        {
-          "count": 1,
-          "name": "Decorum Dissertation"
-        },
-        {
-          "count": 1,
-          "name": "Firebending Lesson"
-        },
-        {
-          "count": 4,
-          "name": "Thoughtseize"
-        },
-        {
-          "count": 2,
-          "name": "Go Blank"
-        },
-        {
-          "count": 1,
-          "name": "Ozai's Cruelty"
-        },
-        {
-          "count": 3,
-          "name": "The Legend of Roku"
-        },
-        {
-          "count": 2,
-          "name": "Ghost Vacuum"
-        }
-      ]
-    },
-    {
       "name": "Izzet Phoenix",
       "author": "MTGGoldfish",
       "colors": [
@@ -918,6 +795,133 @@
         {
           "count": 2,
           "name": "Brazen Borrower"
+        }
+      ]
+    },
+    {
+      "name": "Rakdos Sacrifice",
+      "author": "MTGGoldfish",
+      "colors": [
+        "B",
+        "R"
+      ],
+      "tags": [
+        "metagame"
+      ],
+      "main": [
+        {
+          "count": 4,
+          "name": "Fatal Push"
+        },
+        {
+          "count": 4,
+          "name": "Blazemire Verge"
+        },
+        {
+          "count": 3,
+          "name": "Blightstep Pathway"
+        },
+        {
+          "count": 4,
+          "name": "Blood Crypt"
+        },
+        {
+          "count": 4,
+          "name": "Bloodtithe Harvester"
+        },
+        {
+          "count": 4,
+          "name": "Cauldron Familiar"
+        },
+        {
+          "count": 3,
+          "name": "Claim the Firstborn"
+        },
+        {
+          "count": 4,
+          "name": "Deadly Dispute"
+        },
+        {
+          "count": 2,
+          "name": "Den of the Bugbear"
+        },
+        {
+          "count": 4,
+          "name": "Eyetwitch"
+        },
+        {
+          "count": 4,
+          "name": "Fable of the Mirror-Breaker"
+        },
+        {
+          "count": 4,
+          "name": "Blackcleave Cliffs"
+        },
+        {
+          "count": 4,
+          "name": "Mayhem Devil"
+        },
+        {
+          "count": 1,
+          "name": "Scavenger's Talent"
+        },
+        {
+          "count": 1,
+          "name": "Sokenzan, Crucible of Defiance"
+        },
+        {
+          "count": 3,
+          "name": "Swamp"
+        },
+        {
+          "count": 1,
+          "name": "Takenuma, Abandoned Mire"
+        },
+        {
+          "count": 2,
+          "name": "The Sackville-Bagginses"
+        },
+        {
+          "count": 4,
+          "name": "Witch's Oven"
+        }
+      ],
+      "sideboard": [
+        {
+          "count": 1,
+          "name": "Abandon Attachments"
+        },
+        {
+          "count": 4,
+          "name": "Thoughtseize"
+        },
+        {
+          "count": 1,
+          "name": "Firebending Lesson"
+        },
+        {
+          "count": 2,
+          "name": "Ghost Vacuum"
+        },
+        {
+          "count": 1,
+          "name": "Go Blank"
+        },
+        {
+          "count": 1,
+          "name": "Ozai's Cruelty"
+        },
+        {
+          "count": 1,
+          "name": "Ruinous Waterbending"
+        },
+        {
+          "count": 3,
+          "name": "The Legend of Roku"
+        },
+        {
+          "count": 1,
+          "name": "Decorum Dissertation"
         }
       ]
     },
@@ -1149,15 +1153,15 @@
         },
         {
           "count": 4,
+          "name": "Thoughtseize"
+        },
+        {
+          "count": 4,
           "name": "Fatal Push"
         },
         {
           "count": 4,
           "name": "Gloomlake Verge"
-        },
-        {
-          "count": 4,
-          "name": "Thoughtseize"
         }
       ],
       "sideboard": [

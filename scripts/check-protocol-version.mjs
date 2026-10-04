@@ -44,7 +44,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v101 adds `ActivatedAbilityKind::Mana` (mana-ability activations now emit
 // `GameEvent::AbilityActivated`), the event's `departed_source_lki`, and
 // `AbilityActivationRecord.source_zone`.
-// v103 carries the CR 201.5a granter binding (ObjectScope + granting_object).
+// v107 carries the CR 201.5a granter binding (ObjectScope + granting_object).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -79,12 +79,17 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +29: the v100 additional-phase segment and recipient parse bump.
 // +30: the v101 mana-ability activation kind and departed-source LKI.
 // +31: v102 adds the tagged SharedCardTypes quantity.
-// +32: the v103 CR 201.5a granter binding.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 32;
+// +32: v103 removes FormatConfig.allow_experimental_dungeons for the format-derived dungeon pool.
+// +33: v104 moves delve fuel to total-cost payment (PendingCast.delved_cards,
+// the FinalizeDelvedCast completion; DelveManaPayment removed).
+// +34: v105 adds the nominal base quantity to deferred mana-source selections.
+// +35: v106 adds exact replacement-choice preferences and remembered response actions.
+// +36: the v107 CR 201.5a granter binding.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 36;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
-const EXPECTED_LOBBY_PROTOCOL_VERSION = 14;
+const EXPECTED_LOBBY_PROTOCOL_VERSION = 15;
 // The capability FLOOR for correlated tournament settlement — a different kind
 // of number from the other version constants here, and the reason it is pinned
 // separately. Those track a surface's current version; this one is frozen at the
@@ -136,8 +141,12 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // recipient.
 // +29: wire 83 moves with full-game v101 for the mana-ability activation kind.
 // +30: wire 84 moves with full-game v102 for SharedCardTypes.
-// +31: wire 85 moves with full-game v103 for the CR 201.5a granter binding.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 31;
+// +31: wire 85 moves with full-game v103 for the format-derived dungeon pool.
+// +32: wire 86 moves with full-game v104 for the delve payment state shape.
+// +33: wire 87 moves with full-game v105 for deferred mana-source quantities.
+// +34: wire 88 moves with full-game v106 for remembered replacement choices.
+// +35: wire 89 moves with full-game v107 for the CR 201.5a granter binding.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 35;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

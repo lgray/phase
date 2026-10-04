@@ -4750,7 +4750,12 @@ fn pay_mana_sub_cost(
         .map_err(|_| {
             EngineError::ActionNotAllowed("Mana pool changed before payment applied".to_string())
         })?;
-    state.layers_dirty.mark_full();
+    // CR 106.4 + CR 613.1: Spending pool mana only changes continuous effects
+    // that read unspent mana (Omnath's "+1/+1 for each unspent green mana");
+    // re-evaluate layers only when one exists, like every other pool spend.
+    if mana_payment::has_unspent_mana_continuous_effects(state) {
+        state.layers_dirty.mark_full();
+    }
     // CR 605.3b: The player's mana pool mutation is the public signal; no
     // dedicated event exists for ability mana payments. The pool-diff is
     // surfaced via the standard state-update machinery.
@@ -12455,6 +12460,77 @@ mod tests {
 
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 0);
+    }
+
+    /// Pay Sunken Ruins' `{U/B}` sub-cost with floating black mana and report
+    /// whether the pool spend forced a full layer re-evaluation.
+    fn filter_land_pool_payment_dirties_layers(with_unspent_mana_static: bool) -> bool {
+        let mut state = GameState::new_two_player(42);
+        if with_unspent_mana_static {
+            // Omnath class: "+1/+1 for each unspent green mana you have".
+            let omnath_static = StaticDefinition::continuous().modifications(vec![
+                ContinuousModification::AddDynamicPower {
+                    value: QuantityExpr::Ref {
+                        qty: QuantityRef::UnspentMana {
+                            color: Some(ManaColor::Green),
+                        },
+                    },
+                },
+            ]);
+            let omnath = create_object(
+                &mut state,
+                CardId(9_901),
+                PlayerId(0),
+                "Unspent Mana Static".to_string(),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&omnath).unwrap();
+            obj.static_definitions.push(omnath_static.clone());
+            obj.base_static_definitions = Arc::new(vec![omnath_static]);
+        }
+        let (ruins, ability) = setup_sunken_ruins(&mut state);
+        seed_pool_with(&mut state, PlayerId(0), ManaType::Blue, 1);
+        seed_pool_with(&mut state, PlayerId(0), ManaType::Black, 1);
+
+        let mut events = Vec::new();
+        let WaitingFor::PayManaAbilityMana {
+            options,
+            pending_mana_ability,
+            ..
+        } = activate_mana_ability(
+            &mut state,
+            ruins,
+            PlayerId(0),
+            0,
+            &ability,
+            &mut events,
+            ManaAbilityResume::Priority,
+            None,
+        )
+        .unwrap()
+        else {
+            panic!("ambiguous {{U/B}} payment must prompt");
+        };
+        crate::game::layers::flush_layers(&mut state);
+        crate::game::perf_counters::reset();
+        handle_pay_mana_ability_mana(
+            &mut state,
+            &options,
+            &pending_mana_ability,
+            &[ManaType::Black],
+            &mut events,
+        )
+        .unwrap();
+        crate::game::perf_counters::snapshot().layers_full_eval > 0
+    }
+
+    #[test]
+    fn filter_land_pool_payment_dirties_layers_only_for_unspent_mana_effects() {
+        // CR 106.4 + CR 613.1: Spending floating mana changes characteristics
+        // only through effects that read unspent mana, so a full layer
+        // re-evaluation is owed exactly when one is on the battlefield.
+        assert!(filter_land_pool_payment_dirties_layers(true));
+        assert!(!filter_land_pool_payment_dirties_layers(false));
     }
 
     #[test]

@@ -60,12 +60,39 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 103 — CR 201.5a granter binding: `ObjectScope::GrantingObject` and
+/// 107 — CR 201.5a granter binding: `ObjectScope::GrantingObject` and
 ///      `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
 ///      `PlayerFilter::GrantingObjectCaster`, plus the `granting_object` stamp on
 ///      `AbilityDefinition`, `TriggerDefinition`, `StaticDefinition`,
 ///      `ReplacementDefinition`, `SpellContext` and `TriggerSourceContext`.
-///      A v102 peer cannot deserialize the new state. P2P moves to wire 85.
+///      A v106 peer cannot deserialize the new state. P2P moves to wire 89.
+/// 106 — Full-game replacement-choice preferences, exact source/definition
+///       identities, remembered ordering/optional actions, and prompt
+///       eligibility metadata. P2P moves in lockstep (wire 88); lobby-only
+///       messages are unchanged.
+/// 105 — Deferred mana-source selections carry a nominal base quantity.
+///      Older peers cannot decode the new tagged output payload; the full-game
+///      handshake rejects the mismatch. P2P moves in lockstep (wire 87).
+///      Lobby-only messages are unchanged.
+/// 104 — `PendingCast` gains `delved_cards` (serde default, skipped when
+///      empty), `PendingCostMoveResume::DelveManaPayment` is removed and
+///      `PendingCostMoveCompletion::FinalizeDelvedCast` is added: delve fuel
+///      is exiled when the total cost is paid (#9400). A PARSE bump: a v103
+///      peer cannot decode a parked delve commit, and a v104 peer cannot
+///      decode the removed variant. Full-game peers and P2P move in lockstep
+///      (wire 86); lobby carriers hold no `GameState` and are unchanged.
+/// 103 — `FormatConfig` loses `allow_experimental_dungeons`: the per-session
+///      capability flag behind the experimental dungeon pool is gone, and
+///      the pool is now format-derived — Baldur's Gate Wilderness joins the
+///      normal venture options and the initiative choice in exactly the
+///      formats whose own rules positively restrict nothing (Freeform and
+///      Freeform Commander). A CAPABILITY bump like 90's own: the key is
+///      simply absent now, and neither side sets `deny_unknown_fields`, so
+///      a v102 peer still parses the frame — but it would fail the pool
+///      closed and run a freeform game without the Wilderness the rules now
+///      require, a silent rule change no parse error would catch.
+///      Full-game peers and P2P move in lockstep (wire 85); lobby carriers
+///      move too, see `LOBBY_PROTOCOL_VERSION` 15.
 /// 102 — `QuantityRef::SharedCardTypes` adds a tagged quantity carried in
 ///      serialized ability definitions and saved GameState. Readers without
 ///      this tag cannot deserialize that quantity. P2P moves in lockstep
@@ -855,7 +882,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 103;
+pub const PROTOCOL_VERSION: u32 = 107;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -882,6 +909,18 @@ pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
 /// broker's window went disjoint from the shipped client's. This constant is
 /// the fix — it moves only for reasons the lobby can actually observe.
 ///
+/// 15 — `FormatConfig` loses `allow_experimental_dungeons` (see
+///      `PROTOCOL_VERSION` 103 for the full entry): the per-session toggle is
+///      gone and the Baldur's Gate Wilderness pool is format-derived. Same
+///      three carriers as 13: `CreateGameWithSettings` on
+///      [`LobbyClientMessage`] (client → broker), `JoinTargetInfo` and
+///      `PeerInfo` on [`LobbyServerMessage`] (broker → client). Like 13, a
+///      CAPABILITY bump, not a parse bump — neither side sets
+///      `deny_unknown_fields`, so a v14 frame carrying the stale key and a
+///      v15 frame omitting it both deserialize cleanly — so
+///      [`MIN_SUPPORTED_LOBBY_PROTOCOL`] does NOT move: a v14 client keeps
+///      creating and joining games whose Wilderness pool the format, not a
+///      flag, now decides.
 /// 14 — `PairingView.report_gate` (broker → client, on `TournamentUpdate` and
 ///      the `GetTournament` reply) gains a `ReportGate::Hosted` arm — the "a
 ///      field's type changed" trigger, a serialized enum's value space growing.
@@ -1146,7 +1185,7 @@ pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
 ///     that direction can reject — into one legible handshake refusal.
 /// 1 — Initial lobby-owned version, covering the `LobbyClientMessage` /
 ///     `LobbyServerMessage` variant sets, unchanged since #1880.
-pub const LOBBY_PROTOCOL_VERSION: u32 = 14;
+pub const LOBBY_PROTOCOL_VERSION: u32 = 15;
 
 /// Lowest [`LOBBY_PROTOCOL_VERSION`] a broker accepts from a client.
 ///
@@ -2057,7 +2096,7 @@ mod tests {
     /// rather than silently re-coupling the lobby to full-game churn.
     #[test]
     fn lobby_protocol_version_is_independent_of_the_full_game_one() {
-        assert_eq!(LOBBY_PROTOCOL_VERSION, 14);
+        assert_eq!(LOBBY_PROTOCOL_VERSION, 15);
         // Deliberately still 2, not 12: every lobby version past 2 keeps this
         // floor's guarantee — that a version-2 client can still parse every
         // frame it already understands. Individually: 3 is additive in both
@@ -2075,7 +2114,9 @@ mod tests {
         // broker → client field that a consumer which does not name it
         // ignores; 13 adds an optional, defaulted `FormatConfig` field on
         // the same three carriers as 2, ignored the same way; 14 adds a hosted
-        // report gate that has no production emitter yet. See the constant's
+        // report gate that has no production emitter yet; 15 removes that
+        // `FormatConfig` field again, which parses cleanly in both directions
+        // because neither side sets `deny_unknown_fields`. See the constant's
         // own changelog.
         assert_eq!(MIN_SUPPORTED_LOBBY_PROTOCOL, 2);
         assert_ne!(
@@ -2096,12 +2137,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 103);
+        assert_eq!(PROTOCOL_VERSION, 107);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 102);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 106);
     }
 
     #[test]
@@ -2263,9 +2304,11 @@ mod tests {
     /// step: no field, no variant, moved ahead of new `GameFormat` variants;
     /// see that constant's own `/// 11` entry. Version 12 extends the chain by
     /// the same rule, as does version 13 (`FormatConfig` gains the optional
-    /// `allow_experimental_dungeons` flag) and version 14 (`Hosted` report gate).
+    /// `allow_experimental_dungeons` flag), version 14 (`Hosted` report gate),
+    /// and version 15 (`FormatConfig` loses that flag; the Wilderness pool is
+    /// format-derived).
     #[test]
-    fn the_tournament_chain_spans_lobby_versions_four_through_fourteen() {
+    fn the_tournament_chain_spans_lobby_versions_four_through_fifteen() {
         const PRE_TOURNAMENT_LOBBY_VERSION: u32 = 3;
         const TOURNAMENT_SET_LOBBY_VERSION: u32 = PRE_TOURNAMENT_LOBBY_VERSION + 1;
         const CORRELATED_SETTLEMENT_LOBBY_VERSION: u32 = TOURNAMENT_SET_LOBBY_VERSION + 1;
@@ -2287,7 +2330,13 @@ mod tests {
         // Adds a `Hosted` arm to `PairingView.report_gate` (a serialized enum's
         // value space grows) — the "a field's type changed" trigger.
         const HOSTED_MATCH_LOBBY_VERSION: u32 = EXPERIMENTAL_DUNGEONS_LOBBY_VERSION + 1;
-        assert_eq!(LOBBY_PROTOCOL_VERSION, HOSTED_MATCH_LOBBY_VERSION);
+        // Removes `allow_experimental_dungeons` from `FormatConfig`; the
+        // Baldur's Gate Wilderness pool is format-derived instead.
+        const FORMAT_DERIVED_DUNGEON_POOL_LOBBY_VERSION: u32 = HOSTED_MATCH_LOBBY_VERSION + 1;
+        assert_eq!(
+            LOBBY_PROTOCOL_VERSION,
+            FORMAT_DERIVED_DUNGEON_POOL_LOBBY_VERSION
+        );
     }
 
     /// The guard for [`is_known_lobby_tag`], which is a string `matches!` and
@@ -3106,10 +3155,9 @@ mod tests {
     /// `Option<FormatConfig>` field's own `Deserialize` impl), not just as an
     /// engine-crate unit test. A single-field-varied host-configured
     /// Commander config (max_players, starting_life,
-    /// commander_damage_threshold, allow_experimental_dungeons each on its
-    /// own, then all four together) must reach `ParsedFrame::Message`; a
-    /// value outside the format's own registry range must still route to
-    /// `ParsedFrame::Malformed`.
+    /// commander_damage_threshold each on its own, then all three together)
+    /// must reach `ParsedFrame::Message`; a value outside the format's own
+    /// registry range must still route to `ParsedFrame::Malformed`.
     fn create_game_with_settings_frame(format_config: FormatConfig) -> String {
         let message = LobbyClientMessage::CreateGameWithSettings {
             deck: DeckData::default(),
@@ -3162,17 +3210,6 @@ mod tests {
             "a Commander config with only commander_damage_threshold varied to Some(30) must \
              parse as a message"
         );
-
-        let mut experimental_varied = FormatConfig::commander();
-        experimental_varied.allow_experimental_dungeons = true;
-        assert!(
-            matches!(
-                parse_lobby_client_message(&create_game_with_settings_frame(experimental_varied)),
-                ParsedFrame::Message(_)
-            ),
-            "a Commander config with only allow_experimental_dungeons varied to true must parse \
-             as a message"
-        );
     }
 
     #[test]
@@ -3190,18 +3227,17 @@ mod tests {
     }
 
     #[test]
-    fn wire_frame_admits_all_four_host_choices_combined_and_rejects_an_out_of_range_value() {
+    fn wire_frame_admits_all_three_host_choices_combined_and_rejects_an_out_of_range_value() {
         let mut combined = FormatConfig::commander();
         combined.max_players = 2;
         combined.starting_life = 25;
         combined.commander_damage_threshold = Some(30);
-        combined.allow_experimental_dungeons = true;
         assert!(
             matches!(
                 parse_lobby_client_message(&create_game_with_settings_frame(combined)),
                 ParsedFrame::Message(_)
             ),
-            "the realistic combined case (all four host choices at once) must parse as a message"
+            "the realistic combined case (all three host choices at once) must parse as a message"
         );
 
         let mut out_of_range = FormatConfig::commander();

@@ -1370,11 +1370,10 @@ fn deliver_batch(
             ZoneMoveTerminalResult::NeedsAuraAttachmentChoice => {
                 // CR 303.4f: an aura-host choice flows through
                 // `WaitingFor::ReturnAsAuraTarget`, not the replacement-choice
-                // resume path. No batch flow targets a battlefield aura entry
-                // today (mill destinations are graveyard/exile/hand; mass bounce
-                // returns to hand/library), so this arm is unreachable for the
-                // current batch callers; stop and stash the tail so a future
-                // battlefield-entry batch does not silently drop its remainder.
+                // resume path. Battlefield-entry batches (reveal-until kept
+                // delivery, Dig mass put-all) reach this arm when an entering
+                // Aura needs a host; stop and stash the tail so the remainder is
+                // delivered when the attachment choice resumes the batch.
                 //
                 // The stashed tail IS drained correctly on resume: the
                 // `ReturnAsAuraTarget` handler (engine.rs:3608-3611) and its

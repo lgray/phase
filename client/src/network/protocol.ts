@@ -106,10 +106,24 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
- *  85 — GameState carries the CR 201.5a granter binding (ObjectScope
+ *  89 — GameState carries the CR 201.5a granter binding (ObjectScope
  *       GrantingObject / SpecificObject, TargetFilter GrantingObject.bound,
  *       PlayerFilter GrantingObjectCaster and the granting_object stamps).
- *       Bumped with full-game protocol 103 so first contact rejects the skew.
+ *       Bumped with full-game protocol 107 so first contact rejects the skew.
+ *  88 — GameState and game actions carry exact replacement-choice preferences,
+ *       remembered responses, and prompt eligibility metadata. Bumped with
+ *       full-game protocol 106.
+ *  87 — GameState and game actions carry the nominal quantity of a deferred
+ *       mana-source selection. Bumped with full-game protocol 105.
+ *  86 — game_setup and state_update carry GameState, whose PendingCast
+ *       gains delved_cards and whose pending cost-move resume swaps
+ *       DelveManaPayment for FinalizeDelvedCast (#9400). Bumped in lockstep
+ *       with full-game protocol 104.
+ *  85 — game_setup and state_update carry GameState, whose FormatConfig
+ *       loses allow_experimental_dungeons: the Wilderness pool is
+ *       format-derived now, so a v84 peer would fail it closed in freeform
+ *       games. First contact rejects the skew instead. Bumped in lockstep
+ *       with full-game protocol 103.
  *  84 — full-game protocol 102 adds the SharedCardTypes quantity tag in
  *       serialized ability definitions. Keep the existing P2P handshake in
  *       lockstep with full-game protocol 102.
@@ -531,7 +545,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 85 as const;
+export const WIRE_PROTOCOL_VERSION = 89 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {
