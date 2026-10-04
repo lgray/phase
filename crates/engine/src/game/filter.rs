@@ -1546,7 +1546,8 @@ fn effective_controller(
 }
 
 /// The zone whose shared-container player axis may collapse: one the filter names via
-/// `InZone`/`InAnyZone` or the caller claims, the battlefield never through `claimed`.
+/// `InZone`/`InAnyZone` or the caller claims. A battlefield resident has no shared container
+/// of its own, so it takes the first zone the caller claims (the origin it arrived from).
 fn claimed_shared_zone(
     properties: &[FilterProp],
     claimed: &[Zone],
@@ -1558,7 +1559,14 @@ fn claimed_shared_zone(
         FilterProp::InAnyZone { zones } => zones.contains(&zone),
         _ => false,
     });
-    (named || (zone != Zone::Battlefield && claimed.contains(&zone))).then_some(zone)
+    if named {
+        return Some(zone);
+    }
+    if zone == Zone::Battlefield {
+        claimed.iter().copied().find(|&z| z != Zone::Battlefield)
+    } else {
+        claimed.contains(&zone).then_some(zone)
+    }
 }
 
 /// CR 400.1 as modified by a shared-zone format: a player-axis comparison holds when it
@@ -19865,6 +19873,54 @@ mod dandan_axis_collapse_tests {
                 &[Zone::Graveyard]
             ),
             (OWNER_ONLY, OWNER_ONLY),
+            "a per-seat format has no shared container to read"
+        );
+    }
+
+    /// A battlefield entrant is read through the shared container of the zone it arrived from.
+    #[test]
+    fn a_claimed_origin_licenses_a_battlefield_resident_on_the_live_door() {
+        let mut state = dandan();
+        let entrant = creature(&mut state, Zone::Battlefield);
+        let pile_record = record(Some(Zone::Graveyard));
+        let by_controller = typed(Some(ControllerRef::You), vec![]);
+        let by_owner = typed(None, vec![owned(ControllerRef::You)]);
+        for filter in [&by_controller, &by_owner] {
+            assert_eq!(
+                claimed_admitted(&state, &pile_record, entrant, filter, &[Zone::Graveyard]).0,
+                BOTH,
+                "claimed pile origin"
+            );
+            for (claim, why) in [
+                (&[][..], "no claim"),
+                (&[Zone::Hand][..], "per-seat origin claimed"),
+                (&[Zone::Battlefield][..], "the battlefield is never claimed"),
+            ] {
+                assert_eq!(
+                    claimed_admitted(&state, &pile_record, entrant, filter, claim).0,
+                    OWNER_ONLY,
+                    "{why}"
+                );
+            }
+        }
+        let in_hand = creature(&mut state, Zone::Hand);
+        assert_eq!(
+            claimed_admitted(&state, &pile_record, in_hand, &by_owner, &[Zone::Graveyard]).0,
+            OWNER_ONLY,
+            "a non-battlefield object is licensed only by its own zone"
+        );
+        let mut per_seat = standard();
+        let standard_entrant = creature(&mut per_seat, Zone::Battlefield);
+        assert_eq!(
+            claimed_admitted(
+                &per_seat,
+                &pile_record,
+                standard_entrant,
+                &by_owner,
+                &[Zone::Graveyard]
+            )
+            .0,
+            OWNER_ONLY,
             "a per-seat format has no shared container to read"
         );
     }

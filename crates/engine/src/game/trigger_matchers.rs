@@ -1212,27 +1212,22 @@ fn zone_change_clause_matches(
         return false;
     }
     if let Some(filter) = valid_card {
-        let ctx = super::filter::FilterContext::from_trigger_source(source_context);
+        // CR 400.1: the zone the event left is the origin the trigger names, not a property
+        // of `valid_card`, so it is claimed for the shared-zone owner axis on both doors.
+        let origin_claim: &[Zone] = match (origin, from) {
+            (OriginConstraint::Equals(_) | OriginConstraint::OneOf(_), Some(zone))
+                if *zone != Zone::Battlefield =>
+            {
+                std::slice::from_ref(zone)
+            }
+            _ => &[],
+        };
+        let ctx = super::filter::FilterContext::from_trigger_source(source_context)
+            .with_claimed_zones(origin_claim);
         let matches = if *to == Zone::Battlefield && state.objects.contains_key(&record.object_id) {
             super::filter::matches_target_filter(state, record.object_id, filter, &ctx)
         } else {
-            // CR 400.1: the zone the record leaves is the origin the trigger names, not a
-            // property of `valid_card`, so it is claimed for the shared-zone owner axis.
-            let origin_zones: &[Zone] = match origin {
-                OriginConstraint::Equals(zone) if *zone != Zone::Battlefield => {
-                    std::slice::from_ref(zone)
-                }
-                OriginConstraint::OneOf(zones) => zones,
-                OriginConstraint::Equals(_)
-                | OriginConstraint::NotEquals(_)
-                | OriginConstraint::Any => &[],
-            };
-            super::filter::matches_target_filter_on_zone_change_record(
-                state,
-                record,
-                filter,
-                &ctx.with_claimed_zones(origin_zones),
-            )
+            super::filter::matches_target_filter_on_zone_change_record(state, record, filter, &ctx)
         };
         if !matches {
             return false;

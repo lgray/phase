@@ -628,10 +628,10 @@ fn detectives(format: FormatConfig, spell: &str, targeted: bool, pile_owner: Pla
     let (runner, bears) = pile_run(format, "Chalk Outline", spell, targeted, pile_owner);
     assert_eq!(
         runner.state().objects[&bears].zone,
-        if spell == "Regrowth" {
-            Zone::Hand
-        } else {
-            Zone::Exile
+        match spell {
+            "Regrowth" => Zone::Hand,
+            "Reanimate" => Zone::Battlefield,
+            _ => Zone::Exile,
         },
         "reach: the pile card left the graveyard"
     );
@@ -667,6 +667,39 @@ fn v19_in_standard_only_your_own_graveyard_triggers() {
     );
     assert_eq!(
         detectives(FormatConfig::standard(), "Release to Memory", false, P1),
+        0
+    );
+}
+
+#[test]
+fn v19_a_card_reanimated_from_the_shared_graveyard_left_your_graveyard() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        detectives(dandan(), "Reanimate", true, P0),
+        1,
+        "paired: P0's own card"
+    );
+    assert_eq!(
+        detectives(dandan(), "Reanimate", true, P1),
+        1,
+        "the pile is every seat's graveyard, P0's included"
+    );
+}
+
+#[test]
+fn v19_in_standard_only_your_own_graveyard_triggers_on_reanimation() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        detectives(FormatConfig::standard(), "Reanimate", true, P0),
+        1,
+        "reach: the trigger fires for P0's own card"
+    );
+    assert_eq!(
+        detectives(FormatConfig::standard(), "Reanimate", true, P1),
         0
     );
 }
