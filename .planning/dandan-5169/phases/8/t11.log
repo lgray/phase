@@ -1,0 +1,408 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.71s
+────────────
+ Nextest run ID 8e304e1c-3b99-41c4-afe5-cf6a7b233ad0 with nextest profile: default
+    Starting 48 tests across 1 binary (9262 tests skipped)
+       START [         ] ( 1/48) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+
+running 1 test
+test dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.97s
+
+        PASS [   1.985s] ( 1/48) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+       START [         ] ( 2/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+
+running 1 test
+test dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.92s
+
+        PASS [   1.939s] ( 2/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+       START [         ] ( 3/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+
+running 1 test
+test dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.95s
+
+        PASS [   1.969s] ( 3/48) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+       START [         ] ( 4/48) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+
+running 1 test
+PROBE true PlayerId(1) [] stack=[ObjectId(5), ObjectId(6)]
+PROBE true PlayerId(0) [] stack=[ObjectId(5), ObjectId(6)]
+PROBE false PlayerId(1) [] stack=[ObjectId(5), ObjectId(6)]
+test dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.99s
+
+        PASS [   2.009s] ( 4/48) phase-engine::integration dandan_read_sweep::v16_a_surveil_the_pile_replacement_may_move_leaves_the_counter_unanswered
+       START [         ] ( 5/48) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+
+running 1 test
+test dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.96s
+
+        PASS [   1.976s] ( 5/48) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+       START [         ] ( 6/48) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+
+running 1 test
+test dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.95s
+
+        PASS [   1.962s] ( 6/48) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+       START [         ] ( 7/48) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+
+running 1 test
+test dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.14s
+
+        PASS [   2.155s] ( 7/48) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+       START [         ] ( 8/48) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+
+running 1 test
+test dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.96s
+
+        PASS [   1.975s] ( 8/48) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+       START [         ] ( 9/48) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+
+running 1 test
+test dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.03s
+
+        PASS [   2.042s] ( 9/48) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+       START [         ] (10/48) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+
+running 1 test
+test dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.00s
+
+        PASS [   2.012s] (10/48) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+       START [         ] (11/48) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+
+running 1 test
+test dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.01s
+
+        PASS [   2.023s] (11/48) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+       START [         ] (12/48) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+
+running 1 test
+test dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.96s
+
+        PASS [   1.973s] (12/48) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+       START [         ] (13/48) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+
+running 1 test
+test dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.11s
+
+        PASS [   2.128s] (13/48) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+       START [         ] (14/48) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+
+running 1 test
+test dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.07s
+
+        PASS [   2.092s] (14/48) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+       START [         ] (15/48) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+
+running 1 test
+test dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.01s
+
+        PASS [   2.026s] (15/48) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+       START [         ] (16/48) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+
+running 1 test
+test dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.05s
+
+        PASS [   2.061s] (16/48) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+       START [         ] (17/48) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+
+running 1 test
+test dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.12s
+
+        PASS [   2.143s] (17/48) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+       START [         ] (18/48) phase-engine::integration dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+
+running 1 test
+test dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.22s
+
+        PASS [   2.237s] (18/48) phase-engine::integration dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+       START [         ] (19/48) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+
+running 1 test
+test dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.95s
+
+        PASS [   1.966s] (19/48) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+       START [         ] (20/48) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+
+running 1 test
+test dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 3.10s
+
+        PASS [   3.140s] (20/48) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+       START [         ] (21/48) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+
+running 1 test
+test dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.86s
+
+        PASS [   2.902s] (21/48) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+       START [         ] (22/48) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+
+running 1 test
+test dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.97s
+
+        PASS [   1.991s] (22/48) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+       START [         ] (23/48) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+
+running 1 test
+test dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.00s
+
+        PASS [   2.019s] (23/48) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+       START [         ] (24/48) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+
+running 1 test
+test dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.01s
+
+        PASS [   2.026s] (24/48) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+       START [         ] (25/48) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+
+running 1 test
+test dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.00s
+
+        PASS [   2.016s] (25/48) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+       START [         ] (26/48) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+
+running 1 test
+test dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.13s
+
+        PASS [   2.154s] (26/48) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+       START [         ] (27/48) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+
+running 1 test
+test dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.10s
+
+        PASS [   2.122s] (27/48) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+       START [         ] (28/48) phase-engine::integration dandan_read_sweep::v5_doomsday_searches_the_pile_library_and_graveyard
+
+running 1 test
+test dandan_read_sweep::v5_doomsday_searches_the_pile_library_and_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 1.94s
+
+        PASS [   1.952s] (28/48) phase-engine::integration dandan_read_sweep::v5_doomsday_searches_the_pile_library_and_graveyard
+       START [         ] (29/48) phase-engine::integration dandan_read_sweep::v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat
+
+running 1 test
+test dandan_read_sweep::v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.07s
+
+        PASS [   2.087s] (29/48) phase-engine::integration dandan_read_sweep::v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat
+       START [         ] (30/48) phase-engine::integration dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.05s
+
+        PASS [   2.066s] (30/48) phase-engine::integration dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+       START [         ] (31/48) phase-engine::integration dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.87s
+
+        PASS [   2.894s] (31/48) phase-engine::integration dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+       START [         ] (32/48) phase-engine::integration dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+
+running 1 test
+
+thread 'dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard' (959591) panicked at crates/engine/tests/integration/dandan_read_sweep.rs:1341:9:
+assertion `left == right` failed: true PlayerId(1): two cards cover collect evidence 10 from the pile graveyard
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard ... FAILED
+
+failures:
+
+failures:
+    dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.51s
+
+        FAIL [   2.523s] (32/48) phase-engine::integration dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+       START [         ] (33/48) phase-engine::integration dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.53s
+
+        PASS [   2.553s] (33/48) phase-engine::integration dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+       START [         ] (34/48) phase-engine::integration dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.65s
+
+        PASS [   2.674s] (34/48) phase-engine::integration dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard
+       START [         ] (35/48) phase-engine::integration dandan_read_sweep::v6_skullwinder_returns_the_chosen_opponents_card_from_the_pile
+
+running 1 test
+test dandan_read_sweep::v6_skullwinder_returns_the_chosen_opponents_card_from_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 3.10s
+
+        PASS [   3.120s] (35/48) phase-engine::integration dandan_read_sweep::v6_skullwinder_returns_the_chosen_opponents_card_from_the_pile
+       START [         ] (36/48) phase-engine::integration dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.39s
+
+        PASS [   2.408s] (36/48) phase-engine::integration dandan_read_sweep::v6_treetop_sentries_forages_from_the_pile_graveyard
+       START [         ] (37/48) phase-engine::integration dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.25s
+
+        PASS [   2.266s] (37/48) phase-engine::integration dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+       START [         ] (38/48) phase-engine::integration dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.32s
+
+        PASS [   2.345s] (38/48) phase-engine::integration dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+       START [         ] (39/48) phase-engine::integration dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom
+
+running 1 test
+test dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.18s
+
+        PASS [   2.196s] (39/48) phase-engine::integration dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom
+       START [         ] (40/48) phase-engine::integration dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+
+running 1 test
+test dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.19s
+
+        PASS [   2.211s] (40/48) phase-engine::integration dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+       START [         ] (41/48) phase-engine::integration dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top
+
+running 1 test
+test dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.18s
+
+        PASS [   2.202s] (41/48) phase-engine::integration dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top
+       START [         ] (42/48) phase-engine::integration dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type
+
+running 1 test
+test dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.16s
+
+        PASS [   2.191s] (42/48) phase-engine::integration dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type
+       START [         ] (43/48) phase-engine::integration dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+
+running 1 test
+test dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 2.19s
+
+        PASS [   2.211s] (43/48) phase-engine::integration dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+       START [         ] (44/48) phase-engine::integration dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+
+running 1 test
+test dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 3.48s
+
+        PASS [   3.516s] (44/48) phase-engine::integration dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+       START [         ] (45/48) phase-engine::integration dandan_read_sweep::v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+
+running 1 test
+test dandan_read_sweep::v9_deep_spawn_pays_its_upkeep_mill_from_the_pile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 3.95s
+
+        PASS [   4.013s] (45/48) phase-engine::integration dandan_read_sweep::v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+       START [         ] (46/48) phase-engine::integration dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard
+
+running 1 test
+test dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 3.93s
+
+        PASS [   3.981s] (46/48) phase-engine::integration dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard
+       START [         ] (47/48) phase-engine::integration dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size
+
+running 1 test
+test dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 4.59s
+
+        PASS [   4.635s] (47/48) phase-engine::integration dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size
+       START [         ] (48/48) phase-engine::integration dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay
+
+running 1 test
+test dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9309 filtered out; finished in 4.16s
+
+        PASS [   4.200s] (48/48) phase-engine::integration dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay
+────────────
+     Summary [ 115.300s] 48 tests run: 47 passed, 1 failed, 9262 skipped
+        FAIL [   2.523s] (32/48) phase-engine::integration dandan_read_sweep::v6_conspiracy_unraveler_collects_evidence_from_the_pile_graveyard
+error: test run failed
+done rc=100

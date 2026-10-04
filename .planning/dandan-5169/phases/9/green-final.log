@@ -1,0 +1,38 @@
+ crates/engine/src/ai_support/candidates.rs         |   8 +-
+ crates/engine/src/ai_support/mod.rs                |   2 +-
+ crates/engine/src/analysis/resource.rs             | 139 +++++++++++++++++++--
+ crates/engine/src/types/game_state.rs              |  34 +++++
+ .../tests/fixtures/integration_cards.json.gz       | Bin 2995365 -> 2994999 bytes
+ crates/engine/tests/integration/main.rs            |   1 +
+ crates/phase-ai/src/combo/detection.rs             |  37 +++++-
+ crates/phase-ai/src/determinize.rs                 |  87 ++++++++++---
+ crates/phase-ai/src/planner/mod.rs                 |  40 ++++++
+ .../phase-ai/src/policies/fetch_land_patience.rs   |  62 ++++++++-
+ crates/phase-llm/src/render/game.rs                |  69 +++++++++-
+ 11 files changed, 440 insertions(+), 39 deletions(-)
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling phase-llm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11m 16s
+────────────
+ Nextest run ID f028c171-162a-4610-aca7-5eee2fc49b75 with nextest profile: default
+    Starting 15 tests across 35 binaries (35524 tests skipped)
+        PASS [   0.076s] ( 1/15) phase-engine analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+        PASS [   0.135s] ( 2/15) phase-engine analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+        PASS [   0.141s] ( 3/15) phase-engine types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once
+        PASS [   0.160s] ( 4/15) phase-engine analysis::resource::tests::certificate_residual_compares_stored_containers
+        PASS [   0.434s] ( 5/15) phase-ai combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+        PASS [   0.436s] ( 6/15) phase-ai determinize::tests::unknown_slots_in_a_per_seat_format_stay_per_seat
+        PASS [   0.445s] ( 7/15) phase-ai policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+        PASS [   0.448s] ( 8/15) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+        PASS [   0.450s] ( 9/15) phase-ai planner::tests::position_hashes_fold_the_shared_pile_once
+        PASS [   0.498s] (10/15) phase-llm render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter
+        PASS [   8.941s] (11/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        PASS [   9.391s] (12/15) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+        PASS [  10.191s] (13/15) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+        PASS [  12.231s] (14/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+        PASS [  12.692s] (15/15) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+────────────
+     Summary [  12.797s] 15 tests run: 15 passed, 35524 skipped
+done rc=0
+restored

@@ -1,0 +1,22 @@
+    Checking phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+error: useless use of `vec!`
+   --> crates/engine/tests/integration/dandan_read_sweep.rs:675:13
+    |
+675 |             &vec![(other(actor), "Capture of Jingzhou"); 6],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use a slice directly: `&[(other(actor), "Capture of Jingzhou"); 6]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+    = note: `-D clippy::useless-vec` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_vec)]`
+
+error: useless use of `vec!`
+    --> crates/engine/tests/integration/dandan_read_sweep.rs:1236:45
+     |
+1236 |         stage(&mut sc, db, Zone::Graveyard, &vec![(target, "Island"); 3]);
+     |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use a slice directly: `&[(target, "Island"); 3]`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+
+error: could not compile `phase-engine` (test "integration") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+done rc=101

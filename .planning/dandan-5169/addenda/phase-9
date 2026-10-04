@@ -1,0 +1,1 @@
+Decision: S2b-2 read sweep analysis/ai_support/cross-crate. Scope adds crates/engine/tests/fixtures/integration_cards.json.gz (fixture regeneration for the cards the new test file names; standing class). Every charter decision stands. 2026-10-03.

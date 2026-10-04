@@ -1,0 +1,9 @@
+== REVERT effects/rad_counters.rs
+error: failed
+FAIL v4_mirelurk_queen_rad_counters_mill_the_pile
+Summary skipped
+== REVERT effects/put_on_top.rs
+error: failed
+FAIL v8_crown_of_convergence_offers_the_pile_to_bottom
+Summary skipped
+done rc=0

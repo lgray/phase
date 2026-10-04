@@ -1,0 +1,46 @@
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde v1.0.228
+   Compiling tracing v0.1.44
+   Compiling percent-encoding v2.3.2
+   Compiling yoke v0.8.2
+   Compiling form_urlencoded v1.2.2
+   Compiling zerovec v0.11.6
+   Compiling zerotrie v0.2.4
+   Compiling smallvec v1.15.1
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling im v15.1.0
+   Compiling insta v1.47.2
+   Compiling toml_edit v0.22.27
+   Compiling tracing-subscriber v0.3.23
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.2.0
+   Compiling icu_locale_core v2.2.0
+   Compiling icu_provider v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling toml v0.8.23
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling url v2.5.8
+   Compiling phase-ai v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling phase-llm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20m 39s
+────────────
+ Nextest run ID 5bf55a6a-9f83-4410-9b84-c7b16178358b with nextest profile: default
+    Starting 10 tests across 3 binaries (25910 tests skipped)
+        PASS [   0.036s] ( 1/10) phase-engine analysis::resource::tests::certificate_residual_compares_stored_containers
+        PASS [   0.052s] ( 2/10) phase-engine types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once
+        PASS [   0.051s] ( 3/10) phase-engine analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+        PASS [   0.067s] ( 4/10) phase-engine analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+        PASS [   0.090s] ( 5/10) phase-ai planner::tests::position_hashes_fold_the_shared_pile_once
+        PASS [   0.090s] ( 6/10) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+        PASS [   0.090s] ( 7/10) phase-ai combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+        PASS [   0.092s] ( 8/10) phase-ai policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+        PASS [   0.093s] ( 9/10) phase-ai determinize::tests::unknown_slots_in_a_per_seat_format_stay_per_seat
+        PASS [   0.104s] (10/10) phase-llm render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter
+────────────
+     Summary [   0.134s] 10 tests run: 10 passed, 25910 skipped
+done rc=0

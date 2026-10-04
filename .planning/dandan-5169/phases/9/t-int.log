@@ -1,0 +1,54 @@
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 25s
+────────────
+ Nextest run ID 02052ac1-93f4-406e-8547-24fd6e95ee47 with nextest profile: default
+    Starting 5 tests across 1 binary (9308 tests skipped)
+        PASS [   4.126s] (1/5) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+        FAIL [   4.431s] (2/5) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 4.37s
+
+  stderr ───
+
+    thread 'dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard' (1664770) panicked at crates/engine/tests/integration/dandan_analysis_ai_support_reads.rs:159:17:
+    assertion `left == right` failed: true PlayerId(1) mana=false
+      left: []
+     right: [CostNotPayableNow]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   4.727s] (3/5) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 4.69s
+
+  stderr ───
+
+    thread 'dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile' (1664767) panicked at crates/engine/src/game/scenario.rs:2558:14:
+    SpellCast commit must be accepted by the engine: ActionNotAllowed("Cannot pay mana cost")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.833s] (4/5) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        PASS [   4.882s] (5/5) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+────────────
+     Summary [   4.903s] 5 tests run: 3 passed, 2 failed, 9308 skipped
+        FAIL [   4.431s] (2/5) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+        FAIL [   4.727s] (3/5) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+error: test run failed
+done rc=100

@@ -1,0 +1,99 @@
+ crates/engine/src/ai_support/candidates.rs         |   8 +-
+ crates/engine/src/ai_support/mod.rs                |   2 +-
+ crates/engine/src/analysis/resource.rs             | 139 +++++++++++++++++++--
+ crates/engine/src/types/game_state.rs              |  34 +++++
+ .../tests/fixtures/integration_cards.json.gz       | Bin 2995365 -> 2994999 bytes
+ crates/engine/tests/integration/main.rs            |   1 +
+ crates/phase-ai/src/combo/detection.rs             |  37 +++++-
+ crates/phase-ai/src/determinize.rs                 |  87 ++++++++++---
+ crates/phase-ai/src/planner/mod.rs                 |  40 ++++++
+ .../phase-ai/src/policies/fetch_land_patience.rs   |  62 ++++++++-
+ crates/phase-llm/src/render/game.rs                |  69 +++++++++-
+ 11 files changed, 440 insertions(+), 39 deletions(-)
+   Compiling phase-ai v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling phase-llm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.52s
+────────────
+ Nextest run ID ca8b68c9-b3f4-4ea3-91cd-31429957226d with nextest profile: default
+    Starting 15 tests across 35 binaries (35524 tests skipped)
+        PASS [   0.073s] ( 1/15) phase-llm render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter
+        PASS [   0.080s] ( 2/15) phase-ai policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+        PASS [   0.082s] ( 3/15) phase-ai determinize::tests::unknown_slots_in_a_per_seat_format_stay_per_seat
+        PASS [   0.092s] ( 4/15) phase-ai planner::tests::position_hashes_fold_the_shared_pile_once
+        FAIL [   0.101s] ( 5/15) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+  stdout ───
+
+    running 1 test
+    test determinize::tests::unknown_slots_select_the_shared_pile_by_storage ... FAILED
+
+    failures:
+
+    failures:
+        determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2648 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'determinize::tests::unknown_slots_select_the_shared_pile_by_storage' (1874694) panicked at crates/phase-ai/src/determinize.rs:639:13:
+    assertion `left == right` failed: PlayerId(1): hand then the whole pile, minus tokens and known cards
+      left: [ObjectId(5), ObjectId(1)]
+     right: [ObjectId(5), ObjectId(1), ObjectId(2)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.119s] ( 6/15) phase-engine analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+        FAIL [   0.119s] ( 7/15) phase-engine types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once
+  stdout ───
+
+    running 1 test
+    test types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once ... FAILED
+
+    failures:
+
+    failures:
+        types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23166 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once' (1874699) panicked at crates/engine/src/types/game_state.rs:44038:9:
+    assertion `left == right` failed: the pile is folded once under the shared axis
+      left: 15449515221434191334
+     right: 10271544985918801181
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.115s] ( 8/15) phase-ai combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+        PASS [   0.111s] ( 9/15) phase-engine analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+        FAIL [   0.112s] (10/15) phase-engine analysis::resource::tests::certificate_residual_compares_stored_containers
+  stdout ───
+
+    running 1 test
+    test analysis::resource::tests::certificate_residual_compares_stored_containers ... FAILED
+
+    failures:
+
+    failures:
+        analysis::resource::tests::certificate_residual_compares_stored_containers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23166 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'analysis::resource::tests::certificate_residual_compares_stored_containers' (1874701) panicked at crates/engine/src/analysis/resource.rs:34678:9:
+    a stray id in the non-holder container refuses
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   8.064s] (11/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        PASS [   8.198s] (12/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+        PASS [  12.091s] (13/15) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+        PASS [  13.386s] (14/15) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+        PASS [  13.539s] (15/15) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+────────────
+     Summary [  13.701s] 15 tests run: 12 passed, 3 failed, 35524 skipped
+        FAIL [   0.101s] ( 5/15) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+        FAIL [   0.119s] ( 7/15) phase-engine types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once
+        FAIL [   0.112s] (10/15) phase-engine analysis::resource::tests::certificate_residual_compares_stored_containers
+error: test run failed
+done rc=100
+restored

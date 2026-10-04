@@ -1,0 +1,273 @@
+ crates/engine/src/ai_support/candidates.rs         |   4 +-
+ crates/engine/src/analysis/resource.rs             | 135 ++++++++++++++++++++-
+ crates/engine/src/types/game_state.rs              |  34 ++++++
+ .../tests/fixtures/integration_cards.json.gz       | Bin 2995365 -> 2994999 bytes
+ crates/engine/tests/integration/main.rs            |   1 +
+ crates/phase-ai/src/combo/detection.rs             |  33 +++++
+ crates/phase-ai/src/determinize.rs                 |  87 ++++++++++---
+ crates/phase-ai/src/planner/mod.rs                 |  40 ++++++
+ .../phase-ai/src/policies/fetch_land_patience.rs   |  58 ++++++++-
+ crates/phase-llm/src/render/game.rs                |  61 ++++++++++
+ 10 files changed, 427 insertions(+), 26 deletions(-)
+   Compiling phase-engine v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: unused variable: `state`
+    --> crates/engine/src/analysis/resource.rs:1930:9
+     |
+1930 |         state: &GameState,
+     |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling phase-ai v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling phase-llm v0.101.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+warning: `phase-engine` (lib) generated 1 warning (run `cargo fix --lib -p phase-engine` to apply 1 suggestion)
+warning: `phase-engine` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 59s
+────────────
+ Nextest run ID f54b0d8e-72b9-4ef8-b48e-3996fc97ab3c with nextest profile: default
+    Starting 15 tests across 35 binaries (35524 tests skipped)
+        PASS [   0.042s] ( 1/15) phase-ai determinize::tests::unknown_slots_in_a_per_seat_format_stay_per_seat
+        PASS [   0.043s] ( 2/15) phase-ai planner::tests::position_hashes_fold_the_shared_pile_once
+        FAIL [   0.047s] ( 3/15) phase-ai policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+  stdout ───
+
+    running 1 test
+    test policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat ... FAILED
+
+    failures:
+
+    failures:
+        policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2648 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat' (1783740) panicked at crates/phase-ai/src/policies/fetch_land_patience.rs:698:17:
+    assertion `left == right` failed: PlayerId(1) stocked=true
+      left: false
+     right: true
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.054s] ( 4/15) phase-engine analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+  stdout ───
+
+    running 1 test
+    test analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat ... FAILED
+
+    failures:
+
+    failures:
+        analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23166 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat' (1783742) panicked at crates/engine/src/analysis/resource.rs:34589:9:
+    assertion `left == right` failed
+      left: 0
+     right: 5
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.052s] ( 5/15) phase-engine analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+  stdout ───
+
+    running 1 test
+    test analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat ... FAILED
+
+    failures:
+
+    failures:
+        analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23166 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat' (1783743) panicked at crates/engine/src/analysis/resource.rs:34626:9:
+    assertion `left == right` failed
+      left: Some(0)
+     right: Some(5)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.055s] ( 6/15) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+  stdout ───
+
+    running 1 test
+    test determinize::tests::unknown_slots_select_the_shared_pile_by_storage ... FAILED
+
+    failures:
+
+    failures:
+        determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2648 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'determinize::tests::unknown_slots_select_the_shared_pile_by_storage' (1783739) panicked at crates/phase-ai/src/determinize.rs:639:13:
+    assertion `left == right` failed: PlayerId(1): hand then the whole pile, minus tokens and known cards
+      left: [ObjectId(5)]
+     right: [ObjectId(5), ObjectId(1), ObjectId(2)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.055s] ( 7/15) phase-engine analysis::resource::tests::certificate_residual_compares_stored_containers
+        FAIL [   0.042s] ( 8/15) phase-ai combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+  stdout ───
+
+    running 1 test
+    test combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat ... FAILED
+
+    failures:
+
+    failures:
+        combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2648 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat' (1783735) panicked at crates/phase-ai/src/combo/detection.rs:330:13:
+    PlayerId(1)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.055s] ( 9/15) phase-engine types::game_state::shared_zone_storage_tests::loop_fingerprint_folds_the_shared_pile_once
+        FAIL [   0.187s] (10/15) phase-llm render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter
+  stdout ───
+
+    running 1 test
+    test render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter ... FAILED
+
+    failures:
+
+    failures:
+        render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 103 filtered out; finished in 0.16s
+
+  stderr ───
+
+    thread 'render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter' (1783737) panicked at crates/phase-llm/src/render/game.rs:660:13:
+    PlayerId(1) shared=true: === POSITION ===
+    You are Player 1.
+    Turn 0 — Untap — active player: Player 0
+    Priority: Player 0
+
+    --- PLAYERS ---
+    Player 0: 20 life, 0 cards in hand, 3 cards in library, 1 cards in graveyard, 0 lands played this turn
+    You: 20 life, 0 cards in hand, 0 cards in library, 0 cards in graveyard, 0 lands played this turn
+
+    --- STACK ---
+    (empty)
+
+    --- BATTLEFIELD ---
+    (empty)
+
+    --- YOUR HAND ---
+    (empty)
+
+    --- GRAVEYARDS ---
+    Player 0: Memory Lapse
+    You: (empty)
+
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.616s] (11/15) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+  stdout ───
+
+    running 1 test
+    test dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 3.53s
+
+  stderr ───
+
+    thread 'dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard' (1783750) panicked at crates/engine/tests/integration/dandan_analysis_ai_support_reads.rs:166:17:
+    assertion `left == right` failed: true PlayerId(1) mana=false
+      left: []
+     right: [CostNotPayableNow]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   4.092s] (12/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        FAIL [   4.107s] (13/15) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 4.05s
+
+  stderr ───
+
+    thread 'dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile' (1783747) panicked at crates/engine/tests/integration/dandan_analysis_ai_support_reads.rs:203:9:
+    assertion `left == right` failed: true PlayerId(1): the pile's names, not the fallback
+      left: ["Control Magic"]
+     right: ["Island", "Brainstorm"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   4.271s] (14/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 4.17s
+
+  stderr ───
+
+    thread 'dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile' (1783752) panicked at crates/engine/tests/integration/dandan_analysis_ai_support_reads.rs:92:13:
+    assertion `left == right` failed: true PlayerId(1) mana=true: offered exactly when payable
+      left: false
+     right: true
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   4.387s] (15/15) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9312 filtered out; finished in 4.29s
+
+  stderr ───
+
+    thread 'dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile' (1783753) panicked at crates/engine/tests/integration/dandan_analysis_ai_support_reads.rs:131:9:
+    true PlayerId(1): the exile-from-graveyard mana ability (CR 605.1a)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   4.452s] 15 tests run: 5 passed, 10 failed, 35524 skipped
+        FAIL [   0.047s] ( 3/15) phase-ai policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+        FAIL [   0.054s] ( 4/15) phase-engine analysis::resource::tests::snapshot_reads_the_shared_pile_for_every_seat
+        FAIL [   0.052s] ( 5/15) phase-engine analysis::resource::tests::seat_headroom_reads_the_shared_pile_for_every_seat
+        FAIL [   0.055s] ( 6/15) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+        FAIL [   0.042s] ( 8/15) phase-ai combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+        FAIL [   0.187s] (10/15) phase-llm render::game::tests::the_shared_pile_renders_for_every_seat_through_the_viewer_filter
+        FAIL [   3.616s] (11/15) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+        FAIL [   4.107s] (13/15) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+        FAIL [   4.271s] (14/15) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+        FAIL [   4.387s] (15/15) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+error: test run failed
+done rc=100
+restored

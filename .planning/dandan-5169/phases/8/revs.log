@@ -1,0 +1,44 @@
+== REVERT casting.rs
+error: failed
+FAIL v6_organ_grinder_exiles_three_from_the_pile_graveyard
+FAIL v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+FAIL v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+FAIL v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+FAIL v8_future_sight_reveals_and_casts_from_the_pile_top
+Summary skipped
+== REVERT derived.rs
+error: failed
+FAIL v8_future_sight_reveals_and_casts_from_the_pile_top
+Summary skipped
+== REVERT effects/scry.rs
+error: failed
+FAIL v4_opt_scries_the_pile_front_and_bottoms_it
+Summary skipped
+== REVERT effects/reveal_top.rs
+error: failed
+FAIL v4_sifter_wurm_reveals_the_pile_top_for_life
+FAIL v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat
+Summary skipped
+== REVERT cost_payability.rs
+error: failed
+FAIL v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+FAIL v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+FAIL v6_organ_grinder_exiles_three_from_the_pile_graveyard
+FAIL v9_manakin_and_millikin_mills_the_pile_to_pay
+Summary skipped
+== REVERT costs.rs
+Summary skipped
+== REVERT casting_costs.rs
+error: failed
+FAIL v6_organ_grinder_exiles_three_from_the_pile_graveyard
+Summary skipped
+== REVERT effects/ripple.rs
+error: failed
+FAIL v4_thrumming_stone_ripples_the_pile_front_four
+Summary skipped
+== REVERT effects/clash.rs
+error: failed
+FAIL v15_clash_reveals_the_pile_top_for_either_seat
+FAIL v15_clash_reveals_the_top_card_of_a_standard_library
+Summary skipped
+done rc=0

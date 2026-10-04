@@ -28,3 +28,6 @@
 
 ## Phase 7 — S5 best-of-three ceiling (be100055ae, e0d9cb1208; plus merge-fix c1cf96cf63 before it)
 - `engine.rs::match_type_within` clamps the requested match type to `format.best_of_three_ceiling()` in `start_game_with_starting_player` (Dandan Bo3 plays as Bo1); `engine-wasm` exports the ceiling (+ regenerated `engine_wasm.d.ts`), `engineRuntime.ts` wrapper, `HostSetup.tsx` exports `useBestOfThreeCeiling`/`cappedMatchType` and caps the selector, `GameSetupPage.tsx` caps it too. Tests: `best_of_three_ceiling.rs` (R1–R6), HostSetup H1–H5, GameSetupPage G1/G2 (Momir counterpart). No protocol bump.
+
+## Phase 8 — S2b-1 read sweep game/ (616148f99e, e35fc63606)
+- All 45 `game/` production sites that read a seat's library/graveyard container now resolve through the Phase 6 accessors (classes S, S-guard, L, Q, W, R); shared helper `non_owner_graveyard_ids` (casting.rs) for the L-class scan; `candidate_player_scalar` GraveyardSize arm moved to `candidate_player_scalar_with_state`; clash reads the top via `.front()`; `morph.rs` owner clause; `quantity.rs` `TargetZoneCardCount`. Residual raw reads = the plan's F and D sets plus Phase 6's kept-raw lines (24 lines at the candidate). Tests: `dandan_read_sweep.rs` (46 rows) + inline `dandan_read_sweep_tests` modules. Quantity arms Krosan Avenger / Kindly Stranger remain Phase 10; AI/analysis sites are Phase 9/17.

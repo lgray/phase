@@ -1,0 +1,44 @@
+== BASE costs unit
+        FAIL [   0.035s] (1/1) phase-engine game::costs::dandan_read_sweep_tests::payer_scoped_graveyard_exile_reads_the_shared_pile
+     Summary [   0.076s] 1 test run: 0 passed, 1 failed, 23160 skipped
+        FAIL [   0.035s] (1/1) phase-engine game::costs::dandan_read_sweep_tests::payer_scoped_graveyard_exile_reads_the_shared_pile
+error: test run failed
+== REVERT B1: effects/cascade.rs effects/dig.rs effects/discover.rs effects/exile_from_top_until.rs effects/exile_top.rs effects/explore.rs effects/forage.rs effects/heist.rs effects/manifest_dread.rs effects/mill.rs
+error: failed
+FAIL v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+FAIL v2_mental_note_mills_the_top_two_of_the_pile
+FAIL v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+FAIL v4_ethrimik_manifests_dread_from_the_pile_top_two
+FAIL v4_grave_expectations_heists_the_opponents_pile
+FAIL v4_merfolk_branchwalker_explores_the_pile_top
+FAIL v4_mirelurk_queen_rad_counters_mill_the_pile
+FAIL v4_reckless_impulse_exiles_the_pile_top_two
+FAIL v4_sweet_gum_recluse_cascades_from_the_pile
+FAIL v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+FAIL v4_trumpeting_carnosaur_discovers_from_the_pile
+FAIL v6_corpseberry_cultivator_forages_from_the_pile_graveyard
+FAIL v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+FAIL v9_manakin_and_millikin_mills_the_pile_to_pay
+Summary skipped
+== REVERT B2: effects/put_on_top.rs effects/rad_counters.rs effects/reveal_until.rs effects/search_library.rs effects/seek.rs effects/separate_piles.rs effects/surveil.rs effects/collect_evidence.rs effects/choose_from_zone.rs effects/stack_reach.rs
+error: failed
+FAIL v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+FAIL v4_fact_or_fiction_reveals_the_pile_front_five
+FAIL v4_nesting_instinct_seeks_the_land_in_the_pile
+FAIL v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+FAIL v5_doomsday_searches_the_pile_library_and_graveyard
+FAIL v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+FAIL v6_kylox_voltstrider_collects_evidence_from_the_pile_graveyard
+FAIL v8_crown_of_convergence_offers_the_pile_to_bottom
+Summary skipped
+== REVERT B3: derived_views.rs engine_debug.rs layers.rs morph.rs quantity.rs replacement.rs visibility.rs engine_payment_choices.rs restrictions.rs
+error: failed
+FAIL v10_debug_views_and_mill_act_on_the_pile
+FAIL v8_mul_daya_channelers_reads_the_pile_top_type
+FAIL v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+FAIL v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+FAIL v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+FAIL v9_eldritch_pact_counts_the_targets_pile_graveyard
+FAIL v9_golgari_thug_dredge_reads_the_pile_size
+Summary skipped
+done rc=0
