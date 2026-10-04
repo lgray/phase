@@ -2793,7 +2793,7 @@ pub fn activation_block_reasons(state: &GameState) -> HashMap<ObjectId, Vec<Abil
     // CR 108.4 + CR 108.4a: same owner fallback as the hand loop above, and
     // CR 404.1 puts a card into its OWNER's graveyard. Mirrors the graveyard
     // loop in `candidates.rs`.
-    for &obj_id in &state.players[player.0 as usize].graveyard {
+    for &obj_id in state.graveyard_of(player) {
         if let Some(obj) = state.objects.get(&obj_id) {
             if obj.owner == player {
                 collect_activation_block_reasons_for_object(

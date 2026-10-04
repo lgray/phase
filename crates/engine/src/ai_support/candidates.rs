@@ -4516,7 +4516,7 @@ pub(crate) fn priority_actions_with_probe(
         // from there. CR 602.2: to activate an ability is to put it onto the
         // stack and pay its costs. Non-mana graveyard activations are
         // suppressed by split second, mirroring the hand-zone loop above.
-        for &obj_id in &state.players[player.0 as usize].graveyard {
+        for &obj_id in state.graveyard_of(player) {
             if let Some(obj) = state.objects.get(&obj_id) {
                 // CR 602.2: "Only an object's controller (or its owner, if it
                 // doesn't have a controller) can activate its activated ability
@@ -4599,7 +4599,7 @@ pub(crate) fn priority_actions_with_probe(
     // loop lives outside the split-second-gated block — mirroring the hand-zone
     // mana loop above. CR 602.2: only the object's controller — or its owner,
     // when it has none (CR 108.4 + CR 108.4a) — can activate it.
-    for &obj_id in &state.players[player.0 as usize].graveyard {
+    for &obj_id in state.graveyard_of(player) {
         if let Some(obj) = state.objects.get(&obj_id) {
             if obj.owner == player {
                 for (i, ability_def) in obj.abilities.iter().enumerate() {
@@ -5589,10 +5589,10 @@ fn card_name_choice_candidates(
         for &id in controller.hand.iter() {
             push_object_name(id);
         }
-        for &id in controller.graveyard.iter() {
+        for &id in state.graveyard_of(controller.id) {
             push_object_name(id);
         }
-        for &id in controller.library.iter() {
+        for &id in state.library_of(controller.id) {
             push_object_name(id);
         }
     }

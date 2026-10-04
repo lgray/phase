@@ -44022,4 +44022,38 @@ mod shared_zone_storage_tests {
             assert_eq!(stamp.library_owner, expected);
         }
     }
+
+    /// `loop_fingerprint` hashes the stored containers, so a pile in the canonical
+    /// seat's container is folded once under the shared-zone axis, not once per seat.
+    #[test]
+    fn loop_fingerprint_folds_the_shared_pile_once() {
+        let mut standard = GameState::new_two_player(5);
+        for id in [1, 2, 3] {
+            standard.players[0].library.push_back(ObjectId(id));
+        }
+        standard.players[0].graveyard.push_back(ObjectId(4));
+        let mut dandan = standard.clone();
+        dandan.format_config = FormatConfig::dandan();
+
+        assert_eq!(
+            standard.loop_fingerprint(),
+            dandan.loop_fingerprint(),
+            "the pile is folded once under the shared axis"
+        );
+
+        let mut grown = dandan.clone();
+        grown.players[0].library.push_back(ObjectId(5));
+        assert_ne!(
+            dandan.loop_fingerprint(),
+            grown.loop_fingerprint(),
+            "reach: the pile's library length is hashed"
+        );
+        let mut buried = dandan.clone();
+        buried.players[0].graveyard.push_back(ObjectId(6));
+        assert_ne!(
+            dandan.loop_fingerprint(),
+            buried.loop_fingerprint(),
+            "reach: the pile's graveyard length is hashed"
+        );
+    }
 }
