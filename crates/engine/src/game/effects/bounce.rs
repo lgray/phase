@@ -1787,8 +1787,8 @@ mod dandan_read_sweep_tests {
     use crate::types::format::FormatConfig;
     use crate::types::identifiers::{CardId, ObjectId};
 
-    /// CR 608.2d + CR 400.1: the chosen player returns a card from the shared
-    /// pile graveyard, which is not stored on their seat.
+    /// CR 608.2d + CR 400.1: "their graveyard" is the one shared pile, so the
+    /// chosen player picks among every card in it, whoever owns it.
     #[test]
     fn chosen_non_canonical_player_returns_a_card_from_the_shared_pile_graveyard() {
         let mut state = GameState::new(FormatConfig::dandan(), 2, 42);
@@ -1829,6 +1829,25 @@ mod dandan_read_sweep_tests {
         ability.chosen_players = vec![PlayerId(1)];
 
         resolve(&mut state, &ability, &mut Vec::new()).unwrap();
+
+        match &state.waiting_for {
+            crate::types::game_state::WaitingFor::EffectZoneChoice { player, cards, .. } => {
+                assert_eq!(*player, PlayerId(1));
+                let mut offered = cards.clone();
+                offered.sort();
+                assert_eq!(offered, vec![own, theirs]);
+            }
+            other => panic!("expected EffectZoneChoice over the pile, got {other:?}"),
+        }
+
+        crate::game::engine::apply(
+            &mut state,
+            PlayerId(1),
+            crate::types::actions::GameAction::SelectCards {
+                cards: vec![theirs],
+            },
+        )
+        .unwrap();
 
         assert!(state.players[1].hand.contains(&theirs));
         assert_eq!(
