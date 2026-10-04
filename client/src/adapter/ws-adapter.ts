@@ -210,13 +210,20 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
- * 106 — ContinuousModification gains `SubstituteTextWord` (CR 612.1), serialized
- *      inside GameState's transient continuous effects, so a v105 peer cannot
+ * 108 — ContinuousModification gains `SubstituteTextWord` (CR 612.1), serialized
+ *      inside GameState's transient continuous effects, so a v107 peer cannot
  *      parse the tag.
- * 105 — GameFormat gains `Dandan`. It serializes as its Display string and
- *      deserializes through FromStr, so a v104 peer cannot parse a GameState or
- *      a lobby FormatConfig that names it. Wire 87 and lobby 16 move with it;
+ * 107 — GameFormat gains `Dandan`. It serializes as its Display string and
+ *      deserializes through FromStr, so a v106 peer cannot parse a GameState or
+ *      a lobby FormatConfig that names it. Wire 89 and lobby 16 move with it;
  *      see PROTOCOL_VERSION in crates/lobby-broker/src/protocol.rs.
+ * 106 — Full-game replacement-choice preferences, exact source/definition
+ *       identities, remembered ordering/optional actions, and prompt
+ *       eligibility metadata. P2P moves in lockstep (wire 88); lobby-only
+ *       messages are unchanged.
+ * 105 — Deferred mana-source selections carry a nominal base quantity.
+ *      Full-game peers must agree on the tagged output shape; P2P moves in
+ *      lockstep (wire 87). Lobby-only messages are unchanged.
  * 104 — PendingCast gains `delved_cards` and the pending cost-move resume
  *      swaps DelveManaPayment for the FinalizeDelvedCast completion: delve
  *      fuel is exiled when the total cost is paid (#9400). A v103 peer
@@ -694,7 +701,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 106;
+export const PROTOCOL_VERSION = 108;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

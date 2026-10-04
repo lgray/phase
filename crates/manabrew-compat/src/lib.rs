@@ -2825,7 +2825,7 @@ pub fn convert_available_action(
         GameAction::SelectTargets { .. } | GameAction::ChooseTarget { .. } => {
             AvailableActionConversion::Skip
         }
-        GameAction::ChooseReplacement { .. } => {
+        GameAction::ChooseReplacement { .. } | GameAction::ChooseReplacementAndRemember { .. } => {
             AvailableActionConversion::Unsupported("local.replacement-choice-unsupported")
         }
         // Answered through the Reorder prompt for `WaitingFor::OrderTriggers`.
@@ -2994,6 +2994,7 @@ pub fn convert_available_action(
         | GameAction::SetPriorityPassingMode { .. }
         | GameAction::SetPriorityYield { .. }
         | GameAction::SetMayTriggerAutoChoice { .. }
+        | GameAction::SetReplacementAutoChoice { .. }
         | GameAction::SetTriggerOrderTemplate { .. } => {
             AvailableActionConversion::Unsupported("local.autopass-settings-unsupported")
         }

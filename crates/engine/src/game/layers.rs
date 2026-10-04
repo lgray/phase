@@ -6519,7 +6519,7 @@ fn gather_ring_emblem_continuous_effects(
     }
 }
 
-fn for_each_static_effect_source(
+pub(crate) fn for_each_static_effect_source(
     state: &GameState,
     mut visit: impl FnMut(&GameState, &crate::game::game_object::GameObject),
 ) {

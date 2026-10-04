@@ -82,9 +82,11 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +32: v103 removes FormatConfig.allow_experimental_dungeons for the format-derived dungeon pool.
 // +33: v104 moves delve fuel to total-cost payment (PendingCast.delved_cards,
 // the FinalizeDelvedCast completion; DelveManaPayment removed).
-// +34: the v105 `Dandan` GameFormat name.
-// +35: the v106 `SubstituteTextWord` text-changing modification.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 35;
+// +34: v105 adds the nominal base quantity to deferred mana-source selections.
+// +35: v106 adds exact replacement-choice preferences and remembered response actions.
+// +36: the v105 `Dandan` GameFormat name.
+// +37: the v106 `SubstituteTextWord` text-changing modification.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 37;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -142,9 +144,11 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +30: wire 84 moves with full-game v102 for SharedCardTypes.
 // +31: wire 85 moves with full-game v103 for the format-derived dungeon pool.
 // +32: wire 86 moves with full-game v104 for the delve payment state shape.
-// +33: wire 87 moves with full-game v105 for the `Dandan` GameFormat name.
-// +34: wire 88 moves with full-game v106 for the `SubstituteTextWord` modification.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 34;
+// +33: wire 87 moves with full-game v105 for deferred mana-source quantities.
+// +34: wire 88 moves with full-game v106 for remembered replacement choices.
+// +35: wire 89 moves with full-game v107 for the `Dandan` GameFormat name.
+// +36: wire 90 moves with full-game v108 for the `SubstituteTextWord` modification.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 36;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

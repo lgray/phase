@@ -60,8 +60,16 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 106 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized inside `GameState`'s transient continuous effects, so a v105 peer cannot parse the tag and must be refused before it receives v106 state.
-/// 105 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v104 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 87); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 16.
+/// 108 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized inside `GameState`'s transient continuous effects, so a v107 peer cannot parse the tag and must be refused before it receives v108 state.
+/// 107 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v106 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 89); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 16.
+/// 106 — Full-game replacement-choice preferences, exact source/definition
+///       identities, remembered ordering/optional actions, and prompt
+///       eligibility metadata. P2P moves in lockstep (wire 88); lobby-only
+///       messages are unchanged.
+/// 105 — Deferred mana-source selections carry a nominal base quantity.
+///      Older peers cannot decode the new tagged output payload; the full-game
+///      handshake rejects the mismatch. P2P moves in lockstep (wire 87).
+///      Lobby-only messages are unchanged.
 /// 104 — `PendingCast` gains `delved_cards` (serde default, skipped when
 ///      empty), `PendingCostMoveResume::DelveManaPayment` is removed and
 ///      `PendingCostMoveCompletion::FinalizeDelvedCast` is added: delve fuel
@@ -870,7 +878,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 106;
+pub const PROTOCOL_VERSION: u32 = 108;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2127,7 +2135,7 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 106);
+        assert_eq!(PROTOCOL_VERSION, 108);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact

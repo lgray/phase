@@ -762,6 +762,76 @@ fn castability_follows_two_swamps_through_a_filter_land_payment() {
     assert!(state.pending_cast.is_none());
 }
 
+/// CR 601.2g + CR 605.3b: The producer -> filter-land routes a priority probe
+/// memoizes are spell-independent, so one probe must answer every cost the
+/// same way the uncached witness does, whichever cost explores the route tree
+/// first and whether a later query is served from the memo or resumes it.
+#[test]
+fn priority_probe_filter_land_route_memo_matches_the_uncached_witness() {
+    let mut state = setup_game_at_main_phase();
+    let spell =
+        create_generic_creature_in_hand(&mut state, 9_030, PlayerId(0), "Route Memo Stand-In", 0);
+    for name in ["First Swamp", "Second Swamp"] {
+        create_tap_mana_source(
+            &mut state,
+            name,
+            ManaProduction::Fixed {
+                colors: vec![ManaColor::Black],
+                contribution: ManaContribution::Base,
+            },
+        );
+    }
+    create_black_red_filter_land(&mut state, 9_031);
+    let colored = |shards: Vec<ManaCostShard>| ManaCost::Cost { shards, generic: 0 };
+    // Two Swamps plus a filter land net three mana: {B}{B}{R} is payable only
+    // through the filter-land route, {B}{B}{R}{R} is not payable at all.
+    let payable = colored(vec![
+        ManaCostShard::Black,
+        ManaCostShard::Black,
+        ManaCostShard::Red,
+    ]);
+    let unpayable = colored(vec![
+        ManaCostShard::Black,
+        ManaCostShard::Black,
+        ManaCostShard::Red,
+        ManaCostShard::Red,
+    ]);
+    assert!(can_feasibly_pay_mana_cost(
+        &state,
+        PlayerId(0),
+        Some(spell),
+        &payable
+    ));
+    assert!(!can_feasibly_pay_mana_cost(
+        &state,
+        PlayerId(0),
+        Some(spell),
+        &unpayable
+    ));
+
+    let feasible_with = |probe: &PriorityCastProbe, cost: &ManaCost| {
+        can_feasibly_pay_mana_cost_with_probe(
+            probe.state(),
+            PlayerId(0),
+            Some(spell),
+            cost,
+            Some(probe),
+        )
+    };
+
+    // Exhaust the route tree first, then answer from the memo.
+    let exhausted = PriorityCastProbe::new(&state, PlayerId(0));
+    assert!(!feasible_with(&exhausted, &unpayable));
+    assert!(feasible_with(&exhausted, &payable));
+    assert!(!feasible_with(&exhausted, &unpayable));
+
+    // Stop early on a payable cost, then resume the walk for an unpayable one.
+    let resumed = PriorityCastProbe::new(&state, PlayerId(0));
+    assert!(feasible_with(&resumed, &payable));
+    assert!(!feasible_with(&resumed, &unpayable));
+    assert!(feasible_with(&resumed, &payable));
+}
+
 #[test]
 fn castability_follows_a_manual_nonland_producer_through_a_filter_land_payment() {
     let mut state = setup_game_at_main_phase();
