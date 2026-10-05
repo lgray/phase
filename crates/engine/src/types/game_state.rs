@@ -87,8 +87,54 @@ use crate::game::triggers::trigger_source_context_for_latch;
 
 use crate::game::game_object::{AttachTarget, BackFaceData, CaseState, GameObject, PhaseStatus};
 
-fn default_rng() -> ChaCha20Rng {
-    ChaCha20Rng::seed_from_u64(0)
+fn default_rng() -> GameRng {
+    GameRng::seed_from_u64(0)
+}
+
+/// What a random draw decides; the draw site's rule names it, never the generator call it uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RandomDraw {
+    /// Where cards go: a shuffle (CR 701.24a), a random order, or a random position.
+    Placement,
+    /// Any other random result, such as a coin flip (CR 705.1) or a die roll (CR 706.1).
+    Outcome,
+}
+
+/// The game's seeded generator, handed out only to a draw that declares its [`RandomDraw`], so
+/// a replay can tell an outcome it cannot predict from a placement (CR 732.2a).
+#[derive(Clone, Debug)]
+pub struct GameRng {
+    generator: ChaCha20Rng,
+    /// Outcome draws made through this generator; not part of the game's identity.
+    outcome_draws: u64,
+}
+
+impl GameRng {
+    pub fn seed_from_u64(seed: u64) -> Self {
+        Self {
+            generator: ChaCha20Rng::seed_from_u64(seed),
+            outcome_draws: 0,
+        }
+    }
+
+    pub fn draw(&mut self, kind: RandomDraw) -> &mut ChaCha20Rng {
+        if kind == RandomDraw::Outcome {
+            self.outcome_draws += 1;
+        }
+        &mut self.generator
+    }
+
+    pub fn outcome_draws(&self) -> u64 {
+        self.outcome_draws
+    }
+
+    pub fn get_word_pos(&self) -> u128 {
+        self.generator.get_word_pos()
+    }
+
+    pub fn set_word_pos(&mut self, word_offset: u128) {
+        self.generator.set_word_pos(word_offset);
+    }
 }
 
 fn default_game_number() -> u8 {
@@ -20445,7 +20491,7 @@ declare_game_state! {
     #[serde(default)]
     pub rng_word_pos: u128,
     #[serde(skip, default = "default_rng")]
-    pub rng: ChaCha20Rng,
+    pub rng: GameRng,
 
     // Combat
     pub combat: Option<CombatState>,
@@ -27041,7 +27087,7 @@ impl GameState {
     /// already-consumed values (issue #5466). Pre-#5466 snapshots carry
     /// `rng_word_pos == 0`, which reproduces the previous from-origin behavior.
     pub fn rehydrate_rng(&mut self) {
-        self.rng = ChaCha20Rng::seed_from_u64(self.rng_seed);
+        self.rng = GameRng::seed_from_u64(self.rng_seed);
         self.rng.set_word_pos(self.rng_word_pos);
     }
 
@@ -28109,7 +28155,7 @@ impl GameState {
             command_zone: im::Vector::new(),
             rng_seed: seed,
             rng_word_pos: 0,
-            rng: ChaCha20Rng::seed_from_u64(seed),
+            rng: GameRng::seed_from_u64(seed),
             combat: None,
             waiting_for: WaitingFor::Priority {
                 player: starting_player,
@@ -40857,7 +40903,7 @@ mod tests {
         let serialized = serde_json::to_string(&state).unwrap();
         let mut deserialized: GameState = serde_json::from_str(&serialized).unwrap();
         // Reconstruct RNG from seed since it's skipped in serde
-        deserialized.rng = ChaCha20Rng::seed_from_u64(deserialized.rng_seed);
+        deserialized.rng = GameRng::seed_from_u64(deserialized.rng_seed);
         assert_eq!(state, deserialized);
     }
 
@@ -40896,7 +40942,7 @@ mod tests {
         use rand::RngCore;
         let mut state = GameState::new_two_player(0xABCD_1234);
         for _ in 0..7 {
-            state.rng.next_u32(); // consume randomness as gameplay would
+            state.rng.draw(RandomDraw::Outcome).next_u32(); // consume randomness as gameplay would
         }
         state.capture_rng_word_pos(); // production export-time capture
         let mut expected = state.rng.clone(); // the values that come next
@@ -40911,8 +40957,8 @@ mod tests {
         );
         for i in 0..5 {
             assert_eq!(
-                restored.rng.next_u32(),
-                expected.next_u32(),
+                restored.rng.draw(RandomDraw::Outcome).next_u32(),
+                expected.draw(RandomDraw::Outcome).next_u32(),
                 "restored stream diverged at draw {i}",
             );
         }
@@ -42757,7 +42803,7 @@ mod tests {
 
         let serialized = serde_json::to_string(&state).unwrap();
         let mut deserialized: GameState = serde_json::from_str(&serialized).unwrap();
-        deserialized.rng = ChaCha20Rng::seed_from_u64(deserialized.rng_seed);
+        deserialized.rng = GameRng::seed_from_u64(deserialized.rng_seed);
 
         assert_eq!(
             deserialized.may_trigger_auto_choice(&key),
@@ -43150,7 +43196,7 @@ mod tests {
 
         let json = serde_json::to_string(&state).unwrap();
         let mut deserialized: GameState = serde_json::from_str(&json).unwrap();
-        deserialized.rng = rand_chacha::ChaCha20Rng::seed_from_u64(deserialized.rng_seed);
+        deserialized.rng = GameRng::seed_from_u64(deserialized.rng_seed);
         assert_eq!(state, deserialized);
     }
 
@@ -43232,7 +43278,7 @@ mod tests {
         let state = GameState::new(crate::types::format::FormatConfig::commander(), 4, 42);
         let serialized = serde_json::to_string(&state).unwrap();
         let mut deserialized: GameState = serde_json::from_str(&serialized).unwrap();
-        deserialized.rng = ChaCha20Rng::seed_from_u64(deserialized.rng_seed);
+        deserialized.rng = GameRng::seed_from_u64(deserialized.rng_seed);
         assert_eq!(state, deserialized);
     }
 

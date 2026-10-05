@@ -4729,3 +4729,48 @@ fn lifelink_etb_damage_life_axis_routes_to_replay() {
         "the CR 702.15b lifelink gain is paid ONCE (batched route ⇒ double)"
     );
 }
+
+/// CR 702.51a + CR 732.2a: the confirmer pays a recorded convoke with the tap set the replayed
+/// board offers, so the Sprout Swarm period whose recorded convoke tapped the one-shot Witherbloom
+/// confirms from its offer frame.
+#[test]
+fn the_confirmer_rebinds_a_recorded_convoke_to_the_replayed_board() {
+    let state = {
+        let mut state: GameState = serde_json::from_str(&UNTAPPED_PRECAST_STATE).expect(
+            "the real untapped-precast 4p dump must deserialize into the current GameState",
+        );
+        state
+            .objects
+            .get_mut(&ObjectId(405))
+            .expect("Saproling 405")
+            .tapped = false;
+        let witherbloom = state
+            .objects
+            .get_mut(&ObjectId(401))
+            .expect("Witherbloom 401");
+        witherbloom.color = vec![ManaColor::Green, ManaColor::Black];
+        witherbloom.base_color = vec![ManaColor::Green, ManaColor::Black];
+        state
+    };
+    let mut runner = GameRunner::from_state(state);
+    let outcome = runner
+        .cast(ObjectId(402))
+        .accept_optional()
+        .convoke_with(&[ObjectId(401)])
+        .commit()
+        .resolve();
+    assert!(
+        matches!(outcome.final_waiting_for(), WaitingFor::LoopShortcut { .. }),
+        "reach: the base offers at this frame"
+    );
+    let mut frame = runner.state().clone();
+    frame.waiting_for = WaitingFor::Priority {
+        player: engine::game::scenario::P0,
+    };
+    let verdicts = engine::game::period_confirm::confirm_for_tests(&frame);
+    assert!(!verdicts.is_empty(), "reach: the trace names a span here");
+    assert!(
+        verdicts.iter().any(|(_, verdict)| verdict.is_ok()),
+        "a span confirms with its convoke rebound: {verdicts:?}"
+    );
+}

@@ -1,4 +1,5 @@
 // engine-citation-gate: symbol anchors only
+use crate::types::game_state::RandomDraw;
 use std::collections::{HashMap, HashSet};
 
 use rand::seq::SliceRandom;
@@ -1035,7 +1036,7 @@ pub(crate) fn route_rest_partition(
         // CR 400.5 + CR 608.2c: Exact Oracle text requires a randomized
         // remainder; only this rest pile, not the remainder of the library,
         // consumes entropy.
-        ordered_ids.shuffle(&mut state.rng);
+        ordered_ids.shuffle(state.rng.draw(RandomDraw::Placement));
     }
     route_rest_partition_then(state, &ordered_ids, rest_zone, source_id, None, events)
 }
@@ -4544,7 +4545,7 @@ pub(super) fn handle_resolution_choice(
                             if rest_order == DigRestOrder::Random {
                                 // CR 400.5 + CR 608.2c: Randomize exactly the
                                 // unchosen pile immediately before bottom placement.
-                                unkept.shuffle(&mut state.rng);
+                                unkept.shuffle(state.rng.draw(RandomDraw::Placement));
                             }
                             for &obj_id in &unkept {
                                 // allow-raw-zone: looked-at cards remain library objects until a keep decision (CR 701.20b/e).
@@ -4757,7 +4758,7 @@ pub(super) fn handle_resolution_choice(
                 let rest_destination = rest_destination.unwrap_or(Zone::Graveyard);
                 let mut ordered_unkept = unkept.clone();
                 if rest_destination == Zone::Library && rest_order == DigRestOrder::Random {
-                    ordered_unkept.shuffle(&mut state.rng);
+                    ordered_unkept.shuffle(state.rng.draw(RandomDraw::Placement));
                 }
                 let completion = crate::types::game_state::BatchCompletion::RevealRestPile {
                     delivery_stage: crate::types::game_state::DigDeliveryStage::Rest,
@@ -9868,7 +9869,7 @@ pub(crate) fn run_batch_completion(
             {
                 let mut ordered_rest_cards = rest_cards.clone();
                 if rest_destination == Zone::Library && rest_order == DigRestOrder::Random {
-                    ordered_rest_cards.shuffle(&mut state.rng);
+                    ordered_rest_cards.shuffle(state.rng.draw(RandomDraw::Placement));
                 }
                 let completion = BatchCompletion::RevealRestPile {
                     delivery_stage: crate::types::game_state::DigDeliveryStage::Rest,
@@ -9940,7 +9941,7 @@ pub(crate) fn run_batch_completion(
             if publish_tracked_set.is_some() && !rest_cards.is_empty() {
                 let mut ordered_rest_cards = rest_cards.clone();
                 if rest_destination == Zone::Library && rest_order == DigRestOrder::Random {
-                    ordered_rest_cards.shuffle(&mut state.rng);
+                    ordered_rest_cards.shuffle(state.rng.draw(RandomDraw::Placement));
                 }
                 let cleanup = BatchCompletion::RevealRestPile {
                     delivery_stage: crate::types::game_state::DigDeliveryStage::Rest,
@@ -12988,7 +12989,7 @@ mod tests {
         let keep = random_state.players[0].library[0];
         let mut expected_rest = rest.to_vec();
         let mut expected_rng = random_state.rng.clone();
-        expected_rest.shuffle(&mut expected_rng);
+        expected_rest.shuffle(expected_rng.draw(crate::types::game_state::RandomDraw::Placement));
         let mut events = Vec::new();
         handle_resolution_choice(
             &mut random_state,

@@ -1,3 +1,4 @@
+use crate::types::game_state::RandomDraw;
 use rand::Rng;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use thiserror::Error;
@@ -63,6 +64,7 @@ use super::match_flow;
 use super::morph;
 use super::mulligan;
 use super::payment_transaction;
+use super::period_confirm::OfferRefusal;
 use super::planechase;
 use super::planeswalker;
 use super::priority;
@@ -8006,6 +8008,12 @@ fn normalize_recast_frame(
             p.library.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
         }
     }
+    clear_frame_bookkeeping(&mut s);
+    s
+}
+
+/// Clears what churns a fresh id every cycle without being part of the board a period repeats.
+pub(crate) fn clear_frame_bookkeeping(s: &mut GameState) {
     // CR 608.2 anaphora / display bookkeeping: the "last created token / revealed /
     // zone-changed" id slots churn a fresh id each cycle. No observer reads them at a settle
     // beat, whichever boundary the driven step settles at, so clearing them is fail-safe for
@@ -8017,15 +8025,13 @@ fn normalize_recast_frame(
     // apply() resets these at the start of every player action, so a frame is compared as the
     // next player action starts from it.
     s.clear_player_action_transients();
-    s
 }
 
 /// CR 732.2a: the object-growth producer's certification of its three settle frames — their
-/// normalization, the minted class, and the recurrence cover — asked of `lead`, the period's
-/// first step.
-fn certify_object_growth_frames(
+/// normalization, the minted class, and the recurrence cover.
+pub(crate) fn certify_object_growth_frames(
     frames: [&GameState; 3],
-    lead: &crate::types::game_state::LoopActionContext,
+    normalize: impl Fn(&GameState) -> GameState,
     caster: PlayerId,
 ) -> crate::analysis::resource::ObjectGrowthVerdict {
     use crate::analysis::resource::ObjectGrowthVerdict;
@@ -8034,11 +8040,7 @@ fn certify_object_growth_frames(
     // token-id bookkeeping) BEFORE the cover fork so both arms share the normalized frames. Uses
     // the lead step's action to dispatch the recast-strip — an all-`Activate` period (the mana-engine
     // class) only clears token-id bookkeeping; a 1-element `Recast` strips its card as before.
-    let (cs_n, cs_n1, cs_n2) = (
-        normalize_recast_frame(s_n, lead),
-        normalize_recast_frame(s_n1, lead),
-        normalize_recast_frame(s_n2, lead),
-    );
+    let (cs_n, cs_n1, cs_n2) = (normalize(s_n), normalize(s_n1), normalize(s_n2));
     // CR 732.2a board recurrence on BOTH pairs — two disjoint recurrence shapes:
     //  - fodder-growth (one HOMOGENEOUS class of k >= 1 members was reproduced each period,
     //    `derived_fodder_class` is `Some`): cover modulo the inert reproduced fodder class (the
@@ -8097,7 +8099,11 @@ pub fn certify_object_growth_frames_for_tests(
         view
     });
     let _probe = SimulationProbeGuard::enter();
-    certify_object_growth_frames([&views[0], &views[1], &views[2]], lead, caster)
+    certify_object_growth_frames(
+        [&views[0], &views[1], &views[2]],
+        |frame| normalize_recast_frame(frame, lead),
+        caster,
+    )
 }
 
 /// CR 111.1: the battlefield objects one period MINTED — created with no prior existence in any
@@ -8468,70 +8474,23 @@ fn try_offer_object_growth_shortcut(
     drive_loop_sequence_iteration(&mut clone, &seq, 1, &expected_defs).ok()?;
     let s_n2 = clone;
 
-    // CR 732.2a: any randomness CONSUMED during the deterministic detection drive means the
-    // real loop is outcome-dependent (a coin flip CR 705.1 / die roll CR 706.1a / random
-    // selection CR 701.9b / shuffle) and is not a predictable shortcut. The seeded ChaCha20
-    // stream position advances iff randomness was drawn; the driven clone started as
-    // `state.clone()` (an equal baseline), so a word-position delta disqualifies the offer.
-    // This is the RUNTIME backstop to the static scan above: the fodder-cover's
-    // `fire_time_conditions_read_growing_class` already rejects a randomness-bearing *permanent*
-    // ability whose effect classifies `Axes::CONSERVATIVE` (`FlipCoin`/`RollDie`; a few
-    // dice-adjacent effects like `RollToVisitAttractions` classify `Axes::NONE` and slip the
-    // cover — this check catches those too), but it does NOT scan the resolving
-    // recast *spell's* own body — so a coin flip in the recast body advances the RNG yet passes
-    // the cover. This check closes that gap even when the static scan's `collect_effects` walk
-    // misses a nested payload. Fail-closed / strictly-more-conservative (only turns OFFERs into
-    // NO-OFFERs). (A2 determinism gate — discharges the b132ad9f8 "fail-closed-modulo-auto-
-    // randomness" carry.)
-    if s_n2.rng.get_word_pos() != state.rng.get_word_pos() {
+    // CR 732.2a: a random outcome drawn while driving the period is not a predictable result; a
+    // shuffle or random order is a placement and is admitted.
+    if s_n2.rng.outcome_draws() != s_n.rng.outcome_draws() {
         return None;
     }
 
-    if !certify_object_growth_frames([&s_n, &s_n1, &s_n2], &seq[0], caster).certifies() {
-        return None;
-    }
-
-    // CR 119 / CR 122.1 / CR 704.5g sign-check on the second pair (RAW un-projected frames):
-    // net progress for the caster, no loss axis for anyone, every driving consumable
-    // non-decreasing (energy / poison / player-counters / object-counters) and no
-    // damage_marked increase.
-    let mut delta = crate::analysis::resource::ResourceVector::delta(
-        &crate::analysis::resource::ResourceVector::snapshot(&s_n1),
-        &crate::analysis::resource::ResourceVector::snapshot(&s_n2),
-    );
-    // CR 111.1: `tokens_created` is an EVENT-fed axis (0 under a snapshot diff),
-    // so the period's MINTED count is fed in as the per-cycle tokens-created count — the
-    // unbounded axis — and `net_progress_for` then sees the progress the certificate names.
-    // The count is the MINTED one, not the raw `battlefield.len()` delta, because the boundary
-    // mint reproduces minted members and an ARRIVAL grows the battlefield without being one:
-    // publishing the raw delta would promise a per-cycle count the collapse cannot reproduce.
-    // Same `minted_battlefield_ids` test the class derivation uses, so the two cannot drift.
-    let minted_growth = minted_battlefield_ids(&s_n1, &s_n2).len() as i64;
-    if minted_growth > 0 {
-        delta.tokens_created += minted_growth;
-    }
-    // CR 701.17b: an instructed, choiceless, non-caster top-of-library departure is an
-    // ADVANTAGE axis, not a loss one — CR 121.4 / CR 104.3c / CR 704.5b lose a player for
-    // DRAWING from an empty library, never for milling one. `has_no_loss_axis` is therefore
-    // asked about the delta with the certified departure added back, and ONLY it:
-    // `net_progress_for` and `driving_resources_non_decreasing` keep the full delta, and
-    // `has_no_loss_axis` itself is not edited — its other call sites are the CR 732.4
-    // mandatory-draw arms, where relieving this would turn an unbreakable mandatory mill loop
-    // into a draw (CR 104.4b needs the game state to REPEAT, and a shrinking library does not).
-    let certified_departure =
-        crate::analysis::resource::certify_instructed_opponent_library_departure(
-            &s_n1, &s_n2, caster,
-        );
-    let sign_check_delta = match &certified_departure {
-        Some(certified) => delta.without_certified_departure(&certified.per_victim),
-        None => delta.clone(),
-    };
-    if !delta.net_progress_for(caster)
-        || !has_no_loss_axis(&sign_check_delta)
-        || !crate::analysis::resource::driving_resources_non_decreasing(&s_n1, &s_n2, caster)
+    if !certify_object_growth_frames(
+        [&s_n, &s_n1, &s_n2],
+        |frame| normalize_recast_frame(frame, &seq[0]),
+        caster,
+    )
+    .certifies()
     {
         return None;
     }
+
+    let (delta, certified_departure) = period_sign_check(&s_n1, &s_n2, caster).ok()?;
 
     let certificate = build_cert(&s_n1, &s_n2, &delta, caster, certified_departure.as_ref());
     // CR 732.2a (CARRY, don't re-derive): the schema's decision list is the SAME
@@ -8587,6 +8546,66 @@ fn try_offer_object_growth_shortcut(
         None,
     );
     Some((certificate, schema))
+}
+
+/// The sign check on a period's second frame pair: net progress for the caster, no loss axis for
+/// anyone, and no driving resource consumed; the delta and any certified departure on success.
+pub(crate) fn period_sign_check(
+    s_n1: &GameState,
+    s_n2: &GameState,
+    caster: PlayerId,
+) -> Result<
+    (
+        crate::analysis::resource::ResourceVector,
+        Option<crate::analysis::resource::CertifiedInstructedDeparture>,
+    ),
+    OfferRefusal,
+> {
+    // CR 119 / CR 122.1 / CR 704.5g sign-check on the second pair (RAW un-projected frames):
+    // net progress for the caster, no loss axis for anyone, every driving consumable
+    // non-decreasing (energy / poison / player-counters / object-counters) and no
+    // damage_marked increase.
+    let mut delta = crate::analysis::resource::ResourceVector::delta(
+        &crate::analysis::resource::ResourceVector::snapshot(s_n1),
+        &crate::analysis::resource::ResourceVector::snapshot(s_n2),
+    );
+    // CR 111.1: `tokens_created` is an EVENT-fed axis (0 under a snapshot diff),
+    // so the period's MINTED count is fed in as the per-cycle tokens-created count — the
+    // unbounded axis — and `net_progress_for` then sees the progress the certificate names.
+    // The count is the MINTED one, not the raw `battlefield.len()` delta, because the boundary
+    // mint reproduces minted members and an ARRIVAL grows the battlefield without being one:
+    // publishing the raw delta would promise a per-cycle count the collapse cannot reproduce.
+    // Same `minted_battlefield_ids` test the class derivation uses, so the two cannot drift.
+    let minted_growth = minted_battlefield_ids(s_n1, s_n2).len() as i64;
+    if minted_growth > 0 {
+        delta.tokens_created += minted_growth;
+    }
+    // CR 701.17b: an instructed, choiceless, non-caster top-of-library departure is an
+    // ADVANTAGE axis, not a loss one — CR 121.4 / CR 104.3c / CR 704.5b lose a player for
+    // DRAWING from an empty library, never for milling one. `has_no_loss_axis` is therefore
+    // asked about the delta with the certified departure added back, and ONLY it:
+    // `net_progress_for` and `driving_resources_non_decreasing` keep the full delta, and
+    // `has_no_loss_axis` itself is not edited — its other call sites are the CR 732.4
+    // mandatory-draw arms, where relieving this would turn an unbreakable mandatory mill loop
+    // into a draw (CR 104.4b needs the game state to REPEAT, and a shrinking library does not).
+    let certified_departure =
+        crate::analysis::resource::certify_instructed_opponent_library_departure(
+            s_n1, s_n2, caster,
+        );
+    let sign_check_delta = match &certified_departure {
+        Some(certified) => delta.without_certified_departure(&certified.per_victim),
+        None => delta.clone(),
+    };
+    if !delta.net_progress_for(caster) {
+        return Err(OfferRefusal::NoAxis);
+    }
+    if !has_no_loss_axis(&sign_check_delta) {
+        return Err(OfferRefusal::LossAxis);
+    }
+    if !crate::analysis::resource::driving_resources_non_decreasing(s_n1, s_n2, caster) {
+        return Err(OfferRefusal::DrivingResourcesDecrease);
+    }
+    Ok((delta, certified_departure))
 }
 
 /// CR 732.2a: which materialization strategy an accepted object-growth collapse selected.
@@ -19924,7 +19943,12 @@ pub fn start_game(state: &mut GameState) -> ActionResult {
     let (rounds, starting_player) = build_contest_rounds(&seat_order, |contenders| {
         contenders
             .iter()
-            .map(|&seat| (seat, state.rng.random_range(1..=20u8)))
+            .map(|&seat| {
+                (
+                    seat,
+                    state.rng.draw(RandomDraw::Outcome).random_range(1..=20u8),
+                )
+            })
             .collect()
     });
 

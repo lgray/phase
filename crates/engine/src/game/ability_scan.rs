@@ -615,9 +615,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 acc = acc.or(scan_pt_value(toughness, mode));
                 // `target_ctx` is `effect_target_ctx(x, mode)`, computed once at the head
                 // of this function; it classifies `Effect::Pump` into the bounded
-                // `SnapshotOrEvent` group. The same classification is what
-                // `effect_target_reads_growing_class_for_loop` derives for
-                // `analysis::resource`'s `pump_aggregate_provably_excludes_class` relief.
+                // `SnapshotOrEvent` group.
                 acc = acc.or(scan_target_filter(target, target_ctx, mode));
                 // The `projected` axis is not re-raised here and the verdict stays precise:
                 // the def-level and effect-target entry points both ask
@@ -3598,9 +3596,9 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
 /// `ContinuousModification::GrantTrigger`), and the firing condition of a DELAYED triggered
 /// ability created by an effect (CR 603.7, via `scan_delayed_trigger_condition`).
 ///
-/// FOR THE GRANTED CARRIER, the object-growth firewall already scans an INSTALLED
+/// FOR THE GRANTED CARRIER, the growing-class scan already reads an INSTALLED
 /// trigger's `condition` + `execute` on the same layer-flushed frame (`analysis::resource`
-/// `fire_time_conditions_read_growing_class_scoped`), so the blanket `Axes::CONSERVATIVE`
+/// `fire_time_conditions_read_growing_class`), so the blanket `Axes::CONSERVATIVE`
 /// this replaces was a redundant SECOND
 /// veto on content already read; a DELAYED trigger is attached to no object, is never reached
 /// by that scan, and the descent there is a FIRST read. Descending is what lets the firewall
@@ -4878,9 +4876,7 @@ fn scan_replacement_condition(x: &ReplacementCondition, mode: ScanMode) -> Axes 
         // `scan_target_filter`, and inspecting it to relax the axis would re-open a
         // census the evaluator still runs.
         //
-        // CR 732.2a: no disjointness arm matches this variant, so the only def the
-        // replacement-condition accessor spares is one `replacement_is_spent_self_entry`
-        // skips whole — an unblinked `SelfRef` entry on the battlefield.
+        // CR 732.2a: no disjointness arm matches this variant.
         ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes {
             event: false,
             sibling: true,
@@ -6207,48 +6203,9 @@ pub(crate) fn ability_definition_reads_growing_class_for_loop(def: &AbilityDefin
     ability_definition_axes(def, ScanMode::LoopFirewall).reads_growing_class()
 }
 
-/// CR 732.2a growing class (`sibling` ∨ `projected`) on ONE effect-TARGET filter,
-/// under that effect's OWN census discipline. `target` MUST be a target-filter field
-/// of `effect`: the `FilterReadContext` is derived from `effect` by
-/// [`effect_target_ctx`], the same derivation `scan_effect` makes for its own
-/// [`scan_target_filter`] calls, so a re-grouping of that effect moves this answer
-/// with it. Both axes, and what `Conservative` consumers ask instead: see
-/// [`Axes::reads_growing_class`].
-///
-/// `pub(crate)` for ONE reason: `analysis::resource`'s relief arm
-/// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
-/// contributes no growing-class read before relieving that def's veto — a veto the
-/// aggregate `PtValue` half carries, since [`scan_quantity_ref`] marks it `sibling`
-/// before walking the filter. Its sibling arms state this as a `target: None`
-/// PATTERN, which `Effect::Pump` cannot: its `target` is not an `Option<_>`.
-pub(crate) fn effect_target_reads_growing_class_for_loop(
-    effect: &Effect,
-    target: &TargetFilter,
-) -> bool {
-    // The doc's "`target` MUST be a target-filter field of `effect`" was a request with
-    // nothing binding the two arguments: a caller passing an unrelated filter would get a
-    // verdict computed under a DIFFERENT effect's census discipline, silently and with no
-    // diagnostic. `Effect::target_filter()` is the authority for that relation and answers
-    // `Some` for `Effect::Pump`, which is this function's whole reason for being
-    // `pub(crate)`. Value equality, not pointer identity — a caller may legitimately hold a
-    // clone of the field.
-    debug_assert!(
-        effect.target_filter() == Some(target),
-        "`effect_target_reads_growing_class_for_loop` derives its `FilterReadContext` from \
-         `effect`, so `target` must BE that effect's target filter — otherwise the verdict is \
-         computed under a census discipline belonging to a different effect"
-    );
-    scan_target_filter(
-        target,
-        effect_target_ctx(effect, ScanMode::LoopFirewall),
-        ScanMode::LoopFirewall,
-    )
-    .reads_growing_class()
-}
-
 /// CR 613.1 + CR 732.2a: does a live continuous modification READ a mutable board
 /// aggregate (axis-2 `sibling`)? Consumed by
-/// `analysis::resource::fire_time_conditions_read_growing_class_scoped`'s live
+/// `analysis::resource::fire_time_conditions_read_growing_class`'s live
 /// continuous-modification descent.
 pub(crate) fn continuous_modification_reads_sibling_mutable(m: &ContinuousModification) -> bool {
     scan_continuous_modification(m, ScanMode::LoopFirewall).sibling
@@ -7699,11 +7656,7 @@ mod tests {
         effect
     }
 
-    /// A `Pump` with two `PtValue::Fixed` halves and a read-free target — the shape row 25
-    /// relieves. Migrated in from arm (vi) of `analysis::resource`'s
-    /// `pump_aggregate_gate_is_precise_and_fail_closed`, which could no longer construct it
-    /// once `pump_firewall_fixture`'s reach guard stopped being reachable with a read-free
-    /// def.
+    /// A `Pump` with two `PtValue::Fixed` halves and a read-free target.
     fn read_free_pump(target: TargetFilter) -> Effect {
         Effect::Pump {
             power: PtValue::Fixed(2),
@@ -7771,8 +7724,8 @@ mod tests {
     /// A `Pump` whose magnitude reads a PROJECTED player resource keeps its veto, in a
     /// form the consuming firewall can see. `scan_quantity_ref` classifies
     /// `QuantityRef::LifeTotal` as `{event: false, sibling: false, projected: true}`,
-    /// and that precision is a veto only because blocks (1b) and (2) of
-    /// `analysis::resource`'s `fire_time_conditions_read_growing_class_scoped` consult
+    /// and that precision is a veto only because block (2) of
+    /// `analysis::resource`'s `fire_time_conditions_read_growing_class` consults
     /// [`ability_definition_reads_growing_class_for_loop`], whose `projected` half sees
     /// it (CR 608.2h: the answer is "determined only once, when the effect is
     /// applied"). The fixture is Loxodon Lifechanter's shipped `abilities[0]` body,
@@ -7977,9 +7930,8 @@ mod tests {
     }
 
     /// A `Pump` whose TARGET reads the board still vetoes (CR 732.2a: a target naming
-    /// a live board population is itself a sibling read). The three-way family
-    /// `analysis::resource::pump_target_axis_is_not_blind` already uses, at the scanner
-    /// level: three defs differing ONLY in `target`. The read-free `PtValue::Fixed`
+    /// a live board population is itself a sibling read): three defs differing ONLY in
+    /// `target`. The read-free `PtValue::Fixed`
     /// halves are not a convenience — they make `target` the SOLE possible source of a
     /// sibling read, which a Pyreswipe Hawk fixture could not do (its `power` is a
     /// `PropertyAggregate` over `Objects`, and `scan_quantity_ref` sets `sibling: true` for that
@@ -10954,50 +10906,6 @@ mod tests {
                 "B-5: blanket member must stay fail-closed CONSERVATIVE"
             );
         }
-    }
-
-    /// A `Pump` whose `target` is the effect's own field — the ONLY shape
-    /// [`effect_target_reads_growing_class_for_loop`] is contracted to accept.
-    fn pump_with_target(target: TargetFilter) -> Effect {
-        Effect::Pump {
-            power: crate::types::ability::PtValue::Fixed(1),
-            toughness: crate::types::ability::PtValue::Fixed(1),
-            target,
-        }
-    }
-
-    /// The contracted call shape passes the binding assert and returns a
-    /// verdict. Without this row the `#[should_panic]` sibling below is satisfiable by an
-    /// assert that fires on EVERYTHING, which would be a debug-build outage rather than a
-    /// binding.
-    #[test]
-    fn effect_target_wrapper_accepts_the_effects_own_target_field() {
-        let effect = pump_with_target(TargetFilter::SelfRef);
-        let Effect::Pump { target, .. } = &effect else {
-            unreachable!("built as Pump")
-        };
-        assert!(
-            !effect_target_reads_growing_class_for_loop(&effect, target),
-            "`SelfRef` reads no board population, so the contracted shape must answer false \
-             — and must not trip the binding assert on its way there"
-        );
-    }
-
-    /// The doc's "`target` MUST be a target-filter field of `effect`" is now BOUND,
-    /// not requested. The wrapper derives its `FilterReadContext` from `effect` via
-    /// `effect_target_ctx`, so a `target` belonging to some other effect is answered under
-    /// the wrong census discipline — silently, and with a plausible-looking bool.
-    ///
-    /// MUTATION PROBE: delete the `debug_assert!(effect.target_filter() == Some(target))`
-    /// from [`effect_target_reads_growing_class_for_loop`] ⇒ this row FAILS (no panic).
-    #[test]
-    #[should_panic(expected = "must BE that effect's target filter")]
-    fn effect_target_wrapper_refuses_a_target_that_is_not_the_effects_own() {
-        let effect = pump_with_target(TargetFilter::SelfRef);
-        // A filter that is NOT `effect`'s field. `Effect::target_filter()` is the authority
-        // that says so, and it is what the assert consults.
-        let foreign = TargetFilter::Any;
-        let _ = effect_target_reads_growing_class_for_loop(&effect, &foreign);
     }
 
     fn loop_axes(effect: &Effect) -> (bool, bool, bool) {

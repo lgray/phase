@@ -1528,7 +1528,7 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
     // word offset would give an attacker the keystream alignment for free. Zero
     // it so no viewer snapshot carries either the seed or its stream position.
     filtered.rng_word_pos = 0;
-    filtered.rng = <rand_chacha::ChaCha20Rng as rand::SeedableRng>::seed_from_u64(0);
+    filtered.rng = crate::types::game_state::GameRng::seed_from_u64(0);
     filtered.liminal_entries.clear();
     filtered.pending_liminal_entry_resume = None;
 
@@ -4314,7 +4314,10 @@ mod tests {
         // offset hands an attacker the keystream alignment for free, so the
         // filter must redact the stream position as well as the seed.
         for _ in 0..5 {
-            state.rng.next_u32();
+            state
+                .rng
+                .draw(crate::types::game_state::RandomDraw::Outcome)
+                .next_u32();
         }
         state.capture_rng_word_pos();
         let source_word_pos = state.rng_word_pos;

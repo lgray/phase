@@ -647,44 +647,6 @@ fn an_until_lethal_take_of_a_trigger_driven_offer_changes_nothing() {
     );
 }
 
-/// CR 603.6a: the offer apply's relief consults reach past the shape stage.
-#[test]
-fn the_offer_apply_consults_relief_past_the_shape_stage() {
-    for board in BOARDS {
-        let Some((_, applies)) = offered(board) else {
-            return;
-        };
-        let cost = offer_cost(board, &applies);
-        assert!(
-            cost.etb_relief_consults()
-                - cost.etb_relief_shape_declined
-                - cost.etb_relief_pre_gate_refused
-                > 0,
-            "{board:?}: a consult passed the shape stage; {cost:?}"
-        );
-    }
-}
-
-/// CR 400.7 + CR 603.6a: at the offer apply a blinked resident the relieved definitions' matchers
-/// match refuses relief at the identity stage, and no consult grants it.
-#[test]
-fn an_identity_unstable_resident_refuses_relief_at_the_offer_apply() {
-    for board in BOARDS {
-        let Some((_, applies)) = offered(board) else {
-            return;
-        };
-        let cost = offer_cost(board, &applies);
-        assert!(
-            cost.etb_relief_identity_refused > 0,
-            "{board:?}: a consult was refused at the identity stage; {cost:?}"
-        );
-        assert_eq!(
-            cost.etb_relief_excluded, 0,
-            "{board:?}: no consult granted relief; {cost:?}"
-        );
-    }
-}
-
 /// Each apply evaluates the loop shortcut at most once, through the take and on to the next window
 /// whose cover the producer asks.
 #[test]

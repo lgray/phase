@@ -15,13 +15,14 @@ use crate::types::ability::{
 use crate::types::actions::GameAction;
 use crate::types::card::PrintedCardRef;
 use crate::types::game_state::{
-    printed_trigger_origin, GameState, ReplacementChoiceKind, RetargetScope, StackEntry,
-    StackEntryKind, WaitingFor,
+    printed_trigger_origin, GameState, PayCostKind, ReplacementChoiceKind, RetargetScope,
+    StackEntry, StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
+use crate::types::zones::Zone;
 
 /// Increments the test-support meter; compiled out of every other build.
 macro_rules! meter {
@@ -147,6 +148,87 @@ pub enum AnswerOptionality {
     Mandatory,
 }
 
+/// Whether an entry was made at priority or at another prompt, such as a mana ability activated
+/// during a payment (CR 605.3a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptClass {
+    Priority,
+    Other,
+}
+
+/// Where an object-moving cost sends its objects, and the zones the moved objects arrived in
+/// (CR 400.7), sorted; a replacement may send them elsewhere (CR 614.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CostMove {
+    pub destination: Zone,
+    /// `None` for an object that no longer exists.
+    pub arrivals: Vec<Option<Zone>>,
+}
+
+/// Where an object-moving cost sends the objects it chooses; `None` for a cost that moves none.
+fn cost_destination(kind: &PayCostKind) -> Option<Zone> {
+    match kind {
+        // CR 701.21a + CR 701.9a: sacrificed and discarded objects go to the graveyard.
+        PayCostKind::Sacrifice | PayCostKind::Discard => Some(Zone::Graveyard),
+        // CR 701.13a: an exiled object goes to exile.
+        PayCostKind::ExileFromZone { .. }
+        | PayCostKind::ExileMaterials { .. }
+        | PayCostKind::ExilePermanent { .. }
+        | PayCostKind::ExileFromManaZone { .. }
+        | PayCostKind::ExileAggregate { .. }
+        | PayCostKind::Behold {
+            action: crate::types::ability::BeholdCostAction::ExileChosen,
+        } => Some(Zone::Exile),
+        PayCostKind::ReturnToHand => Some(Zone::Hand),
+        PayCostKind::Reveal
+        | PayCostKind::UnattachFrom { .. }
+        | PayCostKind::RemoveCounter { .. }
+        | PayCostKind::TapCreatures { .. }
+        | PayCostKind::Behold {
+            action: crate::types::ability::BeholdCostAction::ChooseOrReveal,
+        } => None,
+    }
+}
+
+/// The objects an object-moving cost prompt offers, with the zone each is in now.
+#[derive(Clone, Debug)]
+pub(crate) struct CostChoices {
+    destination: Zone,
+    choices: Vec<(ObjectId, Zone)>,
+}
+
+impl CostChoices {
+    pub(crate) fn at(state: &GameState) -> Option<Self> {
+        let WaitingFor::PayCost { kind, choices, .. } = &state.waiting_for else {
+            return None;
+        };
+        Some(Self {
+            destination: cost_destination(kind)?,
+            choices: choices
+                .iter()
+                .filter_map(|id| state.objects.get(id).map(|o| (*id, o.zone)))
+                .collect(),
+        })
+    }
+
+    /// The move as it stands in `after`: every offered object no longer where it was.
+    pub(crate) fn moved(&self, after: &GameState) -> CostMove {
+        let mut arrivals: Vec<Option<Zone>> = self
+            .choices
+            .iter()
+            .filter_map(|(id, zone)| {
+                let now = after.objects.get(id).map(|o| o.zone);
+                (now != Some(*zone)).then_some(now)
+            })
+            .collect();
+        arrivals.sort_unstable();
+        CostMove {
+            destination: self.destination,
+            arrivals,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EntryKind {
     Play {
@@ -161,6 +243,8 @@ pub enum EntryKind {
         optional: AnswerOptionality,
         /// The triggered ability whose resolution asked it (CR 603.5 + CR 608.2d).
         asked_by: Option<usize>,
+        /// Set when the answer chose the objects an object-moving cost moves.
+        cost_move: Option<CostMove>,
     },
 }
 
@@ -168,6 +252,12 @@ pub enum EntryKind {
 pub struct TraceEntry {
     pub seat: PlayerId,
     pub kind: EntryKind,
+    /// The stack's size when the entry was made.
+    pub depth: usize,
+    pub prompt: PromptClass,
+    /// The object-id counter when the entry was made, so a replay can tell an object minted
+    /// since then from one that existed.
+    pub next_object_id: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -854,6 +944,8 @@ pub(crate) struct TraceSnapshot {
     reverses: Option<Reversal>,
     /// The trace before the action's entry, when no play was in progress before it.
     opening: Option<Box<PlayTrace>>,
+    /// The entry of an answer to an object-moving cost, and what the cost offered.
+    cost: Option<(usize, CostChoices)>,
 }
 
 /// Records a player's game choice at the outermost action boundary, before it runs.
@@ -879,12 +971,21 @@ pub(crate) fn begin_action(
         // Every snapshot a reversal restores is this trace before the entry touches any field.
         let prior = trace_mut(state).clone();
         let at = prior.entries.len();
+        let depth = state.stack.len();
+        let prompt = if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+            PromptClass::Priority
+        } else {
+            PromptClass::Other
+        };
+        let next_object_id = state.next_object_id;
+        let mut cost = None;
         let (entry, continues_mana_ability) = match choice {
             Choice::Reverse(reversal) => {
                 return Some(TraceSnapshot {
                     before,
                     reverses: Some(reversal),
                     opening: None,
+                    cost: None,
                 });
             }
             Choice::Play(play) => {
@@ -897,6 +998,9 @@ pub(crate) fn begin_action(
                         node,
                         locus,
                     },
+                    depth,
+                    prompt,
+                    next_object_id,
                 };
                 (entry, false)
             }
@@ -906,6 +1010,7 @@ pub(crate) fn begin_action(
                     .resolving_stack_entry
                     .as_ref()
                     .and_then(|entry| trigger_node(state, entry, at));
+                cost = CostChoices::at(state).map(|choices| (at, choices));
                 let trace = trace_mut(state);
                 let asked_by = asking.map(|key| trace.intern(key));
                 let entry = TraceEntry {
@@ -914,7 +1019,11 @@ pub(crate) fn begin_action(
                         action: action.clone(),
                         optional,
                         asked_by,
+                        cost_move: None,
                     },
+                    depth,
+                    prompt,
+                    next_object_id,
                 };
                 (entry, state.waiting_for.is_mana_ability_continuation())
             }
@@ -926,6 +1035,7 @@ pub(crate) fn begin_action(
             before,
             reverses: None,
             opening,
+            cost,
         })
     })
 }
@@ -943,8 +1053,20 @@ pub(crate) fn end_action(state: &mut GameState, snapshot: Option<TraceSnapshot>,
         reverse(state, reversal);
     }
     let began_play = play_in_progress(state);
+    let cost_move = snapshot
+        .cost
+        .map(|(at, choices)| (at, choices.moved(state)));
     let tapped = &state.lands_tapped_for_mana;
     if let Some(trace) = state.play_trace.as_deref_mut() {
+        if let Some((at, moved)) = cost_move {
+            if let Some(TraceEntry {
+                kind: EntryKind::Answer { cost_move, .. },
+                ..
+            }) = trace.entries.get_mut(at)
+            {
+                *cost_move = Some(moved);
+            }
+        }
         // A play begins at the action after which one is in progress, whatever prompt that
         // action answered; the engine's state, not the prompt, says which action that was.
         if let Some(before) = snapshot.opening.filter(|_| began_play) {
@@ -989,8 +1111,14 @@ fn reverse(state: &mut GameState, reversal: Reversal) {
     state.play_trace = Some(Box::new(restored));
 }
 
+/// The stack and object-id counter as they stood before a priority pass resolved its top.
+pub(crate) struct BeforeResolution {
+    stack: im::Vector<StackEntry>,
+    next_object_id: u64,
+}
+
 /// The stack as it stood before a priority pass resolves its top, when the trace records it.
-pub(crate) fn stack_before_resolution(state: &GameState) -> Option<im::Vector<StackEntry>> {
+pub(crate) fn stack_before_resolution(state: &GameState) -> Option<BeforeResolution> {
     if in_simulation_probe()
         && state.loop_detection.samples()
         && state
@@ -1000,19 +1128,18 @@ pub(crate) fn stack_before_resolution(state: &GameState) -> Option<im::Vector<St
     {
         meter!(resolution_hooks_in_probe += 1);
     }
-    recording(state).then(|| state.stack.clone())
+    recording(state).then(|| BeforeResolution {
+        stack: state.stack.clone(),
+        next_object_id: state.next_object_id,
+    })
 }
 
 /// CR 603.3: records each triggered ability among the `consumed` entries that resolved from
 /// the top of `before`. Triggered mana abilities never use the stack (CR 605.4a).
-pub(crate) fn record_resolutions(
-    state: &mut GameState,
-    before: &im::Vector<StackEntry>,
-    consumed: u32,
-) {
+pub(crate) fn record_resolutions(state: &mut GameState, before: &BeforeResolution, consumed: u32) {
     metered(|| {
         let consumed = usize::try_from(consumed).unwrap_or(usize::MAX);
-        for entry in before.iter().rev().take(consumed) {
+        for (resolved, entry) in before.stack.iter().rev().take(consumed).enumerate() {
             let at = trace_mut(state).entries.len();
             let Some(key) = trigger_node(state, entry, at) else {
                 continue;
@@ -1026,6 +1153,9 @@ pub(crate) fn record_resolutions(
                 TraceEntry {
                     seat: entry.controller,
                     kind: EntryKind::Resolution { node },
+                    depth: before.stack.len() - resolved,
+                    prompt: PromptClass::Priority,
+                    next_object_id: before.next_object_id,
                 },
                 false,
             );
@@ -1121,6 +1251,7 @@ pub(crate) fn name_window(state: &mut GameState) {
                     Some(TraceEntry {
                         seat,
                         kind: EntryKind::Play { locus, .. },
+                        ..
                     }) if *seat == holder => Some((at, node, *locus)),
                     _ => None,
                 })
@@ -1146,6 +1277,30 @@ pub(crate) fn name_window(state: &mut GameState) {
         }
     });
     state.play_trace = Some(Box::new(trace));
+}
+
+/// The current window's trace; `None` when none was recorded or it belongs to an ended step.
+fn current(state: &GameState) -> Option<&PlayTrace> {
+    state
+        .play_trace
+        .as_deref()
+        .filter(|trace| trace.window == WindowKey::of(state))
+}
+
+/// The current window's entries.
+pub(crate) fn current_entries(state: &GameState) -> Option<&im::Vector<TraceEntry>> {
+    current(state).map(|trace| &trace.entries)
+}
+
+/// Every span the current window's trace names, in the order it named them.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn current_named(state: &GameState) -> Vec<NamedSpan> {
+    current(state).map_or_else(Vec::new, |trace| trace.named.iter().copied().collect())
+}
+
+/// Whether two states stand in the same step (CR 500.2).
+pub(crate) fn same_window(a: &GameState, b: &GameState) -> bool {
+    WindowKey::of(a) == WindowKey::of(b)
 }
 
 /// Runs a hook, metering the whole-state copies it makes outside its legality reads.
@@ -1177,10 +1332,7 @@ pub struct PlayTraceView {
 /// The current window's trace; `None` when none was recorded or it belongs to an ended step.
 #[cfg(any(test, feature = "test-support"))]
 pub fn play_trace_view(state: &GameState) -> Option<PlayTraceView> {
-    let trace = state
-        .play_trace
-        .as_deref()
-        .filter(|trace| trace.window == WindowKey::of(state))?;
+    let trace = current(state)?;
     Some(PlayTraceView {
         entries: trace.entries.iter().cloned().collect(),
         named: trace.named.iter().copied().collect(),

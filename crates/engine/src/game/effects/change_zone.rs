@@ -1,3 +1,4 @@
+use crate::types::game_state::RandomDraw;
 use rand::Rng;
 
 use crate::game::game_object::AttachTarget;
@@ -1052,7 +1053,10 @@ pub fn resolve(
             && !choice_up_to
             && choice_count == 1
         {
-            let index = state.rng.random_range(0..eligible.len());
+            let index = state
+                .rng
+                .draw(RandomDraw::Outcome)
+                .random_range(0..eligible.len());
             let chosen = eligible[index];
             publish_finalized_owner_library_subjects(state, ability, &[chosen]);
             capture_devour_snapshot_before_single_entry(state, chosen, dest_zone);
@@ -2267,7 +2271,7 @@ pub fn resolve_all(
     let mut matching = matching;
     if random_order {
         use rand::seq::SliceRandom;
-        matching.shuffle(&mut state.rng);
+        matching.shuffle(state.rng.draw(RandomDraw::Placement));
     }
 
     let mut moved_count: i32 = 0;

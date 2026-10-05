@@ -7932,7 +7932,9 @@ fn gamble_searches_to_hand_then_discards_random_card() {
     discard_pool.push(target);
     let expected_discard = {
         let mut rng = state.rng.clone();
-        let index = rng.random_range(0..discard_pool.len());
+        let index = rng
+            .draw(crate::types::game_state::RandomDraw::Outcome)
+            .random_range(0..discard_pool.len());
         discard_pool[index]
     };
 

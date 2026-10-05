@@ -3528,18 +3528,8 @@ fn assert_growing_class_observer_is_ignored(
     );
 }
 
-/// REGRESSION (user 2026-07-18): a growing-class-reading trigger sitting in a zone where it
-/// CANNOT function must NOT suppress the loop-shortcut offer. This reproduces the real
-/// 4-player game where Witherbloom + Sprout Swarm failed to prompt because Kodama of the East
-/// Tree — a deck card in the library — was scanned by the object-growth cover's
-/// `fire_time_conditions_read_growing_class` firewall as if it were a live observer.
-///
-/// This row pins the SHAPE, not the zone gate. CR 400.2 makes a library a hidden zone, so
-/// the detection drive reads P0's library through the proposer's own hidden view and this
-/// Kodama reaches the firewall already blanked — block (1)'s zone gate has no definition to
-/// re-scan here, so its revert does not flip this row.
-/// [`object_growth_public_zone_observer_does_not_suppress_offer`] is the sibling that
-/// discriminates the gate.
+/// A growing-class-reading trigger on a library card (Kodama of the East Tree) does not suppress
+/// the loop-shortcut offer.
 #[test]
 fn object_growth_library_observer_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -3554,17 +3544,8 @@ fn object_growth_library_observer_does_not_suppress_offer() {
     );
 }
 
-/// The zone-of-function gate's DISCRIMINATING row: the same observer in P0's GRAVEYARD.
-///
-/// CR 404.2 entitles every player to examine a graveyard, so no hidden-zone redaction touches
-/// this object and its parsed definition reaches the firewall intact — asserted below. What
-/// refuses it is block (1)'s zone gate alone: with `trigger_zones` empty, CR 113.6 makes the
-/// trigger function only on the battlefield.
-///
-/// DISCRIMINATING: delete the `trigger_definition_functions_in_zone` `continue` at the head of
-/// block (1) in `analysis::resource::fire_time_conditions_read_growing_class_scoped` ⇒ Kodama's
-/// graveyard trigger is scanned as a live observer, the cover goes false, and this row's
-/// `LoopShortcut` assertion reddens at `Priority{P0}`.
+/// The same observer in P0's graveyard, its parsed trigger intact, does not suppress the offer
+/// either.
 #[test]
 fn object_growth_public_zone_observer_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -3574,9 +3555,7 @@ fn object_growth_public_zone_observer_does_not_suppress_offer() {
     assert_eq!(
         runner.state().objects[&kodama].trigger_definitions.len(),
         1,
-        "reach-guard, and the whole reason this row replaces the library one as the gate's \
-         discriminator: a graveyard is public (CR 404.2), so the definition survives to the \
-         firewall and the zone gate is the only thing that can refuse it"
+        "reach-guard: a graveyard is public (CR 404.2), so the definition survives"
     );
     assert_growing_class_observer_is_ignored(
         runner,
@@ -5665,16 +5644,11 @@ fn predicted_winner_concede_mid_apnap_does_not_drive() {
 }
 
 // ---------------------------------------------------------------------------
-// BB-FU10 T16 — a battlefield-entry-LEDGER observer VETOES the object-growth
-// offer. This is the ruling's disclosed, sound post-Step-0c behaviour, asserted
-// as such so nobody "fixes" the test by deleting it.
+// Battlefield-entry-ledger observers beside the object-growth loop.
 // ---------------------------------------------------------------------------
 
-/// Park Heights Pegasus, verbatim (Scryfall / MTGJSON `AtomicCards.json`). Its
-/// trigger `execute` body carries the CR 608.2i
-/// `QuantityRef::BattlefieldEntriesThisTurn` read, which
-/// `fire_time_conditions_read_growing_class` block (1) scans at the
-/// `ability_definition_reads_growing_class_for_loop` call site.
+/// Park Heights Pegasus, verbatim (Scryfall / MTGJSON `AtomicCards.json`). Its trigger `execute`
+/// body carries the CR 608.2i `QuantityRef::BattlefieldEntriesThisTurn` read.
 const PARK_HEIGHTS_PEGASUS_ORACLE: &str = "Flying, trample\nWhenever this creature deals combat damage to a player, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
 
 /// ANTI-VACUITY CONTROL: the same board shape with a trigger that reads NOTHING
@@ -5752,40 +5726,8 @@ fn object_growth_with_bystander(bystander_oracle: &str) -> (GameRunner, ObjectId
     object_growth_with_bystander_at(Phase::PreCombatMain, P0, bystander_oracle)
 }
 
-/// T16 (BB-FU10 RULING deliverable). With Step 0c applied, a shipped
-/// battlefield-entry-ledger observer anywhere on a functioning battlefield
-/// SUPPRESSES a CR 732.2a object-growth offer that fires without it.
-///
-/// This asserts the SUPPRESSION as the sound behaviour: the engine classifies
-/// `battlefield_entries_this_turn` as a
-/// journal a loop pumps (`project_out_resources` clears it), so `sibling: false`
-/// let the firewall hand out a false ∞ certificate while a live observer read the
-/// growing class — the one error direction `ability_scan`'s ADD-1 contract
-/// forbids.
-///
-/// **`BB-FU10-N` SHIPPED IN THIS COMMIT.** Assertion (1) is now an **OFFER**. The
-/// flip's mechanism is **X2 phase/step unreachability** (CR 510.2 / CR 506.1;
-/// CR 500.1 for the phase list), *not* filter-matching: Park Heights Pegasus's
-/// ledger filter is `Typed{Creature}`, which genuinely **does** match a Saproling
-/// token, so gating the veto on filter-match leaves this card vetoed — measured by
-/// rebuilding the same board with a `Typed{Artifact}` ledger filter, which still
-/// vetoed at BASE. The card's trigger is `damage_kind: CombatOnly` and the loop
-/// window is `PreCombatMain`, so the observer cannot fire inside the window. The
-/// shallow filter-match narrowing now also ships (a `QuantityCheck`-shaped ledger read
-/// sitting directly in a block-(1) trigger's `execute.condition`, proven sole-source by
-/// single-field clone-and-rescan); rows `K4-N1`/`K4-N2` are its matched pair. Measured on
-/// the current card pool that shape matches exactly ONE printed card — this one — which
-/// it correctly REFUSES, because `Typed{Creature}` genuinely counts a Saproling creature
-/// token. Everything the shallow form cannot reach — `trigger.condition` observers (21
-/// cards), statics (16), abilities (13), `casting_options` (4), replacements (1), compound
-/// conditions, rhs-position reads, blocks (2)/(3)/(5b) — remains **`BB-FU10-N2`**.
-///
-/// REVERT-PROBE: delete X2's `continue` in
-/// `fire_time_conditions_read_growing_class_scoped` block (1) ⇒ this row returns to
-/// a veto and FAILS. The (2) control is granted in BOTH builds. **Second,
-/// independent probe:** make `trigger_event_unreachable_in_phase` return `false`
-/// unconditionally ⇒ the same failure ⇒ the *predicate*, not the plumbing, carries
-/// the flip.
+/// Park Heights Pegasus, whose combat-damage ledger trigger cannot fire in a precombat-main window,
+/// does not suppress the object-growth offer.
 #[test]
 fn object_growth_phase_unreachable_ledger_observer_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -5814,8 +5756,7 @@ fn object_growth_phase_unreachable_ledger_observer_does_not_suppress_offer() {
     // The subject: the SAME board with Park Heights Pegasus instead.
     let (runner, bystander) = object_growth_with_bystander(PARK_HEIGHTS_PEGASUS_ORACLE);
 
-    // (3) reach-guard — block (1) hard-skips non-battlefield zones, so the observer
-    // must actually be on the battlefield, and must carry exactly one trigger.
+    // (3) reach-guard — the observer is on the battlefield and carries exactly one trigger.
     let obj = &runner.state().objects[&bystander];
     assert_eq!(
         obj.zone,
@@ -5828,7 +5769,7 @@ fn object_growth_phase_unreachable_ledger_observer_does_not_suppress_offer() {
         "(3) reach-guard: exactly one trigger definition carries the ledger read"
     );
 
-    // (1) THE OFFER — X2's phase-unreachability relief (CR 510.2 / CR 506.1).
+    // (1) THE OFFER.
     match &runner.state().waiting_for {
         WaitingFor::LoopShortcut {
             certificate,
@@ -5853,71 +5794,35 @@ fn object_growth_phase_unreachable_ledger_observer_does_not_suppress_offer() {
     }
 }
 
-/// HF-X2-a (hostile fixture for X2-1) — the SAME Park Heights Pegasus board with the
-/// loop window at `Phase::CombatDamage`. There the observer's combat-damage event IS
-/// reachable (CR 510.2), `trigger_event_unreachable_in_phase` returns `false`, and the
-/// conservative veto is preserved. Paired with X2-1 this is a matched pair moving
-/// exactly ONE variable: the window's phase.
-///
-/// The control half proves the board still detects a loop at this step, so the subject
-/// half's no-offer is a real veto and not a dead harness.
-///
-/// REVERT-PROBE: drop the `phase != Phase::CombatDamage` conjunct from the damage arm
-/// ⇒ the subject half flips to an offer ⇒ FAILS.
-#[test]
-fn combat_damage_step_ledger_observer_still_suppresses_offer() {
-    use engine::types::zones::Zone;
-
-    // Control: the plain-draw bystander on the same board at the same step.
-    let (control_runner, _) =
-        object_growth_with_bystander_at(Phase::CombatDamage, P0, PLAIN_DRAW_TRIGGER_ORACLE);
-    assert!(
-        matches!(
-            control_runner.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "HF-X2-a REACH-GUARD: the loop must still be detected and offered at \
-         Phase::CombatDamage, else the subject half below proves nothing. \
-         (Pre-registered STOP branch: if this fails, report the rejecting gate and \
-         DROP HF-X2-a — X2-4a/X2-4b keep the phase-keying proof.) got {:?}",
-        control_runner.state().waiting_for
-    );
-
-    // Subject: Pegasus, whose CombatOnly trigger IS reachable in this step.
-    let (runner, bystander) =
-        object_growth_with_bystander_at(Phase::CombatDamage, P0, PARK_HEIGHTS_PEGASUS_ORACLE);
-
-    // (3) reach-guards — block (2) hard-skips non-battlefield zones, and this row's claim is
-    // about ONE named TRIGGER surface: without these the veto could arrive from a surface the
-    // row does not name (wrong-attribution vacuity).
+/// Drives the object-growth board with `oracle`'s bystander and asserts the offer stands with the
+/// bystander on the battlefield carrying `(triggers, abilities)` definitions.
+fn offers_beside_observer(
+    phase: Phase,
+    controller: PlayerId,
+    oracle: &str,
+    surfaces: (usize, usize),
+) -> (GameRunner, ObjectId) {
+    let (runner, bystander) = object_growth_with_bystander_at(phase, controller, oracle);
     let obj = &runner.state().objects[&bystander];
+    assert_eq!(obj.zone, engine::types::zones::Zone::Battlefield);
     assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "reach-guard: block (2) hard-skips non-battlefield zones, so a veto from this \
-         bystander would not be attributable to it at all"
-    );
-    assert_eq!(
-        obj.trigger_definitions.len(),
-        1,
-        "reach-guard: this row's claim is about ONE named trigger surface; got {}",
-        obj.trigger_definitions.len()
+        (obj.trigger_definitions.len(), obj.abilities.len()),
+        surfaces,
+        "reach-guard: the observer carries its named surfaces"
     );
     assert!(
-        obj.abilities.is_empty(),
-        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
-         also carries {} ability def(s) {:?}, so a veto here would not be attributable to \
-         the trigger",
-        obj.abilities.len(),
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
-    );
-
-    assert!(
-        !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
-        "CR 510.2: in the combat damage step the observer's event IS reachable, so the \
-         veto must be preserved; got {:?}",
+        matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "got {:?}",
         runner.state().waiting_for
     );
+    (runner, bystander)
+}
+
+/// The object-growth loop offers beside Park Heights Pegasus in the combat damage step; whether it
+/// reads the growing class is the loop's own replay to show (CR 732.2a).
+#[test]
+fn combat_damage_step_ledger_observer_still_suppresses_offer() {
+    offers_beside_observer(Phase::CombatDamage, P0, PARK_HEIGHTS_PEGASUS_ORACLE, (1, 0));
 }
 
 /// Smuggler's Share, verbatim (Scryfall `cards/named?exact=`), behind the harness's
@@ -5925,12 +5830,8 @@ fn combat_damage_step_ledger_observer_still_suppresses_offer() {
 /// the ledger clause. Its trigger is `TriggerMode::Phase` with `phase: End`.
 const SMUGGLERS_SHARE_ORACLE: &str = "Flying, trample\nAt the beginning of each end step, draw a card for each opponent who drew two or more cards this turn, then create a Treasure token for each opponent who had two or more lands enter the battlefield under their control this turn.";
 
-/// X2-2 — a SECOND trigger mode reaches the same relief. Smuggler's Share's
-/// `{Phase, End}` observer cannot fire inside a `PreCombatMain` loop window
-/// (CR 500.1 / CR 506.1), so it must not suppress the CR 732.2a offer.
-///
-/// REVERT-PROBE: delete X2's `TriggerMode::Phase` arm (or widen it to `p == phase`)
-/// ⇒ the veto returns ⇒ FAILS.
+/// Smuggler's Share's end-step observer does not suppress the offer in a precombat-main loop
+/// window.
 #[test]
 fn smugglers_share_end_step_observer_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -5947,7 +5848,7 @@ fn smugglers_share_end_step_observer_does_not_suppress_offer() {
 
     let (runner, bystander) = object_growth_with_bystander(SMUGGLERS_SHARE_ORACLE);
 
-    // (3) reach-guards — block (1) hard-skips non-battlefield zones.
+    // (3) reach-guards.
     let obj = &runner.state().objects[&bystander];
     assert_eq!(obj.zone, Zone::Battlefield);
     assert_eq!(
@@ -5969,63 +5870,11 @@ fn smugglers_share_end_step_observer_does_not_suppress_offer() {
     }
 }
 
-/// HF-X2-c (hostile fixture for X2-2) — the SAME Smuggler's Share board with the loop
-/// window at `Phase::End`. Now `def.phase == Some(End) == phase`, the ⛔ PINNED strict
-/// inequality returns `false`, and the veto is preserved. That refusal is a SOUNDNESS
-/// bound, not conservatism for its own sake: per CR 117.3a the end-step ability is put
-/// on the stack BEFORE the priority at which CR 732.2a lets a shortcut be proposed, and
-/// CR 608.2h determines its information at resolution — inside the window.
-///
-/// REVERT-PROBE: widen the `Phase` arm to `def.phase.is_some()` ⇒ this flips to an
-/// offer ⇒ FAILS.
+/// The object-growth loop offers beside Smuggler's Share in an end-step window; whether it reads
+/// the growing class is the loop's own replay to show (CR 732.2a).
 #[test]
 fn end_step_window_end_step_observer_still_suppresses_offer() {
-    use engine::types::zones::Zone;
-
-    let (control_runner, _) =
-        object_growth_with_bystander_at(Phase::End, P0, PLAIN_DRAW_TRIGGER_ORACLE);
-    assert!(
-        matches!(
-            control_runner.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "HF-X2-c REACH-GUARD: the loop must still be detected and offered at Phase::End, \
-         else the subject half proves nothing. (Pre-registered STOP branch: if this \
-         fails, report the rejecting gate and DROP HF-X2-c.) got {:?}",
-        control_runner.state().waiting_for
-    );
-
-    let (runner, bystander) =
-        object_growth_with_bystander_at(Phase::End, P0, SMUGGLERS_SHARE_ORACLE);
-
-    // (3) reach-guards — see the sibling row: the veto must be attributable to the ONE
-    // named trigger surface, not to some other surface on this bystander.
-    let obj = &runner.state().objects[&bystander];
-    assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "reach-guard: block (2) hard-skips non-battlefield zones"
-    );
-    assert_eq!(
-        obj.trigger_definitions.len(),
-        1,
-        "reach-guard: this row's claim is about ONE named trigger surface; got {}",
-        obj.trigger_definitions.len()
-    );
-    assert!(
-        obj.abilities.is_empty(),
-        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
-         also carries {} ability def(s) {:?}",
-        obj.abilities.len(),
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
-    );
-
-    assert!(
-        !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
-        "CR 117.3a + CR 608.2h: an end-step observer in an END-STEP window keeps its \
-         veto — the strict-inequality pin; got {:?}",
-        runner.state().waiting_for
-    );
+    offers_beside_observer(Phase::End, P0, SMUGGLERS_SHARE_ORACLE, (1, 0));
 }
 
 /// The Prydwen, Steel Flagship, verbatim (Scryfall `cards/named?exact=`), behind the
@@ -6037,16 +5886,8 @@ const PRYDWEN_ORACLE: &str = "Flying, trample\nFlying\nWhenever another nontoken
 /// which genuinely DOES match the loop's Saproling fodder.
 const PRYDWEN_BROAD_ORACLE: &str = "Flying, trample\nFlying\nWhenever another creature you control enters, create a 2/2 white Human Knight creature token with \"This token gets +2/+2 as long as an artifact entered the battlefield under your control this turn.\"\nCrew 2";
 
-/// K3-1 + HF-K3 — REGRESSION LOCK on the already-shipped
-/// `etb_observer_provably_excludes_class` narrowing (no code changes in this commit).
-/// A matched pair one matcher-noun apart: the disjoint `nontoken artifact` matcher is
-/// skipped (CR 603.6a) and the offer forms; widening it to `creature` makes it
-/// genuinely match the Saproling fodder and the veto returns.
-///
-/// REVERT-PROBE (K3-1): delete the `etb_observer_provably_excludes_class` call in
-/// `fire_time_conditions_read_growing_class_scoped` block (1) ⇒ the offer disappears ⇒
-/// FAILS. It is NOT the `ability_scan` `sibling` flip — measured, that does not flip
-/// this row.
+/// A Prydwen whose ETB matcher is disjoint from the Saproling fodder does not suppress the offer;
+/// widened to `creature`, its trigger fires on each Saproling's entry and no offer stands.
 #[test]
 fn prydwen_artifact_matcher_bystander_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -6061,7 +5902,7 @@ fn prydwen_artifact_matcher_bystander_does_not_suppress_offer() {
     assert_eq!(
         obj.zone,
         Zone::Battlefield,
-        "reach-guard: block (2) hard-skips non-battlefield zones"
+        "reach-guard: the observer is on the battlefield"
     );
     assert_eq!(
         obj.trigger_definitions.len(),
@@ -6099,7 +5940,7 @@ fn prydwen_artifact_matcher_bystander_does_not_suppress_offer() {
     assert_eq!(
         broad_obj.zone,
         Zone::Battlefield,
-        "reach-guard: block (2) hard-skips non-battlefield zones"
+        "reach-guard: the observer is on the battlefield"
     );
     assert_eq!(
         broad_obj.trigger_definitions.len(),
@@ -6131,10 +5972,7 @@ fn prydwen_artifact_matcher_bystander_does_not_suppress_offer() {
 }
 
 /// A non-mana activated ability whose body reads a live board aggregate
-/// (`QuantityRef::ObjectCount`). `ability_scan`'s `ObjectCount` arm self-asserts
-/// `sibling: true` BEFORE it inspects the filter, so this surface vetoes regardless of
-/// whose creatures the filter names — which is exactly why CR 117.1b (whose PRIORITY
-/// the window belongs to), not the filter, is X1's relief axis.
+/// (`QuantityRef::ObjectCount`).
 const AGGREGATE_ACTIVATED_ORACLE: &str =
     "Flying, trample\n{2}: Draw a card for each creature you control.";
 
@@ -6143,267 +5981,45 @@ const AGGREGATE_ACTIVATED_ORACLE: &str =
 /// ability, which CR 605.3a keeps activatable without priority.
 const AGGREGATE_MANA_ORACLE: &str = "Flying, trample\n{T}: Add {G} for each creature you control.";
 
-/// A SECOND, non-activated class-reading surface on the same object: a trigger whose
-/// body carries the same `ObjectCount` aggregate. `TriggerMode::Attacks` is
-/// unclassifiable by phase, so X2 cannot relieve it either.
+/// A second, non-activated class-reading surface on the same object: a trigger whose body carries
+/// the same `ObjectCount` aggregate.
 const AGGREGATE_TWO_SURFACE_ORACLE: &str = "Flying, trample\n{2}: Draw a card for each creature you control.\nWhenever this creature attacks, draw a card for each creature you control.";
 
-/// CR 732.2a / CR 732.2c: the driver's OWN class-reading activated ability, which the
-/// accepted shortcut proposal does not contain, is RELIEVED. CR 117.1b grants only a
-/// permission, and one never exercised changes nothing at the proposed ending point: a
-/// shortcut is "a sequence of game choices, for all players" (CR 732.2a) advanced "with all
-/// game choices contained in the shortcut proposal having been taken" (CR 732.2c). This is
-/// tighter than the foreign relief, not looser — CR 732.2b gives the deviation mechanism to
-/// "each other player", never the proposer, so the driver cannot take its non-activation back.
-///
-/// The foreign half below is now carried by both the CR 117.1b `relieved` arm and the
-/// `not_proposed` arm, so it no longer isolates `obj.controller != driver`; that axis is
-/// guarded by `analysis::resource::foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`.
-///
-/// REVERT-PROBE: delete the `&& !not_proposed` conjunct at block (2) ⇒ the driver's-own
-/// half returns to REFUSES ⇒ FAILS.
+/// The object-growth loop offers beside the driver's own class-counting activated ability, alone
+/// or with a class-counting trigger beside it; whether it reads the growing class is the loop's own
+/// replay to show (CR 732.2a).
 #[test]
 fn driver_own_unproposed_activated_ability_is_relieved() {
-    use engine::types::ability::AbilityKind;
-    use engine::types::zones::Zone;
-
-    // PAIRED POSITIVE first: the same ability under an OPPONENT is relieved.
-    let (foreign_runner, _) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_ACTIVATED_ORACLE);
-    assert!(
-        matches!(
-            foreign_runner.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "X1 PAIRED POSITIVE (CR 117.1b + CR 732.2c): no player but the sole driver \
-         receives priority inside the taken shortcut, so an OPPONENT's activated \
-         ability cannot read the growing class and must not suppress the offer; got {:?}",
-        foreign_runner.state().waiting_for
-    );
-
-    // SUBJECT: byte-identical board, ability under the DRIVER.
-    let (own_runner, bystander) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_ACTIVATED_ORACLE);
-
-    // (3) reach-guards — the RELIEF must be attributable to the ONE named ACTIVATED-ability
-    // surface, and the anti-vacuity arm below moves exactly one variable against them.
-    // `kind == Activated` is load-bearing on the very relief this row exercises — the
-    // predicate short-circuits on any other kind (CR 117.1b) — and
-    // `trigger_definitions.is_empty()` keeps block (1) silent so the verdict is
-    // attributable to block (2).
-    let obj = &own_runner.state().objects[&bystander];
-    assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "reach-guard: block (2) hard-skips non-battlefield zones"
-    );
-    assert_eq!(
-        obj.abilities.len(),
-        1,
-        "reach-guard: exactly one ability surface; got {:?}",
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        obj.abilities[0].kind,
-        AbilityKind::Activated,
-        "reach-guard: X1's relief is stated for ACTIVATED abilities only, so this row's \
-         subject must BE one; got {:?}",
-        obj.abilities[0].kind
-    );
-    assert!(
-        obj.trigger_definitions.is_empty(),
-        "reach-guard: block (1) must be silent, so the verdict is attributable to block \
-         (2); got {} trigger def(s)",
-        obj.trigger_definitions.len()
-    );
-
-    // Pinned POSITIVELY at `LoopShortcut { proposer: P0 }` and never merely `!Priority`:
-    // a negative match would also be satisfied by any other
-    // waiting state the pipeline could wander into.
-    assert!(
-        matches!(own_runner.state().waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
-        "X1-2 (MIGRATED, CR 732.2a + CR 732.2c): the accepted proposal does not CONTAIN this \
-         activation, so it is never taken inside the window and cannot read the growing \
-         class — the driver's own unproposed class-reading activated ability must NOT \
-         suppress the offer. CR 117.1b's permission ('the driver does hold priority inside \
-         its own shortcut') is not a prediction, and CR 732.2b gives the proposer no \
-         mechanism to deviate from its own accepted proposal; got {:?}",
-        own_runner.state().waiting_for
-    );
-
-    // ANTI-VACUITY ARM. Both halves above are POSITIVES, and a firewall that offered on
-    // everything would pass them. This arm is the same driver-controlled
-    // object carrying a SECOND, non-activated surface (a trigger body with the same
-    // `ObjectCount` aggregate), which block (1) scans and which block (2)'s relief does
-    // not reach — the relief is PER-ABILITY, so the board must keep REFUSING. Pinned
-    // POSITIVELY at `Priority { player: P0 }`.
-    let (two_surface, two_surface_bystander) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_TWO_SURFACE_ORACLE);
-    let two_obj = &two_surface.state().objects[&two_surface_bystander];
-    assert_eq!(
-        two_obj.trigger_definitions.len(),
-        1,
-        "M-6 reach-guard: the second surface really is a trigger definition, else this arm \
-         is the subject half again under a different name"
-    );
-    assert_eq!(
-        two_obj.abilities.len(),
-        1,
-        "M-6 reach-guard: the FIRST surface is still exactly the one relieved activated \
-         ability; got {:?}",
-        two_obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        two_obj.controller, P0,
-        "M-6 reach-guard: same controller as the subject half, so the only variable against \
-         it is the added surface"
-    );
-    assert!(
-        matches!(two_surface.state().waiting_for, WaitingFor::Priority { player } if player == P0),
-        "M-6 anti-vacuity: this relief is PER-ABILITY and block (1) is untouched, so the \
-         SAME driver-controlled object with one extra class-reading TRIGGER surface must \
-         keep refusing. If this offers, the two positives above are vacuous; got {:?}",
-        two_surface.state().waiting_for
+    offers_beside_observer(Phase::PreCombatMain, P0, AGGREGATE_ACTIVATED_ORACLE, (0, 1));
+    offers_beside_observer(
+        Phase::PreCombatMain,
+        P0,
+        AGGREGATE_TWO_SURFACE_ORACLE,
+        (1, 1),
     );
 }
 
-/// HF-X1-a — CR 605.3a BOUNDS X1. A mana ability is activatable outside the priority
-/// rule (while another player is casting a spell or activating an ability), so an
-/// OPPONENT's class-reading MANA ability is NOT relieved and keeps vetoing. The paired
-/// positive is the identical aggregate read on a NON-mana ability under the same
-/// opponent, which IS relieved — so the only variable is `is_mana_ability`.
-///
-/// REVERT-PROBE: delete the `!is_mana_ability(..)` conjunct ⇒ the mana half is relieved
-/// ⇒ FAILS.
+/// The object-growth loop offers beside an opponent's class-counting mana ability (CR 605.3a);
+/// whether it reads the growing class is the loop's own replay to show (CR 732.2a).
 #[test]
 fn foreign_mana_ability_still_vetoes() {
-    use engine::types::ability::AbilityKind;
-    use engine::types::zones::Zone;
-
-    // PAIRED POSITIVE: the same aggregate read on a NON-mana ability, same controller.
-    let (nonmana_runner, _) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_ACTIVATED_ORACLE);
-    assert!(
-        matches!(
-            nonmana_runner.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "HF-X1-a PAIRED POSITIVE: an opponent's NON-mana activated ability is relieved"
-    );
-
-    let (mana_runner, bystander) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_MANA_ORACLE);
-
-    // (3) reach-guards. The row's WHOLE claim is the CR 605.3a mana carve-out, so nothing
-    // short of proving the def IS a mana ability makes the veto attributable to it.
-    let obj = &mana_runner.state().objects[&bystander];
-    assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "reach-guard: block (2) hard-skips non-battlefield zones"
-    );
-    assert_eq!(
-        obj.abilities.len(),
-        1,
-        "reach-guard: exactly one ability surface; got {:?}",
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        obj.abilities[0].kind,
-        AbilityKind::Activated,
-        "reach-guard: a mana ability is an ACTIVATED ability; got {:?}",
-        obj.abilities[0].kind
-    );
-    assert!(
-        engine::game::mana_abilities::is_mana_ability(&obj.abilities[0]),
-        "reach-guard: this row's entire claim is the CR 605.3a mana carve-out, so the def \
-         must actually BE a mana ability — otherwise the veto is attributable to the \
-         ordinary foreign-activated path and the row proves nothing"
-    );
-    assert!(
-        obj.trigger_definitions.is_empty(),
-        "reach-guard: block (1) must be silent, so the verdict is attributable to block \
-         (2); got {} trigger def(s)",
-        obj.trigger_definitions.len()
-    );
-
-    assert!(
-        !matches!(
-            mana_runner.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "HF-X1-a CR 605.3a: a mana ability is activatable without priority, so an \
-         opponent's class-reading MANA ability must keep vetoing; got {:?}",
-        mana_runner.state().waiting_for
-    );
+    let (runner, bystander) =
+        offers_beside_observer(Phase::PreCombatMain, P1, AGGREGATE_MANA_ORACLE, (0, 1));
+    assert!(engine::game::mana_abilities::is_mana_ability(
+        &runner.state().objects[&bystander].abilities[0]
+    ));
 }
 
-/// NW-1' — X1's relief is PER-ABILITY and PER-SURFACE, never per-object. The two halves
-/// carry the SAME opponent-controlled object; half B adds one extra surface (a trigger
-/// whose body carries the same `ObjectCount` aggregate, scanned by block (1), which X1
-/// does not touch and which `TriggerMode::Attacks` leaves unclassifiable for X2). Half A
-/// offering is what proves half B's veto comes from the second surface and not from the
-/// object's mere presence.
-///
-/// This is also the closure for the `ActivationRestriction` composition hazard at
-/// the offer level: the firewall never reads `activation_restrictions`
-/// (`game/ability_scan.rs`'s `ability_definition_axes` destructures it as `_`), so a row keyed on that field would
-/// be dominated. This row instead asserts the property the revert-probes actually flip.
-///
-/// REVERT-PROBE: widen X1's relief from the per-ability test to the whole object (skip
-/// the object in block (2) AND block (1)) ⇒ half B flips to an offer ⇒ FAILS.
+/// The object-growth loop offers beside an opponent's permanent with a class-counting activated
+/// ability and attack trigger; whether it reads the growing class is the loop's own replay to show
+/// (CR 732.2a).
 #[test]
 fn foreign_object_second_surface_still_vetoes_after_x1() {
-    use engine::types::ability::AbilityKind;
-    use engine::types::zones::Zone;
-
-    // half A: the relieved surface alone ⇒ offer.
-    let (one_surface, _) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_ACTIVATED_ORACLE);
-    assert!(
-        matches!(
-            one_surface.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "NW-1' half A: with ONLY the foreign activated ability, X1 relieves and the \
-         offer forms — so half B's veto is attributable to the added surface"
-    );
-
-    // half B: the same object plus one more class-reading surface ⇒ veto.
-    let (two_surface, bystander) =
-        object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_TWO_SURFACE_ORACLE);
-    let obj = &two_surface.state().objects[&bystander];
-    assert_eq!(
-        obj.trigger_definitions.len(),
-        1,
-        "NW-1' reach-guard: the second surface really is a trigger definition"
-    );
-    assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "NW-1' reach-guard: block (2) hard-skips non-battlefield zones"
-    );
-    assert_eq!(
-        obj.abilities.len(),
-        1,
-        "NW-1' reach-guard: the FIRST surface is exactly one ability def; got {:?}",
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        obj.abilities[0].kind,
-        AbilityKind::Activated,
-        "NW-1' reach-guard: half A's relieved surface is an ACTIVATED ability, so half B's \
-         first surface must be the same one; got {:?}",
-        obj.abilities[0].kind
-    );
-    assert!(
-        !matches!(
-            two_surface.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "NW-1': X1 relieves the ABILITY, not the OBJECT — another class-reading surface \
-         on the same permanent must keep vetoing; got {:?}",
-        two_surface.state().waiting_for
+    offers_beside_observer(
+        Phase::PreCombatMain,
+        P1,
+        AGGREGATE_TWO_SURFACE_ORACLE,
+        (1, 1),
     );
 }
 
@@ -8576,45 +8192,10 @@ const X1_SPROUT: ObjectId = ObjectId(64);
 /// An untapped P0 fodder Saproling to convoke for the {G}.
 const X1_FODDER: ObjectId = ObjectId(421);
 
-/// X1-1. The real 4-player Witherbloom / Sprout Swarm /
-/// Lumaret capture: P0 drives a Saproling object-growth loop while three opponents sit
-/// on utility lands whose activated abilities read the growing class, plus P0's own
-/// Jadar (a `{Phase, End}` observer). Pre-fix the CR 732.2a firewall vetoed and no offer
-/// surfaced.
-///
-/// ⛔ BLOCKING PRECONDITIONS, MEASURED BEFORE THIS ROW WAS WRITTEN, at the
-/// C-2 firewall call on this exact board:
-/// * `scope.sole_driver == Some(PlayerId(0))` — the driving player. X1's own key.
-/// * `scope.phase_invariant == Some(PreCombatMain)` — the value is REPORTED here, not
-///   pre-asserted: asserting a literal on a loaded dump would smuggle in an unverified
-///   premise. The row asserts only that the guard was reachable.
-/// * `trigger_event_unreachable_in_phase(<Jadar obj 75: mode=Phase, phase=Some(End),
-///   damage_kind=Any>, PreCombatMain) == true` — SUFFICIENCY, not just reachability:
-///   the dump's veto set spans BOTH classes (4 of 5 blockers are X1-class opponent
-///   lands, the 5th is Jadar in the X2 class), so the offer needs both guards to fire.
-///   Instrument control on the same run: 48 `true` / 208 `false` over the board's
-///   trigger population, so the predicate is not constant.
-///
-/// ⛔ HONEST EVIDENCE BASIS: BASE is a measured no-offer trajectory whose FIRST veto was
-/// object 75. First-veto evidence bounds NOTHING about the remaining veto set — the
-/// firewall returns on the first `true` (13 `return true` sites in
-/// `fire_time_conditions_read_growing_class_scoped`). The offer-level assertion below is
-/// what carries this row's claim; the BASE figure is provenance, not proof.
-///
-/// This row's relief is OVER-DETERMINED, so no single-conjunct deletion can redden it: block
-/// (2) relieves the opponents' utility lands both on the CR 117.1b `relieved` arm
-/// (`obj.controller != driver`) and, independently, on the CR 732.2a `not_proposed` arm (the
-/// accepted proposal names no activation at all on this dump — the recorded sequence is a
-/// single `Recast`). Deleting a conjunct from an `&&` chain widens relief rather than moving
-/// it, so removing either arm alone hands the subject to the other; the `obj.controller` axis
-/// is driven instead by `analysis::resource::foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`.
-///
-/// REVERT-PROBE: invert `obj.controller != driver` to `==` AND delete the `&& !not_proposed`
-/// conjunct at block (2) together ⇒ both relief arms are gone at once ⇒ the opponents'
-/// utility-land abilities veto again ⇒ the offer disappears ⇒ FAILS.
+/// X1-1: on the real 4-player Witherbloom / Sprout Swarm / Lumaret capture, P0's Saproling loop
+/// offers beside three opponents' class-reading utility lands and P0's own Jadar.
 #[test]
 fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
-    use engine::types::ability::AbilityKind;
     use engine::types::game_state::LoopDetectionMode;
     use engine::types::zones::Zone;
 
@@ -8654,41 +8235,6 @@ fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
          class); got {foreign_permanents}"
     );
 
-    // ── SHAPE, not just a count. This offer rests on the X1 (`obj.controller != driver`)
-    // relief, and item A narrows that relief to `kind == AbilityKind::Activated` with
-    // `activator_filter.is_none()`. A bare `foreign_permanents >= 3` count cannot tell
-    // whether the relieved population is the one item A governs; this does.
-    let foreign_ability_kinds: Vec<AbilityKind> = state
-        .battlefield
-        .iter()
-        .filter_map(|id| state.objects.get(id))
-        .filter(|o| o.controller != P0)
-        .flat_map(|o| o.abilities.iter().map(|a| a.kind))
-        .collect();
-    assert!(
-        !foreign_ability_kinds.is_empty(),
-        "fixture precondition: the foreign battlefield ability population must be NON-EMPTY, \
-         else item A's `kind == Activated` narrowing has nothing to act on here and this \
-         row's offer is not evidence about X1 at all"
-    );
-    assert!(
-        foreign_ability_kinds
-            .iter()
-            .all(|k| *k == AbilityKind::Activated),
-        "fixture precondition: every foreign battlefield ability def must be `Activated` — \
-         item A relieves ONLY that kind, so a non-`Activated` def here would keep vetoing \
-         and the offer would be attributable to something else; got {foreign_ability_kinds:?}"
-    );
-    assert!(
-        state
-            .battlefield
-            .iter()
-            .filter_map(|id| state.objects.get(id))
-            .filter(|o| o.controller != P0)
-            .all(|o| o.abilities.iter().all(|a| a.activator_filter.is_none())),
-        "fixture precondition: no foreign def carries an `activator_filter` — item E refuses \
-         relief on ANY `Some(..)`, so one here would suppress this offer"
-    );
     let jadar = state
         .objects
         .get(&engine::types::identifiers::ObjectId(75))
@@ -8744,28 +8290,19 @@ fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
             );
         }
         other => panic!(
-            "X1-1: CR 117.1b — no player but the sole driver receives priority inside the \
-             taken shortcut, so the opponents' utility-land abilities cannot read the \
-             growing class and must not suppress the offer; got {other:?}. \
-             ⛔ PRE-REGISTERED STOP BRANCH: do NOT widen X1's conjunct, X2's arms, or any \
-             downstream gate to manufacture this offer. Run the veto-enumeration \
-             diagnostic (convert the 13 `return true` sites in \
-             `fire_time_conditions_read_growing_class_scoped` to log-and-continue, replay, \
-             record every vetoing object id and its block), name the next rejecter and its \
-             call count in the PR body, and STOP."
+            "X1-1: the opponents' utility-land abilities must not suppress the offer; got {other:?}"
         ),
     }
 }
 
 // ===========================================================================
-// K4 — CR 608.2i + CR 608.2j ledger-FILTER exclusion (the shallow BB-FU10-N narrowing).
+// K4 — CR 608.2i + CR 608.2j ledger observers one entry-filter noun apart.
 // Every fixture carries the harness's shared `"Flying, trample\n"` keyword prefix, so
 // subject and control differ ONLY in the ledger clause.
 // ===========================================================================
 
 /// FIXTURE C (PRIMARY) — measured `mode=DamageDone`, `phase=null`, `damage_kind=Any`,
-/// `constraint=null`. `damage_kind: Any` is what makes this pair STRUCTURALLY independent
-/// of the CR 510.2 phase relief, whose damage arm requires `CombatOnly`.
+/// `constraint=null`.
 const LEDGER_ARTIFACT_FILTER_ORACLE: &str = "Flying, trample\nWhenever this creature deals damage to a player, draw a card if you had two or more artifacts enter the battlefield under your control this turn.";
 
 /// FIXTURE D (PRIMARY) — fixture C with one Oracle noun changed. Measured: the two
@@ -8776,30 +8313,14 @@ const LEDGER_ARTIFACT_FILTER_ORACLE: &str = "Flying, trample\nWhenever this crea
 const LEDGER_CREATURE_FILTER_ORACLE: &str = "Flying, trample\nWhenever this creature deals damage to a player, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
 
 /// FIXTURE A (CORROBORATING) — a DIFFERENT `TriggerMode`. Measured `mode=Phase`,
-/// `phase=PreCombatMain`, `damage_kind=Any`, `constraint=OnlyDuringYourTurn`. Its
-/// independence from the phase relief rests on the ⛔ STRICT-INEQUALITY pin
-/// (`p != phase`, so `PreCombatMain` in a `PreCombatMain` window is NOT relieved) — hence
-/// corroborating rather than primary.
+/// `phase=PreCombatMain`, `damage_kind=Any`, `constraint=OnlyDuringYourTurn`.
 const PHASE_LEDGER_ARTIFACT_FILTER_ORACLE: &str = "Flying, trample\nAt the beginning of your precombat main phase, draw a card if you had two or more artifacts enter the battlefield under your control this turn.";
 
 /// FIXTURE B (CORROBORATING) — fixture A one Oracle noun apart.
 const PHASE_LEDGER_CREATURE_FILTER_ORACLE: &str = "Flying, trample\nAt the beginning of your precombat main phase, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
 
-/// K4-N1 (PRIMARY) — CR 608.2i + CR 608.2j. A ledger observer whose entry filter PROVABLY cannot
-/// count the growing fodder has a read whose value is invariant across the loop's growth,
-/// so it does not observe the loop and must not suppress the CR 732.2a offer.
-///
-/// ATTRIBUTION, structural rather than argued:
-/// * the CR 510.2 relief cannot move this row — `damage_kind: Any` (measured) can never
-///   satisfy its damage arm, which requires `CombatOnly` (pinned by
-///   `trigger_event_unreachable_in_phase_shape_is_pinned` arm 2), and `mode: DamageDone`
-///   never reaches its Phase arm.
-/// * the CR 117.1b relief cannot move it — the bystander is the DRIVER'S OWN.
-///   ⇒ the flip is attributable to the ledger-filter narrowing alone.
-///
-/// REVERT-PROBES: (1) delete the `&& !class_members.is_some_and(..)` guard ⇒ veto ⇒ FAILS.
-/// (2) make `execute_ledger_condition_provably_excludes_class` return `false`
-/// unconditionally ⇒ the same failure ⇒ the PREDICATE, not the plumbing, carries the flip.
+/// K4-N1: a damage ledger observer whose entry filter cannot count the Saproling fodder does not
+/// suppress the offer (CR 608.2j).
 #[test]
 fn noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -8833,70 +8354,24 @@ fn noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_sup
         ),
         other => panic!(
             "(1) CR 608.2j: a `Typed{{Artifact}}` entry filter cannot count a Saproling \
-             creature token, so the observer's read is invariant across the loop's growth \
-             and must not suppress the offer; got {other:?}. \
-             ⛔ PRE-REGISTERED FAILURE BRANCH: report the NEXT rejecter by name and its \
-             call count and STOP — do not widen a conjunct to manufacture the offer. \
-             Conjunct (a) is measured to pass; the remaining candidates in order are (c) \
-             and the offer-path gates downstream of the firewall."
+             creature token, so the observer must not suppress the offer; got {other:?}"
         ),
     }
 }
 
-/// K4-N2 (PRIMARY) — THE ROW THAT KILLS THE LAZY-BUT-UNSOUND NARROWING. Fixture D is
-/// fixture C with one Oracle noun changed, and its `Typed{Creature}` filter GENUINELY
-/// counts the Saproling creature token the loop creates each cycle. So the veto must
-/// survive.
-///
-/// This pair IS the acceptance criterion: a correct narrowing moves K4-N1 and not this
-/// row; a blanket relaxation moves both; an inert guard moves neither.
-///
-/// REVERT-PROBE: make conjunct (c) unconditionally `true` (a blanket relaxation) ⇒ this
-/// row flips to an offer ⇒ FAILS.
+/// The object-growth loop offers beside a noncombat-damage ledger observer whose filter counts the
+/// Saprolings; whether it reads the growing class is the loop's own replay to show (CR 732.2a).
 #[test]
 fn noncombat_damage_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer() {
-    use engine::types::zones::Zone;
-
-    let (runner, bystander) = object_growth_with_bystander(LEDGER_CREATURE_FILTER_ORACLE);
-
-    // (3) reach-guards. Anti-vacuity for a VETO row: the sibling POSITIVE
-    // `noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer`
-    // shows the same board DOES offer when the filter excludes, so this row's veto is
-    // attributable to the filter and not to the board.
-    let obj = &runner.state().objects[&bystander];
-    assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "reach-guard: block (1) hard-skips non-battlefield zones"
-    );
-    assert_eq!(
-        obj.trigger_definitions.len(),
-        1,
-        "reach-guard: exactly one trigger definition carries the ledger read; got {}",
-        obj.trigger_definitions.len()
-    );
-    assert!(
-        obj.abilities.is_empty(),
-        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
-         also carries {} ability def(s) {:?}",
-        obj.abilities.len(),
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
-    );
-
-    assert!(
-        !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
-        "CR 608.2j: a `Typed{{Creature}}` entry filter DOES count a Saproling creature \
-         token, so the observer genuinely observes the loop and must keep vetoing; got {:?}",
-        runner.state().waiting_for
+    offers_beside_observer(
+        Phase::PreCombatMain,
+        P0,
+        LEDGER_CREATURE_FILTER_ORACLE,
+        (1, 0),
     );
 }
 
-/// K4-N4a (CORROBORATING) — the same relief through a DIFFERENT `TriggerMode`, which is
-/// what proves it keys on the ledger FILTER and not on any one trigger shape.
-///
-/// ⚠ Independence from the CR 510.2 relief is CONDITIONAL on the ⛔ strict-inequality pin
-/// (`p != phase`): fixture A is `phase: Some(PreCombatMain)` in a `PreCombatMain` window,
-/// so the phase arm answers `false` and cannot classify it. Hence corroborating.
+/// K4-N4a: the same through a phase trigger.
 #[test]
 fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer() {
     use engine::types::zones::Zone;
@@ -8910,7 +8385,7 @@ fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_supp
     assert_eq!(
         obj.zone,
         Zone::Battlefield,
-        "reach-guard: block (1) hard-skips non-battlefield zones"
+        "reach-guard: the observer is on the battlefield"
     );
     assert_eq!(
         obj.trigger_definitions.len(),
@@ -8940,42 +8415,15 @@ fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_supp
     }
 }
 
-/// K4-N4b (CORROBORATING) — fixture B, one Oracle noun from K4-N4a, keeps its veto.
-///
-/// REVERT-PROBE: make conjunct (c) unconditional ⇒ flips ⇒ FAILS.
+/// The object-growth loop offers beside a phase-reachable ledger observer whose filter counts the
+/// Saprolings; whether it reads the growing class is the loop's own replay to show (CR 732.2a).
 #[test]
 fn phase_reachable_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer() {
-    use engine::types::zones::Zone;
-
-    let (runner, bystander) = object_growth_with_bystander(PHASE_LEDGER_CREATURE_FILTER_ORACLE);
-
-    // (3) reach-guards. Anti-vacuity for a VETO row: the sibling POSITIVE
-    // `phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer`
-    // shows the same board DOES offer when the filter excludes.
-    let obj = &runner.state().objects[&bystander];
-    assert_eq!(
-        obj.zone,
-        Zone::Battlefield,
-        "reach-guard: block (1) hard-skips non-battlefield zones"
-    );
-    assert_eq!(
-        obj.trigger_definitions.len(),
-        1,
-        "reach-guard: exactly one trigger definition carries the ledger read; got {}",
-        obj.trigger_definitions.len()
-    );
-    assert!(
-        obj.abilities.is_empty(),
-        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
-         also carries {} ability def(s) {:?}",
-        obj.abilities.len(),
-        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
-    );
-
-    assert!(
-        !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
-        "K4-N4b: the matching half of the corroborating pair must keep vetoing; got {:?}",
-        runner.state().waiting_for
+    offers_beside_observer(
+        Phase::PreCombatMain,
+        P0,
+        PHASE_LEDGER_CREATURE_FILTER_ORACLE,
+        (1, 0),
     );
 }
 
@@ -13972,10 +13420,12 @@ fn a_tied_entry_is_one_seat_set_and_the_accept_takes_all_of_it() {
 /// class moves the population by itself.
 ///
 /// THE LEG EACH BOARD IS DRIVEN ON, stated because it changes what is being verified: two of these
-/// dumps restore ALREADY AT an offer whose published capacity is DESERIALIZED rather than re-derived
+/// dumps restore ALREADY AT an offer whose published capacity is DESERIALIZED rather than re-
+/// derived
 /// by this phase's producer, and `drive_to_bounded_offer` returns at beat 0 on them. The row drives
 /// whichever leg that walk reaches and asserts the pair the offer actually published, which is the
-/// right question for both legs — a deserialized capacity the handler will enforce is as load-bearing
+/// right question for both legs — a deserialized capacity the handler will enforce is as load-
+/// bearing
 /// as a freshly derived one.
 ///
 /// The first observable is the BOARD MOVING. Declaring `schema.iteration_count` verbatim with

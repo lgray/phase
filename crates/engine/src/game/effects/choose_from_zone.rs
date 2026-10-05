@@ -1,3 +1,4 @@
+use crate::types::game_state::RandomDraw;
 use rand::seq::IndexedRandom; // rand 0.9: `choose_multiple` on `[T]` lives here.
 
 use crate::game::filter::{matches_target_filter, FilterContext};
@@ -802,7 +803,7 @@ pub(crate) fn resolve_random_in_chain(
     // CR 608.2d (override): the game selects `count` distinct cards at random.
     let clamped = count.min(cards.len());
     let picked: Vec<ObjectId> = cards
-        .choose_multiple(&mut state.rng, clamped)
+        .choose_multiple(state.rng.draw(RandomDraw::Outcome), clamped)
         .copied()
         .collect();
     ability.targets = picked.iter().map(|&id| TargetRef::Object(id)).collect();

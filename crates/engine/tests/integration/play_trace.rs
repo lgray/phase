@@ -103,7 +103,12 @@ fn casts(object: ObjectId) -> impl Fn(&GameAction) -> bool {
     move |action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == object)
 }
 
-fn place(state: &mut GameState, player: PlayerId, name: &str, db: &CardDatabase) -> ObjectId {
+pub(crate) fn place(
+    state: &mut GameState,
+    player: PlayerId,
+    name: &str,
+    db: &CardDatabase,
+) -> ObjectId {
     let face = db.get_face_by_name(name).expect("card in fixture");
     let id = create_object_from_card_face(state, face, player);
     remove_from_zone(state, id, Zone::Library, player);
@@ -112,7 +117,7 @@ fn place(state: &mut GameState, player: PlayerId, name: &str, db: &CardDatabase)
     id
 }
 
-fn ability(state: &GameState, id: ObjectId, mana: bool) -> usize {
+pub(crate) fn ability(state: &GameState, id: ObjectId, mana: bool) -> usize {
     state.objects[&id]
         .abilities
         .iter()
@@ -127,7 +132,7 @@ fn act(runner: &mut GameRunner, action: GameAction) {
         .unwrap_or_else(|error| panic!("{shown} rejected: {error:?}"));
 }
 
-fn activate(runner: &mut GameRunner, source: ObjectId, index: usize) {
+pub(crate) fn activate(runner: &mut GameRunner, source: ObjectId, index: usize) {
     act(
         runner,
         GameAction::ActivateAbility {
@@ -137,7 +142,12 @@ fn activate(runner: &mut GameRunner, source: ObjectId, index: usize) {
     );
 }
 
-fn cast(runner: &mut GameRunner, object: ObjectId, targets: Vec<ObjectId>, mode: CastPaymentMode) {
+pub(crate) fn cast(
+    runner: &mut GameRunner,
+    object: ObjectId,
+    targets: Vec<ObjectId>,
+    mode: CastPaymentMode,
+) {
     let card_id = runner.state().objects[&object].card_id;
     act(
         runner,
@@ -175,7 +185,7 @@ fn answer(runner: &mut GameRunner, score: &dyn Fn(&GameAction) -> i32) {
 }
 
 /// Passes and answers until an empty-stack priority window or an offer.
-fn settle(runner: &mut GameRunner, score: &dyn Fn(&GameAction) -> i32) {
+pub(crate) fn settle(runner: &mut GameRunner, score: &dyn Fn(&GameAction) -> i32) {
     for _ in 0..BEAT_CAP {
         match &runner.state().waiting_for {
             WaitingFor::LoopShortcut { .. } | WaitingFor::GameOver { .. } => return,
@@ -187,14 +197,14 @@ fn settle(runner: &mut GameRunner, score: &dyn Fn(&GameAction) -> i32) {
     panic!("the drive did not settle");
 }
 
-fn names(ids: &[ObjectId]) -> impl Fn(&GameAction) -> i32 + '_ {
+pub(crate) fn names(ids: &[ObjectId]) -> impl Fn(&GameAction) -> i32 + '_ {
     move |action| {
         let related = action.related_object_ids();
         ids.iter().filter(|id| related.contains(id)).count() as i32
     }
 }
 
-fn chooses_color(color: ManaType) -> impl Fn(&GameAction) -> i32 {
+pub(crate) fn chooses_color(color: ManaType) -> impl Fn(&GameAction) -> i32 {
     move |action| {
         i32::from(
             matches!(action, GameAction::ChooseManaColor { choice: ManaChoice::SingleColor(c), .. } if *c == color),
@@ -202,7 +212,7 @@ fn chooses_color(color: ManaType) -> impl Fn(&GameAction) -> i32 {
     }
 }
 
-fn is_offer(state: &GameState) -> bool {
+pub(crate) fn is_offer(state: &GameState) -> bool {
     matches!(state.waiting_for, WaitingFor::LoopShortcut { .. })
 }
 
@@ -331,7 +341,10 @@ fn kiki_cycle(runner: &mut GameRunner, kiki: ObjectId, exarch: ObjectId) {
 /// Phyrexian Altar ("Sacrifice a creature: Add one mana of any color."), Gravecrawler in the
 /// graveyard ("You may cast this card from your graveyard as long as you control a Zombie."),
 /// Walking Corpse (the Zombie), a Swamp, and `payoff`.
-fn altar_board(payoff: Option<&str>, db: &CardDatabase) -> (GameRunner, ObjectId, ObjectId) {
+pub(crate) fn altar_board(
+    payoff: Option<&str>,
+    db: &CardDatabase,
+) -> (GameRunner, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let altar = scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);

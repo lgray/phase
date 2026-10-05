@@ -4,6 +4,7 @@ use crate::types::ability::AbilityKind;
 use crate::types::actions::MulliganChoice;
 use crate::types::events::GameEvent;
 use crate::types::format::GameFormat;
+use crate::types::game_state::RandomDraw;
 use crate::types::game_state::{
     GameState, MulliganBottomEntry, MulliganDecisionEntry, MulliganDecisionPhase,
     OpeningHandBottomReason, PendingBeginGameAbility, PendingMulliganAction, WaitingFor,
@@ -86,7 +87,7 @@ pub fn start_mulligan(state: &mut GameState, events: &mut Vec<GameEvent>) -> Wai
     // Shuffle every player's library.
     let GameState { players, rng, .. } = &mut *state;
     for player in players.iter_mut() {
-        crate::util::im_ext::shuffle_vector(&mut player.library, rng);
+        crate::util::im_ext::shuffle_vector(&mut player.library, rng.draw(RandomDraw::Placement));
     }
 
     // Draw the opening hand for each player in seat order.
@@ -687,7 +688,7 @@ fn shuffle_hand_into_library(state: &mut GameState, player: PlayerId, events: &m
         .iter_mut()
         .find(|p| p.id == player)
         .expect("player exists");
-    crate::util::im_ext::shuffle_vector(&mut player_data.library, rng);
+    crate::util::im_ext::shuffle_vector(&mut player_data.library, rng.draw(RandomDraw::Placement));
 }
 
 fn draw_n(state: &mut GameState, player_id: PlayerId, count: usize, events: &mut Vec<GameEvent>) {

@@ -121,7 +121,10 @@ pub mod mulligan;
 pub mod object_state;
 pub(crate) mod off_zone_characteristics;
 pub mod pairing;
+// Until the producer asks the confirmer, only tests reach it.
 pub mod perf_counters;
+#[allow(dead_code)]
+pub mod period_confirm;
 // Tests for `archenemy` live in a sibling file (declared here, not in
 // `archenemy.rs`, so `archenemy.rs` stays implementation-only).
 #[cfg(test)]
@@ -155,8 +158,8 @@ pub fn staged_payment_shadow_for_test(
 pub(crate) mod play_trace;
 #[cfg(any(test, feature = "test-support"))]
 pub use play_trace::{
-    play_trace_view, AnswerOptionality, EntryKind, NamedSpan, NamingCause, PlayLocus,
-    PlayTraceView, TraceEntry,
+    play_trace_view, AnswerOptionality, CostMove, EntryKind, NamedSpan, NamingCause, PlayLocus,
+    PlayTraceView, PromptClass, TraceEntry,
 };
 pub mod preview;
 pub mod printed_cards;

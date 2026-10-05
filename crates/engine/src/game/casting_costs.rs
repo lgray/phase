@@ -18644,8 +18644,12 @@ mod tests {
         assert_eq!(state.players[0].hand.len(), 1, "no hand card may be paid");
         let mut actual_rng = state.rng.clone();
         assert_eq!(
-            actual_rng.next_u64(),
-            expected_rng.next_u64(),
+            actual_rng
+                .draw(crate::types::game_state::RandomDraw::Outcome)
+                .next_u64(),
+            expected_rng
+                .draw(crate::types::game_state::RandomDraw::Outcome)
+                .next_u64(),
             "strict rejection must not advance seeded randomness"
         );
     }

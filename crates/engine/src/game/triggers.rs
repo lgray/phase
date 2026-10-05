@@ -1,17 +1,15 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use rand_chacha::ChaCha20Rng;
-
 use crate::database::synthesis::KeywordTriggerInstaller;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCostOrigin,
     BounceSelection, CardTypeSetSource, CastManaSpentMetric, ChosenAttribute, CommanderOwnership,
     ControllerRef, CopyRetargetPermission, DamageAmountScope, DamageAmountThreshold,
-    DamageKindFilter, DelayedAbilityOrigin, DelayedTriggerCondition, DurationEvent, Effect,
-    FilterProp, ModalChoice, NameStickerSet, ObjectScope, OriginConstraint, PlayerFilter,
-    PlayerScope, PtValue, QuantityExpr, QuantityRef, RenownSubject, ResolvedAbility, SacrificeCost,
-    StaticCondition, TargetFilter, TargetRef, TributeOutcome, TriggerCondition, TriggerConstraint,
+    DelayedAbilityOrigin, DelayedTriggerCondition, DurationEvent, Effect, FilterProp, ModalChoice,
+    NameStickerSet, ObjectScope, OriginConstraint, PlayerFilter, PlayerScope, PtValue,
+    QuantityExpr, QuantityRef, RenownSubject, ResolvedAbility, SacrificeCost, StaticCondition,
+    TargetFilter, TargetRef, TributeOutcome, TriggerCondition, TriggerConstraint,
     TriggerDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerEntry,
     TriggerGrantProducerKey, TypeFilter, TypedFilter,
 };
@@ -3197,175 +3195,14 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
     }
 }
 
-/// CR 603.2 / CR 603.6a: can this observer's trigger event ever fire on the growing fodder
-/// class ENTERING the battlefield? Answers `ExclusionVerdict::Excluded` iff it PROVABLY cannot — a
-/// scalar single-clause enters-the-battlefield trigger (`ChangesZone`/`ChangesZoneAll`,
-/// `destination == Battlefield`, no disjunctive `zone_change_clauses`) whose positive
-/// `valid_card` matcher excludes `class_member` (wrong subtype/type, `NonToken` vs a token, or
-/// a controller scope bound to a player other than the loop controller — CR 603.6a checks the
-/// entering permanent against the matcher). Matching is delegated verbatim to
-/// `trigger_matchers::valid_card_matches` (the SAME `matches_target_filter` +
-/// source-relative `FilterContext` path `match_changes_zone` uses at fire time), so no new
-/// subtype/controller logic is written here.
-///
-/// SOUNDNESS + ORDERING (load-bearing — do not reorder the callers): such a trigger never
-/// fires on the loop's per-cycle token creation because two invariants, checked IN ORDER inside
-/// `analysis::resource::loop_states_cover_modulo_fodder_growth`, guarantee that every object
-/// difference between the frames is either a fodder-class member or an id the period's
-/// instructed-departure certificate accounts:
-///
-/// 1. the FIRST accept-time frame pair's ONE-CLASS MINTED set is guaranteed by
-///    `game::engine::derived_fodder_class` (it returns `None` unless EVERY object the cycle
-///    MINTED onto the battlefield is the same class under BOTH
-///    `analysis::resource::fodder_content_eq` AND
-///    `game::printed_cards::intrinsic_copiable_values`, so a `Some` fodder class means the k >= 1
-///    minted entrants were all fodder. The invariant needs "one class", not
-///    "one object", and content equality delivers it. `derived_fodder_class` also has a second,
-///    display-only caller — the soundness-bearing one is inside the fodder-cover arm); and
-/// 2. the SECOND cover frame pair's "only the growing set differs" is guaranteed SOLELY by
-///    `analysis::resource::board_covers_modulo_fodder`, whose all-zones
-///    stable-partition content-equality is enforced by its own return value at its ONLY call
-///    site — which PRECEDES the firewall call in the same function. A reader/refactor
-///    must not reorder the
-///    `board_covers_modulo_fodder` gate after the firewall: the disjointness argument here
-///    relies on it having already proven that nothing outside that set differs.
-///
-/// The premise is stated over the CERTIFIED set rather than over what can never enter the
-/// battlefield, so it stays true however the certificate later WIDENS — and it never rests on
-/// what the proposer may or may not see.
-///
-/// Therefore a matcher that provably excludes the fodder cannot fire on the fodder ENTERING, and
-/// does not veto the CR 732.2a offer on that account. That alone does not reach the def observing
-/// nothing else across the window; THE IDENTITY CONJUNCT below is what carries the rest, within
-/// the NAMED RESIDUAL stated with it.
-///
-/// Fail-closed on every axis it cannot classify: a broad (`valid_card == None`), disjunctive
-/// (`zone_change_clauses` non-empty), non-battlefield-destination, or genuinely-matching observer
-/// answers a refusal arm (it may observe the loop → the firewall keeps its conservative veto).
-///
-/// Shares the cluster's ordered obligation through `analysis::resource::exclusion_verdict`, with
-/// both declarations recorded rather than omitted.
-///
-/// Pre-gate `SoleSource::None`: the subject is a `TriggerDefinition`, not an
-/// `AbilityDefinition`, so there is no axis for a `Blank` rescan to blank. The shape gate reads
-/// the entry matcher and nothing else of the definition, and an `Excluded` here is nevertheless
-/// DEF-SCOPED: `analysis::resource::fire_time_conditions_read_growing_class_scoped` `continue`s
-/// over the WHOLE definition, so neither this trigger's `condition` nor its `execute` body is
-/// scanned afterwards.
-///
-/// THE IDENTITY CONJUNCT (CR 400.7 + CR 603.6a) is what carries the DEF-scoped `continue`. The
-/// ordering premise above reaches exactly one conclusion: the matcher cannot fire on the
-/// FODDER's OWN entry, and a trigger that does not fire evaluates none of its surfaces. Skipping
-/// the two unscanned surfaces needs the WIDER premise that the matcher fires NOWHERE in the
-/// window, so the relief additionally requires that no entry the matcher DOES match occurs
-/// inside it. `identity_unstable` buys exactly that, and the cover cannot supply it:
-/// `analysis::resource::identity_unstable_ids` is the authority — CR 400.7 makes a re-entering
-/// permanent a new object and CR 603.6a has that entry checked against every
-/// enters-the-battlefield trigger on the battlefield, yet a permanent blinked through
-/// `game::zones::move_to_zone` keeps its id and is `object_content_eq` to its pre-blink self, so
-/// a steady-state blink pair passes every gate of
-/// `analysis::resource::loop_states_cover_modulo_fodder_growth` and only the incarnation epoch
-/// records it. The identity stage therefore refuses relief wherever the scanned frame keys such an
-/// id ON the battlefield and this definition's own matcher matches it, and refuses on an ABSENT
-/// proof for the reason every consumer of that proof refuses: no proof is not a proof of stability.
-///
-/// NAMED RESIDUAL: two sampled frames cannot witness a permanent that enters the battlefield and
-/// leaves again inside a single cycle, so an unstable id the scanned frame keys in another zone
-/// is refused on only if it entered inside the cycle — which the cover cannot see. Closing that
-/// needs a per-cycle entry ledger the cover does not carry.
-///
-/// Nor are the two unscanned surfaces redundant with the frame comparison, which is why the
-/// consult scans them whenever it does not `continue`:
-/// `analysis::resource::project_object_for_loop` erases the stored power / toughness / loyalty /
-/// defense family and drops the monotone counters, and
-/// `analysis::resource::project_out_resources` zeroes marked damage and the per-turn tallies —
-/// so an `execute` body writing the class's growth into any of those leaves the compared frames
-/// identical.
-///
-/// Liveness `MemberLiveness::Unchecked`, and NOT because the delegate fails closed. It fails
-/// OPEN: `trigger_matchers::valid_card_matches` answers `false` for an id absent from
-/// `state.objects`, and the exclusion closure below NEGATES that answer, so an unresolvable
-/// member would be RELIEVED rather than vetoed. Soundness is the CALLER's. The class-keyed
-/// relief is reached only under a `Some(class_members)` argument, and the one production call
-/// that supplies one — `analysis::resource::loop_states_cover_modulo_fodder_growth` — hands
-/// over exactly the ids its wildcard-free `match obj.zone` keeps ON the battlefield of the
-/// scanned frame (CR 400.1 fixes the seven zones, so an eighth is a compile error there). That
-/// keep reads the frame through `is_some_and`, so an id the frame does not key is dropped with
-/// the off-battlefield residents and never arrives here. CR 603.6a is why the drop is relief
-/// the rules owe rather than a proof the prover failed to find: an enters-the-battlefield
-/// ability triggers only when a permanent ENTERS the battlefield, and an id the scanned frame
-/// keys elsewhere made no entry across the covered cycle. The keep is pinned by
-/// `analysis::resource`'s `an_etb_observer_matching_an_off_battlefield_id_moves_under_the_keep_set`.
-pub(crate) fn etb_observer_provably_excludes_class(
-    def: &TriggerDefinition,
-    state: &GameState,
-    class_member: ObjectId,
-    source_id: ObjectId,
-    identity_unstable: Option<&HashSet<ObjectId>>,
-) -> crate::analysis::resource::ExclusionVerdict {
-    // ONE matcher question for BOTH halves of this relief — the member exclusion below and
-    // the CR 400.7 refusal in the identity stage — so the two halves can never consult two
-    // different matchers. `valid_card_matches` takes an observation-time source-context
-    // snapshot (upstream's LKI-by-incarnation refactor) rather than a bare id, so
-    // source-relative refs in the `valid_card` filter resolve against the source's
-    // characteristics. Project the live functioning source the same way the trigger pipeline
-    // does (`trigger_source_context_for_latch`). `source_id` is the object being scanned, so
-    // it is always present; answer "it may match" (fail-closed, keeping the veto) if it
-    // somehow isn't.
-    let matcher_may_match = |candidate: ObjectId| {
-        let Some(source) = state.objects.get(&source_id) else {
-            return true;
-        };
-        let source_context = trigger_source_context_for_latch(state, source);
-        crate::game::trigger_matchers::valid_card_matches(def, state, candidate, &source_context)
-    };
-    crate::analysis::resource::exclusion_verdict(
-        state,
-        class_member,
-        crate::analysis::resource::SoleSource::None,
-        crate::analysis::resource::MemberLiveness::Unchecked,
-        || {
-            (matches!(
-                def.mode,
-                TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll
-            ) && def.zone_change_clauses.is_empty()
-                && def.destination == Some(Zone::Battlefield)
-                && def.valid_card.is_some())
-            .then_some(())
-        },
-        // CR 400.7: an object that moves from one zone to another becomes a new object.
-        // CR 603.6a: each time an event puts one or more permanents onto the battlefield, all
-        // permanents on the battlefield are checked for matching enters-the-battlefield
-        // triggers. So an identity-unstable permanent the scanned frame keys ON the battlefield
-        // is an entry this definition's own matcher may fire on, and the DEF-scoped relief is
-        // refused there. An ABSENT proof refuses too: no identity proof is not a proof of
-        // stability.
-        || {
-            identity_unstable.is_some_and(|unstable| {
-                !unstable.iter().any(|&id| {
-                    state
-                        .objects
-                        .get(&id)
-                        .is_some_and(|obj| obj.zone == Zone::Battlefield)
-                        && matcher_may_match(id)
-                })
-            })
-        },
-        |(), member| !matcher_may_match(member),
-    )
-}
-
 /// CR 701.17a: a mill puts a card from the top of a library into a graveyard; CR 614.6
 /// lets a replacement send it elsewhere instead, so the shapes a certified id can have
 /// taken are its own landing zone and the graveyard — and only a matcher that excludes
 /// ALL of them provably cannot fire on one. Returns `true` iff so.
 ///
-/// The departure-event sibling of [`etb_observer_provably_excludes_class`], under the
-/// same fail-closed discipline: every axis this predicate cannot classify keeps the
-/// caller's conservative veto.
+/// Fail-closed: every axis this predicate cannot classify keeps the caller's conservative veto.
 ///
-/// A CO-EQUAL SIBLING GATE, NOT an arm of `analysis::resource::provably_excludes_class`, and
-/// deliberately so: it takes neither a `&GameState` nor a class member, because its proof is
+/// It takes neither a `&GameState` nor a class member, because its proof is
 /// zone/event-key disjointness against sets its caller supplies. Its one consult sits inside
 /// `certify_instructed_opponent_library_departure`, which runs on both projected and
 /// unprojected frames, so binding this proof to a frame would make its verdict depend on which
@@ -3458,55 +3295,6 @@ pub(crate) fn departure_observer_provably_excludes(
                 && !keys.is_empty()
                 && !keys.iter().any(|key| class_event_keys.contains(key))
         }
-    }
-}
-
-/// CR 510.2 / CR 506.1 (+ CR 500.1 for the phase list): can this trigger's event occur
-/// while the loop window sits in `phase`? Returns `true` iff it PROVABLY cannot — then
-/// the trigger never fires inside the window and does not observe the growing class.
-///
-/// Exhaustive dispatch on [`TriggerMode`] with a fail-closed `_ => false` arm: a mode
-/// this predicate cannot classify KEEPS its veto. That wildcard is the deliberate
-/// error-direction deviation — a future mode is swallowed into *conservatism*, never
-/// into relief.
-///
-/// ⛔ SHAPE IS PINNED ON BOTH ARMS.
-/// (1) The `Phase` arm is STRICT inequality. `def.phase == Some(phase)` MUST return
-///     `false`, and widening it to relieve `p == phase` ("it already triggered this
-///     phase, so it cannot trigger again") is a SOUNDNESS change, not a precision one:
-///     CR 117.3a puts beginning-of-phase abilities ON THE STACK before the active
-///     player receives the priority at which CR 732.2a lets a shortcut be proposed, and
-///     CR 608.2h determines an on-stack ability's information AT RESOLUTION — inside
-///     the window. Such a refinement needs a stack-emptiness proof no caller supplies.
-/// (2) The combat-damage arm REQUIRES `damage_kind == CombatOnly`. CR 510.2 confines
-///     combat damage to the combat damage step (extra combat damage steps are still
-///     `Phase::CombatDamage`), which is exactly what makes the arm sound; a
-///     `damage_kind: Any` trigger can fire on NONCOMBAT damage in any phase, so
-///     dropping the requirement would relieve observers that genuinely fire in the
-///     window.
-/// Both pins are asserted by `trigger_event_unreachable_in_phase_shape_is_pinned`.
-pub(crate) fn trigger_event_unreachable_in_phase(def: &TriggerDefinition, phase: Phase) -> bool {
-    match def.mode {
-        // CR 500.1 / CR 506.1: a phase/step-keyed trigger's event is the arrival of
-        // that phase or step, which cannot occur inside a window proven invariant at a
-        // DIFFERENT one. `def.phase == None` proves nothing ⇒ keep the veto.
-        TriggerMode::Phase => def.phase.is_some_and(|p| p != phase),
-        // CR 510.2: the whole CR 120.2a combat-damage family. Combat damage is dealt
-        // only by the combat damage step's turn-based action, so a `CombatOnly` filter
-        // cannot match any damage event inside a window invariant at another step.
-        TriggerMode::DamageDone
-        | TriggerMode::DamageDoneOnce
-        | TriggerMode::DamageAll
-        | TriggerMode::DamageDealtOnce
-        | TriggerMode::DamageDoneOnceByController
-        | TriggerMode::DamageReceived
-        | TriggerMode::DamagePreventedOnce
-        | TriggerMode::ExcessDamage
-        | TriggerMode::ExcessDamageAll => {
-            def.damage_kind == DamageKindFilter::CombatOnly && phase != Phase::CombatDamage
-        }
-        // Fail-closed: every mode this predicate cannot classify keeps its veto.
-        _ => false,
     }
 }
 
@@ -9114,12 +8902,12 @@ impl TriggerDispatchDisposition {
 enum PreparedTriggerTargets {
     NoTargets {
         trigger: PendingTrigger,
-        rng: ChaCha20Rng,
+        rng: crate::types::game_state::GameRng,
         events: Vec<GameEvent>,
     },
     AutoAssigned {
         trigger: PendingTrigger,
-        rng: ChaCha20Rng,
+        rng: crate::types::game_state::GameRng,
         events: Vec<GameEvent>,
     },
     NeedsPlayerChoice {
@@ -9238,7 +9026,7 @@ fn prepare_trigger_targets(state: &GameState, trigger: &PendingTrigger) -> Prepa
 
 fn commit_prepared_trigger_targets(
     state: &mut GameState,
-    rng: ChaCha20Rng,
+    rng: crate::types::game_state::GameRng,
     events: Vec<GameEvent>,
     events_out: &mut Vec<GameEvent>,
 ) {
@@ -49661,86 +49449,6 @@ pub mod tests {
         );
     }
 
-    /// X2-3 — `trigger_event_unreachable_in_phase` is FAIL-CLOSED on the modes it
-    /// cannot classify, and still answers `true` for the two families it can. Both
-    /// polarities live in one row, so a constant implementation fails an arm.
-    ///
-    /// REVERT-PROBE: replace the predicate's `_ => false` arm with `_ => true` ⇒ the
-    /// `ChangesZone` assertion FAILS while the two `true` assertions still pass, so the
-    /// probe is isolated to the fail-closed arm.
-    #[test]
-    fn trigger_event_unreachable_in_phase_is_fail_closed() {
-        // Unclassifiable mode: an ETB observer's event can occur in any phase, so the
-        // predicate must NOT claim unreachability — the veto is kept.
-        let mut etb = TriggerDefinition::new(TriggerMode::ChangesZone);
-        etb.destination = Some(Zone::Battlefield);
-        assert!(
-            !trigger_event_unreachable_in_phase(&etb, Phase::PreCombatMain),
-            "CR 603.6a: a zone-change observer is unclassifiable by phase ⇒ fail closed"
-        );
-
-        // Classified family 1 — CR 500.1 / CR 506.1 phase-keyed.
-        let mut end_step = TriggerDefinition::new(TriggerMode::Phase);
-        end_step.phase = Some(Phase::End);
-        assert!(
-            trigger_event_unreachable_in_phase(&end_step, Phase::PreCombatMain),
-            "an end-step trigger's event cannot occur in a precombat-main window"
-        );
-
-        // Classified family 2 — CR 510.2 combat damage.
-        let mut combat_damage = TriggerDefinition::new(TriggerMode::DamageDone);
-        combat_damage.damage_kind = DamageKindFilter::CombatOnly;
-        assert!(
-            trigger_event_unreachable_in_phase(&combat_damage, Phase::PreCombatMain),
-            "CR 510.2: combat damage is dealt only in the combat damage step"
-        );
-    }
-
-    /// X2-4a + X2-4b — the ⛔ ANTI-COLLAPSE PIN on both classified arms. Each arm
-    /// carries its own paired positive, so the row proves the SHAPE and not merely
-    /// that the function returns something.
-    ///
-    /// REVERT-PROBES, one per arm:
-    /// * arm 1 (X2-4a): widen the `Phase` arm from `p != phase` to `def.phase.is_some()`
-    ///   (or to any `p == phase` relief) ⇒ the first assertion FAILS. It fails for a
-    ///   SOUNDNESS reason, not to protect a test: CR 117.3a puts a beginning-of-phase
-    ///   ability on the stack BEFORE the shortcut's priority and CR 608.2h reads its
-    ///   information at resolution, inside the window.
-    /// * arm 2 (X2-4b): drop the `damage_kind == CombatOnly` requirement ⇒ the third
-    ///   assertion FAILS. A `damage_kind: Any` trigger fires on NONCOMBAT damage in any
-    ///   phase, so classifying it would relieve an observer that genuinely fires.
-    #[test]
-    fn trigger_event_unreachable_in_phase_shape_is_pinned() {
-        // ── arm 1: the Phase arm is STRICT inequality ──
-        let mut precombat = TriggerDefinition::new(TriggerMode::Phase);
-        precombat.phase = Some(Phase::PreCombatMain);
-        assert!(
-            !trigger_event_unreachable_in_phase(&precombat, Phase::PreCombatMain),
-            "X2-4a PIN: `p == phase` must NOT be relieved (CR 117.3a + CR 603.3 + CR 608.2h)"
-        );
-        assert!(
-            trigger_event_unreachable_in_phase(&precombat, Phase::CombatDamage),
-            "X2-4a paired positive: the same def IS unreachable at a different phase"
-        );
-
-        // ── arm 2: the damage arm REQUIRES `CombatOnly` ──
-        let mut any_damage = TriggerDefinition::new(TriggerMode::DamageDone);
-        any_damage.damage_kind = DamageKindFilter::Any;
-        assert!(
-            !trigger_event_unreachable_in_phase(&any_damage, Phase::PreCombatMain),
-            "X2-4b PIN: `damage_kind: Any` can fire on noncombat damage in any phase"
-        );
-        let mut combat_only = TriggerDefinition::new(TriggerMode::DamageDone);
-        combat_only.damage_kind = DamageKindFilter::CombatOnly;
-        assert!(
-            trigger_event_unreachable_in_phase(&combat_only, Phase::PreCombatMain),
-            "X2-4b paired positive: `CombatOnly` IS unreachable outside CR 510.2's step"
-        );
-        assert!(
-            !trigger_event_unreachable_in_phase(&combat_only, Phase::CombatDamage),
-            "X2-4b: `CombatOnly` is reachable IN the combat damage step (CR 510.2)"
-        );
-    }
     /// CR 603.4 + CR 701.54a: "a creature other than ~" — the event-snapshotted
     /// bearer proves OTHER only against a known source identity; without one
     /// the condition fails closed (review #7820 round 5).
