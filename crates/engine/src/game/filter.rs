@@ -4405,8 +4405,8 @@ pub fn matches_zone_change_event_object_filter(
                     .is_none_or(|inc| obj.incarnation == inc)
         });
         if still_on_battlefield {
-            // A named origin is the zone the entrant is judged as a resident of (CR 603.10a for a
-            // graveyard, CR 400.1 as the format modifies it for a library).
+            // A named origin is the zone the entrant is judged as a resident of (CR 400.1 as the
+            // format modifies it).
             match origin {
                 Some(from) => {
                     matches_target_filter_on_departure(state, *object_id, from, filter, ctx)
