@@ -769,6 +769,33 @@ pub enum PublicFinalizeMode {
 /// CR 601.2h + CR 702.132a: Assist remains cancellable while it is only a
 /// selected contribution. Once helper payment has started or completed, its
 /// resources may have changed and cancellation cannot roll that prefix back.
+/// CR 605.3a + CR 117.1d: the payment window a mana ability activated at it
+/// returns to, with the player who pays there.
+fn payment_window_resume(waiting_for: &WaitingFor) -> Option<(PlayerId, ManaAbilityResume)> {
+    match waiting_for {
+        WaitingFor::ManaPayment {
+            player,
+            convoke_mode,
+        } => Some((
+            *player,
+            ManaAbilityResume::ManaPayment {
+                outer_player: Some(*player),
+                convoke_mode: *convoke_mode,
+            },
+        )),
+        WaitingFor::ManaAbilityManaPayment {
+            player,
+            pending_mana_ability,
+        } => Some((
+            *player,
+            ManaAbilityResume::ManaAbilityManaPayment {
+                pending_mana_ability: pending_mana_ability.clone(),
+            },
+        )),
+        _ => None,
+    }
+}
+
 fn ensure_assist_cancellation_is_allowed(state: &GameState) -> Result<(), EngineError> {
     let pending = state
         .pending_cast
@@ -14395,6 +14422,29 @@ fn apply_non_priority_pass_action(
             chosen,
             &mut events,
         )?,
+        // CR 733.1: withdrawing a mana ability at its payment window reverses that
+        // activation; its resume target stands as before the announcement, and
+        // mana nested activations made stays in the pool.
+        (
+            WaitingFor::ManaAbilityManaPayment {
+                pending_mana_ability,
+                ..
+            },
+            GameAction::CancelCast,
+        ) => match pending_mana_ability.resume.clone() {
+            ManaAbilityResume::ManaAbilityManaPayment {
+                pending_mana_ability: outer,
+            } => WaitingFor::ManaAbilityManaPayment {
+                player: outer.player,
+                pending_mana_ability: outer,
+            },
+            resume => mana_abilities::resume_mana_ability_root(
+                state,
+                pending_mana_ability.player,
+                resume,
+                &mut events,
+            )?,
+        },
         (WaitingFor::ManaPayment { player, .. }, GameAction::CancelCast) => {
             // CR 601.2i: Cancelling at mana payment rolls back the cast — pop
             // the stack entry placed at announcement and return the object to
@@ -14908,17 +14958,17 @@ fn apply_non_priority_pass_action(
                 None => WaitingFor::Priority { player },
             }
         }
-        // Allow mana abilities during mana payment (mid-cast)
+        // Allow mana abilities during mana payment (mid-cast) and in a mana
+        // ability's own payment window.
         (
-            WaitingFor::ManaPayment {
-                player,
-                convoke_mode,
-            },
+            window @ (WaitingFor::ManaPayment { .. } | WaitingFor::ManaAbilityManaPayment { .. }),
             GameAction::ActivateAbility {
                 source_id,
                 ability_index,
             },
         ) => {
+            let (player, resume) = payment_window_resume(window)
+                .expect("the arm matches only payment windows");
             let obj = state
                 .objects
                 .get(&source_id)
@@ -14930,14 +14980,11 @@ fn apply_non_priority_pass_action(
                 let wf = mana_abilities::activate_mana_ability(
                     state,
                     source_id,
-                    *player,
+                    player,
                     ability_index,
                     &ability_def,
                     &mut events,
-                    crate::types::game_state::ManaAbilityResume::ManaPayment {
-                        outer_player: Some(*player),
-                        convoke_mode: *convoke_mode,
-                    },
+                    resume,
                     None,
                 )?;
                 // CR 605.4a: no outer scan. `activate_mana_ability`
@@ -14962,21 +15009,17 @@ fn apply_non_priority_pass_action(
         }
         // Allow basic land tapping during mana payment
         (
-            WaitingFor::ManaPayment {
-                player,
-                convoke_mode,
-            },
+            window @ (WaitingFor::ManaPayment { .. } | WaitingFor::ManaAbilityManaPayment { .. }),
             GameAction::TapLandForMana { selection },
         ) => {
+            let (player, resume) = payment_window_resume(window)
+                .expect("the arm matches only payment windows");
             let events_before = events.len();
             let wf = handle_tap_land_for_mana(
                 state,
-                *player,
+                player,
                 &selection,
-                ManaAbilityResume::ManaPayment {
-                    outer_player: Some(*player),
-                    convoke_mode: *convoke_mode,
-                },
+                resume.clone(),
                 &mut events,
             )?;
             // CR 605.1b + CR 605.4a: the manual land tap has no cursor wrapper
@@ -14999,16 +15042,30 @@ fn apply_non_priority_pass_action(
                     &mut events,
                     events_before,
                     crate::types::game_state::ManaTriggerFixedPointResume::Root {
-                        player: *player,
-                        resume: Box::new(ManaAbilityResume::ManaPayment {
-                            outer_player: Some(*player),
-                            convoke_mode: *convoke_mode,
-                        }),
+                        player,
+                        resume: Box::new(resume),
                     },
                 ) {
                     return Ok(ActionResult::applied(events, pause));
                 }
             }
+            // CR 605.3a + CR 602.2b: back at a mana ability's payment window once
+            // the tap's triggered mana is in the pool, the pending activation
+            // decides its payment again.
+            let wf = match wf {
+                WaitingFor::ManaAbilityManaPayment {
+                    pending_mana_ability,
+                    ..
+                } => mana_abilities::resume_mana_ability_root(
+                    state,
+                    player,
+                    ManaAbilityResume::ManaAbilityManaPayment {
+                        pending_mana_ability,
+                    },
+                    &mut events,
+                )?,
+                wf => wf,
+            };
             if let Some(order_wf) =
                 super::triggers::preserve_order_triggers_resume(state, wf.clone())
             {

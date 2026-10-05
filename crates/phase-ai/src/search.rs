@@ -2327,6 +2327,15 @@ pub fn fallback_action(
                 payment: plan.clone(),
             })
         }
+        // CR 605.3a + CR 733.1: activate an issued mana ability toward the pending
+        // one's mana cost; with none issued, withdraw the pending activation.
+        WaitingFor::ManaAbilityManaPayment { .. } => issued(|action| {
+            matches!(
+                action,
+                GameAction::ActivateAbility { .. } | GameAction::TapLandForMana { .. }
+            )
+        })
+        .or_else(|| issued(|action| matches!(action, GameAction::CancelCast))),
 
         // Mana ability sub-costs: these are not pending-cast states but
         // carry PendingManaAbility, so CancelCast is not valid here.

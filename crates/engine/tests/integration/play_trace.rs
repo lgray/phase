@@ -935,6 +935,74 @@ fn play_trace_names_nothing_for_worldgorger_animate_dead() {
 }
 
 #[test]
+fn play_trace_keys_a_delayed_trigger_by_its_creator_across_cycles() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    // Animate Dead: "... When this Aura leaves the battlefield, that creature's controller
+    // sacrifices it." Each cycle's enters trigger creates that delayed ability anew.
+    let dragon = scenario.add_real_card(P0, "Worldgorger Dragon", Zone::Graveyard, db);
+    let animate = scenario.add_real_card(P0, "Animate Dead", Zone::Hand, db);
+    for _ in 0..2 {
+        scenario.add_real_card(P0, "Swamp", Zone::Battlefield, db);
+    }
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Swamp", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    cast(&mut runner, animate, vec![dragon], CastPaymentMode::Auto);
+    let (mut delayed, mut animate_printed) = (Vec::new(), Vec::new());
+    for _ in 0..60 {
+        let state = runner.state();
+        match &state.waiting_for {
+            WaitingFor::GameOver { .. } => break,
+            WaitingFor::Priority { .. } if state.stack.is_empty() => break,
+            WaitingFor::Priority { .. } => {
+                let top = match state.stack.back().map(|e| &e.kind) {
+                    Some(StackEntryKind::TriggeredAbility { ability, .. })
+                        if ability.source_id == animate =>
+                    {
+                        Some(ability.delayed_origin.is_some())
+                    }
+                    _ => None,
+                };
+                let before = trace_of(state).entries.len();
+                act(&mut runner, GameAction::PassPriority);
+                let resolved = trace_of(runner.state()).entries[before..]
+                    .iter()
+                    .find_map(|e| match e.kind {
+                        EntryKind::Resolution { node } => Some(node),
+                        _ => None,
+                    });
+                match (top, resolved) {
+                    (Some(true), Some(node)) => delayed.push(node),
+                    (Some(false), Some(node)) => animate_printed.push(node),
+                    _ => {}
+                }
+            }
+            WaitingFor::LoopShortcut { .. } => act(&mut runner, GameAction::DeclineShortcut),
+            _ => answer(&mut runner, &names(&[dragon])),
+        }
+    }
+    assert!(
+        delayed.len() >= 3 && !animate_printed.is_empty(),
+        "reach: three cycles of Animate Dead's delayed and enters triggers resolved: \
+         {delayed:?} {animate_printed:?}"
+    );
+    assert!(
+        delayed.iter().all(|&node| node == delayed[0]),
+        "CR 603.7a: one creator's delayed ability is one node across cycles: {delayed:?}"
+    );
+    assert!(
+        !animate_printed.contains(&delayed[0]),
+        "the delayed ability is not its creator's printed trigger: {delayed:?} {animate_printed:?}"
+    );
+}
+
+#[test]
 fn play_trace_keys_activations_by_definition() {
     let Some(db) = shared_card_db() else { return };
     let (mut runner, basalt) = basalt_board(2, 0, db);

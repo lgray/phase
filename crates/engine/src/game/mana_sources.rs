@@ -977,6 +977,7 @@ pub(crate) fn preflight_tap_land_action(
     let waiting_player = match &state.waiting_for {
         WaitingFor::Priority { player }
         | WaitingFor::ManaPayment { player, .. }
+        | WaitingFor::ManaAbilityManaPayment { player, .. }
         | WaitingFor::UnlessPayment { player, .. } => *player,
         _ => {
             return Err(EngineError::ActionNotAllowed(

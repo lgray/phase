@@ -210,6 +210,9 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 112 — WaitingFor.ManaAbilityManaPayment and its ManaAbilityResume root are
+ *      new variants a v111 peer cannot parse; ResolvedAbility gains the
+ *      optional delayed_origin.
  * 111 — WaitingFor.LoopShortcut and ShortcutProposal gained a required road
  *      naming the producer that minted the offer. A v110 peer drops the key
  *      from every frame it re-encodes, so the exact-match version check at
@@ -720,7 +723,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 111;
+export const PROTOCOL_VERSION = 112;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

@@ -995,6 +995,17 @@ pub fn candidate_actions_broad_with_probe(
             player,
             convoke_mode,
         } => mana_payment_actions(state, *player, *convoke_mode),
+        // CR 605.3a + CR 733.1: activate a mana ability toward the pending one's
+        // mana cost, or withdraw the pending activation.
+        WaitingFor::ManaAbilityManaPayment { player, .. } => {
+            let mut actions = mana_tap_actions(state, *player);
+            actions.push(candidate(
+                GameAction::CancelCast,
+                TacticalClass::Pass,
+                Some(*player),
+            ));
+            actions
+        }
         WaitingFor::ManaSourceSelection {
             player, options, ..
         } => {

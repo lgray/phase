@@ -106,6 +106,9 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  94 — game_setup and state_update carry GameState, whose WaitingFor gained
+ *       ManaAbilityManaPayment, a variant a v93 peer cannot parse. Bumped in
+ *       lockstep with full-game protocol 112.
  *  93 — game_setup and state_update carry GameState, whose
  *       WaitingFor::LoopShortcut and ShortcutProposal gained a required road
  *       naming the producer that minted the offer. A v92 peer drops the key
@@ -572,7 +575,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 93 as const;
+export const WIRE_PROTOCOL_VERSION = 94 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

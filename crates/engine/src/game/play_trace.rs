@@ -9,7 +9,8 @@ use std::cell::Cell;
 
 use crate::game::engine::in_simulation_probe;
 use crate::types::ability::{
-    AbilityDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerPrintedOrigin,
+    AbilityDefinition, DelayedAbilityOrigin, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+    TriggerPrintedOrigin,
 };
 use crate::types::actions::GameAction;
 use crate::types::card::PrintedCardRef;
@@ -107,6 +108,8 @@ enum NodeKey {
     },
     /// CR 603.3: a printed triggered ability, on the card and on every copy of it.
     Triggered(TriggerPrintedOrigin),
+    /// CR 603.7a: a delayed triggered ability, by its creator and what it was created to do.
+    Delayed(Box<DelayedAbilityOrigin>),
     /// Any other trigger occurrence keys only itself, so it names no repeat it cannot prove.
     TriggeredOccurrence(TriggerDefinitionRef),
     /// A play or resolution with no identity: the trace index it was recorded at.
@@ -749,6 +752,7 @@ fn answer_optionality(prompt: &WaitingFor, answer: Answer) -> AnswerOptionality 
         | WaitingFor::CostTypeChoice { .. }
         | WaitingFor::BlightChoice { .. }
         | WaitingFor::PayManaAbilityMana { .. }
+        | WaitingFor::ManaAbilityManaPayment { .. }
         | WaitingFor::ChooseManaColor { .. }
         | WaitingFor::CollectEvidenceChoice { .. }
         | WaitingFor::TopOrBottomChoice { .. }
@@ -817,6 +821,9 @@ fn trigger_node(state: &GameState, entry: &StackEntry, at: usize) -> Option<Node
     let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
         return None;
     };
+    if let Some(origin) = &ability.delayed_origin {
+        return Some(NodeKey::Delayed(origin.clone()));
+    }
     let Some(definition_ref) = &ability.trigger_definition_ref else {
         return Some(NodeKey::Unkeyed(at));
     };

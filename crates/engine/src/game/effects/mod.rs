@@ -4980,6 +4980,7 @@ fn instruction_outlives_declined_gate(
         source_incarnation: _,
         trigger_source: _,
         trigger_definition_ref: _,
+        delayed_origin: _,
         target_incarnations: _,
         selected_target_incarnations: _,
         illegal_target_slots: _,

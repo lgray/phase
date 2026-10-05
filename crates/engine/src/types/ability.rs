@@ -32323,6 +32323,16 @@ pub struct TriggerPrintedOrigin {
     pub printed_occurrence: usize,
 }
 
+/// CR 603.7a: what identifies a delayed triggered ability across the resolutions that create
+/// it — the creating source's printed card, and the delayed condition and root effect before
+/// any creation-time binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelayedAbilityOrigin {
+    pub creator: PrintedCardRef,
+    pub condition: DelayedTriggerCondition,
+    pub effect: Effect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopiableValues {
     pub name: String,
@@ -33263,6 +33273,10 @@ pub struct ResolvedAbility {
     /// `ability_index` remains presentation/compatibility only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_definition_ref: Option<TriggerDefinitionRef>,
+    /// CR 603.7a: the creator-keyed identity a delayed triggered ability carries from its
+    /// installation, on the root of its chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delayed_origin: Option<Box<DelayedAbilityOrigin>>,
     /// CR 400.7 + CR 509.1c: Exact attacker selected by a source- or
     /// event-source-referential force-block instruction. This is bound when the
     /// triggered ability is put on the stack, before targets are chosen; it is
@@ -33709,6 +33723,7 @@ impl PartialEq for ResolvedAbility {
             source_incarnation: a_source_incarnation,
             trigger_source: a_trigger_source,
             trigger_definition_ref: a_trigger_definition_ref,
+            delayed_origin: a_delayed_origin,
             force_block_attacker: a_force_block_attacker,
             target_incarnations: a_target_incarnations,
             selected_target_incarnations: a_selected_target_incarnations,
@@ -33780,6 +33795,7 @@ impl PartialEq for ResolvedAbility {
             source_incarnation: b_source_incarnation,
             trigger_source: b_trigger_source,
             trigger_definition_ref: b_trigger_definition_ref,
+            delayed_origin: b_delayed_origin,
             force_block_attacker: b_force_block_attacker,
             target_incarnations: b_target_incarnations,
             selected_target_incarnations: b_selected_target_incarnations,
@@ -33851,6 +33867,7 @@ impl PartialEq for ResolvedAbility {
             && a_source_incarnation == b_source_incarnation
             && a_trigger_source == b_trigger_source
             && a_trigger_definition_ref == b_trigger_definition_ref
+            && a_delayed_origin == b_delayed_origin
             && a_force_block_attacker == b_force_block_attacker
             && a_target_incarnations == b_target_incarnations
             && a_selected_target_incarnations == b_selected_target_incarnations
@@ -34257,6 +34274,7 @@ impl ResolvedAbility {
             source_incarnation: None,
             trigger_source: None,
             trigger_definition_ref: None,
+            delayed_origin: None,
             force_block_attacker: None,
             target_incarnations: Vec::new(),
             selected_target_incarnations: Vec::new(),

@@ -2618,6 +2618,7 @@ export type WaitingFor =
     }
   | { type: "BlightChoice"; data: { player: PlayerId; counters: number; creatures: ObjectId[]; pending_cast: PendingCast } }
   | { type: "PayManaAbilityMana"; data: { player: PlayerId; options: ManaType[][]; pending_mana_ability: unknown } }
+  | { type: "ManaAbilityManaPayment"; data: { player: PlayerId; pending_mana_ability: unknown } }
   | {
       type: "ChooseManaColor";
       data: {

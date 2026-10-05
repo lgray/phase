@@ -8,10 +8,10 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCostOrigin,
     BounceSelection, CardTypeSetSource, CastManaSpentMetric, ChosenAttribute, CommanderOwnership,
     ControllerRef, CopyRetargetPermission, DamageAmountScope, DamageAmountThreshold,
-    DamageKindFilter, DelayedTriggerCondition, DurationEvent, Effect, FilterProp, ModalChoice,
-    NameStickerSet, ObjectScope, OriginConstraint, PlayerFilter, PlayerScope, PtValue,
-    QuantityExpr, QuantityRef, RenownSubject, ResolvedAbility, SacrificeCost, StaticCondition,
-    TargetFilter, TargetRef, TributeOutcome, TriggerCondition, TriggerConstraint,
+    DamageKindFilter, DelayedAbilityOrigin, DelayedTriggerCondition, DurationEvent, Effect,
+    FilterProp, ModalChoice, NameStickerSet, ObjectScope, OriginConstraint, PlayerFilter,
+    PlayerScope, PtValue, QuantityExpr, QuantityRef, RenownSubject, ResolvedAbility, SacrificeCost,
+    StaticCondition, TargetFilter, TargetRef, TributeOutcome, TriggerCondition, TriggerConstraint,
     TriggerDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerEntry,
     TriggerGrantProducerKey, TypeFilter, TypedFilter,
 };
@@ -923,6 +923,22 @@ impl PendingActivationTriggerCollection {
     }
 }
 
+/// CR 603.7a: the identity of a delayed triggered ability `creator` makes, or `None` when the
+/// creator has no printed card.
+pub(crate) fn delayed_ability_origin(
+    state: &GameState,
+    creator: ObjectId,
+    condition: DelayedTriggerCondition,
+    effect: Effect,
+) -> Option<Box<DelayedAbilityOrigin>> {
+    let creator = state.objects.get(&creator)?.base_printed_ref.clone()?;
+    Some(Box::new(DelayedAbilityOrigin {
+        creator,
+        condition,
+        effect,
+    }))
+}
+
 /// Installs one CR 603.7 delayed triggered ability and journals it.
 ///
 /// SINGLE AUTHORITY for adding to `GameState::delayed_triggers`. Every rules
@@ -943,6 +959,15 @@ pub fn install_delayed_trigger(
     mut trigger: DelayedTrigger,
     _events: &mut Vec<GameEvent>,
 ) {
+    // CR 603.7a: a caller that did not stamp the origin is identified by what it installs.
+    if trigger.ability.delayed_origin.is_none() {
+        trigger.ability.delayed_origin = delayed_ability_origin(
+            state,
+            trigger.source_id,
+            trigger.condition.clone(),
+            trigger.ability.effect.clone(),
+        );
+    }
     let token = DelayedTriggerToken(state.next_delayed_trigger_token);
     state.next_delayed_trigger_token = state.next_delayed_trigger_token.saturating_add(1);
     let instance = DelayedTriggerInstanceId(state.next_delayed_trigger_instance);

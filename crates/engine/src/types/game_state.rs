@@ -8625,6 +8625,11 @@ pub enum ManaAbilityResume {
     FinalizePendingManaPayment {
         player: PlayerId,
     },
+    /// CR 605.3a + CR 117.1d: a mana ability activated inside another mana
+    /// ability's payment window; its completion re-enters that activation.
+    ManaAbilityManaPayment {
+        pending_mana_ability: Box<PendingManaAbility>,
+    },
 }
 
 impl ManaAbilityResume {
@@ -8639,6 +8644,8 @@ impl ManaAbilityResume {
             | ManaAbilityResume::ManaSourceSelection { .. }
             | ManaAbilityResume::PhyrexianCastPayment { .. }
             | ManaAbilityResume::FinalizePendingManaPayment { .. } => true,
+            // CR 602.2b: the outer mana ability's cost is still being paid.
+            ManaAbilityResume::ManaAbilityManaPayment { .. } => true,
             // CR 116.2g / 116.2b / 116.2c: companion to hand, turning a
             // permanent face up, and paying to end an effect are special actions.
             ManaAbilityResume::CompanionToHand { .. }
@@ -16019,6 +16026,14 @@ pub enum WaitingFor {
         options: Vec<Vec<ManaType>>,
         pending_mana_ability: Box<PendingManaAbility>,
     },
+    /// CR 605.3a + CR 117.1d + CR 601.2g via CR 602.2b: a mana ability's own
+    /// mana cost that the pool and auto-tap cannot cover opens a payment window
+    /// in which the player activates other mana abilities; each completion
+    /// re-enters the pending activation.
+    ManaAbilityManaPayment {
+        player: PlayerId,
+        pending_mana_ability: Box<PendingManaAbility>,
+    },
     /// CR 106.3 + CR 608.2d + CR 605.3b: Mana production with a choice dimension
     /// — player must answer before mana is added to the pool. The prompt shape
     /// depends on the `ManaProduction` variant. All shapes
@@ -17263,6 +17278,7 @@ impl WaitingFor {
             WaitingFor::CostTypeChoice { .. } => "CostTypeChoice",
             WaitingFor::BlightChoice { .. } => "BlightChoice",
             WaitingFor::PayManaAbilityMana { .. } => "PayManaAbilityMana",
+            WaitingFor::ManaAbilityManaPayment { .. } => "ManaAbilityManaPayment",
             WaitingFor::ChooseManaColor { .. } => "ChooseManaColor",
             WaitingFor::CollectEvidenceChoice { .. } => "CollectEvidenceChoice",
             WaitingFor::HarmonizeTapChoice { .. } => "HarmonizeTapChoice",
@@ -17410,6 +17426,7 @@ impl WaitingFor {
             | WaitingFor::CostTypeChoice { player, .. }
             | WaitingFor::BlightChoice { player, .. }
             | WaitingFor::PayManaAbilityMana { player, .. }
+            | WaitingFor::ManaAbilityManaPayment { player, .. }
             | WaitingFor::ChooseManaColor { player, .. }
             | WaitingFor::CollectEvidenceChoice { player, .. }
             | WaitingFor::HarmonizeTapChoice { player, .. }
@@ -17663,6 +17680,7 @@ impl WaitingFor {
             | WaitingFor::CollectEvidenceChoice { .. }
             | WaitingFor::PayAmountChoice { .. }
             | WaitingFor::PayManaAbilityMana { .. }
+            | WaitingFor::ManaAbilityManaPayment { .. }
             | WaitingFor::Priority { .. }
             | WaitingFor::ResolveAllConsent { .. }
             | WaitingFor::ResolveAllReady { .. }
@@ -17822,7 +17840,9 @@ impl WaitingFor {
                 pending_mana_ability,
                 ..
             } => pending_mana_ability.is_some(),
-            WaitingFor::PayManaAbilityMana { .. } => true,
+            WaitingFor::PayManaAbilityMana { .. } | WaitingFor::ManaAbilityManaPayment { .. } => {
+                true
+            }
             // Every other prompt is not part of a mana ability's activation.
             // Listed rather than `_` so a new prompt has to be classified.
             WaitingFor::Priority { .. }

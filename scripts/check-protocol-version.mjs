@@ -46,7 +46,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // `AbilityActivationRecord.source_zone`.
 // v109 carries the CR 201.5a granter binding (ObjectScope + granting_object).
 // v110 splits the shortcut schema's measured bound from its deliverable capacity;
-// v111 stamps the minting road on shortcut offers.
+// v111 stamps the minting road on shortcut offers; v112 adds the mana ability
+// payment window.
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -91,7 +92,8 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +38: the v109 CR 201.5a granter binding.
 // +39: the v110 ShortcutDecisionSchema capacity split adds a capability bump on top.
 // +40: the v111 offer road stamp.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 40;
+// +41: the v112 mana ability payment window.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 41;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -156,7 +158,8 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +37: wire 91 moves with full-game v109 for the CR 201.5a granter binding.
 // +38: wire 92 moves with full-game v110 for the shortcut schema capacity split.
 // +39: wire 93 moves with full-game v111 for the offer road stamp.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 39;
+// +40: wire 94 moves with full-game v112 for the mana ability payment window.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 40;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

@@ -789,9 +789,9 @@ fn every_waiting_for_arm_declares_its_acting_authority() {
     // classified by `WaitingFor::acting_authority` as
     // `ActingAuthority::One(player)`. Not actorless: the prompt cannot advance
     // without that player's `GameAction::SelectCards`.
-    if declared.len() != 140 {
+    if declared.len() != 141 {
         failures.push(format!(
-            "PIN declared.len()={} != 140.\n\
+            "PIN declared.len()={} != 141.\n\
              \n\
              Adding a `WaitingFor` variant IS the counted event this gate exists to make loud. \
              Repair it by ADJUDICATING, not by bumping the number:\n\

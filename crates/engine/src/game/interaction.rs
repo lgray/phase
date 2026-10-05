@@ -288,9 +288,9 @@ fn human_response_model(waiting_for: &WaitingFor, semantic_owner: PlayerId) -> H
         | WaitingFor::CommanderZoneChoice { .. }
         | WaitingFor::UntapChoice { .. } => HumanResponseModel::DirectChoices,
         WaitingFor::BetweenGamesSideboard { .. } => HumanResponseModel::SideboardPartition,
-        WaitingFor::ManaPayment { .. } | WaitingFor::ManaSourceSelection { .. } => {
-            HumanResponseModel::DirectChoices
-        }
+        WaitingFor::ManaPayment { .. }
+        | WaitingFor::ManaSourceSelection { .. }
+        | WaitingFor::ManaAbilityManaPayment { .. } => HumanResponseModel::DirectChoices,
         WaitingFor::LoopShortcut { .. } => HumanResponseModel::LoopShortcut,
         WaitingFor::Priority { .. }
         | WaitingFor::MeldPairChoice { .. }
@@ -392,6 +392,7 @@ fn classify_waiting_for(waiting_for: &WaitingFor) -> WaitingClassification {
         ),
         WaitingFor::ManaPayment { .. }
         | WaitingFor::ManaSourceSelection { .. }
+        | WaitingFor::ManaAbilityManaPayment { .. }
         | WaitingFor::AssistPayment { .. }
         | WaitingFor::DefilerPayment { .. }
         | WaitingFor::UnlessPayment { .. }
@@ -2281,6 +2282,20 @@ fn direct_choice_projection(
                 .map(|selection| GameAction::ActivateManaSource { selection })
                 .collect::<Vec<_>>();
             actions.push(GameAction::BackToManaPayment);
+            actions
+        }
+        // CR 605.3a + CR 733.1: the window's moves are the mana activations and
+        // withdrawing the pending activation.
+        WaitingFor::ManaAbilityManaPayment { player, .. } => {
+            if *player != semantic_owner {
+                return Err(InteractionReasonCode::InvalidAuthorityState);
+            }
+            let mut actions =
+                super::mana_sources::activatable_mana_actions_for_player(state, *player);
+            if actions.len() >= MAX_INTERACTION_LIST_LEN {
+                return Err(InteractionReasonCode::PayloadTooLarge);
+            }
+            actions.push(GameAction::CancelCast);
             actions
         }
         WaitingFor::PrecastCopyShortcutOffer {
@@ -4755,6 +4770,7 @@ fn selection_projection(
         | WaitingFor::EntryAttackTargetChoice { .. }
         | WaitingFor::ManaPayment { .. }
         | WaitingFor::ManaSourceSelection { .. }
+        | WaitingFor::ManaAbilityManaPayment { .. }
         | WaitingFor::AssistChoosePlayer { .. }
         | WaitingFor::AssistPayment { .. }
         | WaitingFor::ChooseXValue { .. }
