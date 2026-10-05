@@ -1,0 +1,12 @@
+sha=995d99af2d923480f141f9fbc680cf64775907a4
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [  10.402s] ( 3460/37442) phase-ai search::tests::untapped_fetchland_outscores_passing_on_its_own_turn
+        FAIL [  12.408s] ( 3453/37442) phase-ai search::tests::prospective_fetch_choice_survives_to_the_real_search_prompt
+        FAIL [   3.957s] ( 3331/37442) phase-ai search::tests::self_destruct_target_selection_prefers_lethal_over_nonlethal_body
+        FAIL [   5.581s] ( 3480/37442) phase-ai::ai_quality control_prefers_mana_rock_over_comparable_creature_as_disclosed
+     Summary [2909.174s] 37442 tests run: 37438 passed (154 slow), 4 failed, 51 skipped
+done rc=0

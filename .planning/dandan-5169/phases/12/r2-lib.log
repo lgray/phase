@@ -1,0 +1,70 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 38s
+────────────
+ Nextest run ID 03db4193-ace3-4ed9-89d8-08ca2648910f with nextest profile: default
+    Starting 62 tests across 1 binary (23163 tests skipped)
+        PASS [   0.081s] ( 1/62) phase-engine ai_support::tests::stuck_diagnostic_none_on_normal_mulligan_decision
+        PASS [   0.090s] ( 2/62) phase-engine game::mulligan::tests::deal_sequence_interleaves_from_the_active_player_when_the_format_says_so
+        PASS [   0.094s] ( 3/62) phase-engine game::mulligan::tests::dandan_round_waits_for_owed_bottoms_before_redrawing
+        PASS [   0.104s] ( 4/62) phase-engine game::log::tests::explicit_and_skip_mulligan_starts_reset_context_without_a_contest
+        PASS [   0.113s] ( 5/62) phase-engine game::mulligan::tests::commander_first_mulligan_is_free_in_duel
+        PASS [   0.112s] ( 6/62) phase-engine game::mulligan::tests::brawl_first_mulligan_is_free_in_duel
+        PASS [   0.124s] ( 7/62) phase-engine game::mulligan::tests::deal_hands_alternates_pile_cards_and_the_receiver_owns_them
+        PASS [   0.127s] ( 8/62) phase-engine game::mulligan::tests::dandan_close_returns_every_hand_before_the_deal_and_deals_active_player_first
+        PASS [   0.128s] ( 9/62) phase-engine game::mulligan::tests::dandan_mulligan_is_held_until_every_player_has_declared
+        PASS [   0.129s] (10/62) phase-engine game::mulligan::tests::both_players_keep_starts_game
+        PASS [   0.137s] (11/62) phase-engine game::mulligan::tests::ai_starting_player_can_submit_mulligan_decision
+        PASS [   0.143s] (12/62) phase-engine game::mulligan::tests::dandan_cap_applies_an_implicit_keep_at_the_close
+        PASS [   0.043s] (13/62) phase-engine game::mulligan::tests::kept_hand_size_after_normal
+        PASS [   0.185s] (14/62) phase-engine game::mulligan::tests::concede_during_mulligan_excludes_from_bottoms
+        PASS [   0.094s] (15/62) phase-engine game::mulligan::tests::four_player_concurrent_keep_in_any_order
+        PASS [   0.186s] (16/62) phase-engine game::mulligan::tests::concede_during_mulligan_use_serum_powder_bottoming_excludes_cleanly
+        PASS [   0.062s] (17/62) phase-engine game::mulligan::tests::keep_removes_player_from_pending
+        PASS [   0.078s] (18/62) phase-engine game::mulligan::tests::handle_bottom_cards_wrong_count_errors
+        PASS [   0.067s] (19/62) phase-engine game::mulligan::tests::keep_with_zero_mulligans_resolves_immediately_no_bottom_phase
+        PASS [   0.068s] (20/62) phase-engine game::mulligan::tests::kept_hand_size_after_free_first
+        PASS [   0.095s] (21/62) phase-engine game::mulligan::tests::four_player_partial_keep_pending_shrinks
+        PASS [   0.092s] (22/62) phase-engine game::mulligan::tests::keep_after_mulligan_enters_bottom_cards_immediately_independent_of_other_pending
+        PASS [   0.118s] (23/62) phase-engine game::mulligan::tests::four_player_keep_in_arbitrary_order_starts_game
+        PASS [   0.109s] (24/62) phase-engine game::mulligan::tests::handle_bottom_cards_puts_on_bottom
+        PASS [   0.152s] (25/62) phase-engine game::mulligan::tests::four_player_concurrent_bottom_in_any_order
+        PASS [   0.108s] (26/62) phase-engine game::mulligan::tests::max_mulligans_free_first_format_permits_eighth
+        PASS [   0.065s] (27/62) phase-engine game::mulligan::tests::mulligan_redraws_seven
+        PASS [   0.074s] (28/62) phase-engine game::mulligan::tests::mulligan_keeps_player_in_pending_and_increments_count
+        PASS [   0.090s] (29/62) phase-engine game::mulligan::tests::multiplayer_two_mulligans_bottoms_one
+        PASS [   0.104s] (30/62) phase-engine game::mulligan::tests::mull_to_five_bottoms_full_cumulative_count_not_incremental_delta
+        PASS [   0.297s] (31/62) phase-engine game::mulligan::tests::dandan_elimination_with_a_held_declaration_still_closes_the_round
+        PASS [   0.114s] (32/62) phase-engine game::mulligan::tests::mull_to_five_then_third_mulligan_owes_full_amount_not_incremental_delta
+        PASS [   0.049s] (33/62) phase-engine game::mulligan::tests::serum_powder_rejects_object_not_in_actor_hand
+        PASS [   0.119s] (34/62) phase-engine game::mulligan::tests::mulligan_shuffle_back_emits_no_shuffled_library_events
+        PASS [   0.096s] (35/62) phase-engine game::mulligan::tests::select_cards_while_declare_phase_rejected
+        PASS [   0.104s] (36/62) phase-engine game::mulligan::tests::serum_powder_can_chain_when_redraw_yields_another_powder
+        PASS [   0.123s] (37/62) phase-engine game::mulligan::tests::multiplayer_first_mulligan_is_free
+        PASS [   0.091s] (38/62) phase-engine game::mulligan::tests::serum_powder_exiles_entire_hand_and_redraws
+        PASS [   0.075s] (39/62) phase-engine game::mulligan::tests::serum_powder_rejects_non_powder_object
+        PASS [   0.128s] (40/62) phase-engine game::mulligan::tests::optional_begin_game_ability_prompts_before_resolving
+        PASS [   0.108s] (41/62) phase-engine game::mulligan::tests::serum_powder_does_not_disturb_other_pending_players
+        PASS [   0.160s] (42/62) phase-engine game::mulligan::tests::max_mulligans_standard_duel_caps_at_seven
+        PASS [   0.082s] (43/62) phase-engine game::mulligan::tests::serum_powder_then_keep_owes_no_bottoms
+        PASS [   0.051s] (44/62) phase-engine game::mulligan::tests::tiny_leaders_multi_commander_bottoms_before_normal_mulligan
+        PASS [   0.061s] (45/62) phase-engine game::mulligan::tests::start_mulligan_emits_event
+        PASS [   0.066s] (46/62) phase-engine game::mulligan::tests::start_mulligan_draws_seven_for_each_player
+        PASS [   0.079s] (47/62) phase-engine game::mulligan::tests::standard_opening_deal_event_order_is_seat_by_seat
+        PASS [   0.092s] (48/62) phase-engine game::mulligan::tests::standard_duel_has_no_free_mulligan
+        PASS [   0.093s] (49/62) phase-engine game::mulligan::tests::shared_team_turn_opening_deal_walks_seats_from_the_starting_player
+        PASS [   0.072s] (50/62) phase-engine game::mulligan::tests::use_serum_powder_cannot_bottom_the_earmarked_powder_itself
+        PASS [   0.081s] (51/62) phase-engine game::mulligan::tests::tiny_leaders_opening_bottom_counts_as_first_mulligan_bottom
+        PASS [   0.072s] (52/62) phase-engine game::mulligan::tests::use_serum_powder_resolves_owed_bottom_before_exiling_hand
+        PASS [   0.054s] (53/62) phase-engine types::actions::tests::mulligan_decision_roundtrips
+        PASS [   0.053s] (54/62) phase-engine types::format::tests::limited_no_free_first_mulligan
+        PASS [   0.074s] (55/62) phase-engine game::visibility::tests::filters_opponent_mulligan_hand_to_library_events
+        PASS [   0.051s] (56/62) phase-engine types::format::tests::premodern_uses_normal_constructed_mulligan
+        PASS [   0.060s] (57/62) phase-engine types::format::tests::freeform_no_free_first_mulligan
+        PASS [   0.092s] (58/62) phase-engine game::mulligan::tests::use_serum_powder_twice_in_a_row_at_same_count_does_not_recharge
+        PASS [   0.058s] (59/62) phase-engine types::game_state::tests::mulligan_decision_declared_round_trips_and_is_omitted_when_empty
+        PASS [   0.071s] (60/62) phase-engine types::format::tests::freeform_commander_grants_free_first_mulligan
+        PASS [   0.457s] (61/62) phase-engine game::engine::tests::full_turn_integration_with_mulligan
+        PASS [   0.116s] (62/62) phase-engine parser::oracle::tests::serum_powder_mulligan_ability_classifies_as_mulligan_kind
+────────────
+     Summary [   0.502s] 62 tests run: 62 passed, 23163 skipped
+done rc=0
