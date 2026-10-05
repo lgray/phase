@@ -3,7 +3,7 @@
 //! reveal it and redraw, before its first regular mulligan, without taking a
 //! mulligan.
 
-use engine::ai_support::candidate_actions;
+use engine::ai_support::{candidate_actions, legal_actions_for_viewer, legal_actions_full};
 use engine::database::card_db::CardDatabase;
 use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
 use engine::game::engine::{apply, start_game_with_starting_player};
@@ -491,4 +491,40 @@ fn v6_a_free_reveal_that_redraws_a_qualifying_hand_may_repeat() {
     assert_eq!(reveals(&events).len(), 1);
     assert_eq!(entry(&state, P1), (0, MulliganDecisionPhase::Declare));
     assert_eq!(round(&state), (vec![P1], vec![]));
+}
+
+fn viewer_sees_free_reveal(state: &GameState, viewer: PlayerId) -> bool {
+    legal_actions_for_viewer(state, viewer)
+        .0
+        .contains(&GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal,
+        })
+}
+
+#[test]
+fn v7_a_viewer_is_offered_the_free_reveal_only_for_their_own_hand() {
+    let Some(db) = shared_card_db() else { return };
+    let mut state = dandan(db, P0);
+    arrange_counts(&mut state, P0, 0, 7);
+    arrange_counts(&mut state, P1, 3, 4);
+    let keep = GameAction::MulliganDecision {
+        choice: MulliganChoice::Keep,
+    };
+    assert!(legal_actions_for_viewer(&state, P0).0.contains(&keep));
+    assert!(legal_actions_for_viewer(&state, P1).0.contains(&keep));
+    assert!(legal_actions_full(&state)
+        .0
+        .contains(&GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal
+        }));
+
+    assert!(viewer_sees_free_reveal(&state, P0));
+    assert!(!viewer_sees_free_reveal(&state, P1));
+    assert!(try_act(&mut state.clone(), P1, MulliganChoice::FreeReveal).is_err());
+
+    arrange_counts(&mut state, P1, 1, 6);
+    assert!(viewer_sees_free_reveal(&state, P0) && viewer_sees_free_reveal(&state, P1));
+    arrange_counts(&mut state, P0, 3, 4);
+    arrange_counts(&mut state, P1, 3, 4);
+    assert!(!viewer_sees_free_reveal(&state, P0) && !viewer_sees_free_reveal(&state, P1));
 }

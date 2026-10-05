@@ -27,7 +27,7 @@ use crate::types::ability::{
     AbilityBlockEntry, AbilityKind, CounterCostSelection, TapCreaturesSelectionMode, TargetRef,
     TriggerDefinition,
 };
-use crate::types::actions::GameAction;
+use crate::types::actions::{GameAction, MulliganChoice};
 use crate::types::card_type::CoreType;
 use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
@@ -2577,10 +2577,44 @@ pub fn legal_actions_for_viewer(state: &GameState, viewer: PlayerId) -> LegalAct
     // controlled turn for them). Coincides with `acting_players().contains`
     // whenever no turn-control effect is active.
     if crate::game::turn_control::is_authorized_submitter(state, viewer) {
-        legal_actions_full(state)
+        let (actions, spell_costs, grouped) = legal_actions_full(state);
+        (
+            actions_visible_to_viewer(state, viewer, actions),
+            spell_costs,
+            grouped,
+        )
     } else {
         (Vec::new(), HashMap::new(), HashMap::new())
     }
+}
+
+/// Drops the actions of a seat-agnostic `legal_actions_full` list that the
+/// engine would refuse from `viewer`. `FreeReveal` names no seat and is
+/// resolved against the submitter's own pending entry, so it is kept only
+/// when that entry qualifies (CR 103.5, Dandan free reveal); keeping it for
+/// another seat would offer a dead action and disclose that seat's hand shape.
+pub fn actions_visible_to_viewer(
+    state: &GameState,
+    viewer: PlayerId,
+    mut actions: Vec<GameAction>,
+) -> Vec<GameAction> {
+    let offered = match &state.waiting_for {
+        WaitingFor::MulliganDecision { pending, .. } => pending
+            .iter()
+            .any(|e| e.player == viewer && crate::game::mulligan::free_reveal_offered(state, e)),
+        _ => false,
+    };
+    if !offered {
+        actions.retain(|action| {
+            !matches!(
+                action,
+                GameAction::MulliganDecision {
+                    choice: MulliganChoice::FreeReveal
+                }
+            )
+        });
+    }
+    actions
 }
 
 /// CR 118.3: maximum TOTAL read-out entries summed across every object bucket
