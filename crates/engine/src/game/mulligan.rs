@@ -13,7 +13,7 @@ use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
-use super::players::apnap_order_from;
+use super::players::{is_alive, turn_order_index};
 use super::turns;
 
 /// CR 103.5: A player's starting hand size is normally seven cards.
@@ -167,7 +167,8 @@ fn tiny_leaders_forced_mulligan_pending(state: &GameState) -> Vec<MulliganBottom
 ///   player's bottoms ledger to 0 (CR 103.5 — a fresh redraw invalidates prior
 ///   credit). The player remains in `pending` to decide again. At the mulligan
 ///   cap (CR 103.5 final sentence) the mulligan is treated as an implicit Keep
-///   at the new count.
+///   at the new count. In a shared-library format the declaration is only
+///   recorded in `declared` (CR 103.5) and carried out by `close_declare_round`.
 /// - `UseSerumPowder { object_id }` (CR 103.5b + Serum Powder Oracle text) is a
 ///   declare-point action. If bottoms are still owed, the entry transitions to
 ///   `BottomCards { then: UseSerumPowder { object_id } }` and the exile+redraw
@@ -178,9 +179,9 @@ fn tiny_leaders_forced_mulligan_pending(state: &GameState) -> Vec<MulliganBottom
 /// A decision is rejected if the player's entry is not in the `Declare` phase
 /// (they owe bottoms first).
 ///
-/// When `pending` becomes empty, advance directly to `finish_mulligans` — each
-/// player's bottoms are resolved at their own declare point, so there is no
-/// separate batch bottoms phase.
+/// When `pending` becomes empty, close the declare round if any declaration is
+/// held, then advance to `finish_mulligans` — each player's bottoms are resolved
+/// at their own declare point, so there is no separate batch bottoms phase.
 pub fn handle_mulligan_decision(
     state: &mut GameState,
     player: PlayerId,
@@ -461,7 +462,7 @@ fn close_declare_round(
     free_first: bool,
     events: &mut Vec<GameEvent>,
 ) -> Vec<MulliganDecisionEntry> {
-    let redrawers: Vec<MulliganDeclaration> = apnap_order_from(state, None, state.active_player)
+    let redrawers: Vec<MulliganDeclaration> = seat_walk_from_active(state)
         .into_iter()
         .filter_map(|player| declared.iter().find(|d| d.player == player).cloned())
         .collect();
@@ -512,7 +513,7 @@ fn close_declare_round(
             idx += 1;
             continue;
         }
-        // CR 103.5 final sentence: the last legal mulligan is an implicit Keep.
+        // CR 103.5 final sentence + CR 103.5c: the last legal mulligan is an implicit Keep.
         let before = entries.len();
         resolve_declare_point(
             state,
@@ -817,16 +818,32 @@ fn shuffle_library_of(state: &mut GameState, player: PlayerId) {
     crate::util::im_ext::shuffle_vector(&mut player_data.library, rng);
 }
 
-/// CR 103.5 + CR 121.2c as modified by the format's `DealOrder`: the recipient
-/// of each successive card. Seats absent from `deals` or no longer in the game
-/// receive nothing.
+/// The living seats in `seat_order`, starting at the active player, so every
+/// format (shared team turns included) deals and redraws in seat order.
+fn seat_walk_from_active(state: &GameState) -> Vec<PlayerId> {
+    let len = state.seat_order.len();
+    let start = state
+        .seat_order
+        .iter()
+        .position(|&id| id == state.active_player)
+        .unwrap_or(0);
+    (0..len)
+        .map(|offset| state.seat_order[turn_order_index(start, offset, len, state.turn_direction)])
+        .filter(|&player| is_alive(state, player))
+        .collect()
+}
+
+/// CR 103.5 + the format's `DealOrder`: the recipient of each successive card,
+/// seat by seat from the active player. Seats absent from `deals` or no longer
+/// in the game receive nothing.
 pub(crate) fn deal_sequence(state: &GameState, deals: &[(PlayerId, usize)]) -> Vec<PlayerId> {
-    let ordered: Vec<(PlayerId, usize)> = apnap_order_from(state, None, state.active_player)
+    let ordered: Vec<(PlayerId, usize)> = seat_walk_from_active(state)
         .into_iter()
         .filter_map(|player| deals.iter().find(|(p, _)| *p == player).copied())
         .collect();
     match state.format_config.format.deal_order() {
-        // CR 121.2c: the active player performs all of their draws first.
+        // CR 121.2c order (active player first) applied as the pregame default;
+        // CR 103.5 sets no deal order.
         DealOrder::PlayerByPlayer => ordered
             .iter()
             .flat_map(|&(player, count)| std::iter::repeat_n(player, count))
@@ -2523,6 +2540,27 @@ mod tests {
         let expected: Vec<&str> =
             [vec!["move"; 7], vec!["p0"], vec!["move"; 7], vec!["p1"]].concat();
         assert_eq!(kinds, expected);
+    }
+
+    #[test]
+    fn shared_team_turn_opening_deal_walks_seats_from_the_starting_player() {
+        for start in [1u8, 3] {
+            let mut state = setup_n_player_with_libraries(4, 20);
+            state.format_config = crate::types::format::FormatConfig::two_headed_giant();
+            assert!(
+                state.format_config.topology().has_shared_team_turns(),
+                "reach: the shared-team-turn arm is the one under test"
+            );
+            state.active_player = PlayerId(start);
+            state.seat_order.rotate_left(start as usize);
+            let mut events = Vec::new();
+            start_mulligan(&mut state, &mut events);
+
+            let mut recipients = drawn_recipients(&state, &events);
+            recipients.dedup();
+            let expected: Vec<PlayerId> = (0..4).map(|i| PlayerId((start + i) % 4)).collect();
+            assert_eq!(recipients, expected, "starting player P{start}");
+        }
     }
 
     #[test]
