@@ -141,8 +141,8 @@ use super::oracle_trigger::{
     parse_trigger_lines_at_index_ir,
 };
 use super::oracle_util::{
-    normalize_card_name_refs, parse_mana_symbols, parse_number, render_granting_self_reference,
-    split_same_is_true_static_tail, strip_reminder_text, TextPair,
+    normalize_card_name_refs, normalize_card_name_refs_reporting, parse_mana_symbols, parse_number,
+    render_granting_self_reference, split_same_is_true_static_tail, strip_reminder_text, TextPair,
 };
 
 /// Collected parsed abilities from Oracle text.
@@ -4316,6 +4316,7 @@ pub(crate) fn lower_oracle_ir(ir: &mut OracleDocIr) -> ParsedAbilities {
     // former `synthesize`/`bind` passes ran (the audit reads `result` first).
     apply_etb_exile_ltb_return(&mut result, &ir.relations, &trigger_ids);
     apply_active_player_punisher(&mut result, &ir.relations, &ability_ids);
+    demote_refused_granter_names(&mut result, ir, &tracks);
 
     // The doc IR's diagnostics channel is the single source of parse warnings.
     // Assigned once, here, so it carries BOTH the parse-time diagnostics sealed by
@@ -5223,8 +5224,8 @@ pub(crate) fn parse_oracle_ir(
     types: &[String],
     subtypes: &[String],
 ) -> OracleDocIr {
-    let normalized = normalize_card_name_refs(oracle_text, card_name);
-    parse_normalized_oracle_ir(
+    let (normalized, refusals) = normalize_card_name_refs_reporting(oracle_text, card_name);
+    let mut ir = parse_normalized_oracle_ir(
         oracle_text,
         &normalized,
         card_name,
@@ -5232,7 +5233,9 @@ pub(crate) fn parse_oracle_ir(
         types,
         subtypes,
         None,
-    )
+    );
+    ir.granter_name_refusals = refusals;
+    ir
 }
 
 /// The generic replacement priority cannot reconstruct the target ownership of
@@ -9307,7 +9310,7 @@ fn parse_oracle_pipeline(
     ParsedAbilities,
     Option<(OracleDocIr, ParsedAbilities, String)>,
 ) {
-    let normalized = normalize_card_name_refs(oracle_text, card_name);
+    let (normalized, refusals) = normalize_card_name_refs_reporting(oracle_text, card_name);
     let mut ir = parse_normalized_oracle_ir(
         oracle_text,
         &normalized,
@@ -9317,6 +9320,7 @@ fn parse_oracle_pipeline(
         subtypes,
         observer,
     );
+    ir.granter_name_refusals = refusals;
     let document_ir = capture_stages.then(|| ir.clone());
     let mut parsed = lower_oracle_ir(&mut ir);
     let mut raw_lowered = capture_stages.then(|| parsed.clone());
@@ -9486,35 +9490,92 @@ fn demote_unsupported_composite_counter_choice_costs(parsed: &mut ParsedAbilitie
 /// References are counted on the serialized tree because the walk cannot count the
 /// positions it misses.
 fn demote_unreached_granter_references(parsed: &mut ParsedAbilities) {
+    demote_granter_references(parsed, granter_reference_unreached);
+}
+
+/// Lowers each top-level definition `refuse` selects to the unsupported granter residual,
+/// visiting abilities, triggers, statics and replacements each in order.
+fn demote_granter_references(
+    parsed: &mut ParsedAbilities,
+    mut refuse: impl FnMut(DefinitionNode<'_>) -> bool,
+) {
     for def in &mut parsed.abilities {
-        if granter_reference_unreached(DefinitionNode::Ability(def)) {
+        if refuse(DefinitionNode::Ability(def)) {
             *def = unreached_granter_residual(&def.description);
         }
     }
     let demoted: Vec<AbilityDefinition> = parsed
         .triggers
-        .extract_if(.., |def| {
-            granter_reference_unreached(DefinitionNode::Trigger(def))
-        })
+        .extract_if(.., |def| refuse(DefinitionNode::Trigger(def)))
         .map(|def| unreached_granter_residual(&def.description))
-        .chain(
-            parsed
-                .statics
-                .extract_if(.., |def| {
-                    granter_reference_unreached(DefinitionNode::Static(def))
-                })
-                .map(|def| unreached_granter_residual(&def.description)),
-        )
-        .chain(
-            parsed
-                .replacements
-                .extract_if(.., |def| {
-                    granter_reference_unreached(DefinitionNode::Replacement(def))
-                })
-                .map(|def| unreached_granter_residual(&def.description)),
-        )
         .collect();
-    parsed.abilities.extend(demoted);
+    let demoted_statics: Vec<AbilityDefinition> = parsed
+        .statics
+        .extract_if(.., |def| refuse(DefinitionNode::Static(def)))
+        .map(|def| unreached_granter_residual(&def.description))
+        .collect();
+    let demoted_replacements: Vec<AbilityDefinition> = parsed
+        .replacements
+        .extract_if(.., |def| refuse(DefinitionNode::Replacement(def)))
+        .map(|def| unreached_granter_residual(&def.description))
+        .collect();
+    parsed.abilities.extend(
+        demoted
+            .into_iter()
+            .chain(demoted_statics)
+            .chain(demoted_replacements),
+    );
+}
+
+/// CR 201.5a: lowers the definitions of each item whose quoted text names the card where
+/// the masker refused it, unless the item hands abilities only to its own source.
+fn demote_refused_granter_names(
+    result: &mut ParsedAbilities,
+    ir: &OracleDocIr,
+    tracks: &ItemIdTracks<'_>,
+) {
+    let refusals = &ir.granter_name_refusals;
+    if refusals.is_empty() {
+        return;
+    }
+    let refused = |id: &OracleItemId| {
+        ir.item(*id).is_some_and(|item| {
+            let span = item.source.span();
+            refusals
+                .range(span.first_line..=span.last_line)
+                .next()
+                .is_some()
+        })
+    };
+    let mut abilities = tracks.abilities.iter();
+    let mut triggers = tracks.triggers.iter();
+    let mut statics = tracks.statics.iter();
+    let mut replacements = tracks.replacements.iter();
+    demote_granter_references(result, |node| {
+        let id = match node {
+            DefinitionNode::Ability(_) => abilities.next(),
+            DefinitionNode::Trigger(_) => triggers.next(),
+            DefinitionNode::Static(_) => statics.next(),
+            DefinitionNode::Replacement(_) => replacements.next(),
+        };
+        id.is_some_and(refused) && !grants_only_to_its_source(node)
+    });
+}
+
+/// CR 201.5a: whether every object `node` hands an ability to is `node`'s own source, so the
+/// host `~` and the granter are one object.
+pub(crate) fn grants_only_to_its_source(node: DefinitionNode<'_>) -> bool {
+    let (mut to_source, mut elsewhere) = (false, false);
+    crate::types::ability_visit::granter_symbols::each_node(node, &mut |node| match node {
+        DefinitionNode::Static(def) => match def.affected {
+            Some(TargetFilter::SelfRef | TargetFilter::OriginalSource) => to_source = true,
+            _ => elsewhere = true,
+        },
+        // CR 111.1: a token is another object, though its own statics name it `SelfRef`.
+        DefinitionNode::Ability(def) => elsewhere |= matches!(*def.effect, Effect::Token { .. }),
+        DefinitionNode::Trigger(_) | DefinitionNode::Replacement(_) => {}
+    });
+    to_source && !elsewhere
 }
 
 /// CR 201.5a: whether `node` holds a granter reference that `each_granter_symbol` misses.

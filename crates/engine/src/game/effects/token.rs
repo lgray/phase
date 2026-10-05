@@ -4492,22 +4492,27 @@ fn catalog_rules_text_abilities(
     // independently of `parse_oracle_ir`'s single entry point, so it needs its
     // own `normalize_card_name_refs` pass here, mirroring `parse_oracle_ir`'s
     // call in `oracle.rs`.
-    let rules_text = crate::parser::oracle_util::normalize_card_name_refs(rules_text, card_name);
+    let (rules_text, refusals) =
+        crate::parser::oracle_util::normalize_card_name_refs_reporting(rules_text, card_name);
     let mut static_definitions = Vec::new();
     let mut modifications = Vec::new();
     let mut unparsed_lines = Vec::new();
-    for line in rules_text
+    for (index, line) in rules_text
         .split('\n')
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .enumerate()
+        .filter(|(_, line)| !line.is_empty())
     {
         let parsed_statics = crate::parser::oracle_static::parse_static_line_multi(line);
-        // CR 201.5a: a granter reference the walk cannot bind would read the token itself,
-        // so its line is refused as unparsed.
+        // CR 201.5a: a granter reference the walk cannot bind, or a granter name the masker
+        // left as the host, would read the wrong object, so its line is refused as unparsed.
         let unreached = |def: &StaticDefinition| {
-            crate::parser::oracle::granter_reference_unreached(
-                crate::types::ability_visit::DefinitionNode::Static(def),
-            )
+            let node = crate::types::ability_visit::DefinitionNode::Static(def);
+            crate::parser::oracle::granter_reference_unreached(node)
+                || (refusals.contains(&index)
+                    && !crate::parser::oracle::grants_only_to_its_source(
+                        crate::types::ability_visit::DefinitionNode::Static(def),
+                    ))
         };
         let refused =
             || crate::parser::oracle_util::render_granting_self_reference(line, card_name);
@@ -9438,6 +9443,24 @@ mod tests {
         assert!(
             json.contains("Sacrifice Rock"),
             "CR 201.5a: the granted body must name the granting token: {json}"
+        );
+    }
+
+    /// CR 201.5a: a catalog body naming the token where the masker refuses the name would
+    /// read the equipped creature, so that line is unparsed while the rest still parses.
+    #[test]
+    fn catalog_rules_text_refuses_a_granter_name_left_as_the_host() {
+        let (static_definitions, modifications, unparsed_lines) = catalog_rules_text_abilities(
+            "Equipped creature has \"{T}, Unattach Rock: This creature deals 2 damage to any target.\"\nEquip {1}",
+            "Rock",
+        );
+        assert!(
+            !static_definitions.is_empty() || !modifications.is_empty(),
+            "reach-guard: the Equip line still parses"
+        );
+        assert_eq!(
+            unparsed_lines,
+            vec!["Equipped creature has \"{T}, Unattach ~: ~ deals 2 damage to any target.\""]
         );
     }
 

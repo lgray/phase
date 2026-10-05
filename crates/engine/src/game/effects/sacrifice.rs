@@ -692,13 +692,16 @@ mod tests {
     use crate::game::effects::resolve_ability_chain;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityKind, AggregateFunction, Comparator, ControllerRef, CostPaidObjectSnapshot, Effect,
-        FilterProp, ObjectProperty, PtStat, PtValueScope, QuantityRef, TargetFilter, TypedFilter,
+        AbilityCondition, AbilityKind, AggregateFunction, Comparator, ControllerRef,
+        CostPaidObjectSnapshot, Effect, FilterProp, ObjectProperty, PtStat, PtValue, PtValueScope,
+        QuantityRef, SubAbilityLink, TargetFilter, TypedFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
+    use crate::types::statics::StaticMode;
+    use crate::types::StaticDefinition;
 
     fn make_sacrifice_ability(target: ObjectId) -> ResolvedAbility {
         ResolvedAbility::new(
@@ -2165,10 +2168,6 @@ mod tests {
     /// false even though the later member performed.
     #[test]
     fn compound_if_you_do_needs_every_mandatory_member() {
-        use crate::types::ability::{AbilityCondition, PtValue, SubAbilityLink};
-        use crate::types::statics::StaticMode;
-        use crate::types::StaticDefinition;
-
         for refuse in [false, true] {
             let mut state = GameState::new_two_player(42);
             let victim = create_object(

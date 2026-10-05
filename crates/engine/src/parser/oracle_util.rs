@@ -1,4 +1,5 @@
 use nom::Parser;
+use std::collections::BTreeSet;
 
 use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::error::OracleError;
@@ -2379,6 +2380,19 @@ const GRANTER_SELF_REF_VERB_PREFIXES: &[&str] = &[
 // - `'s controller`: a possessive player reference, not an object position.
 // - `and `: a conjunction, which names no position of its own.
 
+/// CR 114.2 + CR 607.1d: an emblem body's "exiled with <name>" is linked to the emblem's
+/// creator, which the emblem latches, so the name is no granter reference.
+const EMBLEM_LINKED_PREFIXES: &[&str] = &["exiled with "];
+
+/// Whether `text` ends, on a word boundary, in one of `phrases`.
+fn ends_in_position(text: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|p| {
+        // allow-noncombinator: word-bounded lookbehind over a runtime array prefix
+        text.strip_suffix(p)
+            .is_some_and(|head| !head.chars().next_back().is_some_and(char::is_alphanumeric))
+    })
+}
+
 /// CR 201.5a: Within each double-quoted region of `text`, replace occurrences of
 /// the card's own name with [`GRANTING_SELF_PLACEHOLDER`] ONLY in a
 /// granter position (see [`GRANTER_SELF_REF_VERB_PREFIXES`]), so a granted
@@ -2391,7 +2405,10 @@ const GRANTER_SELF_REF_VERB_PREFIXES: &[&str] = &[
 /// short name, and guarded compound first/last short name) are masked, mirroring
 /// `normalize_card_name_refs`; the risky single-word / of-short fallbacks are
 /// skipped to avoid matching English words.
-fn mask_granting_self_reference_in_quotes(text: &str, card_name: &str) -> String {
+fn mask_granting_self_reference_in_quotes(
+    text: &str,
+    card_name: &str,
+) -> (String, BTreeSet<usize>) {
     // allow-noncombinator: structural masking of a card-name self-reference
     // before `~` normalization (mirrors `mask_card_name_keyword_action`), not
     // parsing dispatch.
@@ -2422,11 +2439,15 @@ fn mask_granting_self_reference_in_quotes(text: &str, card_name: &str) -> String
             variants.push((compound, false));
         }
     }
+    // CR 201.5a: the lines where a quoted name was refused and so normalizes to the host.
+    let mut refused_lines = BTreeSet::new();
     if variants.is_empty() {
-        return text.to_string();
+        return (text.to_string(), refused_lines);
     }
     // Segments split on `"`: odd indices are inside a quoted region.
     let mut result = String::with_capacity(text.len());
+    let mut line = 0;
+    let mut linked: &[&str] = &[];
     for (seg_idx, segment) in text.split('"').enumerate() {
         if seg_idx > 0 {
             result.push('"');
@@ -2434,21 +2455,37 @@ fn mask_granting_self_reference_in_quotes(text: &str, card_name: &str) -> String
         if seg_idx % 2 == 1 {
             let mut masked = segment.to_string();
             for (name, case_sensitive) in &variants {
-                masked = mask_name_occurrences_in_segment(&masked, name, *case_sensitive);
+                let (next, refused) =
+                    mask_name_occurrences_in_segment(&masked, name, *case_sensitive, linked);
+                if refused {
+                    refused_lines.insert(line);
+                }
+                masked = next;
             }
             result.push_str(&masked);
         } else {
             result.push_str(segment);
+            linked = if ends_in_position(&segment.to_ascii_lowercase(), &["emblem with "]) {
+                EMBLEM_LINKED_PREFIXES
+            } else {
+                &[]
+            };
         }
+        line += segment.matches('\n').count();
     }
-    result
+    (result, refused_lines)
 }
 
 /// Word-boundary-aware, case-insensitive replacement of `name` occurrences with
 /// [`GRANTING_SELF_PLACEHOLDER`] within a single (already inside-quotes)
 /// `segment`, masking ONLY occurrences in an allowlisted granter position
 /// ([`GRANTER_SELF_REF_VERB_PREFIXES`]).
-fn mask_name_occurrences_in_segment(segment: &str, name: &str, case_sensitive: bool) -> String {
+fn mask_name_occurrences_in_segment(
+    segment: &str,
+    name: &str,
+    case_sensitive: bool,
+    linked: &[&str],
+) -> (String, bool) {
     // allow-noncombinator: structural occurrence masking mirroring
     // `mask_card_name_keyword_action`, not parsing dispatch.
     let lower_seg = segment.to_ascii_lowercase();
@@ -2462,6 +2499,7 @@ fn mask_name_occurrences_in_segment(segment: &str, name: &str, case_sensitive: b
         (lower_seg.as_str(), lower_name.as_str())
     };
     let mut out = String::with_capacity(segment.len());
+    let mut refused = false;
     let mut rest = segment;
     let mut hay_rest = haystack;
     while let Some(idx) = hay_rest.find(needle) {
@@ -2483,29 +2521,33 @@ fn mask_name_occurrences_in_segment(segment: &str, name: &str, case_sensitive: b
         // CR 201.5a: mask only in an allowlisted position; the text before the
         // matched entry must end on a non-alphanumeric so `unattach ` never reads
         // as `attach `.
-        // allow-noncombinator: verb-object lookbehind (structural masking, not parsing dispatch)
         let is_self_ref_object = before_ok
             && after_ok
-            && GRANTER_SELF_REF_VERB_PREFIXES.iter().any(|p| {
-                // allow-noncombinator: word-bounded lookbehind over a runtime array prefix
-                prefix_lower.strip_suffix(p).is_some_and(|head| {
-                    !head.chars().next_back().is_some_and(char::is_alphanumeric)
-                })
-            });
+            && ends_in_position(&prefix_lower, GRANTER_SELF_REF_VERB_PREFIXES);
         if is_self_ref_object {
             out.push_str(&rest[..idx]);
             out.push_str(GRANTING_SELF_PLACEHOLDER);
         } else {
+            refused |= before_ok && after_ok && !ends_in_position(&prefix_lower, linked);
             out.push_str(&rest[..after]);
         }
         rest = &rest[after..];
         hay_rest = &hay_rest[after..];
     }
     out.push_str(rest);
-    out
+    (out, refused)
 }
 
 pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
+    normalize_card_name_refs_reporting(text, card_name).0
+}
+
+/// [`normalize_card_name_refs`], also returning the lines where the granter masker refused
+/// a quoted name.
+pub fn normalize_card_name_refs_reporting(
+    text: &str,
+    card_name: &str,
+) -> (String, BTreeSet<usize>) {
     let pre = mask_ring_tempts_you_phrase(text);
     // CR 701.40a/701.58a/701.62a: protect the keyword-action body verb on cards
     // named after a keyword action ("Manifest Dread", "Cloak") so it survives
@@ -2529,7 +2571,8 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     // granting-object self-reference (GRANTING_SELF_PLACEHOLDER) BEFORE it
     // collapses to `~` below. Bounded to quoted regions and skips `named <name>`
     // filter positions, so only a granter self-ref is marked.
-    result = mask_granting_self_reference_in_quotes(&result, card_name);
+    let (masked, refused_lines) = mask_granting_self_reference_in_quotes(&result, card_name);
+    result = masked;
     // allow-noncombinator: structural detection of MTGJSON A-/a- card-name prefix (not parsing)
     if card_name.starts_with("A-") || card_name.starts_with("a-") {
         let prefixed_upper = format!("A-{effective_name}");
@@ -2776,7 +2819,7 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     result = unmask_keyword_action_walker_names(result, &walker_originals);
     result = unmask_card_named_literal_spans(result, &card_named_originals);
     result = unmask_card_name_keyword_action(result, &kw_action_originals);
-    unmask_ring_tempts_you_phrase(result)
+    (unmask_ring_tempts_you_phrase(result), refused_lines)
 }
 
 /// Strip a comparator prefix from a comparison clause, returning (Comparator, remainder).

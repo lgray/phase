@@ -13,7 +13,7 @@ use engine::game::game_object::AttachTarget;
 use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
-use engine::parser::oracle_util::normalize_card_name_refs;
+use engine::parser::oracle_util::{normalize_card_name_refs, normalize_card_name_refs_reporting};
 use engine::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, Comparator, ContinuousModification, Effect,
     ObjectScope, QuantityExpr, QuantityRef, StaticDefinition, TargetFilter,
@@ -582,12 +582,6 @@ lose 2 life.\"";
 /// members.
 const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
     (
-        BLAZING_TORCH,
-        "Blazing Torch",
-        &["Artifact"],
-        &["Equipment"],
-    ),
-    (
         CITIZENS_CROWBAR,
         "Citizen's Crowbar",
         &["Artifact"],
@@ -602,21 +596,8 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
     (FISHING_POLE, "Fishing Pole", &["Artifact"], &["Equipment"]),
     (HANKYU, "Hankyu", &["Artifact"], &["Equipment"]),
     (
-        MEANDERED_TOWERSHELL,
-        "Meandered Towershell",
-        &["Enchantment"],
-        &["Aura"],
-    ),
-    (NINJAS_KUNAI, "Ninja's Kunai", &["Artifact"], &["Equipment"]),
-    (
         RAKDOS_RITEKNIFE,
         "Rakdos Riteknife",
-        &["Artifact"],
-        &["Equipment"],
-    ),
-    (
-        RAZOR_BOOMERANG,
-        "Razor Boomerang",
         &["Artifact"],
         &["Equipment"],
     ),
@@ -636,12 +617,6 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
     (
         THE_DOMINION_BRACELET,
         "The Dominion Bracelet",
-        &["Artifact"],
-        &["Equipment"],
-    ),
-    (
-        TORALFS_HAMMER,
-        "Toralf's Hammer",
         &["Artifact"],
         &["Equipment"],
     ),
@@ -696,6 +671,45 @@ const CLASS_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
         &["Aura"],
     ),
     (HELLISH_REBUKE, "Hellish Rebuke", &["Instant"], &[]),
+];
+
+const HEARTSEEKER: &str = "Equipped creature gets +2/+1 and has \"{T}, Unattach Heartseeker: \
+Destroy target creature.\"\nEquip {5} ({5}: Attach to target creature you control. Equip only as a \
+sorcery.)";
+const TIBALT_COSMIC_IMPOSTOR: &str = "As Tibalt enters, you get an emblem with \"You may play \
+cards exiled with Tibalt, Cosmic Impostor, and you may spend mana as though it were mana of any \
+color to cast those spells.\"\n[+2]: Exile the top card of each player's library.\n[\u{2212}3]: \
+Exile target artifact or creature.\n[\u{2212}8]: Exile all graveyards. Add {R}{R}{R}.";
+
+/// Exported faces whose quoted granted body names the card where the masker refuses it, so
+/// that name would read the host.
+const REFUSED_CORPUS: &[(&str, &str, &[&str], &[&str])] = &[
+    (
+        BLAZING_TORCH,
+        "Blazing Torch",
+        &["Artifact"],
+        &["Equipment"],
+    ),
+    (HEARTSEEKER, "Heartseeker", &["Artifact"], &["Equipment"]),
+    (
+        MEANDERED_TOWERSHELL,
+        "Meandered Towershell",
+        &["Enchantment"],
+        &["Aura"],
+    ),
+    (NINJAS_KUNAI, "Ninja's Kunai", &["Artifact"], &["Equipment"]),
+    (
+        RAZOR_BOOMERANG,
+        "Razor Boomerang",
+        &["Artifact"],
+        &["Equipment"],
+    ),
+    (
+        TORALFS_HAMMER,
+        "Toralf's Hammer",
+        &["Artifact"],
+        &["Equipment"],
+    ),
 ];
 
 /// CR 201.5a: no raw U+E0004 may survive into ANY string reachable from
@@ -753,11 +767,17 @@ fn placeholder_never_leaks_into_any_description() {
     }
 }
 
-/// CR 201.5a: every class member's granter references sit where the typed binder reaches
-/// them, so the parse demotes none of its abilities.
+/// CR 201.5a: the masker marked every quoted granter name of each class member, and the
+/// typed binder reaches every mark, so the parse demotes none of its abilities.
 #[test]
 fn class_corpus_has_no_unreached_granter_reference() {
     for &(oracle, name, types, subtypes) in CLASS_CORPUS {
+        assert!(
+            normalize_card_name_refs_reporting(oracle, name)
+                .1
+                .is_empty(),
+            "{name}: the masker left a quoted granter name as the host"
+        );
         let types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
         let subtypes: Vec<String> = subtypes.iter().map(|s| s.to_string()).collect();
         let parsed = parse_oracle_text(oracle, name, &[], &types, &subtypes);
@@ -767,6 +787,44 @@ fn class_corpus_has_no_unreached_granter_reference() {
             "reach-guard: {name}"
         );
         assert!(!json.contains("granter_reference_unreached"), "{name}");
+    }
+}
+
+fn granter_residuals(parsed: &engine::parser::oracle::ParsedAbilities) -> Vec<&str> {
+    parsed
+        .abilities
+        .iter()
+        .filter(|def| {
+            matches!(&*def.effect, Effect::Unimplemented { name, .. } if name == "granter_reference_unreached")
+        })
+        .filter_map(|def| def.description.as_deref())
+        .collect()
+}
+
+/// CR 201.5a: a granted body that names its granter where the masker refuses the name is
+/// strictly unsupported, whatever the body's other granter references bind.
+#[test]
+fn refused_corpus_demotes_every_affected_grant() {
+    for &(oracle, name, types, subtypes) in REFUSED_CORPUS {
+        assert!(
+            !normalize_card_name_refs_reporting(oracle, name)
+                .1
+                .is_empty(),
+            "reach-guard: {name}"
+        );
+        let types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
+        let subtypes: Vec<String> = subtypes.iter().map(|s| s.to_string()).collect();
+        let parsed = parse_oracle_text(oracle, name, &[], &types, &subtypes);
+        let residuals = granter_residuals(&parsed);
+        assert_eq!(residuals.len(), 1, "{name}: {parsed:#?}");
+        assert!(
+            residuals[0].contains('"'),
+            "{name}: the residual is the grant line"
+        );
+        let json = serde_json::to_string(&parsed).expect("ParsedAbilities serializes");
+        assert!(!json.contains(PLACEHOLDER), "{name}");
+        assert!(!json.contains("\"GrantAbility\""), "{name}");
+        assert!(!json.contains("\"GrantTrigger\""), "{name}");
     }
 }
 
@@ -806,64 +864,74 @@ fn placeholder_leak_guard_reports_a_planted_marker() {
     );
 }
 
-/// CR 201.5a — HOSTILE FIXTURE: two self-name occurrences in ONE granted body,
-/// in DIFFERENT positions, bound independently.
-///
-/// Meandered Towershell's granted trigger body says, in order:
-///   * "Whenever this creature attacks"  → a HOST reference (CR 201.5b) → `~`
-///   * "exile it and Meandered Towershell" → lookbehind `and `, a refused
-///     masker position, so it stays `~`.
-///   * "return Meandered Towershell to the battlefield" → an ALLOWLISTED
-///     (`return `) granter reference → masked → rendered as the printed name.
-///
-/// Revert-to-red: replace the sentinel render with a blanket
-/// `text.replace('~', card_name)` → (b) fails, which is precisely the failure a
-/// naive implementation produces.
+/// CR 201.5a: "exile it and Meandered Towershell" names the Aura where the masker refuses
+/// the name, so the granted trigger is demoted even though its later return operand binds.
 #[test]
-fn meandered_towershell_binds_each_occurrence_independently() {
+fn meandered_towershell_refused_operand_demotes_its_grant() {
     let parsed = parse_oracle_text(
         MEANDERED_TOWERSHELL,
         "Meandered Towershell",
-        &[],
+        &["Enchant".to_string()],
         &["Enchantment".to_string()],
         &["Aura".to_string()],
     );
-    let json = serde_json::to_string(&parsed).expect("ParsedAbilities serializes");
-    // POSITIVE REACH-GUARD: the allowlisted `return <granter>` occurrence really
-    // reached the typed channel.
     assert!(
-        json.contains("GrantingObject"),
-        "reach-guard: the `return <granter>` occurrence must reach the typed channel"
+        parsed
+            .extracted_keywords
+            .iter()
+            .any(|k| matches!(k, engine::types::keywords::Keyword::Enchant(_))),
+        "reach-guard: the card's other line still parses: {parsed:#?}"
     );
-
-    let trigger = parsed
-        .statics
-        .iter()
-        .flat_map(|s| s.modifications.iter())
-        .find_map(|m| match m {
-            ContinuousModification::GrantTrigger { trigger } => Some(trigger.as_ref()),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("the quoted body must parse to a GrantTrigger: {parsed:#?}"));
-    let desc = trigger
-        .description
-        .as_deref()
-        .expect("the granted trigger carries a display description");
-
-    // (a) CR 201.5a: the allowlisted occurrence renders as the GRANTER's printed
-    // name.
-    assert!(
-        desc.contains("Meandered Towershell"),
-        "CR 201.5a: the `return <granter>` occurrence must render the printed \
-         name; got {desc}"
+    assert_eq!(
+        granter_residuals(&parsed),
+        vec![
+            "Enchanted creature has islandwalk and \"Whenever ~ attacks, exile it and ~. Return it \
+             to the battlefield under your control tapped and attacking at the beginning of the \
+             declare attackers step on your next turn, then return Meandered Towershell to the \
+             battlefield under its owner's control attached to that creature.\""
+        ]
     );
-    // (b) CR 201.5b: the LEADING occurrence is a host reference and stays `~`.
     assert!(
-        desc.starts_with("Whenever ~ attacks"),
-        "CR 201.5b: the leading host reference must stay `~` — a blanket \
-         `~`-replace renders `Whenever Meandered Towershell attacks`; got {desc}"
+        parsed.statics.is_empty() && parsed.triggers.is_empty(),
+        "{parsed:#?}"
     );
 }
+
+/// CR 201.5a: a self-granted body's refused name reads the host, which is the granter.
+#[test]
+fn self_grant_refused_name_stays_supported() {
+    for (oracle, name, types) in [
+        (IRON_FIST, "Iron Fist, Living Weapon", "Creature"),
+        (MS_MARVEL, "Ms. Marvel, Kamala Khan", "Creature"),
+        (NECROMANCY, "Necromancy", "Enchantment"),
+    ] {
+        assert!(
+            !normalize_card_name_refs_reporting(oracle, name)
+                .1
+                .is_empty(),
+            "reach-guard: {name}"
+        );
+        let parsed = parse_oracle_text(oracle, name, &[], &[types.to_string()], &[]);
+        assert!(
+            !parsed.triggers.is_empty(),
+            "reach-guard: {name}: {parsed:#?}"
+        );
+        assert!(granter_residuals(&parsed).is_empty(), "{name}: {parsed:#?}");
+    }
+}
+
+const NECROMANCY: &str = "You may cast this spell as though it had flash. If you cast it any \
+time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it \
+at the beginning of the next cleanup step.\nWhen this enchantment enters, if it's on the \
+battlefield, it becomes an Aura with \"enchant creature put onto the battlefield with \
+Necromancy.\" Put target creature card from a graveyard onto the battlefield under your control \
+and attach this enchantment to it. When this enchantment leaves the battlefield, that creature's \
+controller sacrifices it.";
+const IRON_FIST: &str = "Whenever you cast a spell that targets a creature you control, Iron Fist \
+gains \"{T}: Iron Fist deals damage equal to his power to any other target\" until end of turn.";
+const MS_MARVEL: &str = "Reach, vigilance\nYou have no maximum hand size.\nEmbiggen Fist \u{2014} \
+Whenever you cast a spell that targets a creature you control, draw a card. Until end of turn, Ms. \
+Marvel gains \"Ms. Marvel's base power is equal to the number of cards in your hand.\"";
 
 /// CR 201.5a (last sentence: "This is also true if the second ability is copied
 /// onto a new object") + CR 707.2 — HOSTILE FIXTURE: granter == host, via
@@ -3300,27 +3368,30 @@ mod granter_stamp {
     use engine::game::effects::resolve_ability_chain;
     use engine::game::filter::{matches_target_filter, FilterContext};
     use engine::game::layers::evaluate_layers;
+    use engine::game::mana_abilities::can_activate_mana_ability_now;
     use engine::game::quantity::resolve_quantity_with_targets;
     use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
     use engine::game::targeting::resolved_targets;
     use engine::game::zones::move_to_zone;
     use engine::types::ability::{
-        AbilityCondition, AbilityDefinition, AbilityKind, Comparator, ContinuousModification,
-        Effect, EffectScope, ObjectScope, PtValue, QuantityExpr, QuantityModification, QuantityRef,
-        ReplacementDefinition, ResolvedAbility, SpellContext, TapStateChange, TargetFilter,
-        TargetRef, TriggerDefinition,
+        AbilityCondition, AbilityDefinition, AbilityKind, CardPlayMode, CastingPermission,
+        Comparator, ContinuousModification, Effect, EffectScope, ObjectScope,
+        PlayFromExileProvenance, PlayerFilter, PlayerRelation, PlayerScope, PtValue, QuantityExpr,
+        QuantityModification, QuantityRef, ReplacementDefinition, ResolvedAbility, SpellContext,
+        TapStateChange, TargetFilter, TargetRef, TriggerDefinition,
     };
     use engine::types::actions::GameAction;
     use engine::types::card::CardFace;
     use engine::types::card_type::{CardType, CoreType};
     use engine::types::counter::CounterType;
-    use engine::types::game_state::{GameState, WaitingFor};
+    use engine::types::game_state::{CastPaymentMode, GameState, WaitingFor};
     use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
-    use engine::types::mana::ManaCost;
+    use engine::types::mana::{ManaCost, ManaType};
     use engine::types::phase::Phase;
     use engine::types::replacements::ReplacementEvent;
+    use engine::types::statics::CastFrequency;
     use engine::types::triggers::TriggerMode;
-    use engine::types::zones::Zone;
+    use engine::types::zones::{EtbTapState, Zone};
     use std::sync::Arc;
 
     const EXCLUSION_COUNT: &str =
@@ -4614,12 +4685,6 @@ mod granter_stamp {
     /// caster, not the owner of the card cast from another player's exile.
     #[test]
     fn exile_cost_you_control_reads_the_payer() {
-        use engine::types::ability::{
-            CardPlayMode, CastingPermission, Duration, PlayFromExileProvenance,
-        };
-        use engine::types::game_state::CastPaymentMode;
-        use engine::types::statics::CastFrequency;
-        use engine::types::zones::EtbTapState;
         const NECROTIC_FUMES: &str = "As an additional cost to cast this spell, exile a creature you control.\nExile target creature or planeswalker.";
 
         let mut scenario = GameScenario::new();
@@ -4685,8 +4750,6 @@ mod granter_stamp {
     /// CR 201.5a + CR 605.1a: a granted mana ability whose cost names its granter
     /// pays that cost with the granter.
     fn granted_mana_cost_pays_with_the_granter(verb: &str, zone: Zone) {
-        use engine::game::mana_abilities::can_activate_mana_ability_now;
-        use engine::types::mana::ManaType;
         let mut b = board_with(&format!("{{T}}, {verb} Foo Bar: Add {{C}}."), &[0], false);
         let granter = b.granters[0];
         let index = last_ability(&b);
@@ -5298,7 +5361,6 @@ mod granter_stamp {
 
     mod bound_granter {
         use super::*;
-        use engine::types::ability::{PlayerFilter, PlayerRelation, PlayerScope};
 
         fn set_tapped(b: &mut Board, id: ObjectId, tapped: bool) {
             let st = b.runner.state_mut();
@@ -5818,4 +5880,64 @@ mod granted_caster_reference {
         assert_eq!(zone(&runner, second), Zone::Graveyard, "reach-guard");
         assert_eq!(runner.state().players[1].life, 18);
     }
+}
+
+/// CR 111.1 + CR 114.1 + CR 201.5a: a token or an emblem is another object, so a granter
+/// name the masker refused in its body would read that object; on an equipped creature an
+/// "exiled with" name would read the creature's own exiles.
+#[test]
+fn refused_name_on_a_created_or_equipped_host_is_demoted() {
+    for (oracle, types, subtypes) in [
+        (
+            "Whenever a creature you control dies, create a 1/1 green Ooze creature token with \
+             \"{T}: Foo Bar deals 1 damage to any target.\"",
+            "Enchantment",
+            None,
+        ),
+        (
+            "When this enchantment enters, you get an emblem with \"Whenever a creature you \
+             control dies, Foo Bar deals 1 damage to any target.\"",
+            "Enchantment",
+            None,
+        ),
+        (
+            "Equipped creature has \"You may play cards exiled with Foo Bar.\"\nEquip {1}",
+            "Artifact",
+            Some("Equipment"),
+        ),
+    ] {
+        assert!(
+            !normalize_card_name_refs_reporting(oracle, "Foo Bar")
+                .1
+                .is_empty(),
+            "reach-guard: {oracle}"
+        );
+        let subtypes: Vec<String> = subtypes.into_iter().map(str::to_string).collect();
+        let parsed = parse_oracle_text(oracle, "Foo Bar", &[], &[types.to_string()], &subtypes);
+        assert_eq!(granter_residuals(&parsed).len(), 1, "{oracle}: {parsed:#?}");
+    }
+}
+
+/// CR 607.1d: Tibalt's emblem latches Tibalt, so its "exiled with Tibalt" is no granter
+/// reference and the emblem stays supported.
+#[test]
+fn emblem_linked_exile_name_is_not_refused() {
+    assert!(
+        normalize_card_name_refs_reporting(TIBALT_COSMIC_IMPOSTOR, "Tibalt, Cosmic Impostor")
+            .1
+            .is_empty()
+    );
+    let parsed = parse_oracle_text(
+        TIBALT_COSMIC_IMPOSTOR,
+        "Tibalt, Cosmic Impostor",
+        &[],
+        &["Planeswalker".to_string()],
+        &["Tibalt".to_string()],
+    );
+    assert!(granter_residuals(&parsed).is_empty(), "{parsed:#?}");
+    let json = serde_json::to_string(&parsed.replacements).expect("replacements serialize");
+    assert!(
+        json.contains("\"CreateEmblem\"") && json.contains("ExileCastPermission"),
+        "{json}"
+    );
 }
