@@ -47,6 +47,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v106 adds the `SubstituteTextWord` text-changing modification (CR 612.1).
 // v109 adds `ResolvedZoneChangeCommand.rebound_from` (the Dandan hand-entry
 // ownership rebind).
+// v110 adds `WaitingFor::MulliganDecision.declared` (the CR 103.5 declare round).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -89,7 +90,8 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +36: the v105 `Dandan` GameFormat name.
 // +37: the v106 `SubstituteTextWord` text-changing modification.
 // +38: v109 adds `ResolvedZoneChangeCommand.rebound_from`.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 38;
+// +39: v110 adds `WaitingFor::MulliganDecision.declared`.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 39;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -152,7 +154,8 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +35: wire 89 moves with full-game v107 for the `Dandan` GameFormat name.
 // +36: wire 90 moves with full-game v108 for the `SubstituteTextWord` modification.
 // +37: wire 91 moves with full-game v109 for the journaled `rebound_from`.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 37;
+// +38: wire 92 moves with full-game v110 for `MulliganDecision.declared`.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 38;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

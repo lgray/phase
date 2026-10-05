@@ -244,6 +244,14 @@ fn v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat() {
         },
     )
     .expect("mulligan accepted");
+    apply(
+        &mut state,
+        P0,
+        GameAction::MulliganDecision {
+            choice: MulliganChoice::Keep,
+        },
+    )
+    .expect("P0's keep closes the declare round");
 
     let hand = hand_of(&state, P1);
     assert_eq!(hand.len(), 7, "reach: P1 redrew seven");

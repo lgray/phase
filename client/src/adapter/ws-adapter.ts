@@ -210,6 +210,10 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 110 — WaitingFor::MulliganDecision gains `declared`, the mulligans recorded
+ *      in a CR 103.5 declare round until every player has declared. It is
+ *      serialized in GameState.waiting_for, so a v109 peer would drop it
+ *      silently. Wire 92 moves with it; no lobby frame names it.
  * 109 — ResolvedZoneChangeCommand gains `rebound_from`, the owner a card had
  *      before a Hand entry from a shared zone rebound it to the taker
  *      (CR 108.3 as modified by the Dandan announcement). It is serialized
@@ -706,7 +710,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 109;
+export const PROTOCOL_VERSION = 110;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

@@ -6110,6 +6110,7 @@ mod tests {
                         phase: MulliganDecisionPhase::Declare,
                     }],
                     free_first_mulligan: false,
+                    declared: Vec::new(),
                 },
             ),
             (
@@ -6124,6 +6125,7 @@ mod tests {
                         },
                     }],
                     free_first_mulligan: false,
+                    declared: Vec::new(),
                 },
             ),
             (
@@ -7923,6 +7925,7 @@ mod tests {
                 phase: MulliganDecisionPhase::Declare,
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
 
         assert!(matches!(
@@ -7977,6 +7980,7 @@ mod tests {
                 phase: MulliganDecisionPhase::Declare,
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
 
         assert!(matches!(
@@ -8004,6 +8008,7 @@ mod tests {
                 },
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
         let prepared = prepare_snapshot_with_prompt_id(&state, PlayerId(0), "game-a", 7).unwrap();
         let PromptInput::MulliganPutBack(input) = build_prompt_input(&prepared, &lookup).unwrap()

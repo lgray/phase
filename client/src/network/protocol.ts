@@ -106,6 +106,10 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  92 — game_setup and state_update carry GameState, whose waiting_for can now
+ *       hold the mulligans declared in a CR 103.5 round on
+ *       MulliganDecision.declared. A v91 peer would drop them silently, so first
+ *       contact rejects the skew. Bumped with full-game protocol 110.
  *  91 — game_setup and state_update carry GameState, whose journaled zone-change
  *       commands can now hold rebound_from, the owner a card had before a Hand
  *       entry from a shared zone rebound it to the taker. A v90 peer would drop
@@ -553,7 +557,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 91 as const;
+export const WIRE_PROTOCOL_VERSION = 92 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

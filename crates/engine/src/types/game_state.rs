@@ -9485,8 +9485,16 @@ pub enum MulliganDecisionPhase {
     },
 }
 
+/// CR 103.5: a mulligan this player has declared, carried out once every player has declared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MulliganDeclaration {
+    pub player: PlayerId,
+    /// Mulligans taken before this declaration (the redraw makes it one more).
+    pub mulligan_count: u8,
+}
+
 /// CR 103.5: Per-player state during the simultaneous mulligan decision phase.
-/// One entry per player who has not yet declared "keep".
+/// One entry per player who owes an action (a declaration or owed bottoms).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MulliganDecisionEntry {
     pub player: PlayerId,
@@ -13963,6 +13971,11 @@ pub enum WaitingFor {
     /// empties, the flow advances directly to `finish_mulligans`; there is no
     /// separate batch bottoms phase.
     ///
+    /// CR 103.5: when the library is shared, the redraws would be observable
+    /// between seats, so `Mulligan` is held in `declared` (and the player leaves
+    /// `pending`) until every player has declared; the held mulligans are then
+    /// carried out together.
+    ///
     /// CR 103.5d + CR 805.3a + CR 810.2: shared-team-turn mulligans are
     /// represented in the same simultaneous-decision model; every player
     /// remains independently pending until their own keep/mulligan decision.
@@ -13974,6 +13987,11 @@ pub enum WaitingFor {
         /// Surfaced so display layers can render "Free Mulligan" labelling
         /// without re-deriving format/seat rules.
         free_first_mulligan: bool,
+        /// CR 103.5: in a format whose library is shared, `Mulligan` is recorded
+        /// here and carried out only once every player has declared; a declared
+        /// player is not in `pending`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        declared: Vec<MulliganDeclaration>,
     },
     /// TL:R 906.6a/e: A player with more than one Tiny Leader performs a
     /// forced first mulligan before any player may make a normal mulligan
@@ -40167,6 +40185,7 @@ mod tests {
                 phase: MulliganDecisionPhase::Declare,
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         }));
         variants.push(Box::new(WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
@@ -40178,6 +40197,7 @@ mod tests {
                 },
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         }));
         variants.push(Box::new(WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
@@ -40191,6 +40211,19 @@ mod tests {
                 },
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
+        }));
+        variants.push(Box::new(WaitingFor::MulliganDecision {
+            pending: vec![MulliganDecisionEntry {
+                player: PlayerId(0),
+                mulligan_count: 0,
+                phase: MulliganDecisionPhase::Declare,
+            }],
+            free_first_mulligan: false,
+            declared: vec![MulliganDeclaration {
+                player: PlayerId(1),
+                mulligan_count: 0,
+            }],
         }));
         variants.push(Box::new(WaitingFor::OpeningHandBottomCards {
             pending: vec![MulliganBottomEntry {
@@ -40522,7 +40555,38 @@ mod tests {
             outcomes: Vec::new(),
             pending_cast: dummy_pending(),
         }));
-        assert_eq!(variants.len(), 41);
+        assert_eq!(variants.len(), 42);
+    }
+
+    #[test]
+    fn mulligan_decision_declared_round_trips_and_is_omitted_when_empty() {
+        let entry = MulliganDecisionEntry {
+            player: PlayerId(0),
+            mulligan_count: 0,
+            phase: MulliganDecisionPhase::Declare,
+        };
+        let held = WaitingFor::MulliganDecision {
+            pending: vec![entry.clone()],
+            free_first_mulligan: false,
+            declared: vec![MulliganDeclaration {
+                player: PlayerId(1),
+                mulligan_count: 2,
+            }],
+        };
+        let json = serde_json::to_string(&held).unwrap();
+        assert!(json.contains("\"declared\""));
+        let back: WaitingFor = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, held);
+
+        let open = WaitingFor::MulliganDecision {
+            pending: vec![entry],
+            free_first_mulligan: false,
+            declared: Vec::new(),
+        };
+        let json = serde_json::to_string(&open).unwrap();
+        assert!(!json.contains("declared"));
+        let back: WaitingFor = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, open);
     }
 
     #[test]

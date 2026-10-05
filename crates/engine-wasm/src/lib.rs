@@ -4949,6 +4949,7 @@ mod tests {
                 },
             ],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
         let keep = GameAction::MulliganDecision {
             choice: engine::types::actions::MulliganChoice::Keep,

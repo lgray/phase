@@ -257,6 +257,7 @@ mod cut_a_deal_draw_this_way_count;
 mod cybership_combat_damage_manifest;
 mod dalkovan_encampment_attack_trigger;
 mod dandan_analysis_ai_support_reads;
+mod dandan_declare_round;
 mod dandan_filter_owner_axis;
 mod dandan_hand_entry_ownership;
 mod dandan_read_sweep;

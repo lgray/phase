@@ -272,6 +272,7 @@ mod tests {
                         phase: engine::types::game_state::MulliganDecisionPhase::Declare,
                     }],
                     free_first_mulligan: false,
+                    declared: Vec::new(),
                 },
                 &dummy_action
             ),

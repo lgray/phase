@@ -331,6 +331,15 @@ fn v3_mulligan_by_either_seat_shuffles_the_pile() {
             },
         )
         .expect("mulligan accepted");
+        let other = if mulliganing == P0 { P1 } else { P0 };
+        apply(
+            &mut state,
+            other,
+            GameAction::MulliganDecision {
+                choice: MulliganChoice::Keep,
+            },
+        )
+        .expect("the other seat's keep closes the declare round");
 
         let after = ids(state.library_of(P0));
         assert_eq!(

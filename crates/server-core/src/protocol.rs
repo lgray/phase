@@ -3346,6 +3346,9 @@ mod tests {
         }
     }
 
+    /// `WaitingFor::MulliganDecision` gains `declared` (CR 103.5 declare round),
+    /// serialized in `GameState.waiting_for`; a v109 peer would drop it silently,
+    /// so it must be refused before it receives v110 state.
     /// `ResolvedZoneChangeCommand` gains `rebound_from` (CR 108.3 as modified by
     /// the Dandân hand-entry rebind), serialized inside
     /// `GameState.resolved_rules_journal`; a v108 peer would drop it silently,
@@ -3423,8 +3426,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_109_for_hand_entry_ownership_rebind() {
-        assert_eq!(PROTOCOL_VERSION, 109);
+    fn protocol_version_is_110_for_mulligan_declare_round() {
+        assert_eq!(PROTOCOL_VERSION, 110);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3435,7 +3438,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_109_for_hand_entry_ownership_rebind` stays
+    /// `protocol_version_is_110_for_mulligan_declare_round` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

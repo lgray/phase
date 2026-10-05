@@ -6775,6 +6775,7 @@ mod tests {
                 phase: MulliganDecisionPhase::Declare,
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
 
         assert!(
@@ -7334,6 +7335,7 @@ mod tests {
                     },
                 }],
                 free_first_mulligan: false,
+                declared: Vec::new(),
             },
             WaitingFor::OpeningHandBottomCards {
                 pending: vec![MulliganBottomEntry {

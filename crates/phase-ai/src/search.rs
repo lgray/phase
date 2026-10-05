@@ -12054,6 +12054,7 @@ mod tests {
                 },
             ],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
@@ -14486,6 +14487,7 @@ mod tests {
                     },
                 }],
                 free_first_mulligan: false,
+                declared: Vec::new(),
             }
         });
         push("OpeningHandBottomCards", &|state| {
@@ -15416,6 +15418,7 @@ mod tests {
                 },
             }],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
@@ -15476,6 +15479,7 @@ mod tests {
                 },
             ],
             free_first_mulligan: false,
+            declared: Vec::new(),
         };
 
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
