@@ -3346,6 +3346,10 @@ mod tests {
         }
     }
 
+    /// `MulliganChoice` gains `FreeReveal` and `MulliganDeclaration` gains `kind`
+    /// (the Dandân free reveal mulligan); a v110 peer cannot deserialize the
+    /// choice and would carry out a held free reveal as a regular mulligan, so it
+    /// must be refused before it receives v111 state.
     /// `WaitingFor::MulliganDecision` gains `declared` (CR 103.5 declare round),
     /// serialized in `GameState.waiting_for`; a v109 peer would drop it silently,
     /// so it must be refused before it receives v110 state.
@@ -3426,8 +3430,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_110_for_mulligan_declare_round() {
-        assert_eq!(PROTOCOL_VERSION, 110);
+    fn protocol_version_is_111_for_free_reveal_mulligan() {
+        assert_eq!(PROTOCOL_VERSION, 111);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3438,7 +3442,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_110_for_mulligan_declare_round` stays
+    /// `protocol_version_is_111_for_free_reveal_mulligan` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

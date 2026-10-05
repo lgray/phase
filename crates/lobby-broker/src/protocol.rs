@@ -60,6 +60,7 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
+/// 111 — `MulliganChoice` gains `FreeReveal` and `MulliganDeclaration` gains `kind`: the Dandân free reveal mulligan (CR 103.5 as modified by the Dandân rule), a `GameAction::MulliganDecision` payload and a held declaration in `GameState.waiting_for`. A v110 peer cannot deserialize the choice and would carry out a held free reveal as a regular mulligan. Full-game peers and P2P move in lockstep (wire 93); no lobby carrier names either.
 /// 110 — `WaitingFor::MulliganDecision` gains `declared`, the mulligans recorded in a CR 103.5 declare round until every player has declared. It is serialized in `GameState.waiting_for`, omitted when empty and defaulted when absent, so a v109 peer reading a v110 state in a shared-library format's mulligan round drops the held declarations. Full-game peers and P2P move in lockstep (wire 92); no lobby carrier names it.
 /// 109 — `ResolvedZoneChangeCommand` gains `rebound_from`, the owner a card had before a Hand entry from a shared zone rebound it to the taker (CR 108.3 as modified by the Dandân announcement). It is serialized inside `GameState.resolved_rules_journal`, omitted when ownership is unchanged, and defaulted when absent, so a v108 peer reading a v109 state with a rebound card drops the field silently. Full-game peers and P2P move in lockstep (wire 91); no lobby carrier names it.
 /// 108 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized inside `GameState`'s transient continuous effects, so a v107 peer cannot parse the tag and must be refused before it receives v108 state.
@@ -880,7 +881,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 110;
+pub const PROTOCOL_VERSION: u32 = 111;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2137,12 +2138,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 110);
+        assert_eq!(PROTOCOL_VERSION, 111);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 109);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 110);
     }
 
     #[test]

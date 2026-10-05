@@ -48,6 +48,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v109 adds `ResolvedZoneChangeCommand.rebound_from` (the Dandan hand-entry
 // ownership rebind).
 // v110 adds `WaitingFor::MulliganDecision.declared` (the CR 103.5 declare round).
+// v111 adds `MulliganChoice::FreeReveal` and `MulliganDeclaration.kind` (the Dandan
+// free reveal mulligan).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -91,7 +93,8 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +37: the v106 `SubstituteTextWord` text-changing modification.
 // +38: v109 adds `ResolvedZoneChangeCommand.rebound_from`.
 // +39: v110 adds `WaitingFor::MulliganDecision.declared`.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 39;
+// +40: v111 adds `MulliganChoice::FreeReveal` and `MulliganDeclaration.kind`.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 40;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -155,7 +158,8 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +36: wire 90 moves with full-game v108 for the `SubstituteTextWord` modification.
 // +37: wire 91 moves with full-game v109 for the journaled `rebound_from`.
 // +38: wire 92 moves with full-game v110 for `MulliganDecision.declared`.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 38;
+// +39: wire 93 moves with full-game v111 for the free reveal mulligan.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 39;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

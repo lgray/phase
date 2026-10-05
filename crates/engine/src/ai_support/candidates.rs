@@ -8,6 +8,7 @@ use crate::game::deck_loading::DeckEntry;
 use crate::game::effects::prepare;
 use crate::game::keywords;
 use crate::game::mana_sources;
+use crate::game::mulligan;
 use crate::types::ability::{
     ChoiceType, CounterCostSelection, TapCreaturesSelectionMode, TargetRef,
 };
@@ -865,6 +866,8 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
         // the engine accepts them in any arrival order. When a pending player
         // has one or more Serum Powders in hand, emit one `UseSerumPowder`
         // candidate per Powder so the policy may pick that branch.
+        // CR 103.5: a seat whose hand the engine says qualifies for the free
+        // reveal also gets one `FreeReveal` candidate (`free_reveal_offered`).
         WaitingFor::MulliganDecision { pending, .. } => pending
             .iter()
             .flat_map(|entry| match &entry.phase {
@@ -885,6 +888,15 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
                             Some(entry.player),
                         ),
                     ];
+                    if mulligan::free_reveal_offered(state, entry) {
+                        actions.push(candidate(
+                            GameAction::MulliganDecision {
+                                choice: MulliganChoice::FreeReveal,
+                            },
+                            TacticalClass::Selection,
+                            Some(entry.player),
+                        ));
+                    }
                     for powder_id in serum_powders_in_hand(state, entry.player) {
                         actions.push(candidate(
                             GameAction::MulliganDecision {
@@ -9534,5 +9546,95 @@ mod tests {
         assert_eq!(permutations.len(), 2);
         assert_eq!(permutations[0], vec![a, b]);
         assert_eq!(permutations[1], vec![b, a]);
+    }
+
+    /// Dandan mulligan prompt: P0 holds seven nonland cards, P1 three lands and four nonland.
+    fn dandan_mulligan(p0_phase: MulliganDecisionPhase, p0_count: u8) -> GameState {
+        use crate::types::card_type::CoreType;
+        use crate::types::game_state::MulliganDecisionEntry;
+
+        let mut state = GameState::new(FormatConfig::dandan(), 2, 7);
+        for (seat, lands) in [(PlayerId(0), 0), (PlayerId(1), 3)] {
+            for i in 0..7u64 {
+                let id = create_object(
+                    &mut state,
+                    CardId(seat.0 as u64 * 100 + i),
+                    seat,
+                    format!("Card {i}"),
+                    Zone::Hand,
+                );
+                if i < lands {
+                    state
+                        .objects
+                        .get_mut(&id)
+                        .unwrap()
+                        .card_types
+                        .core_types
+                        .push(CoreType::Land);
+                }
+            }
+        }
+        state.waiting_for = WaitingFor::MulliganDecision {
+            pending: vec![
+                MulliganDecisionEntry {
+                    player: PlayerId(0),
+                    mulligan_count: p0_count,
+                    phase: p0_phase,
+                },
+                MulliganDecisionEntry {
+                    player: PlayerId(1),
+                    mulligan_count: 0,
+                    phase: MulliganDecisionPhase::Declare,
+                },
+            ],
+            free_first_mulligan: false,
+            declared: Vec::new(),
+        };
+        state
+    }
+
+    fn free_reveal_actors(state: &GameState) -> Vec<Option<PlayerId>> {
+        candidate_actions(state)
+            .into_iter()
+            .filter(|c| {
+                c.action
+                    == GameAction::MulliganDecision {
+                        choice: MulliganChoice::FreeReveal,
+                    }
+            })
+            .map(|c| c.metadata.actor)
+            .collect()
+    }
+
+    #[test]
+    fn free_reveal_is_issued_only_to_the_seat_whose_hand_the_engine_says_qualifies() {
+        let state = dandan_mulligan(MulliganDecisionPhase::Declare, 0);
+        assert_eq!(free_reveal_actors(&state), vec![Some(PlayerId(0))]);
+        let keep_and_mulligan = candidate_actions(&state)
+            .iter()
+            .filter(|c| c.metadata.actor == Some(PlayerId(1)))
+            .count();
+        assert_eq!(
+            keep_and_mulligan, 2,
+            "reach: the other seat still has Keep and Mulligan"
+        );
+    }
+
+    #[test]
+    fn free_reveal_is_not_issued_after_a_regular_mulligan_or_while_bottoming() {
+        let state = dandan_mulligan(MulliganDecisionPhase::Declare, 1);
+        assert!(free_reveal_actors(&state).is_empty());
+        let state = dandan_mulligan(
+            MulliganDecisionPhase::BottomCards {
+                count: 1,
+                then: PendingMulliganAction::Keep,
+            },
+            0,
+        );
+        assert!(free_reveal_actors(&state).is_empty());
+        assert!(
+            !candidate_actions(&state).is_empty(),
+            "reach: the bottoming prompt still has candidates"
+        );
     }
 }

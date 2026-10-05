@@ -260,6 +260,7 @@ mod dalkovan_encampment_attack_trigger;
 mod dandan_analysis_ai_support_reads;
 mod dandan_declare_round;
 mod dandan_filter_owner_axis;
+mod dandan_free_reveal;
 mod dandan_hand_entry_ownership;
 mod dandan_read_sweep;
 mod dandan_scoped_counts;

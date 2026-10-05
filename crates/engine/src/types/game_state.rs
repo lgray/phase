@@ -9485,12 +9485,25 @@ pub enum MulliganDecisionPhase {
     },
 }
 
+/// CR 103.5: what a held mulligan does when the declare round closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MulliganDeclarationKind {
+    /// A regular mulligan: the redraw counts and owes a bottom.
+    #[default]
+    Regular,
+    /// The Dandan free reveal: the hand is revealed, then redrawn at the same count.
+    FreeReveal,
+}
+
 /// CR 103.5: a mulligan this player has declared, carried out once every player has declared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MulliganDeclaration {
     pub player: PlayerId,
-    /// Mulligans taken before this declaration (the redraw makes it one more).
+    /// Mulligans taken before this declaration (a `Regular` redraw makes it one more).
     pub mulligan_count: u8,
+    #[serde(default)]
+    pub kind: MulliganDeclarationKind,
 }
 
 /// CR 103.5: Per-player state during the simultaneous mulligan decision phase.
@@ -40231,6 +40244,7 @@ mod tests {
             declared: vec![MulliganDeclaration {
                 player: PlayerId(1),
                 mulligan_count: 0,
+                kind: MulliganDeclarationKind::FreeReveal,
             }],
         }));
         variants.push(Box::new(WaitingFor::OpeningHandBottomCards {
@@ -40579,6 +40593,7 @@ mod tests {
             declared: vec![MulliganDeclaration {
                 player: PlayerId(1),
                 mulligan_count: 2,
+                kind: MulliganDeclarationKind::Regular,
             }],
         };
         let json = serde_json::to_string(&held).unwrap();
@@ -40595,6 +40610,35 @@ mod tests {
         assert!(!json.contains("declared"));
         let back: WaitingFor = serde_json::from_str(&json).unwrap();
         assert_eq!(back, open);
+    }
+
+    #[test]
+    fn mulligan_declaration_kind_round_trips_and_defaults_to_regular() {
+        use crate::types::actions::MulliganChoice;
+
+        for kind in [
+            MulliganDeclarationKind::Regular,
+            MulliganDeclarationKind::FreeReveal,
+        ] {
+            let declaration = MulliganDeclaration {
+                player: PlayerId(1),
+                mulligan_count: 0,
+                kind,
+            };
+            let json = serde_json::to_string(&declaration).unwrap();
+            let back: MulliganDeclaration = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, declaration);
+        }
+        let legacy: MulliganDeclaration =
+            serde_json::from_str(r#"{"player":1,"mulligan_count":2}"#).unwrap();
+        assert_eq!(legacy.kind, MulliganDeclarationKind::Regular);
+
+        assert_eq!(
+            serde_json::to_string(&MulliganChoice::FreeReveal).unwrap(),
+            r#"{"type":"FreeReveal"}"#
+        );
+        let back: MulliganChoice = serde_json::from_str(r#"{"type":"FreeReveal"}"#).unwrap();
+        assert_eq!(back, MulliganChoice::FreeReveal);
     }
 
     #[test]

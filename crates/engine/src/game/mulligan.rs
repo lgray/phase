@@ -2,12 +2,13 @@ use crate::game::ability_utils::build_resolved_from_def;
 use crate::game::effects::resolve_ability_chain;
 use crate::types::ability::AbilityKind;
 use crate::types::actions::MulliganChoice;
+use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
-use crate::types::format::{DealOrder, GameFormat, ZoneScope};
+use crate::types::format::{DealOrder, FreeRevealMulligan, GameFormat, ZoneScope};
 use crate::types::game_state::{
     GameState, MulliganBottomEntry, MulliganDecisionEntry, MulliganDecisionPhase,
-    MulliganDeclaration, OpeningHandBottomReason, PendingBeginGameAbility, PendingMulliganAction,
-    WaitingFor,
+    MulliganDeclaration, MulliganDeclarationKind, OpeningHandBottomReason, PendingBeginGameAbility,
+    PendingMulliganAction, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
@@ -256,9 +257,31 @@ pub fn handle_mulligan_decision(
                 declared.push(MulliganDeclaration {
                     player,
                     mulligan_count: current_count,
+                    kind: MulliganDeclarationKind::Regular,
                 });
             }
         },
+        MulliganChoice::FreeReveal => {
+            if !free_reveal_offered(state, &pending[idx]) {
+                return Err(format!(
+                    "Player {:?} may not take a free reveal mulligan",
+                    player
+                ));
+            }
+            match mulligan_timing(state) {
+                MulliganTiming::Immediate => redraw_after_free_reveal(state, player, events),
+                MulliganTiming::Simultaneous => {
+                    // CR 103.5: record the declaration; the reveal and redraw
+                    // happen when the round closes.
+                    pending.remove(idx);
+                    declared.push(MulliganDeclaration {
+                        player,
+                        mulligan_count: current_count,
+                        kind: MulliganDeclarationKind::FreeReveal,
+                    });
+                }
+            }
+        }
         MulliganChoice::UseSerumPowder { object_id } => {
             // CR 103.5b + Serum Powder Oracle text + CR 201.2: reject an
             // invalid reference at declare time, before any owed-bottom
@@ -278,6 +301,76 @@ pub fn handle_mulligan_decision(
     Ok(advance_after_decision(
         state, pending, declared, free_first, events,
     ))
+}
+
+/// CR 103.5 as modified by the Dandan free-reveal rule (`FreeRevealMulligan`
+/// axis): whether the entry's seat may take the free reveal mulligan now.
+/// Computed from the live hand, never stored, so `WaitingFor` leaks no hand
+/// composition to the opponent.
+pub(crate) fn free_reveal_offered(state: &GameState, entry: &MulliganDecisionEntry) -> bool {
+    match state.format_config.format.free_reveal_mulligan() {
+        FreeRevealMulligan::Unavailable => false,
+        FreeRevealMulligan::WhenHandLacks {
+            min_lands,
+            min_nonlands,
+        } => {
+            let (lands, nonlands) = hand_land_split(state, entry.player);
+            // `mulligan_count == 0` is "no regular mulligan taken yet": every
+            // regular mulligan increments it and a free reveal never does.
+            matches!(entry.phase, MulliganDecisionPhase::Declare)
+                && entry.mulligan_count == 0
+                && (lands < usize::from(min_lands) || nonlands < usize::from(min_nonlands))
+        }
+    }
+}
+
+/// (lands, nonland cards) in `player`'s hand. CR 205.2a: land is a card type.
+fn hand_land_split(state: &GameState, player: PlayerId) -> (usize, usize) {
+    let hand = state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .map(|p| &p.hand);
+    let lands = hand.map_or(0, |hand| {
+        hand.iter()
+            .filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|obj| obj.card_types.core_types.contains(&CoreType::Land))
+            })
+            .count()
+    });
+    (lands, hand.map_or(0, |hand| hand.len()) - lands)
+}
+
+/// CR 701.20a: show the hand to all players, by name only. The cards do not
+/// move (CR 701.20b), and no object id is published: the hand is returned and
+/// redealt before the end-of-action public-reveal hook reads event ids, which
+/// would otherwise mark whichever objects now hold those ids as revealed.
+fn reveal_hand(state: &GameState, player: PlayerId, events: &mut Vec<GameEvent>) {
+    let card_names = state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .into_iter()
+        .flat_map(|p| p.hand.iter())
+        .filter_map(|id| state.objects.get(id))
+        .map(|obj| obj.name.clone())
+        .collect();
+    events.push(GameEvent::CardsRevealed {
+        player,
+        card_ids: Vec::new(),
+        card_names,
+    });
+}
+
+/// The free reveal where each player has their own library: reveal, shuffle
+/// the hand back and redraw, leaving the count and bottoms ledger untouched.
+fn redraw_after_free_reveal(state: &mut GameState, player: PlayerId, events: &mut Vec<GameEvent>) {
+    reveal_hand(state, player, events);
+    shuffle_hand_into_library(state, player, events);
+    draw_n(state, player, STARTING_HAND_SIZE, events);
 }
 
 /// CR 103.5 + 103.5b: Shared declare-point resolution for `Keep` and
@@ -467,6 +560,14 @@ fn close_declare_round(
         .filter_map(|player| declared.iter().find(|d| d.player == player).cloned())
         .collect();
 
+    // CR 701.20a + CR 103.5: every free reveal is shown before any hand
+    // returns, so no declarer's hand is seen after another's was shuffled away.
+    for declaration in &redrawers {
+        match declaration.kind {
+            MulliganDeclarationKind::FreeReveal => reveal_hand(state, declaration.player, events),
+            MulliganDeclarationKind::Regular => {}
+        }
+    }
     for declaration in &redrawers {
         return_hand_to_library(state, declaration.player, events);
     }
@@ -501,7 +602,11 @@ fn close_declare_round(
                 .find(|d| d.player == player)
                 .map(|d| MulliganDecisionEntry {
                     player,
-                    mulligan_count: d.mulligan_count + 1,
+                    mulligan_count: match d.kind {
+                        MulliganDeclarationKind::Regular => d.mulligan_count + 1,
+                        // The free reveal is not a regular mulligan: no count, no bottom.
+                        MulliganDeclarationKind::FreeReveal => d.mulligan_count,
+                    },
                     phase: MulliganDecisionPhase::Declare,
                 })
         })
@@ -1080,6 +1185,76 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GameEvent::MulliganStarted)));
+    }
+
+    #[test]
+    fn free_reveal_redraw_reveals_then_reshuffles_only_the_declarers_hand() {
+        let mut state = setup_with_libraries(20);
+        let mut events = Vec::new();
+        let wf = start_mulligan(&mut state, &mut events);
+        state.waiting_for = wf;
+        let hand_of = |state: &GameState, seat: usize| -> Vec<ObjectId> {
+            state.players[seat].hand.iter().copied().collect()
+        };
+        let (old_hand, other_hand) = (hand_of(&state, 0), hand_of(&state, 1));
+        let old_names: Vec<String> = old_hand
+            .iter()
+            .map(|id| state.objects[id].name.clone())
+            .collect();
+        let library_len = state.players[0].library.len();
+
+        events.clear();
+        redraw_after_free_reveal(&mut state, PlayerId(0), &mut events);
+
+        assert!(
+            matches!(
+                events.first(),
+                Some(GameEvent::CardsRevealed { player, card_ids, card_names })
+                    if *player == PlayerId(0) && card_ids.is_empty() && *card_names == old_names
+            ),
+            "the reveal comes first, by name only: {events:?}"
+        );
+        let new_hand = hand_of(&state, 0);
+        assert_eq!(new_hand.len(), STARTING_HAND_SIZE);
+        assert_ne!(new_hand, old_hand, "reach: the hand was redrawn");
+        assert_eq!(state.players[0].library.len(), library_len);
+        assert_eq!(hand_of(&state, 1), other_hand);
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            GameEvent::PlayerPerformedAction {
+                action: crate::types::events::PlayerActionKind::ShuffledLibrary,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn free_reveal_is_refused_where_the_format_offers_none() {
+        let mut state = setup_with_libraries(20);
+        let mut events = Vec::new();
+        let wf = start_mulligan(&mut state, &mut events);
+        state.waiting_for = wf.clone();
+        // Untyped test cards are all nonland: a (0, 7) hand that Dandan would offer.
+        let entry = MulliganDecisionEntry {
+            player: PlayerId(0),
+            mulligan_count: 0,
+            phase: MulliganDecisionPhase::Declare,
+        };
+        assert!(!free_reveal_offered(&state, &entry));
+        assert!(handle_mulligan_decision(
+            &mut state,
+            PlayerId(0),
+            MulliganChoice::FreeReveal,
+            &mut events
+        )
+        .is_err());
+        assert_eq!(state.waiting_for, wf);
+
+        state.format_config = crate::types::format::FormatConfig::dandan();
+        assert!(
+            free_reveal_offered(&state, &entry),
+            "reach: the axis is the difference"
+        );
     }
 
     /// CR 103.5: a mulligan shuffles the hand back as ONE shuffle, and that
@@ -2600,7 +2775,8 @@ mod tests {
             declared,
             &vec![MulliganDeclaration {
                 player: p1,
-                mulligan_count: 0
+                mulligan_count: 0,
+                kind: MulliganDeclarationKind::Regular,
             }]
         );
         assert_eq!(waiting.acting_players(), vec![p0]);

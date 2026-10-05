@@ -210,6 +210,11 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 111 — MulliganChoice gains `FreeReveal` and MulliganDeclaration gains `kind`:
+ *      the Dandan free reveal mulligan, a MulliganDecision action payload and a
+ *      held declaration in GameState.waiting_for. A v110 peer cannot parse the
+ *      choice and would carry out a held free reveal as a regular mulligan.
+ *      Wire 93 moves with it; no lobby frame names it.
  * 110 — WaitingFor::MulliganDecision gains `declared`, the mulligans recorded
  *      in a CR 103.5 declare round until every player has declared. It is
  *      serialized in GameState.waiting_for, so a v109 peer would drop it
@@ -710,7 +715,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 110;
+export const PROTOCOL_VERSION = 111;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

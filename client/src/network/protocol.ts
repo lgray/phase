@@ -106,6 +106,11 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  93 — game_setup and state_update carry GameState, whose waiting_for can now
+ *       hold a held free reveal mulligan (MulliganDeclaration.kind) and whose
+ *       MulliganDecision action gains the FreeReveal choice. A v92 peer would
+ *       run the free reveal as a regular mulligan, so first contact rejects the
+ *       skew. Bumped with full-game protocol 111.
  *  92 — game_setup and state_update carry GameState, whose waiting_for can now
  *       hold the mulligans declared in a CR 103.5 round on
  *       MulliganDecision.declared. A v91 peer would drop them silently, so first
@@ -557,7 +562,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 92 as const;
+export const WIRE_PROTOCOL_VERSION = 93 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

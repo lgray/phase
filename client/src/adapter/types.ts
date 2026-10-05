@@ -2499,7 +2499,7 @@ export type WaitingFor =
       data: {
         pending: { player: PlayerId; mulligan_count: number; phase: MulliganDecisionPhase }[];
         free_first_mulligan: boolean;
-        declared?: { player: PlayerId; mulligan_count: number }[];
+        declared?: { player: PlayerId; mulligan_count: number; kind: MulliganDeclarationKind }[];
       };
     }
   | {
@@ -2870,6 +2870,9 @@ export type LearnOption =
 
 // ── Mulligan ─────────────────────────────────────────────────────────────
 
+// CR 103.5: what a held mulligan does when the declare round closes.
+export type MulliganDeclarationKind = { type: "Regular" } | { type: "FreeReveal" };
+
 // CR 103.5 + 103.5b: Player decision at a MulliganDecision prompt.
 //   Keep            — lock in the opening hand (CR 103.5).
 //   Mulligan        — shuffle hand back, redraw the starting hand size (CR 103.5).
@@ -2877,10 +2880,13 @@ export type LearnOption =
 //                     the same number; mulligan counter unchanged (CR 103.5b
 //                     + Serum Powder Oracle text). `object_id` must reference
 //                     a card named "Serum Powder" in the actor's hand.
+//   FreeReveal      — Dandan: reveal a qualifying hand, return it and redraw
+//                     without taking a regular mulligan (CR 103.5 as modified).
 export type MulliganChoice =
   | { type: "Keep" }
   | { type: "Mulligan" }
-  | { type: "UseSerumPowder"; data: { object_id: ObjectId } };
+  | { type: "UseSerumPowder"; data: { object_id: ObjectId } }
+  | { type: "FreeReveal" };
 
 // ── Distribution ─────────────────────────────────────────────────────────
 

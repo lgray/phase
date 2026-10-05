@@ -1735,13 +1735,25 @@ pub fn fallback_action(
                 .find(|entry| entry.player == contract.semantic_owner)?;
             match &entry.phase {
                 MulliganDecisionPhase::Declare => {
-                    Some(match first_serum_powder_in_hand(state, entry.player) {
-                        Some(object_id) => GameAction::MulliganDecision {
-                            choice: MulliganChoice::UseSerumPowder { object_id },
-                        },
-                        None => GameAction::MulliganDecision {
-                            choice: MulliganChoice::Keep,
-                        },
+                    // CR 103.5: the engine-issued free reveal takes precedence
+                    // over a Powder, which is a one-shot card.
+                    let free_reveal = issued(|action| {
+                        matches!(
+                            action,
+                            GameAction::MulliganDecision {
+                                choice: MulliganChoice::FreeReveal
+                            }
+                        )
+                    });
+                    free_reveal.or_else(|| {
+                        Some(match first_serum_powder_in_hand(state, entry.player) {
+                            Some(object_id) => GameAction::MulliganDecision {
+                                choice: MulliganChoice::UseSerumPowder { object_id },
+                            },
+                            None => GameAction::MulliganDecision {
+                                choice: MulliganChoice::Keep,
+                            },
+                        })
                     })
                 }
                 MulliganDecisionPhase::BottomCards { .. } => issued_selection(contract),
@@ -3758,8 +3770,21 @@ pub(crate) fn deterministic_choice(
                 // strictly better action than a mulligan (no mulligan count
                 // increment). When the registry says keep, take the keep — don't
                 // burn a Powder on a hand the policies already endorsed.
+                // CR 103.5: a free reveal the engine issued is free and
+                // repeatable while the hand qualifies, so it precedes the
+                // one-shot Powder; the AI never re-derives the hand predicate.
+                let free_reveal_issued = actions.iter().any(|action| {
+                    matches!(
+                        action,
+                        GameAction::MulliganDecision {
+                            choice: MulliganChoice::FreeReveal
+                        }
+                    )
+                });
                 let choice = if decision.keep {
                     MulliganChoice::Keep
+                } else if free_reveal_issued {
+                    MulliganChoice::FreeReveal
                 } else if let Some(object_id) = first_serum_powder_in_hand(state, player) {
                     MulliganChoice::UseSerumPowder { object_id }
                 } else {
@@ -8611,6 +8636,234 @@ mod tests {
             .into_iter()
             .map(|candidate| candidate.action)
             .collect()
+    }
+
+    /// A Dandan mulligan prompt where P0 holds exactly the named real cards.
+    fn dandan_mulligan_state(hand: &[&str], p0_count: u8) -> GameState {
+        use engine::game::scenario_db::GameScenarioDbExt;
+        use engine::types::format::FormatConfig;
+        use engine::types::game_state::MulliganDecisionEntry;
+
+        let db = integration_card_db();
+        let mut scenario = GameScenario::new_with_format(FormatConfig::dandan(), 2, 7);
+        for name in hand {
+            scenario.add_real_card(P0, name, Zone::Hand, &db);
+        }
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.waiting_for = WaitingFor::MulliganDecision {
+            pending: [(P0, p0_count), (P1, 0)]
+                .into_iter()
+                .map(|(player, mulligan_count)| MulliganDecisionEntry {
+                    player,
+                    mulligan_count,
+                    phase: MulliganDecisionPhase::Declare,
+                })
+                .collect(),
+            free_first_mulligan: false,
+            declared: Vec::new(),
+        };
+        state.clone()
+    }
+
+    const NO_LANDS: [&str; 7] = [
+        "Dandân",
+        "Memory Lapse",
+        "Brainstorm",
+        "Control Magic",
+        "Telling Time",
+        "Predict",
+        "Magical Hack",
+    ];
+    const KEEPABLE: [&str; 7] = [
+        "Island",
+        "Island",
+        "Island",
+        "Dandân",
+        "Memory Lapse",
+        "Brainstorm",
+        "Control Magic",
+    ];
+
+    fn registry_keeps(state: &GameState, player: PlayerId) -> bool {
+        let hand: Vec<ObjectId> = state.players[player.0 as usize]
+            .hand
+            .iter()
+            .copied()
+            .collect();
+        let count = match &state.waiting_for {
+            WaitingFor::MulliganDecision { pending, .. } => pending
+                .iter()
+                .find(|e| e.player == player)
+                .map_or(0, |e| e.mulligan_count),
+            _ => 0,
+        };
+        crate::policies::mulligan::MulliganRegistry::default()
+            .evaluate_hand(
+                &hand,
+                state,
+                &crate::features::DeckFeatures::default(),
+                &crate::plan::PlanSnapshot::default(),
+                crate::policies::mulligan::turn_order_for(state, player),
+                count,
+            )
+            .keep
+    }
+
+    fn free_reveal_action() -> GameAction {
+        GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal,
+        }
+    }
+
+    fn mulligan_action(choice: MulliganChoice) -> GameAction {
+        GameAction::MulliganDecision { choice }
+    }
+
+    #[test]
+    fn mulligan_selects_the_engine_issued_free_reveal_and_never_derives_it() {
+        let config = create_config(AiDifficulty::Medium, Platform::Native);
+        let state = dandan_mulligan_state(&NO_LANDS, 0);
+        assert!(!registry_keeps(&state, P0), "reach: the registry declines");
+        let issued = issued_actions(&state, P0);
+        assert!(
+            issued.contains(&free_reveal_action()),
+            "reach: engine issued it"
+        );
+
+        assert_eq!(
+            deterministic_choice(&state, P0, &config, &issued, None),
+            Some(free_reveal_action())
+        );
+
+        // Same hand and count, the engine withholds the candidate: the AI does not
+        // re-derive the hand predicate.
+        let withheld: Vec<GameAction> = issued
+            .iter()
+            .filter(|a| **a != free_reveal_action())
+            .cloned()
+            .collect();
+        assert_eq!(
+            deterministic_choice(&state, P0, &config, &withheld, None),
+            Some(mulligan_action(MulliganChoice::Mulligan))
+        );
+
+        // After a regular mulligan the engine no longer offers it.
+        let after_mulligan = dandan_mulligan_state(&NO_LANDS, 1);
+        let issued = issued_actions(&after_mulligan, P0);
+        assert!(!issued.contains(&free_reveal_action()));
+        assert!(
+            !registry_keeps(&after_mulligan, P0),
+            "reach: still declined"
+        );
+        assert_eq!(
+            deterministic_choice(&after_mulligan, P0, &config, &issued, None),
+            Some(mulligan_action(MulliganChoice::Mulligan))
+        );
+    }
+
+    #[test]
+    fn mulligan_keeps_a_hand_the_registry_endorses_even_when_a_free_reveal_is_issued() {
+        let config = create_config(AiDifficulty::Medium, Platform::Native);
+        let state = dandan_mulligan_state(&KEEPABLE, 0);
+        assert!(
+            registry_keeps(&state, P0),
+            "reach: the registry endorses it"
+        );
+        let mut issued = issued_actions(&state, P0);
+        issued.push(free_reveal_action());
+
+        assert_eq!(
+            deterministic_choice(&state, P0, &config, &issued, None),
+            Some(mulligan_action(MulliganChoice::Keep))
+        );
+    }
+
+    #[test]
+    fn mulligan_prefers_a_free_reveal_to_a_serum_powder() {
+        let config = create_config(AiDifficulty::Medium, Platform::Native);
+        let mut hand = NO_LANDS[..6].to_vec();
+        hand.push("Serum Powder");
+        let state = dandan_mulligan_state(&hand, 0);
+        let powder = first_serum_powder_in_hand(&state, P0).expect("reach: Powder in hand");
+        let issued = issued_actions(&state, P0);
+        let powder_action = mulligan_action(MulliganChoice::UseSerumPowder { object_id: powder });
+        assert!(issued.contains(&free_reveal_action()) && issued.contains(&powder_action));
+        assert!(!registry_keeps(&state, P0));
+
+        assert_eq!(
+            deterministic_choice(&state, P0, &config, &issued, None),
+            Some(free_reveal_action())
+        );
+        let contract = AiDecisionContract::issue(&state, P0);
+        assert_eq!(
+            fallback_action(&state, &config, &contract),
+            Some(free_reveal_action())
+        );
+
+        // Count 1: the engine withholds the free reveal and the Powder is next.
+        let after_mulligan = dandan_mulligan_state(&hand, 1);
+        let contract = AiDecisionContract::issue(&after_mulligan, P0);
+        assert_eq!(
+            fallback_action(&after_mulligan, &config, &contract),
+            Some(powder_action)
+        );
+    }
+
+    #[test]
+    fn fallback_takes_an_issued_free_reveal_and_otherwise_keeps() {
+        let config = create_config(AiDifficulty::Medium, Platform::Native);
+        let state = dandan_mulligan_state(&NO_LANDS, 0);
+        let contract = AiDecisionContract::issue(&state, P0);
+        assert!(contract
+            .candidates
+            .iter()
+            .any(|c| c.action == free_reveal_action()));
+        assert_eq!(
+            fallback_action(&state, &config, &contract),
+            Some(free_reveal_action())
+        );
+
+        let after_mulligan = dandan_mulligan_state(&NO_LANDS, 1);
+        let contract = AiDecisionContract::issue(&after_mulligan, P0);
+        assert_eq!(
+            fallback_action(&after_mulligan, &config, &contract),
+            Some(mulligan_action(MulliganChoice::Keep))
+        );
+    }
+
+    /// Both seats driven by the AI through the real engine on the real 80-card pile:
+    /// every game leaves the mulligan, and the free reveal is actually taken.
+    #[test]
+    fn ai_pair_leaves_the_dandan_mulligan_taking_free_reveals() {
+        use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
+        use engine::game::engine::{apply, start_game_with_starting_player};
+        use engine::types::format::FormatConfig;
+
+        let db = integration_card_db();
+        let config = create_config(AiDifficulty::Medium, Platform::Native);
+        let mut free_reveals = 0;
+        for seed in 0..30 {
+            let mut state = GameState::new(FormatConfig::dandan(), 2, seed);
+            load_and_hydrate_decks(&mut state, &DeckPayload::default(), Some(&db));
+            start_game_with_starting_player(&mut state, P0);
+            for _ in 0..200 {
+                let WaitingFor::MulliganDecision { pending, .. } = &state.waiting_for else {
+                    break;
+                };
+                let seat = pending[0].player;
+                let issued = issued_actions(&state, seat);
+                let action = deterministic_choice(&state, seat, &config, &issued, None)
+                    .expect("the AI answers its mulligan prompt");
+                free_reveals += usize::from(action == free_reveal_action());
+                apply(&mut state, seat, action).expect("the engine accepts the AI's answer");
+            }
+            assert!(
+                !matches!(state.waiting_for, WaitingFor::MulliganDecision { .. }),
+                "seed {seed}: the mulligan must end"
+            );
+        }
+        assert!(free_reveals > 0, "reach: some opening hand qualified");
     }
 
     #[test]
