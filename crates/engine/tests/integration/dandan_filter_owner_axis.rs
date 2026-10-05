@@ -552,6 +552,11 @@ fn pile_run_by(
     } else {
         runner.cast(spell).resolve();
     }
+    play_to_end_step(&mut runner);
+    (runner, bears)
+}
+
+fn play_to_end_step(runner: &mut GameRunner) {
     for _ in 0..60 {
         let state = runner.state();
         if state.phase == Phase::End && state.stack.is_empty() {
@@ -571,7 +576,6 @@ fn pile_run_by(
             }
         }
     }
-    (runner, bears)
 }
 
 fn battlefield_named(runner: &GameRunner, name: &str) -> usize {
@@ -949,4 +953,207 @@ fn v22_a_creature_you_control_entering_is_judged_as_the_permanent() {
             "P1's creature is not a creature P0 controls"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Origin-less record door (Aetherworks Marvel) and entered-from-your-graveyard
+// conditions (Archfiend's Vessel, Prized Amalgam, Grist, Voracious Larva)
+// ---------------------------------------------------------------------------
+
+fn energy(runner: &GameRunner, seat: PlayerId) -> u32 {
+    runner.state().players[seat.0 as usize].energy
+}
+
+/// P0 watches with Aetherworks Marvel while `target` mills two of `library_owner`'s Bears.
+fn marvel_energy_after_mill(
+    format: FormatConfig,
+    library_owner: PlayerId,
+    target: PlayerId,
+) -> u32 {
+    let runner = mill_run(
+        format,
+        "Aetherworks Marvel",
+        "Grizzly Bears",
+        library_owner,
+        target,
+    );
+    assert_eq!(
+        in_graveyard(&runner, "Grizzly Bears"),
+        2,
+        "reach: two cards milled"
+    );
+    energy(&runner, P0)
+}
+
+/// P0 watches with Aetherworks Marvel and destroys its own Grizzly Bears.
+fn marvel_energy_after_own_destroy(format: FormatConfig) -> u32 {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario(format);
+    sc.add_real_card(P0, "Aetherworks Marvel", Zone::Battlefield, db);
+    let bears = sc.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    let spell = sc.add_real_card(P0, "Doom Blade", Zone::Hand, db);
+    let mut runner = start(sc, P0);
+    runner.cast(spell).target_object(bears).resolve();
+    assert_eq!(
+        runner.state().objects[&bears].zone,
+        Zone::Graveyard,
+        "reach: the permanent died"
+    );
+    energy(&runner, P0)
+}
+
+#[test]
+fn a_card_milled_from_a_library_is_not_a_permanent_you_control() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        marvel_energy_after_own_destroy(dandan()),
+        1,
+        "paired: P0's own permanent dies"
+    );
+    assert_eq!(
+        marvel_energy_after_mill(dandan(), P1, P0),
+        0,
+        "the other seat's library cards are nobody's permanents"
+    );
+}
+
+#[test]
+fn in_standard_a_milled_card_is_not_a_permanent_you_control() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        marvel_energy_after_own_destroy(FormatConfig::standard()),
+        1,
+        "reach: the trigger fires for P0's own permanent"
+    );
+    assert_eq!(
+        marvel_energy_after_mill(FormatConfig::standard(), P1, P1),
+        0
+    );
+}
+
+/// P0 reanimates `entrant` (owned by `entrant_owner`) from the pile, with `staged` cards placed
+/// first; returns the runner after the turn is played to the end step.
+fn reanimate_run(
+    format: FormatConfig,
+    staged: &[(PlayerId, &str, Zone)],
+    entrant: &str,
+    entrant_owner: PlayerId,
+) -> (GameRunner, ObjectId) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario(format);
+    for &(owner, name, zone) in staged {
+        sc.add_real_card(owner, name, zone, db);
+    }
+    let spell = sc.add_real_card(P0, "Reanimate", Zone::Hand, db);
+    let card = stage(&mut sc, db, Zone::Graveyard, &[(entrant_owner, entrant)])[0];
+    let mut runner = start(sc, P0);
+    runner
+        .cast(spell)
+        .target_object(card)
+        .accept_optional()
+        .resolve();
+    assert_ne!(
+        runner.state().objects[&card].zone,
+        Zone::Graveyard,
+        "reach: the pile card was reanimated"
+    );
+    play_to_end_step(&mut runner);
+    (runner, card)
+}
+
+fn vessel_demons(format: FormatConfig, owner: PlayerId) -> usize {
+    let (runner, _) = reanimate_run(format, &[], "Archfiend's Vessel", owner);
+    battlefield_named(&runner, "Demon")
+}
+
+#[test]
+fn an_entrant_from_the_shared_pile_entered_from_your_graveyard() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(vessel_demons(dandan(), P0), 1, "paired: P0's own card");
+    assert_eq!(
+        vessel_demons(dandan(), P1),
+        1,
+        "the pile is P0's graveyard whoever owns the card"
+    );
+}
+
+#[test]
+fn in_standard_an_entrant_from_the_other_seats_graveyard_did_not_enter_from_yours() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        vessel_demons(FormatConfig::standard(), P0),
+        1,
+        "reach: P0's own graveyard card"
+    );
+    assert_eq!(vessel_demons(FormatConfig::standard(), P1), 0);
+}
+
+fn amalgam_return_triggers(format: FormatConfig, owner: PlayerId) -> usize {
+    let (runner, _) = reanimate_run(
+        format,
+        &[(P0, "Prized Amalgam", Zone::Graveyard)],
+        "Grizzly Bears",
+        owner,
+    );
+    battlefield_named(&runner, "Prized Amalgam")
+}
+
+#[test]
+fn a_creature_from_the_shared_pile_entered_from_your_graveyard_for_a_graveyard_watcher() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        amalgam_return_triggers(dandan(), P0),
+        1,
+        "paired: P0's own card"
+    );
+    assert_eq!(amalgam_return_triggers(dandan(), P1), 1);
+}
+
+#[test]
+fn in_standard_a_creature_from_the_other_seats_graveyard_does_not_wake_the_watcher() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert_eq!(
+        amalgam_return_triggers(FormatConfig::standard(), P0),
+        1,
+        "reach: P0's own graveyard card"
+    );
+    assert_eq!(amalgam_return_triggers(FormatConfig::standard(), P1), 0);
+}
+
+fn grist_transforms(format: FormatConfig, owner: PlayerId) -> bool {
+    let (runner, grist) = reanimate_run(format, &[], "Grist, Voracious Larva", owner);
+    runner.state().objects[&grist].transformed
+}
+
+#[test]
+fn a_creature_you_control_from_the_shared_pile_transforms_a_graveyard_grist() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert!(grist_transforms(dandan(), P0), "paired: P0's own card");
+    assert!(grist_transforms(dandan(), P1));
+}
+
+#[test]
+fn in_standard_a_card_from_the_other_seats_graveyard_does_not_transform_grist() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    assert!(
+        grist_transforms(FormatConfig::standard(), P0),
+        "reach: P0's own graveyard card"
+    );
+    assert!(!grist_transforms(FormatConfig::standard(), P1));
 }

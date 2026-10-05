@@ -3072,9 +3072,9 @@ pub fn matches_target_filter(
     filter_inner(state, object_id, filter, ctx)
 }
 
-/// CR 603.10a: evaluate a live card whose zone-change record says it departed `from`: the
-/// player axis reads the card as a resident of that zone, while every other property reads the
-/// live card.
+/// Evaluate a live card whose zone-change record says it departed `from`: the player axis reads
+/// the card as a resident of that zone (CR 603.10a for a graveyard, CR 400.1 as the format
+/// modifies it for a library), while every other property reads the live card.
 pub(crate) fn matches_target_filter_on_departure(
     state: &GameState,
     object_id: ObjectId,
@@ -3935,7 +3935,20 @@ pub fn matches_target_filter_on_zone_change_record(
     filter: &TargetFilter,
     ctx: &FilterContext<'_>,
 ) -> bool {
-    zone_change_filter_inner(state, record, filter, ctx)
+    zone_change_filter_inner(state, record, record.from_zone, filter, ctx)
+}
+
+/// Like [`matches_target_filter_on_zone_change_record`], but the player axis reads the record as
+/// a resident of `licensed`, the zone the caller's own text names (CR 603.10a for a graveyard,
+/// CR 400.1 as the format modifies it for a library).
+pub(crate) fn matches_target_filter_on_zone_change_record_licensed(
+    state: &GameState,
+    record: &ZoneChangeRecord,
+    licensed: Option<Zone>,
+    filter: &TargetFilter,
+    ctx: &FilterContext<'_>,
+) -> bool {
+    zone_change_filter_inner(state, record, licensed, filter, ctx)
 }
 
 /// CR 122.1 + CR 122.6: Check whether a per-turn counter-placement snapshot
@@ -4392,7 +4405,14 @@ pub fn matches_zone_change_event_object_filter(
                     .is_none_or(|inc| obj.incarnation == inc)
         });
         if still_on_battlefield {
-            matches_target_filter(state, *object_id, filter, ctx)
+            // A named origin is the zone the entrant is judged as a resident of (CR 603.10a for a
+            // graveyard, CR 400.1 as the format modifies it for a library).
+            match origin {
+                Some(from) => {
+                    matches_target_filter_on_departure(state, *object_id, from, filter, ctx)
+                }
+                None => matches_target_filter(state, *object_id, filter, ctx),
+            }
         } else if let Some(lki) = record
             .entered_incarnation
             .and_then(|incarnation| {
@@ -4423,16 +4443,16 @@ pub fn matches_zone_change_event_object_filter(
                 filter,
                 ctx,
                 record.entered_incarnation,
-                None,
+                origin,
             )
         } else {
             // No exit LKI cached (defensive — a battlefield exit always caches
             // one). Use the zone-change record rather than the reverted live
             // object so the comparison never regresses to baseline P/T.
-            matches_target_filter_on_zone_change_record(state, record, filter, ctx)
+            matches_target_filter_on_zone_change_record_licensed(state, record, origin, filter, ctx)
         }
     } else {
-        matches_target_filter_on_zone_change_record(state, record, filter, ctx)
+        matches_target_filter_on_zone_change_record_licensed(state, record, origin, filter, ctx)
     }
 }
 
@@ -5241,6 +5261,7 @@ fn build_battlefield_entry_token_object(
 fn zone_change_filter_inner(
     state: &GameState,
     record: &ZoneChangeRecord,
+    licensed: Option<Zone>,
     filter: &TargetFilter,
     ctx: &FilterContext<'_>,
 ) -> bool {
@@ -5317,7 +5338,6 @@ fn zone_change_filter_inner(
 
             // CR 400.1 + CR 109.4: a zone without controllers answers the controller axis
             // for every seat reading the same container, like the live-object door.
-            let licensed = record.from_zone;
             if let Some(ctrl) = controller {
                 let admits = |obj_ctrl: PlayerId| -> bool {
                 match ctrl {
@@ -5394,13 +5414,15 @@ fn zone_change_filter_inner(
                 _ => zone_change_record_matches_property(prop, state, record, &source_ctx),
             })
         }
-        TargetFilter::Not { filter: inner } => !zone_change_filter_inner(state, record, inner, ctx),
+        TargetFilter::Not { filter: inner } => {
+            !zone_change_filter_inner(state, record, licensed, inner, ctx)
+        }
         TargetFilter::Or { filters } => filters
             .iter()
-            .any(|inner| zone_change_filter_inner(state, record, inner, ctx)),
+            .any(|inner| zone_change_filter_inner(state, record, licensed, inner, ctx)),
         TargetFilter::And { filters } => filters
             .iter()
-            .all(|inner| zone_change_filter_inner(state, record, inner, ctx)),
+            .all(|inner| zone_change_filter_inner(state, record, licensed, inner, ctx)),
         TargetFilter::SpecificObject { id } => record.object_id == *id,
         // SpecificPlayer scopes to players, not objects — a zone-change record
         // is always an object transition.
@@ -9967,10 +9989,17 @@ mod tests {
         assert!(zone_change_filter_inner(
             &state,
             &record,
+            record.from_zone,
             &TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::TargetOpponent)),
             &ctx,
         ));
-        assert!(zone_change_filter_inner(&state, &record, &owned, &ctx));
+        assert!(zone_change_filter_inner(
+            &state,
+            &record,
+            record.from_zone,
+            &owned,
+            &ctx
+        ));
 
         let source_ctx = source_context_from_filter(
             &state,
@@ -19868,6 +19897,23 @@ mod dandan_axis_collapse_tests {
                         licensed,
                         "record pile zone {why}"
                     );
+                    let record_in_pile = record(Some(zone));
+                    for (stated, expected) in [(Some(zone), licensed), (None, single)] {
+                        assert_eq!(
+                            [P0, P1].map(|seat| {
+                                let ctx = FilterContext::from_source_with_controller(SOURCE, seat);
+                                matches_target_filter_on_zone_change_record_licensed(
+                                    &state,
+                                    &record_in_pile,
+                                    stated,
+                                    &filter,
+                                    &ctx,
+                                )
+                            }),
+                            expected,
+                            "stated licence {stated:?} {why}"
+                        );
+                    }
                     assert_eq!(
                         record_admitted(&state, &record(None), &filter),
                         single,
@@ -19876,6 +19922,42 @@ mod dandan_axis_collapse_tests {
                 }
             }
         }
+    }
+
+    /// A zone-change event's non-battlefield record reads the shared pile only when the
+    /// condition names the origin.
+    #[test]
+    fn an_event_object_condition_licenses_only_a_named_origin() {
+        use crate::types::events::GameEvent;
+        let state = dandan();
+        let event = GameEvent::ZoneChanged {
+            object_id: ObjectId(7),
+            from: Some(Zone::Library),
+            to: Zone::Hand,
+            record: Box::new(ZoneChangeRecord {
+                owner: P1,
+                controller: P1,
+                core_types: vec![CoreType::Creature],
+                ..ZoneChangeRecord::test_minimal(ObjectId(7), Some(Zone::Library), Zone::Hand)
+            }),
+        };
+        let filter = typed(Some(ControllerRef::You), vec![]);
+        let ctx = FilterContext::from_source_with_controller(SOURCE, P0);
+        let admits = |origin| {
+            matches_zone_change_event_object_filter(
+                &state,
+                &event,
+                origin,
+                Zone::Hand,
+                &filter,
+                &ctx,
+            )
+        };
+        assert!(
+            admits(Some(Zone::Library)),
+            "reach: a named library origin reads the shared library"
+        );
+        assert!(!admits(None), "an unnamed origin states no zone");
     }
 
     /// A battlefield resident has controllers: no door but the departure door that names
@@ -19912,40 +19994,46 @@ mod dandan_axis_collapse_tests {
         use crate::types::ability::TriggerDefinition;
         use crate::types::events::GameEvent;
         use crate::types::triggers::TriggerMode;
-        let mut state = dandan();
-        let watcher = create_object(
-            &mut state,
-            CardId(5),
-            P0,
-            "Watcher".into(),
-            Zone::Battlefield,
-        );
-        let mut trigger = TriggerDefinition::new(TriggerMode::Destroyed);
-        trigger.valid_card = Some(typed(Some(ControllerRef::You), vec![]));
-        let source_context =
-            crate::game::trigger_matchers::test_trigger_source_context(&state, watcher);
-        let mut destroyed = |owner: PlayerId, card_id: u64| {
-            let id = create_object(
+        for mut state in [dandan(), standard()] {
+            let watcher = create_object(
                 &mut state,
-                CardId(card_id),
-                owner,
-                "Bear".into(),
-                Zone::Graveyard,
+                CardId(5),
+                P0,
+                "Watcher".into(),
+                Zone::Battlefield,
             );
-            let obj = state.objects.get_mut(&id).unwrap();
-            obj.card_types.core_types.push(CoreType::Creature);
-            obj.controller = owner;
-            GameEvent::CreatureDestroyed {
-                object_id: id,
-                source_id: None,
-            }
-        };
-        let own = destroyed(P0, 6);
-        let theirs = destroyed(P1, 7);
-        let observes = |event: &GameEvent| {
-            crate::game::trigger_matchers::match_destroyed(event, &trigger, &source_context, &state)
-        };
-        assert!(observes(&own), "reach: P0's own pile creature matches");
-        assert!(!observes(&theirs), "P1's pile creature is not P0's");
+            let mut trigger = TriggerDefinition::new(TriggerMode::Destroyed);
+            trigger.valid_card = Some(typed(Some(ControllerRef::You), vec![]));
+            let source_context =
+                crate::game::trigger_matchers::test_trigger_source_context(&state, watcher);
+            let mut destroyed = |owner: PlayerId, card_id: u64| {
+                let id = create_object(
+                    &mut state,
+                    CardId(card_id),
+                    owner,
+                    "Bear".into(),
+                    Zone::Graveyard,
+                );
+                let obj = state.objects.get_mut(&id).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.controller = owner;
+                GameEvent::CreatureDestroyed {
+                    object_id: id,
+                    source_id: None,
+                }
+            };
+            let own = destroyed(P0, 6);
+            let theirs = destroyed(P1, 7);
+            let observes = |event: &GameEvent| {
+                crate::game::trigger_matchers::match_destroyed(
+                    event,
+                    &trigger,
+                    &source_context,
+                    &state,
+                )
+            };
+            assert!(observes(&own), "reach: P0's own pile creature matches");
+            assert!(!observes(&theirs), "P1's pile creature is not P0's");
+        }
     }
 }

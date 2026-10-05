@@ -1180,6 +1180,15 @@ fn destination_constraint_names(
         }
 }
 
+/// The zone a card left when the trigger names its origin (CR 603.10a for a graveyard, CR 400.1
+/// as the format modifies it for a library); a trigger naming none states no zone.
+fn named_origin_zone(origin: &OriginConstraint, from: Option<Zone>) -> Option<Zone> {
+    match origin {
+        OriginConstraint::Equals(_) | OriginConstraint::OneOf(_) => from,
+        OriginConstraint::Any | OriginConstraint::NotEquals(_) => None,
+    }
+}
+
 fn destination_matches_constraint(zone: Zone, constraint: &DestinationConstraint) -> bool {
     match constraint {
         DestinationConstraint::Any => true,
@@ -1228,30 +1237,29 @@ fn zone_change_clause_matches(
         let ctx = super::filter::FilterContext::from_trigger_source(source_context);
         let live_entrant =
             *to == Zone::Battlefield && state.objects.contains_key(&record.object_id);
-        // CR 603.6a: an enters trigger reads the permanent as it exists on the battlefield;
-        // CR 603.10a: a trigger that names the zone a card leaves reads the card as it was there.
-        let departed = match (origin, record.from_zone) {
-            (OriginConstraint::Equals(_) | OriginConstraint::OneOf(_), Some(from))
+        let departed = named_origin_zone(origin, record.from_zone);
+        let matches = match (live_entrant, departed) {
+            // CR 603.6a: an enters trigger reads the permanent as it exists on the battlefield,
+            // so a named battlefield destination leaves the pile unlicensed.
+            (true, Some(from))
                 if !destination_constraint_names(destination, destination_constraint, *to) =>
             {
-                Some(from)
+                super::filter::matches_target_filter_on_departure(
+                    state,
+                    record.object_id,
+                    from,
+                    filter,
+                    &ctx,
+                )
             }
-            _ => None,
-        };
-        let matches = match (live_entrant, departed) {
-            (true, Some(from)) => super::filter::matches_target_filter_on_departure(
-                state,
-                record.object_id,
-                from,
-                filter,
-                &ctx,
-            ),
-            (true, None) => {
+            (true, _) => {
                 super::filter::matches_target_filter(state, record.object_id, filter, &ctx)
             }
-            (false, _) => super::filter::matches_target_filter_on_zone_change_record(
-                state, record, filter, &ctx,
-            ),
+            (false, departed) => {
+                super::filter::matches_target_filter_on_zone_change_record_licensed(
+                    state, record, departed, filter, &ctx,
+                )
+            }
         };
         if !matches {
             return false;
@@ -18444,11 +18452,12 @@ mod tests {
     /// A card reanimated from the shared graveyard by `reanimator`, judged by P0's creature-you-
     /// control trigger over `origin`/`destination`; returns whether the trigger matches.
     fn reanimation_matches(
+        format: crate::types::format::FormatConfig,
         pile_owner: PlayerId,
         reanimator: PlayerId,
         destination: Option<Zone>,
     ) -> bool {
-        let mut state = GameState::new(crate::types::format::FormatConfig::dandan(), 2, 1);
+        let mut state = GameState::new(format, 2, 1);
         let source = create_object(
             &mut state,
             CardId(1),
@@ -18496,20 +18505,27 @@ mod tests {
     /// its controller counts; without a named destination it reads the departed pile.
     #[test]
     fn a_named_battlefield_destination_judges_the_permanent_not_the_pile() {
+        use crate::types::format::FormatConfig;
         let (p0, p1) = (PlayerId(0), PlayerId(1));
         let named = Some(Zone::Battlefield);
+        for format in [FormatConfig::dandan(), FormatConfig::standard()] {
+            assert!(
+                reanimation_matches(format.clone(), p1, p0, named),
+                "reach: P0's own permanent matches"
+            );
+            assert!(
+                !reanimation_matches(format.clone(), p0, p1, named),
+                "P1's permanent is not a creature P0 controls"
+            );
+            assert!(reanimation_matches(format, p1, p0, None));
+        }
         assert!(
-            reanimation_matches(p1, p0, named),
-            "reach: P0's own permanent matches"
-        );
-        assert!(
-            !reanimation_matches(p0, p1, named),
-            "P1's permanent is not a creature P0 controls"
-        );
-        assert!(
-            reanimation_matches(p0, p1, None),
+            reanimation_matches(FormatConfig::dandan(), p0, p1, None),
             "paired: the pile reading"
         );
-        assert!(reanimation_matches(p1, p0, None));
+        assert!(
+            !reanimation_matches(FormatConfig::standard(), p0, p1, None),
+            "Standard has no shared pile"
+        );
     }
 }
