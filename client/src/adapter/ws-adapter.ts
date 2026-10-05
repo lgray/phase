@@ -210,6 +210,11 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 109 — ResolvedZoneChangeCommand gains `rebound_from`, the owner a card had
+ *      before a Hand entry from a shared zone rebound it to the taker
+ *      (CR 108.3 as modified by the Dandan announcement). It is serialized
+ *      inside GameState.resolved_rules_journal, so a v108 peer would drop it
+ *      silently. Wire 91 moves with it; no lobby frame names it.
  * 108 — ContinuousModification gains `SubstituteTextWord` (CR 612.1), serialized
  *      inside GameState's transient continuous effects, so a v107 peer cannot
  *      parse the tag.
@@ -701,7 +706,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 108;
+export const PROTOCOL_VERSION = 109;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

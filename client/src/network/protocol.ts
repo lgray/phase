@@ -106,6 +106,11 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  91 — game_setup and state_update carry GameState, whose journaled zone-change
+ *       commands can now hold rebound_from, the owner a card had before a Hand
+ *       entry from a shared zone rebound it to the taker. A v90 peer would drop
+ *       it silently, so first contact rejects the skew. Bumped with full-game
+ *       protocol 109.
  *  90 — game_setup and state_update carry GameState, whose transient continuous
  *       effects can now hold the SubstituteTextWord modification (CR 612.1), so a
  *       v89 peer cannot parse the tag and first contact rejects the skew.
@@ -548,7 +553,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 90 as const;
+export const WIRE_PROTOCOL_VERSION = 91 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

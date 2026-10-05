@@ -4665,7 +4665,8 @@ pub(super) fn handle_resolution_choice(
                             obj_id,
                             kept_zone,
                             dig_source_id.unwrap_or(obj_id),
-                        );
+                        )
+                        .hand_taker(player);
                         if kept_zone == Zone::Battlefield {
                             request.mods.enter_tapped =
                                 crate::types::zones::EtbTapState::from_legacy_bool(enter_tapped);

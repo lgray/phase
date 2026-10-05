@@ -910,12 +910,42 @@ fn destination_position_after_removal(
 /// resulting incarnation and destination position, then delegates the exact
 /// installation to [`apply_resolved_zone_change`]. Replay never allocates a
 /// timestamp or a new object identity.
+///
+/// Receiver-free form for callers outside the engine: production code always
+/// supplies the receiver decision to [`resolve_and_apply_zone_change_to_receiver`].
+#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_and_apply_zone_change(
     state: &mut GameState,
     object_id: ObjectId,
     from: Zone,
     to: Zone,
     owner: PlayerId,
+    zone_change_record: crate::types::game_state::ZoneChangeRecord,
+) -> Result<ResolvedZoneChangeCommand, ResolvedZoneChangeReplayInvariantError> {
+    resolve_and_apply_zone_change_to_receiver(
+        state,
+        object_id,
+        from,
+        to,
+        owner,
+        None,
+        zone_change_record,
+    )
+}
+
+/// [`resolve_and_apply_zone_change`] for a Hand entry whose receiver owns the
+/// card afterwards.
+///
+/// `owner` is the object's owner before the move; `receiver` is `Some` only when
+/// the move rebinds ownership, and then names the new owner whose hand holds the
+/// card.
+pub(crate) fn resolve_and_apply_zone_change_to_receiver(
+    state: &mut GameState,
+    object_id: ObjectId,
+    from: Zone,
+    to: Zone,
+    owner: PlayerId,
+    receiver: Option<PlayerId>,
     mut zone_change_record: crate::types::game_state::ZoneChangeRecord,
 ) -> Result<ResolvedZoneChangeCommand, ResolvedZoneChangeReplayInvariantError> {
     let object = state.objects.get(&object_id).ok_or(
@@ -941,13 +971,21 @@ pub fn resolve_and_apply_zone_change(
     } else {
         occurrence.incarnation
     };
+    let installed_owner = receiver.unwrap_or(owner);
+    let rebound_from = (installed_owner != owner).then_some(owner);
     let destination_position =
-        destination_position_after_removal(state, object_id, from, to, owner);
+        destination_position_after_removal(state, object_id, from, to, installed_owner);
     let turn_zone_change_index = state.zone_changes_this_turn.len();
     zone_change_record.entered_incarnation =
         (to == Zone::Battlefield).then_some(resulting_incarnation);
     zone_change_record.turn_zone_change_index = turn_zone_change_index;
     zone_change_record.recorded_turn_number = state.turn_number;
+    if rebound_from.is_some() {
+        // CR 108.4a + CR 109.4: off the battlefield and stack a card's controller is its owner.
+        zone_change_record.owner = installed_owner;
+        zone_change_record.controller = installed_owner;
+        zone_change_record.sync_trigger_source_context();
+    }
 
     let command = ResolvedZoneChangeCommand {
         object: occurrence,
@@ -955,7 +993,8 @@ pub fn resolve_and_apply_zone_change(
         from,
         to,
         destination_position,
-        owner,
+        owner: installed_owner,
+        rebound_from,
         entry_timestamp,
         turn_zone_change_index,
         zone_change_record,
@@ -1048,6 +1087,16 @@ pub(crate) fn prune_object_bound_effects_on_exit(
     super::layers::prune_affected_object_left_effects(state, object_id);
 }
 
+/// CR 108.3 as modified by a format's hand-entry ownership axis + CR 108.4a +
+/// CR 109.4: the receiving player owns the card, and off the battlefield and
+/// stack its controller is its owner. `base_controller` follows because exit
+/// cleanup computes `controller` from it.
+fn install_rebound_owner(object: &mut crate::game::game_object::GameObject, owner: PlayerId) {
+    object.owner = owner;
+    object.base_controller = Some(owner);
+    object.controller = owner;
+}
+
 pub fn apply_resolved_zone_change(
     state: &mut GameState,
     command: &ResolvedZoneChangeCommand,
@@ -1063,9 +1112,10 @@ pub fn apply_resolved_zone_change(
             found,
         });
     }
-    if object.owner != command.owner {
+    let expected_owner = command.rebound_from.unwrap_or(command.owner);
+    if object.owner != expected_owner {
         return Err(ResolvedZoneChangeReplayInvariantError::OwnerMismatch {
-            expected: command.owner,
+            expected: expected_owner,
             found: object.owner,
         });
     }
@@ -1155,6 +1205,9 @@ pub fn apply_resolved_zone_change(
         .get_mut(&command.object.object_id)
         .expect("validated zone command object remains live");
     object.zone = command.to;
+    if command.rebound_from.is_some() {
+        install_rebound_owner(object, command.owner);
+    }
     clear_hand_or_graveyard_casting_permissions_on_exit(object, command.from, command.to);
     // CR 400.7 + CR 601.2i: replay bypasses `apply_zone_exit_cleanup`, so it
     // must reproduce the live Stack-exit carrier clear from the recorded move.
@@ -1227,7 +1280,7 @@ pub fn move_to_zone(
     to: Zone,
     events: &mut Vec<GameEvent>,
 ) {
-    move_to_zone_with_entry_flags(state, object_id, to, events, false);
+    move_to_zone_with_entry_flags(state, object_id, to, events, false, None);
 }
 
 /// CR 400.7: Move an object to a new zone. An object that moves to a new zone becomes a new object.
@@ -1263,12 +1316,17 @@ pub fn move_to_zone(
 /// The `transform_permanent` call in `zone_pipeline::deliver_replaced_zone_change`
 /// is the SINGLE authoritative post-move face swap and already runs on `to == Zone::Battlefield`, so the
 /// guard here only gates eligibility — it never mutates the face.
+///
+/// `hand_receiver` (see `zone_pipeline::hand_entry_receiver`) takes effect only
+/// in the ordinary-container branch, so a CR 717.6 redirect to Command never
+/// rebinds ownership.
 pub(crate) fn move_to_zone_with_entry_flags(
     state: &mut GameState,
     object_id: ObjectId,
     mut to: Zone,
     events: &mut Vec<GameEvent>,
     enter_transformed: bool,
+    hand_receiver: Option<PlayerId>,
 ) {
     // CR 111.8: A token that has left the battlefield can't move to another zone
     // or come back onto the battlefield — "if such a token would change zones, it
@@ -1523,12 +1581,13 @@ pub(crate) fn move_to_zone_with_entry_flags(
             }
             (pre_bump_incarnation, obj_mut.incarnation, false)
         } else {
-            let resolved_zone_change = resolve_and_apply_zone_change(
+            let resolved_zone_change = resolve_and_apply_zone_change_to_receiver(
                 state,
                 object_id,
                 from,
                 to,
                 owner,
+                hand_receiver,
                 zone_change_record,
             )
             .expect("ordinary zone transition must install its resolved core");
@@ -4289,7 +4348,7 @@ mod tests {
         }
 
         let mut events = Vec::new();
-        move_to_zone_with_entry_flags(&mut state, id, Zone::Battlefield, &mut events, true);
+        move_to_zone_with_entry_flags(&mut state, id, Zone::Battlefield, &mut events, true, None);
 
         assert_eq!(
             state.objects[&id].zone,
@@ -4399,7 +4458,7 @@ mod tests {
         // back_face intentionally left None (single-faced; the GameState default).
 
         let mut events = Vec::new();
-        move_to_zone_with_entry_flags(&mut state, id, Zone::Battlefield, &mut events, true);
+        move_to_zone_with_entry_flags(&mut state, id, Zone::Battlefield, &mut events, true, None);
 
         assert_eq!(
             state.objects[&id].zone,
@@ -5604,6 +5663,162 @@ mod tests {
                 )
             }),
             "SBA zone movement must still publish the unattach event for triggers"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hand_entry_rebind_tests {
+    use super::*;
+    use crate::types::format::FormatConfig;
+    use crate::types::resolved_commands::{ResolvedRulesCommand, ResolvedRulesJournal};
+
+    const P0: PlayerId = PlayerId(0);
+    const P1: PlayerId = PlayerId(1);
+
+    /// A Dandân state holding one P0-owned pile card, moved into P1's hand with
+    /// P1 as receiver. Returns the pre-move state, the live state, the card and
+    /// the journaled command.
+    fn rebound_move(
+        from: Zone,
+        to: Zone,
+    ) -> (GameState, GameState, ObjectId, ResolvedZoneChangeCommand) {
+        let mut state = GameState::new(FormatConfig::dandan(), 2, 42);
+        let card = create_object(&mut state, CardId(1), P0, "Pile Card".to_string(), from);
+        let pre = state.clone();
+        let record = state.objects[&card].snapshot_for_zone_change(card, Some(from), to);
+        let command = resolve_and_apply_zone_change_to_receiver(
+            &mut state,
+            card,
+            from,
+            to,
+            P0,
+            Some(P1),
+            record,
+        )
+        .expect("the rebinding move applies");
+        (pre, state, card, command)
+    }
+
+    fn journal_wire(state: &GameState) -> serde_json::Value {
+        serde_json::to_value(&state.resolved_rules_journal).expect("journal serializes")
+    }
+
+    fn command_json(
+        wire: &mut serde_json::Value,
+    ) -> &mut serde_json::Map<String, serde_json::Value> {
+        wire["entries"]
+            .as_array_mut()
+            .expect("journal entries")
+            .iter_mut()
+            .find_map(|entry| entry["command"]["ZoneChange"].as_object_mut())
+            .expect("a zone-change command")
+    }
+
+    fn journal_is_accepted(wire: serde_json::Value) -> bool {
+        serde_json::from_value::<ResolvedRulesJournal>(wire).is_ok()
+    }
+
+    #[test]
+    fn replaying_the_command_reproduces_the_live_rebind() {
+        let (pre, live, card, command) = rebound_move(Zone::Library, Zone::Hand);
+        assert_eq!(command.rebound_from, Some(P0), "reach: the move rebound");
+        assert_eq!(command.owner, P1);
+
+        let mut replay = pre;
+        apply_resolved_zone_change(&mut replay, &command).expect("replay applies");
+
+        for state in [&live, &replay] {
+            let object = &state.objects[&card];
+            assert_eq!(object.owner, P1);
+            assert_eq!(object.controller, P1);
+            assert_eq!(object.base_controller, Some(P1));
+            assert_eq!(object.zone, Zone::Hand);
+            assert!(state.players[1].hand.contains(&card));
+            assert!(state.players[0].hand.is_empty());
+        }
+        assert_eq!(live.players[1].hand, replay.players[1].hand);
+        assert_eq!(live.players[0].library, replay.players[0].library);
+    }
+
+    #[test]
+    fn the_replay_precondition_is_the_pre_rebind_owner() {
+        let (mut pre, _, card, command) = rebound_move(Zone::Library, Zone::Hand);
+        pre.objects.get_mut(&card).unwrap().owner = P1;
+
+        assert!(matches!(
+            apply_resolved_zone_change(&mut pre, &command),
+            Err(ResolvedZoneChangeReplayInvariantError::OwnerMismatch {
+                expected: P0,
+                found: P1,
+            })
+        ));
+    }
+
+    #[test]
+    fn a_later_zone_change_does_not_resurrect_the_old_owner_as_controller() {
+        let (_, mut live, card, _) = rebound_move(Zone::Library, Zone::Hand);
+        let mut events = Vec::new();
+
+        move_to_zone(&mut live, card, Zone::Graveyard, &mut events);
+
+        let object = &live.objects[&card];
+        assert_eq!(object.owner, P1);
+        assert_eq!(object.controller, P1);
+        assert!(live.players[0].graveyard.contains(&card));
+    }
+
+    #[test]
+    fn the_journal_validator_accepts_the_rebind_and_refuses_each_malformed_form() {
+        let (_, live, _, _) = rebound_move(Zone::Library, Zone::Hand);
+        assert!(
+            journal_is_accepted(journal_wire(&live)),
+            "reach: the well-formed rebind validates"
+        );
+
+        let mut wire = journal_wire(&live);
+        command_json(&mut wire).insert("rebound_from".to_string(), serde_json::json!(P1));
+        assert!(!journal_is_accepted(wire), "a rebind to the same owner");
+
+        let (_, to_graveyard, _, _) = rebound_move(Zone::Library, Zone::Graveyard);
+        assert!(
+            !journal_is_accepted(journal_wire(&to_graveyard)),
+            "a rebind whose destination is not Hand"
+        );
+
+        let (_, from_exile, _, _) = rebound_move(Zone::Exile, Zone::Hand);
+        assert!(
+            !journal_is_accepted(journal_wire(&from_exile)),
+            "a rebind out of a zone no format shares"
+        );
+    }
+
+    #[test]
+    fn an_unrebound_command_omits_the_field_and_old_saves_default_it() {
+        let mut state = GameState::new(FormatConfig::dandan(), 2, 42);
+        let card = create_object(&mut state, CardId(1), P0, "Own".to_string(), Zone::Library);
+        let record =
+            state.objects[&card].snapshot_for_zone_change(card, Some(Zone::Library), Zone::Hand);
+        let command =
+            resolve_and_apply_zone_change(&mut state, card, Zone::Library, Zone::Hand, P0, record)
+                .expect("an ordinary move applies");
+        assert_eq!(command.rebound_from, None);
+
+        let wire =
+            serde_json::to_value(ResolvedRulesCommand::ZoneChange(Box::new(command.clone())))
+                .expect("serializes");
+        assert!(wire["ZoneChange"].get("rebound_from").is_none());
+        assert_eq!(
+            serde_json::from_value::<ResolvedRulesCommand>(wire).expect("legacy shape reads"),
+            ResolvedRulesCommand::ZoneChange(Box::new(command)),
+        );
+
+        let (_, _, _, command) = rebound_move(Zone::Library, Zone::Hand);
+        let wire = serde_json::to_value(ResolvedRulesCommand::ZoneChange(Box::new(command)))
+            .expect("serializes");
+        assert!(
+            wire["ZoneChange"].get("rebound_from").is_some(),
+            "reach: a rebound command carries the key"
         );
     }
 }

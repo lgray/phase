@@ -3346,6 +3346,10 @@ mod tests {
         }
     }
 
+    /// `ResolvedZoneChangeCommand` gains `rebound_from` (CR 108.3 as modified by
+    /// the Dandân hand-entry rebind), serialized inside
+    /// `GameState.resolved_rules_journal`; a v108 peer would drop it silently,
+    /// so it must be refused before it receives v109 state.
     /// `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized
     /// inside `GameState`'s transient continuous effects; a v105 peer cannot parse
     /// the tag, so it must be refused before it receives v106 state.
@@ -3419,8 +3423,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_108_for_text_word_substitution() {
-        assert_eq!(PROTOCOL_VERSION, 108);
+    fn protocol_version_is_109_for_hand_entry_ownership_rebind() {
+        assert_eq!(PROTOCOL_VERSION, 109);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3431,7 +3435,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_108_for_text_word_substitution` stays
+    /// `protocol_version_is_109_for_hand_entry_ownership_rebind` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

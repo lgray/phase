@@ -258,6 +258,7 @@ mod cybership_combat_damage_manifest;
 mod dalkovan_encampment_attack_trigger;
 mod dandan_analysis_ai_support_reads;
 mod dandan_filter_owner_axis;
+mod dandan_hand_entry_ownership;
 mod dandan_read_sweep;
 mod dandan_scoped_counts;
 mod dandan_shared_pile_storage;

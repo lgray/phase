@@ -80,7 +80,8 @@ pub fn resolve(
     let reqs: Vec<ZoneMoveRequest> = matching[..pick_count]
         .iter()
         .map(|&card_id| {
-            let mut req = ZoneMoveRequest::effect(card_id, destination, ability.source_id);
+            let mut req = ZoneMoveRequest::effect(card_id, destination, ability.source_id)
+                .hand_taker(ability.controller);
             req.mods.enter_tapped = enter_tapped;
             if track_exiled {
                 req = req.track_exiled_by_source();

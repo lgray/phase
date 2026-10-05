@@ -327,7 +327,8 @@ pub(crate) fn resolve_explore_effect(
                 top_card_id,
                 crate::types::zones::Zone::Hand,
                 ability.source_id,
-            )],
+            )
+            .performed_by(controller)],
             Some(BatchCompletion::ExploreLandDeliveryComplete { explorer_id }),
             events,
         );

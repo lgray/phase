@@ -701,7 +701,8 @@ fn draw_n(state: &mut GameState, player_id: PlayerId, count: usize, events: &mut
         };
         // CR 103.5: pregame draw — route through the pipeline under the
         // `PregameProcedure` exempt cause.
-        let req = crate::game::zone_pipeline::ZoneMoveRequest::pregame(top_card, Zone::Hand);
+        let req = crate::game::zone_pipeline::ZoneMoveRequest::pregame(top_card, Zone::Hand)
+            .performed_by(player_id);
         crate::game::zone_pipeline::move_object(state, req, events);
     }
 

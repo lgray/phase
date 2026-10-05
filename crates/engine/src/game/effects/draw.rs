@@ -956,6 +956,7 @@ fn resume_pending_draw_delivery(
                 state,
                 crate::game::zone_pipeline::ZoneMoveRequest::draw(
                     pending.current,
+                    pending.player,
                     pending.applied.clone(),
                 ),
                 events,
