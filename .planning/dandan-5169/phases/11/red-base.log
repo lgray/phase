@@ -1,0 +1,216 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: unused import: `GameScenario`
+ --> crates/engine/tests/integration/dandan_hand_entry_ownership.rs:8:42
+  |
+8 | use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+  |                                          ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-engine` (test "integration") generated 1 warning (run `cargo fix --test "integration" -p phase-engine` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 26s
+────────────
+ Nextest run ID d59a3288-5bca-4213-8042-d55af17337a6 with nextest profile: default
+    Starting 11 tests across 1 binary (9422 tests skipped)
+        FAIL [   3.059s] ( 1/11) phase-engine::integration dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.04s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand' (142200) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: the sought creature: ObjectId(2) is in exactly PlayerId(1)'s hand (checked PlayerId(1))
+      left: false
+     right: true
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.076s] ( 2/11) phase-engine::integration dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.06s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile' (142209) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: the cycled-into land: ObjectId(1) is in exactly PlayerId(1)'s hand (checked PlayerId(0))
+      left: true
+     right: false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.095s] ( 3/11) phase-engine::integration dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.07s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership' (142201) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: PlayerId(1) Fengraf: ObjectId(2) is in exactly PlayerId(1)'s hand (checked PlayerId(0))
+      left: true
+     right: false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.128s] ( 4/11) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.11s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer' (142203) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: the card kept in hand: ObjectId(1) is in exactly PlayerId(1)'s hand (checked PlayerId(0))
+      left: true
+     right: false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.142s] ( 5/11) phase-engine::integration dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.12s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand' (142208) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: first explore: ObjectId(1) is in exactly PlayerId(1)'s hand (checked PlayerId(0))
+      left: true
+     right: false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   3.188s] ( 6/11) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+        PASS [   3.234s] ( 7/11) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_from_the_pile_holder_and_in_standard_are_unchanged
+        FAIL [   3.272s] ( 8/11) phase-engine::integration dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.25s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand' (142210) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: drawn: ObjectId(1) is in exactly PlayerId(1)'s hand (checked PlayerId(0))
+      left: true
+     right: false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.295s] ( 9/11) phase-engine::integration dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.28s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows' (142206) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:441:5:
+    reach: P1 holds cards the pile staged under P0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.337s] (10/11) phase-engine::integration dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.32s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat' (142207) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:219:9:
+    assertion `left == right` failed: PlayerId(0): reach: a seven-card hand
+      left: 14
+     right: 7
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.390s] (11/11) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 3.37s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand' (142204) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: PlayerId(1) kept: ObjectId(1) is in exactly PlayerId(1)'s hand (checked PlayerId(0))
+      left: true
+     right: false
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   3.398s] 11 tests run: 2 passed, 9 failed, 9422 skipped
+        FAIL [   3.059s] ( 1/11) phase-engine::integration dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+        FAIL [   3.076s] ( 2/11) phase-engine::integration dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile
+        FAIL [   3.095s] ( 3/11) phase-engine::integration dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership
+        FAIL [   3.128s] ( 4/11) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer
+        FAIL [   3.142s] ( 5/11) phase-engine::integration dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand
+        FAIL [   3.272s] ( 8/11) phase-engine::integration dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand
+        FAIL [   3.295s] ( 9/11) phase-engine::integration dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows
+        FAIL [   3.337s] (10/11) phase-engine::integration dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat
+        FAIL [   3.390s] (11/11) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+error: test run failed
+done rc=100

@@ -1,0 +1,817 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling server-core v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/server-core)
+   Compiling lobby-broker v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/lobby-broker)
+   Compiling phase-ai v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling draft-core v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-core)
+   Compiling seat-reducer v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7m 02s
+────────────
+ Nextest run ID a8f0802d-9b4e-4c58-9c01-a4c381faeb98 with nextest profile: default
+    Starting 805 tests across 4 binaries
+        PASS [   0.009s] (  1/805) lobby-broker broker::tests::a_gated_settlement_carries_only_its_own_callers_request_id
+        PASS [   0.010s] (  2/805) lobby-broker broker::tests::a_reaped_hosts_metadata_update_leaves_the_code_reclaimer_untouched
+        PASS [   0.013s] (  3/805) lobby-broker broker::tests::a_fresh_connection_with_the_right_token_still_has_authority
+        PASS [   0.013s] (  4/805) lobby-broker broker::tests::a_player_cannot_report_a_pairing_they_are_not_seated_in
+        PASS [   0.013s] (  5/805) lobby-broker broker::tests::a_malformed_requested_code_is_rejected_before_the_handler
+        PASS [   0.013s] (  6/805) lobby-broker broker::tests::a_pre_tournament_snapshot_still_deserializes
+        PASS [   0.016s] (  7/805) lobby-broker broker::tests::a_live_hosts_disconnect_and_unregister_remove_its_own_listing
+        PASS [   0.016s] (  8/805) lobby-broker broker::tests::a_dropped_player_cannot_report_a_pod_that_is_still_pending
+        PASS [   0.016s] (  9/805) lobby-broker broker::tests::a_pinging_hosts_listing_outlives_the_reap_timeout
+        PASS [   0.016s] ( 10/805) lobby-broker broker::tests::a_reaped_hosts_disconnect_leaves_the_code_reclaimer_listed
+        PASS [   0.016s] ( 11/805) lobby-broker broker::tests::a_guard_refused_gated_frame_still_settles_its_own_correlator
+        PASS [   0.031s] ( 12/805) lobby-broker broker::tests::a_dropped_players_token_cannot_drop_again
+        PASS [   0.031s] ( 13/805) lobby-broker broker::tests::a_reaped_hosts_ping_does_not_refresh_the_code_reclaimer
+        PASS [   0.036s] ( 14/805) lobby-broker broker::tests::a_mixed_tick_announces_only_the_entries_it_removed
+        PASS [   0.019s] ( 15/805) lobby-broker broker::tests::another_tournaments_organizer_token_is_rejected
+        PASS [   0.023s] ( 16/805) lobby-broker broker::tests::a_tournament_alone_keeps_the_broker_non_empty_until_it_is_reaped
+        PASS [   0.028s] ( 17/805) lobby-broker broker::tests::a_reaped_hosts_re_create_leaves_the_code_reclaimer_listed
+        PASS [   0.027s] ( 18/805) lobby-broker broker::tests::a_requested_code_held_by_another_socket_is_code_in_use
+        PASS [   0.029s] ( 19/805) lobby-broker broker::tests::a_reaped_hosts_unregister_leaves_the_code_reclaimer_listed
+        PASS [   0.041s] ( 20/805) lobby-broker broker::tests::a_reaped_host_may_look_up_the_code_reclaimers_game
+        PASS [   0.028s] ( 21/805) lobby-broker broker::tests::a_second_connection_never_sees_another_organizers_token
+        PASS [   0.017s] ( 22/805) lobby-broker broker::tests::both_mint_replies_carry_the_credentials_expiry
+        PASS [   0.031s] ( 23/805) lobby-broker broker::tests::an_entry_another_path_removed_is_still_announced
+        PASS [   0.049s] ( 24/805) lobby-broker broker::tests::a_gated_ack_reaches_an_unsubscribed_caller_alongside_the_broadcast
+        PASS [   0.012s] ( 25/805) lobby-broker broker::tests::create_honors_a_requested_code
+        PASS [   0.037s] ( 26/805) lobby-broker broker::tests::a_replacement_listing_survives_the_consume_of_the_entry_it_replaced
+        PASS [   0.032s] ( 27/805) lobby-broker broker::tests::an_uncorrelated_gated_caller_gets_the_pre_correlation_outbounds
+        PASS [   0.046s] ( 28/805) lobby-broker broker::tests::a_stale_open_actions_read_off_the_wire_does_not_survive_the_dispatch
+        PASS [   0.028s] ( 29/805) lobby-broker broker::tests::conn_state_records_tournaments_without_granting_authority
+        PASS [   0.021s] ( 30/805) lobby-broker broker::tests::create_rejects_archenemy_seat_outside_player_count
+        PASS [   0.041s] ( 31/805) lobby-broker broker::tests::an_omitted_scoring_is_resolved_by_the_broker_from_the_arity
+        PASS [   0.020s] ( 32/805) lobby-broker broker::tests::create_without_client_hello_is_rejected
+        PASS [   0.032s] ( 33/805) lobby-broker broker::tests::create_emits_game_created_then_lobby_game_added
+        PASS [   0.024s] ( 34/805) lobby-broker broker::tests::expired_reservation_on_conn_does_not_block_new_reserve
+        PASS [   0.020s] ( 35/805) lobby-broker broker::tests::join_after_registration_closes_surfaces_the_manager_error
+        PASS [   0.021s] ( 36/805) lobby-broker broker::tests::handle_rejects_oversized_display_name_without_parse
+        PASS [   0.033s] ( 37/805) lobby-broker broker::tests::dropping_a_player_updates_both_the_view_and_the_list
+        PASS [   0.021s] ( 38/805) lobby-broker broker::tests::host_cannot_join_own_game
+        PASS [   0.041s] ( 39/805) lobby-broker broker::tests::create_tournament_returns_organizer_token_only_to_creator
+        PASS [   0.024s] ( 40/805) lobby-broker broker::tests::host_cannot_lookup_own_game
+        PASS [   0.035s] ( 41/805) lobby-broker broker::tests::foreign_release_reservation_token_is_rejected
+        PASS [   0.042s] ( 42/805) lobby-broker broker::tests::create_without_peer_id_is_rejected
+        PASS [   0.043s] ( 43/805) lobby-broker broker::tests::credential_rotation_answers_only_the_caller
+        PASS [   0.010s] ( 44/805) lobby-broker broker::tests::lobby_row_visibility_is_the_join_gate
+        PASS [   0.030s] ( 45/805) lobby-broker broker::tests::join_of_an_unknown_code_is_game_not_found
+        PASS [   0.015s] ( 46/805) lobby-broker broker::tests::lookup_of_an_unknown_code_is_game_not_found
+        PASS [   0.017s] ( 47/805) lobby-broker broker::tests::lookup_reports_the_listing_draft_metadata
+        PASS [   0.020s] ( 48/805) lobby-broker broker::tests::lobby_frame_json_for_viewer_round_trips_frames
+        PASS [   0.032s] ( 49/805) lobby-broker broker::tests::join_returns_peer_info_after_gates
+        PASS [   0.020s] ( 50/805) lobby-broker broker::tests::lobby_frame_for_viewer_projects_only_row_frames
+        PASS [   0.054s] ( 51/805) lobby-broker broker::tests::expiry_delivery_contract_matches_the_design
+        PASS [   0.058s] ( 52/805) lobby-broker broker::tests::foreign_join_with_reservation_token_is_rejected
+        PASS [   0.058s] ( 53/805) lobby-broker broker::tests::get_tournament_is_read_only_and_reports_a_missing_code
+        PASS [   0.017s] ( 54/805) lobby-broker broker::tests::per_connection_tournament_lists_are_bounded_without_failing_the_operation
+        PASS [   0.042s] ( 55/805) lobby-broker broker::tests::join_tournament_rejects_duplicate_player_key
+        PASS [   0.031s] ( 56/805) lobby-broker broker::tests::on_disconnect_orders_reservation_updates_before_host_removed
+        PASS [   0.032s] ( 57/805) lobby-broker broker::tests::on_disconnect_emits_reservation_updates_then_host_removed
+        PASS [   0.036s] ( 58/805) lobby-broker broker::tests::lookup_omits_draft_metadata_for_a_constructed_game
+        PASS [   0.017s] ( 59/805) lobby-broker broker::tests::reap_expired_recovers_lobby_and_tournament_events_together
+        PASS [   0.018s] ( 60/805) lobby-broker broker::tests::re_registration_emits_removed_before_added
+        PASS [   0.035s] ( 61/805) lobby-broker broker::tests::only_a_result_report_leaves_the_list_row_untouched
+        PASS [   0.021s] ( 62/805) lobby-broker broker::tests::player_gated_actions_reject_wrong_token
+        PASS [   0.037s] ( 63/805) lobby-broker broker::tests::organizer_gated_actions_reject_wrong_token
+        PASS [   0.027s] ( 64/805) lobby-broker broker::tests::reap_with_no_tournaments_is_unchanged
+        PASS [   0.034s] ( 65/805) lobby-broker broker::tests::ping_returns_pong
+        PASS [   0.028s] ( 66/805) lobby-broker broker::tests::row_delivery_withholds_added_and_retracts_updated
+        PASS [   0.017s] ( 67/805) lobby-broker broker::tests::subscribe_snapshot_lists_only_rows_the_subscriber_can_join
+        PASS [   0.022s] ( 68/805) lobby-broker broker::tests::second_reserve_on_same_game_from_same_conn_is_rejected
+        PASS [   0.018s] ( 69/805) lobby-broker broker::tests::token_gate_and_manager_gate_agree
+        PASS [   0.038s] ( 70/805) lobby-broker broker::tests::reap_expired_handled_consumes_only_what_the_shell_handled
+        PASS [   0.021s] ( 71/805) lobby-broker broker::tests::subscribe_includes_existing_tournaments_in_a_stable_order
+        PASS [   0.031s] ( 72/805) lobby-broker broker::tests::rejected_limited_range_re_registration_preserves_the_existing_lobby
+        PASS [   0.024s] ( 73/805) lobby-broker broker::tests::the_broker_tells_an_expired_credential_apart_from_a_wrong_one
+        PASS [   0.033s] ( 74/805) lobby-broker broker::tests::reporting_a_result_updates_the_detail_view_but_not_the_list
+        PASS [   0.026s] ( 75/805) lobby-broker broker::tests::unregister_by_non_owner_is_rejected
+        PASS [   0.028s] ( 76/805) lobby-broker broker::tests::subscribe_emits_add_then_update_then_tournaments_then_count
+        PASS [   0.022s] ( 77/805) lobby-broker broker::tests::update_metadata_cannot_reset_players_after_consuming_reservations
+        PASS [   0.032s] ( 78/805) lobby-broker broker::tests::the_same_socket_can_re_create_its_own_requested_code
+        PASS [   0.023s] ( 79/805) lobby-broker broker::tests::update_metadata_with_stale_consumed_reservation_can_lower_players
+        PASS [   0.023s] ( 80/805) lobby-broker directory::tests::announced_host_must_be_a_public_dns_name
+        PASS [   0.014s] ( 81/805) lobby-broker directory::tests::do_info_body_deserializes_with_absent_optional_fields
+        PASS [   0.027s] ( 82/805) lobby-broker directory::tests::announced_url_normalises_case_default_port_root_dot_and_trailing_slash
+        PASS [   0.027s] ( 83/805) lobby-broker directory::tests::announced_url_shape_and_size_are_bounded
+        PASS [   0.025s] ( 84/805) lobby-broker directory::tests::info_document_mismatch_is_reported_per_field
+        PASS [   0.026s] ( 85/805) lobby-broker directory::tests::announcement_fields_are_bounded_and_version_gated
+        PASS [   0.019s] ( 86/805) lobby-broker directory::tests::score_decays_as_its_evidence_ages
+        PASS [   0.019s] ( 87/805) lobby-broker directory::tests::score_orders_by_success_latency_and_completion
+        PASS [   0.129s] ( 88/805) lobby-broker broker::tests::create_tournament_is_refused_at_capacity_and_recovers_after_a_reap
+        PASS [   0.035s] ( 89/805) lobby-broker directory::tests::announced_url_requires_a_lowercase_wss_scheme
+        PASS [   0.031s] ( 90/805) lobby-broker directory::tests::score_below_the_minimum_has_no_value_but_a_visible_sample_count
+        PASS [   0.033s] ( 91/805) lobby-broker directory::tests::info_url_is_reachable_only_through_the_normalised_form
+        PASS [   0.024s] ( 92/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_limited_range_until_supported
+        PASS [   0.023s] ( 93/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_archenemy_seat_outside_player_count
+        PASS [   0.025s] ( 94/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_malformed_requested_code
+        PASS [   0.033s] ( 95/805) lobby-broker directory::tests::score_is_none_without_live_evidence
+        PASS [   0.013s] ( 96/805) lobby-broker inbound_guard::tests::borrowed_join_guard_rejects_oversized_lobby_field
+        PASS [   0.015s] ( 97/805) lobby-broker inbound_guard::tests::borrowed_join_guard_rejects_invalid_scheme_deck_entry
+        PASS [   0.030s] ( 98/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_oversized_lobby_field
+        PASS [   0.021s] ( 99/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_oversized_planar_deck
+        PASS [   0.021s] (100/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_oversized_scheme_deck
+        PASS [   0.037s] (101/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_oversized_deck_without_owned_message
+        PASS [   0.028s] (102/805) lobby-broker inbound_guard::tests::borrowed_create_guard_rejects_player_count_outside_format_registry_range
+        PASS [   0.016s] (103/805) lobby-broker lobby::tests::a_replacement_registered_after_the_report_is_not_consumed_by_it
+        PASS [   0.023s] (104/805) lobby-broker lobby::tests::a_refresh_inside_the_quantum_writes_nothing
+        PASS [   0.023s] (105/805) lobby-broker lobby::tests::a_refreshed_listing_outlives_its_creation_age
+        PASS [   0.033s] (106/805) lobby-broker inbound_guard::tests::borrowed_join_guard_rejects_invalid_planar_deck_entry
+        PASS [   0.019s] (107/805) lobby-broker lobby::tests::a_room_is_listed_only_while_public_with_its_host_present
+        PASS [   0.036s] (108/805) lobby-broker inbound_guard::tests::borrowed_join_guard_rejects_oversized_deck_without_owned_message
+        PASS [   0.019s] (109/805) lobby-broker lobby::tests::a_snapshot_without_host_presence_loads_host_present
+        PASS [   0.025s] (110/805) lobby-broker lobby::tests::a_snapshot_round_trip_keeps_a_refreshed_clock
+        PASS [   0.030s] (111/805) lobby-broker lobby::tests::a_registration_after_a_generation_less_restore_cannot_reuse_an_identity
+        PASS [   0.024s] (112/805) lobby-broker lobby::tests::a_superseded_registration_cannot_refresh_the_replacement
+        PASS [   0.034s] (113/805) lobby-broker lobby::tests::a_refresh_leaves_the_advertised_created_at_alone
+        PASS [   0.011s] (114/805) lobby-broker lobby::tests::check_expired_reports_old_games_without_consuming_them
+        PASS [   0.035s] (115/805) lobby-broker lobby::tests::a_host_return_after_unregistration_lists_nothing
+        PASS [   0.037s] (116/805) lobby-broker inbound_guard::tests::borrowed_lookup_guard_rejects_oversized_lobby_field
+        PASS [   0.014s] (117/805) lobby-broker lobby::tests::an_entry_removed_by_another_path_is_reported_already_gone
+        PASS [   0.018s] (118/805) lobby-broker lobby::tests::an_emptied_manager_carries_its_counter_across_a_round_trip
+        PASS [   0.019s] (119/805) lobby-broker lobby::tests::a_superseded_registration_cannot_remove_the_replacement
+        PASS [   0.014s] (120/805) lobby-broker lobby::tests::an_identity_is_not_reissued_after_the_observed_entry_is_removed
+        PASS [   0.031s] (121/805) lobby-broker lobby::tests::a_snapshot_without_last_seen_ages_from_created_at
+        PASS [   0.021s] (122/805) lobby-broker lobby::tests::expired_reservation_is_cleaned_up
+        PASS [   0.025s] (123/805) lobby-broker lobby::tests::check_expired_retains_and_does_not_report_fresh_games
+        PASS [   0.013s] (124/805) lobby-broker lobby::tests::password_protected_reservation_expires
+        PASS [   0.017s] (125/805) lobby-broker lobby::tests::join_target_info_returns_atomic_snapshot
+        PASS [   0.014s] (126/805) lobby-broker lobby::tests::lobby_game_has_password_flag
+        PASS [   0.012s] (127/805) lobby-broker lobby::tests::public_game_returns_none_for_private_entry
+        PASS [   0.014s] (128/805) lobby-broker lobby::tests::join_target_info_returns_none_for_missing_game
+        PASS [   0.022s] (129/805) lobby-broker lobby::tests::extended_fields_roundtrip_through_public_games
+        PASS [   0.015s] (130/805) lobby-broker lobby::tests::listing_delta_compares_the_listing_before_and_after_the_mutation
+        PASS [   0.016s] (131/805) lobby-broker lobby::tests::public_game_derives_is_p2p_from_host_peer_id
+        PASS [   0.017s] (132/805) lobby-broker lobby::tests::public_game_returns_entry_when_public
+        PASS [   0.023s] (133/805) lobby-broker lobby::tests::join_target_info_marks_full_mode_entries_as_non_p2p
+        PASS [   0.021s] (134/805) lobby-broker lobby::tests::len_and_is_empty_reflect_registration
+        PASS [   0.023s] (135/805) lobby-broker lobby::tests::public_game_returns_none_for_missing_entry
+        PASS [   0.027s] (136/805) lobby-broker lobby::tests::host_build_commit_returned_from_register
+        PASS [   0.018s] (137/805) lobby-broker lobby::tests::register_and_list_public_games
+        PASS [   0.024s] (138/805) lobby-broker lobby::tests::public_seat_reservation_expires_at_uses_env_clock
+        PASS [   0.022s] (139/805) lobby-broker lobby::tests::timer_seconds_returns_configured_value
+        PASS [   0.022s] (140/805) lobby-broker lobby::tests::unregister_removes_game
+        PASS [   0.022s] (141/805) lobby-broker lobby::tests::verify_password_correct
+        PASS [   0.020s] (142/805) lobby-broker protocol::tests::a_pre_correlation_frame_parses_with_no_request_id
+        PASS [   0.024s] (143/805) lobby-broker lobby::tests::verify_password_game_not_found
+        PASS [   0.028s] (144/805) lobby-broker lobby::tests::set_current_players_updates_existing_entry
+        PASS [   0.026s] (145/805) lobby-broker lobby::tests::verify_password_no_password_required
+        PASS [   0.028s] (146/805) lobby-broker lobby::tests::verify_password_wrong
+        PASS [   0.031s] (147/805) lobby-broker lobby::tests::set_current_players_no_op_on_missing_game
+        PASS [   0.024s] (148/805) lobby-broker protocol::tests::absent_requested_code_defaults_to_none
+        PASS [   0.018s] (149/805) lobby-broker protocol::tests::correlated_settlement_messages_never_carry_a_token
+        PASS [   0.021s] (150/805) lobby-broker protocol::tests::correlated_gated_frames_round_trip_and_none_omits_the_key
+        PASS [   0.026s] (151/805) lobby-broker protocol::tests::an_invented_tournament_tag_is_still_unknown
+        PASS [   0.034s] (152/805) lobby-broker lobby::tests::verify_password_required_but_missing
+        PASS [   0.014s] (153/805) lobby-broker protocol::tests::every_pairing_outcome_survives_the_view_projection
+        PASS [   0.026s] (154/805) lobby-broker protocol::tests::broadcast_tournament_messages_never_carry_a_token
+        PASS [   0.016s] (155/805) lobby-broker protocol::tests::lobby_protocol_version_is_independent_of_the_full_game_one
+        PASS [   0.033s] (156/805) lobby-broker protocol::tests::an_explicit_scoring_serializes_byte_identically_to_the_pre_six_shape
+        PASS [   0.022s] (157/805) lobby-broker protocol::tests::known_tag_with_bad_payload_routes_to_malformed
+        PASS [   0.015s] (158/805) lobby-broker protocol::tests::summary_counts_active_players_while_the_view_keeps_dropped_ones
+        PASS [   0.028s] (159/805) lobby-broker protocol::tests::known_tags_parse_to_messages
+        PASS [   0.018s] (160/805) lobby-broker protocol::tests::the_views_carry_the_brokers_action_legality_verbatim
+        PASS [   0.031s] (161/805) lobby-broker protocol::tests::every_client_variant_tag_is_known
+        PASS [   0.014s] (162/805) lobby-broker protocol::tests::unknown_tag_routes_to_reject
+        PASS [   0.016s] (163/805) lobby-broker protocol::tests::unit_variant_with_no_data_parses
+        PASS [   0.026s] (164/805) lobby-broker protocol::tests::scoring_is_optional_from_six_and_the_pre_six_shape_still_requires_it
+        PASS [   0.030s] (165/805) lobby-broker protocol::tests::malformed_json_routes_to_malformed
+        PASS [   0.012s] (166/805) lobby-broker protocol::tests::well_formed_frame_with_out_of_bounds_field_routes_to_malformed
+        PASS [   0.025s] (167/805) lobby-broker protocol::tests::the_tournament_chain_spans_lobby_versions_four_through_sixteen
+        PASS [   0.024s] (168/805) lobby-broker protocol::tests::tournament_client_variants_round_trip_through_serde
+        PASS [   0.023s] (169/805) lobby-broker protocol::tests::tournament_views_never_carry_a_token
+        PASS [   0.031s] (170/805) lobby-broker protocol::tests::protocol_version_tracks_full_game_wire_additions
+        PASS [   0.026s] (171/805) lobby-broker protocol::tests::tournament_request_id_is_total_and_only_gated_variants_carry_one
+        PASS [   0.033s] (172/805) lobby-broker protocol::tests::malformed_requested_code_routes_to_malformed
+        PASS [   0.030s] (173/805) lobby-broker protocol::tests::tournament_server_variants_round_trip_through_serde
+        PASS [   0.014s] (174/805) lobby-broker protocol::tests::wire_frame_admits_the_untouched_commander_config_proving_the_envelope_is_fine
+        PASS [   0.014s] (175/805) lobby-broker tournament::tests::a_server_reported_hosted_pairing_stays_locked_against_clients
+        PASS [   0.032s] (176/805) lobby-broker protocol::tests::wire_frame_admits_a_single_field_varied_host_chosen_commander_config
+        PASS [   0.027s] (177/805) lobby-broker tournament::tests::a_lost_renewal_reply_is_recovered_by_replay_on_the_player_path
+        PASS [   0.034s] (178/805) lobby-broker tournament::tests::a_credential_is_refused_from_its_expiry_instant_onwards
+        PASS [   0.047s] (179/805) lobby-broker protocol::tests::well_formed_requested_code_survives_the_parse_boundary
+        PASS [   0.036s] (180/805) lobby-broker tournament::tests::a_hosted_swiss_draw_is_reportable_by_the_server
+        PASS [   0.027s] (181/805) lobby-broker tournament::tests::begin_hosting_refuses_forfeit_and_terminal_pairings
+        PASS [   0.045s] (182/805) lobby-broker protocol::tests::wire_frame_admits_all_three_host_choices_combined_and_rejects_an_out_of_range_value
+        PASS [   0.028s] (183/805) lobby-broker tournament::tests::begin_hosting_refuses_ineligible_pairings
+        PASS [   0.046s] (184/805) lobby-broker tournament::tests::a_dropped_entrants_credential_cannot_be_renewed
+        PASS [   0.041s] (185/805) lobby-broker tournament::tests::a_stale_open_actions_from_before_a_terminal_transition_still_refuses
+        PASS [   0.051s] (186/805) lobby-broker tournament::tests::a_rotated_away_secret_stops_authorizing_immediately
+        PASS [   0.023s] (187/805) lobby-broker tournament::tests::bo1_result_rejects_a_winner_outside_the_pairing
+        PASS [   0.054s] (188/805) lobby-broker tournament::tests::a_hosted_pairing_refuses_a_client_report_but_the_server_writes
+        PASS [   0.016s] (189/805) lobby-broker tournament::tests::completing_a_registration_is_refused_with_its_own_message
+        PASS [   0.048s] (190/805) lobby-broker tournament::tests::an_empty_nonce_mints_but_leaves_nothing_replayable
+        PASS [   0.033s] (191/805) lobby-broker tournament::tests::bo1_head_to_head_validates_a_single_game_result
+        PASS [   0.027s] (192/805) lobby-broker tournament::tests::bo3_validation_matrix
+        PASS [   0.014s] (193/805) lobby-broker tournament::tests::create_resolves_match_type_and_rejects_bo3_at_pod_arity
+        PASS [   0.037s] (194/805) lobby-broker tournament::tests::bo1_head_to_head_counts_the_single_game_in_game_win_percentage
+        PASS [   0.066s] (195/805) lobby-broker tournament::tests::a_lost_renewal_reply_is_recovered_by_replaying_the_same_nonce
+        PASS [   0.027s] (196/805) lobby-broker tournament::tests::construction_round_trips_every_field
+        PASS [   0.033s] (197/805) lobby-broker tournament::tests::complete_tournament_rejects_an_unfinished_round
+        PASS [   0.059s] (198/805) lobby-broker tournament::tests::begin_hosting_generation_is_monotonic_and_durable
+        PASS [   0.018s] (199/805) lobby-broker tournament::tests::default_total_rounds_follows_the_doubling_rule_without_plateau
+        PASS [   0.068s] (200/805) lobby-broker tournament::tests::a_stolen_superseded_secret_cannot_take_over_the_authority
+        PASS [   0.033s] (201/805) lobby-broker tournament::tests::correction_overwrites_not_accumulates
+        PASS [   0.023s] (202/805) lobby-broker tournament::tests::default_match_type_is_bo3_head_to_head_and_bo1_for_pods
+        PASS [   0.030s] (203/805) lobby-broker tournament::tests::credential_survives_a_realistic_between_round_gap
+        PASS [   0.015s] (204/805) lobby-broker tournament::tests::dropped_player_cannot_be_credited_a_win
+        PASS [   0.024s] (205/805) lobby-broker tournament::tests::default_for_arity_at_arity_128_is_255_not_panic
+        PASS [   0.020s] (206/805) lobby-broker tournament::tests::degenerate_counts_n0_n1_n2_n5
+        PASS [   0.027s] (207/805) lobby-broker tournament::tests::default_total_rounds_uses_bracket_depth_for_single_elimination
+        PASS [   0.032s] (208/805) lobby-broker tournament::tests::default_total_rounds_uses_the_arity_selected_table
+        PASS [   0.021s] (209/805) lobby-broker tournament::tests::derived_queries_from_multi_round_history
+        PASS [   0.028s] (210/805) lobby-broker tournament::tests::drop_reduced_field_pairs_identically_to_starting_at_that_count
+        PASS [   0.023s] (211/805) lobby-broker tournament::tests::expiry_terminal_retention_30d
+        PASS [   0.025s] (212/805) lobby-broker tournament::tests::expiry_inprogress_abandoned_over_7d
+        PASS [   0.017s] (213/805) lobby-broker tournament::tests::head_to_head_drop_forfeits
+        PASS [   0.028s] (214/805) lobby-broker tournament::tests::expiry_inprogress_untouched_under_7d
+        PASS [   0.015s] (215/805) lobby-broker tournament::tests::match_arity_rejects_zero_one_and_above_128
+        PASS [   0.020s] (216/805) lobby-broker tournament::tests::generate_pairings_still_advances_below_the_round_total
+        PASS [   0.024s] (217/805) lobby-broker tournament::tests::format_is_stored_on_the_meta_and_projected_to_the_summary
+        PASS [   0.025s] (218/805) lobby-broker tournament::tests::generate_pairings_refuses_to_pair_past_the_default_round_total
+        PASS [   0.033s] (219/805) lobby-broker tournament::tests::expiry_registration_300s
+        PASS [   0.025s] (220/805) lobby-broker tournament::tests::iter_on_an_empty_manager_yields_nothing
+        PASS [   0.026s] (221/805) lobby-broker tournament::tests::generate_pairings_rejects_an_unfinished_round
+        PASS [   0.017s] (222/805) lobby-broker tournament::tests::open_actions_answers_per_lifecycle_status
+        PASS [   0.030s] (223/805) lobby-broker tournament::tests::partition_10_players_is_4_3_3
+        PASS [   0.017s] (224/805) lobby-broker tournament::tests::renewal_does_not_push_back_the_staleness_reaper
+        PASS [   0.037s] (225/805) lobby-broker tournament::tests::iter_yields_every_tournament_regardless_of_status
+        PASS [   0.024s] (226/805) lobby-broker tournament::tests::pod_drop_does_not_auto_resolve
+        PASS [   0.026s] (227/805) lobby-broker tournament::tests::plus_rounds_adds_to_the_default_and_latches_with_it
+        PASS [   0.031s] (228/805) lobby-broker tournament::tests::partition_9_players_is_3_3_3
+        PASS [   0.046s] (229/805) lobby-broker tournament::tests::generate_pairings_refuses_to_pair_past_the_override_round_total
+        PASS [   0.028s] (230/805) lobby-broker tournament::tests::pod_result_validation_requires_empty_game_wins
+        PASS [   0.035s] (231/805) lobby-broker tournament::tests::pod_drop_to_last_player_forfeits
+        PASS [   0.032s] (232/805) lobby-broker tournament::tests::renew_mints_from_current_then_idempotently_replays_the_same_secret
+        PASS [   0.028s] (233/805) lobby-broker tournament::tests::report_result_rejects_server_assigned_dropped_and_terminal_writes
+        PASS [   0.031s] (234/805) lobby-broker tournament::tests::report_result_system_rejects_an_unhosted_pairing
+        PASS [   0.045s] (235/805) lobby-broker tournament::tests::partition_generalizes_across_arities_2_3_4_6
+        PASS [   0.021s] (236/805) lobby-broker tournament::tests::scoring_policy_rejects_zero_win_points
+        PASS [   0.036s] (237/805) lobby-broker tournament::tests::report_gate_returns_hosted_for_a_hosted_pairing
+        PASS [   0.039s] (238/805) lobby-broker tournament::tests::report_gate_answers_every_arm_and_reporting_twice_stays_open
+        PASS [   0.042s] (239/805) lobby-broker tournament::tests::renewal_rotates_both_roles_and_refuses_an_already_expired_credential
+        PASS [   0.027s] (240/805) lobby-broker tournament::tests::single_elimination_byes_seed_the_top_of_the_bracket
+        PASS [   0.027s] (241/805) lobby-broker tournament::tests::single_elimination_pairs_by_seed_then_advances_winners
+        PASS [   0.026s] (242/805) lobby-broker tournament::tests::single_elimination_rejects_non_head_to_head_arity
+        PASS [   0.035s] (243/805) lobby-broker tournament::tests::resolved_pairing_is_unaffected_by_a_later_drop
+        PASS [   0.030s] (244/805) lobby-broker tournament::tests::single_elimination_rejects_a_draw_and_advances_the_reported_winner
+        PASS [   0.021s] (245/805) lobby-broker tournament::tests::swiss_pairing_avoids_rematch_5_7_9_players
+        PASS [   0.032s] (246/805) lobby-broker tournament::tests::standings_compute_the_selected_axes
+        PASS [   0.045s] (247/805) lobby-broker tournament::tests::short_pod_fairness_prefers_players_who_have_not_been_shorted
+        PASS [   0.032s] (248/805) lobby-broker tournament::tests::swap_repair_fixes_a_rematch_the_greedy_pass_cannot_avoid
+        PASS [   0.032s] (249/805) lobby-broker tournament::tests::swiss_drop_does_not_shorten_the_latched_round_count
+        PASS [   0.044s] (250/805) lobby-broker tournament::tests::single_elimination_drop_does_not_shorten_the_latched_final
+        PASS [   0.014s] (251/805) lobby-broker validation::tests::create_game_rejects_out_of_range_timer
+        PASS [   0.029s] (252/805) lobby-broker tournament::tests::the_handler_guards_refuse_exactly_what_open_actions_withholds
+        PASS [   0.033s] (253/805) lobby-broker tournament::tests::total_rounds_resolves_override_then_latched_then_live
+        PASS [   0.035s] (254/805) lobby-broker tournament::tests::the_wire_and_the_validators_together_refuse_malformed_numeric_input
+        PASS [   0.011s] (255/805) lobby-broker validation::tests::create_tournament_rejects_oversized_name
+        PASS [   0.022s] (256/805) lobby-broker validation::tests::create_game_rejects_oversized_display_name
+        PASS [   0.013s] (257/805) lobby-broker validation::tests::create_tournament_rejects_blank_name
+        PASS [   0.029s] (258/805) lobby-broker validation::tests::create_game_accepts_well_formed_requested_code
+        PASS [   0.042s] (259/805) lobby-broker tournament::tests::tiebreak_order_and_floor_are_arity_selected
+        PASS [   0.020s] (260/805) lobby-broker validation::tests::create_game_rejects_oversized_password
+        PASS [   0.039s] (261/805) lobby-broker validation::tests::create_game_accepts_valid
+        PASS [   0.018s] (262/805) lobby-broker validation::tests::get_tournament_rejects_oversized_code
+        PASS [   0.035s] (263/805) lobby-broker validation::tests::create_game_rejects_malformed_requested_code
+        PASS [   0.027s] (264/805) lobby-broker validation::tests::create_game_rejects_oversized_draft_metadata
+        PASS [   0.020s] (265/805) lobby-broker validation::tests::create_tournament_rejects_total_rounds_and_plus_rounds_together
+        PASS [   0.035s] (266/805) lobby-broker validation::tests::create_game_rejects_out_of_range_player_count
+        PASS [   0.022s] (267/805) lobby-broker validation::tests::guard_rejects_invalid_scheme_deck_card_name
+        PASS [   0.017s] (268/805) lobby-broker validation::tests::guard_rejects_oversized_main_deck
+        PASS [   0.023s] (269/805) lobby-broker validation::tests::guard_rejects_oversized_scheme_deck
+        PASS [   0.025s] (270/805) lobby-broker validation::tests::guard_rejects_oversized_join_sideboard
+        PASS [   0.030s] (271/805) lobby-broker validation::tests::guard_rejects_oversized_card_name_in_deck
+        PASS [   0.028s] (272/805) lobby-broker validation::tests::guard_rejects_oversized_planar_deck
+        PASS [   0.037s] (273/805) lobby-broker validation::tests::guard_rejects_invalid_planar_deck_card_name
+        PASS [   0.022s] (274/805) lobby-broker validation::tests::max_game_wins_entries_matches_match_arity_ceiling
+        PASS [   0.029s] (275/805) lobby-broker validation::tests::join_tournament_rejects_oversized_code
+        PASS [   0.023s] (276/805) lobby-broker validation::tests::optional_label_allows_absent_and_blank
+        PASS [   0.025s] (277/805) lobby-broker validation::tests::organizer_gated_messages_reject_oversized_organizer_token
+        PASS [   0.016s] (278/805) lobby-broker validation::tests::report_match_result_rejects_oversized_game_wins_map
+        PASS [   0.024s] (279/805) lobby-broker validation::tests::player_gated_messages_reject_oversized_player_token
+        PASS [   0.031s] (280/805) lobby-broker validation::tests::join_tournament_rejects_oversized_display_name
+        PASS [   0.031s] (281/805) lobby-broker validation::tests::join_tournament_rejects_oversized_player_key
+        PASS [   0.016s] (282/805) lobby-broker validation::tests::required_label_bounds
+        PASS [   0.029s] (283/805) lobby-broker validation::tests::report_match_result_rejects_oversized_game_wins_key
+        PASS [   0.036s] (284/805) lobby-broker validation::tests::multibyte_names_counted_by_character
+        PASS [   0.020s] (285/805) lobby-broker validation::tests::update_metadata_rejects_out_of_range_players
+        PASS [   0.040s] (286/805) lobby-broker validation::tests::ping_has_no_bounded_fields
+        PASS [   0.029s] (287/805) lobby-broker validation::tests::token_bounds
+        PASS [   0.035s] (288/805) lobby-broker validation::tests::report_match_result_rejects_oversized_winner
+        PASS [   0.037s] (289/805) lobby-broker validation::tests::tournament_messages_accept_valid
+        PASS [   0.039s] (290/805) lobby-broker validation::tests::tournament_fields_reject_control_characters
+        PASS [   0.039s] (291/805) lobby-broker validation::tests::update_metadata_rejects_too_many_tokens
+        PASS [   0.047s] (292/805) server-core ai_seats_wire_guard::tests::ai_seats_rejects_seat_outside_effective_player_count
+        PASS [   0.051s] (293/805) server-core ai_seats_wire_guard::tests::ai_seats_rejects_duplicate_seats
+        PASS [   0.054s] (294/805) server-core ai_seats_wire_guard::tests::ai_seats_rejects_oversized_named_deck
+        PASS [   0.042s] (295/805) server-core client_message_wire_guard::tests::both_inbound_guards_agree_on_every_tournament_variant
+        PASS [   0.055s] (296/805) server-core client_hello_guard::tests::client_hello_accepts_valid_fields
+        PASS [   0.074s] (297/805) server-core client_hello_guard::tests::client_hello_rejects_oversized_build_commit
+        PASS [   0.063s] (298/805) server-core client_message_wire_guard::tests::broker_projection_rejects_an_oversized_game_wins_map_before_clone
+        PASS [   0.097s] (299/805) server-core ai_seats_wire_guard::tests::ai_seats_accepts_valid_entry
+        PASS [   0.062s] (300/805) server-core client_message_wire_guard::tests::broker_projection_rejects_too_many_consumed_tokens
+        PASS [   0.072s] (301/805) server-core client_message_wire_guard::tests::broker_projection_accepts_an_interaction_without_bounding_it
+        PASS [   0.092s] (302/805) server-core client_hello_guard::tests::client_hello_rejects_oversized_version
+        PASS [   0.098s] (303/805) server-core ai_seats_wire_guard::tests::ai_seats_rejects_too_many_entries
+        PASS [   0.056s] (304/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_hostile_tap_land_restrictions_at_action_boundary
+        PASS [   0.070s] (305/805) server-core client_message_wire_guard::tests::dispatch_guard_accepts_subscribe_lobby
+        PASS [   0.111s] (306/805) server-core client_message_wire_guard::tests::booster_pack_pool_guard_preserves_duplicates_and_rejects_oversize_or_bad_names
+        PASS [   0.089s] (307/805) server-core client_message_wire_guard::tests::dispatch_guard_accepts_a_bounded_interaction
+        PASS [   0.080s] (308/805) server-core client_message_wire_guard::tests::dispatch_guard_refuses_a_booster_pack_pool_on_a_ranked_game
+        PASS [   0.125s] (309/805) server-core client_message_wire_guard::tests::both_inbound_guards_accept_valid_tournament_frames
+        PASS [   0.059s] (310/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_hostile_tap_land_trigger_production_at_preview_boundary
+        PASS [   0.108s] (311/805) server-core client_message_wire_guard::tests::broker_projection_rejects_oversized_metadata_tokens_before_clone
+        PASS [   0.049s] (312/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_oversized_game_action_before_handler_work
+        PASS [   0.062s] (313/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_oversized_emote
+        PASS [   0.059s] (314/805) server-core client_message_wire_guard::tests::interaction_wire_rejection_answers_on_the_benign_channel
+        PASS [   0.120s] (315/805) server-core client_message_wire_guard::tests::dispatch_guard_accepts_deferred_mana_quantity_at_action_boundary
+        PASS [   0.073s] (316/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_oversized_interaction_before_handler_work
+        PASS [   0.054s] (317/805) server-core client_message_wire_guard::tests::preview_and_submission_refuse_the_same_payload_identically
+        PASS [   0.079s] (318/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_oversized_lookup_game_code
+        PASS [   0.059s] (319/805) server-core client_message_wire_guard::tests::tournament_wire_rejections_answer_on_the_operational_error_channel
+        PASS [   0.087s] (320/805) server-core client_message_wire_guard::tests::dispatch_guards_refuse_a_malformed_requested_code
+        PASS [   0.059s] (321/805) server-core deck_resolve::tests::resolve_deck_with_unresolved_name_errors
+        PASS [   0.060s] (322/805) server-core deck_resolve::tests::resolve_deck_empty_deck_is_ok
+        PASS [   0.148s] (323/805) server-core client_message_wire_guard::tests::dispatch_guard_rejects_an_oversized_preview_before_handler_work
+        PASS [   0.053s] (324/805) server-core deck_resolve::tests::round_trip_name_keeps_the_bare_name_when_it_leads_back
+        PASS [   0.092s] (325/805) server-core client_message_wire_guard::tests::preview_wire_rejection_is_benign_and_correlated
+        PASS [   0.070s] (326/805) server-core deck_resolve::tests::resolve_entries_dedups_and_preserves_first_appearance_order
+        PASS [   0.043s] (327/805) server-core deck_resolve::tests::the_inverse_preserves_the_card_multiset_under_case_folding
+        PASS [   0.091s] (328/805) server-core deck_resolve::tests::resolve_deck_aggregates_missing_across_sections_in_sorted_order
+        PASS [   0.081s] (329/805) server-core deck_resolve::tests::resolve_deck_dedups_resolved_entries_in_first_appearance_order
+        PASS [   0.052s] (330/805) server-core deck_resolve::tests::round_trip_name_uses_the_oracle_id_key_when_nothing_holds_the_bare_name
+        PASS [   0.091s] (331/805) server-core deck_resolve::tests::resolve_deck_preserves_selected_sticker_sheets
+        PASS [   0.090s] (332/805) server-core deck_resolve::tests::resolve_entries_stamps_split_card_off_stack_mana_value_override
+        PASS [   0.070s] (333/805) server-core draft_action_payload_guard::tests::draft_effect_pick_accepts_two_distinct_card_ids
+        PASS [   0.044s] (334/805) server-core draft_action_payload_guard::tests::pick_accepts_two_distinct_card_ids
+        PASS [   0.064s] (335/805) server-core draft_action_payload_guard::tests::draft_effect_pick_rejects_duplicate_card_ids
+        PASS [   0.041s] (336/805) server-core draft_action_payload_guard::tests::replace_seat_with_bot_rejects_oversized_name
+        PASS [   0.091s] (337/805) server-core deck_resolve::tests::the_inverse_emits_a_key_that_resolves_back_to_the_same_face
+        PASS [   0.088s] (338/805) server-core deck_resolve::tests::the_inverse_preserves_the_non_section_fields
+        PASS [   0.057s] (339/805) server-core draft_action_payload_guard::tests::shared_stack_decision_rejects_out_of_range_pile
+        PASS [   0.072s] (340/805) server-core draft_action_payload_guard::tests::pick_rejects_oversized_instance_id
+        PASS [   0.082s] (341/805) server-core draft_action_payload_guard::tests::pick_rejects_duplicate_card_ids
+        PASS [   0.098s] (342/805) server-core draft_action_payload_guard::tests::draft_effect_pick_rejects_wrong_card_count
+        PASS [   0.086s] (343/805) server-core draft_action_payload_guard::tests::pick_accepts_valid_instance_id
+        PASS [   0.088s] (344/805) server-core draft_action_payload_guard::tests::pick_rejects_more_than_max_cards_per_pick
+        PASS [   0.102s] (345/805) server-core draft_action_payload_guard::tests::draft_effect_pick_rejects_oversized_card_id
+        PASS [   0.088s] (346/805) server-core draft_action_payload_guard::tests::pick_rejects_empty_card_ids
+        PASS [   0.083s] (347/805) server-core draft_action_payload_guard::tests::submit_deck_accepts_max_commander_designations
+        PASS [   0.074s] (348/805) server-core draft_action_payload_guard::tests::submit_deck_rejects_invalid_card_name
+        PASS [   0.068s] (349/805) server-core draft_session::tests::a_lobby_pod_is_live_while_its_host_is_connected_or_in_grace
+        PASS [   0.076s] (350/805) server-core draft_session::tests::active_match_for_seat_uses_the_current_round_pairing_order
+        PASS [   0.083s] (351/805) server-core draft_action_payload_guard::tests::submit_deck_rejects_oversized_main
+        PASS [   0.038s] (352/805) server-core draft_session::tests::authorize_rebinds_submit_deck_seat_and_carries_the_designation
+        PASS [   0.091s] (353/805) server-core draft_action_payload_guard::tests::submit_deck_rejects_more_than_max_commander_designations
+        PASS [   0.079s] (354/805) server-core draft_session::tests::apply_system_action_bypasses_token
+        PASS [   0.080s] (355/805) server-core draft_session::tests::authorize_allows_host_actions_from_host
+        PASS [   0.060s] (356/805) server-core draft_session::tests::authorize_rebinds_pick_seat_to_authenticated_seat
+        PASS [   0.049s] (357/805) server-core draft_session::tests::authorize_rejects_host_actions_from_non_host
+        PASS [   0.070s] (358/805) server-core draft_session::tests::authorize_rebinds_draft_effect_pick_seat_to_authenticated_seat
+        PASS [   0.046s] (359/805) server-core draft_session::tests::draft_for_game_code_finds_match
+        PASS [   0.066s] (360/805) server-core draft_session::tests::commander_auto_pick_takes_two_cards
+        PASS [   0.046s] (361/805) server-core draft_session::tests::draft_for_token_lookup_works
+        PASS [   0.062s] (362/805) server-core draft_session::tests::draft_code_is_uppercase_alphanumeric
+        PASS [   0.078s] (363/805) server-core draft_session::tests::authorize_rejects_set_seat_connected_from_client
+        PASS [   0.072s] (364/805) server-core draft_session::tests::disconnect_expiry_refuses_a_non_active_winston_seat
+        PASS [   0.056s] (365/805) server-core draft_session::tests::draft_seats_needing_auto_pick_reaches_the_active_winston_seat
+        PASS [   0.098s] (366/805) server-core draft_session::tests::disconnect_and_reconnect_works
+        PASS [   0.100s] (367/805) server-core draft_session::tests::create_draft_returns_code_and_token
+        PASS [   0.058s] (368/805) server-core draft_session::tests::join_draft_rejects_after_draft_started
+        PASS [   0.066s] (369/805) server-core draft_session::tests::join_draft_enforces_lobby_password
+        PASS [   0.079s] (370/805) server-core draft_session::tests::draft_seats_needing_auto_pick_skips_already_picked
+        PASS [   0.052s] (371/805) server-core draft_session::tests::join_full_draft_fails
+        PASS [   0.050s] (372/805) server-core draft_session::tests::pick_random_for_seat_picks_from_available_pack
+        PASS [   0.084s] (373/805) server-core draft_session::tests::join_draft_assigns_seat
+        PASS [   0.087s] (374/805) server-core draft_session::tests::from_persisted_sets_connected_false_and_timer_task_none
+        PASS [   0.088s] (375/805) server-core draft_session::tests::handle_draft_action_validates_token
+        PASS [   0.046s] (376/805) server-core draft_session::tests::restore_persisted_session_rejects_duplicate_player_tokens
+        PASS [   0.063s] (377/805) server-core draft_session::tests::restore_persisted_session_accepts_chaos_through_redacted_player_views
+        PASS [   0.095s] (378/805) server-core draft_session::tests::join_draft_is_refused_while_the_host_is_away
+        PASS [   0.046s] (379/805) server-core draft_session::tests::restore_persisted_session_rejects_mismatched_wrapper_without_mutation
+        PASS [   0.062s] (380/805) server-core draft_session::tests::restore_persisted_session_records_every_claimed_seat
+        PASS [   0.057s] (381/805) server-core draft_session::tests::restore_session_rebuilds_token_to_draft_index
+        PASS [   0.088s] (382/805) server-core draft_session::tests::premier_auto_pick_still_takes_one_card
+        PASS [   0.039s] (383/805) server-core draft_session::tests::timeout_advances_a_winston_turn
+        PASS [   0.103s] (384/805) server-core draft_session::tests::pick_random_for_seat_fails_when_not_drafting
+        PASS [   0.048s] (385/805) server-core draft_session::tests::sweep_expired_seats_reaps_frees_and_auto_picks_by_status
+        PASS [   0.072s] (386/805) server-core draft_session::tests::restore_registration_path_registers_only_lobby_status_drafts
+        PASS [   0.063s] (387/805) server-core draft_session::tests::started_persisted_draft_does_not_register_in_lobby
+        PASS [   0.071s] (388/805) server-core draft_session::tests::spawn_match_games_skips_pairing_without_submitted_decks
+        PASS [   0.071s] (389/805) server-core draft_session::tests::shared_stack_decision_is_rescoped_to_the_authenticated_seat
+        PASS [   0.050s] (390/805) server-core draft_wire_guard::tests::create_draft_accepts_an_ordered_multi_set_sequence
+        PASS [   0.044s] (391/805) server-core draft_wire_guard::tests::create_draft_accepts_valid_fields
+        PASS [   0.047s] (392/805) server-core draft_wire_guard::tests::create_draft_rejects_oversized_display_name
+        PASS [   0.057s] (393/805) server-core draft_wire_guard::tests::create_draft_rejects_an_empty_or_oversized_sequence
+        PASS [   0.071s] (394/805) server-core draft_wire_guard::tests::a_shared_stack_kind_is_refused_a_chaos_layout_before_the_entropy_draw
+        PASS [   0.056s] (395/805) server-core draft_wire_guard::tests::create_draft_rejects_an_oversized_code_anywhere_in_the_sequence
+        PASS [   0.076s] (396/805) server-core draft_session::tests::to_persisted_roundtrips_through_serde_json
+        PASS [   0.033s] (397/805) server-core draft_wire_guard::tests::reconnect_rejects_oversized_player_token
+        PASS [   0.047s] (398/805) server-core draft_wire_guard::tests::draft_action_accepts_valid_code
+        PASS [   0.061s] (399/805) server-core draft_wire_guard::tests::create_draft_validates_chaos_candidates_before_pool_lookup
+        PASS [   0.057s] (400/805) server-core draft_wire_guard::tests::every_pack_dealing_kind_still_takes_a_chaos_layout
+        PASS [   0.043s] (401/805) server-core draft_wire_guard::tests::wire_guard_uses_the_procedure_for_ceiling_and_pairing_bracket
+        PASS [   0.064s] (402/805) server-core draft_wire_guard::tests::draft_action_rejects_oversized_code
+        PASS [   0.060s] (403/805) server-core draft_wire_guard::tests::wire_guard_admits_four_seat_commander_pod
+        PASS [   0.067s] (404/805) server-core draft_wire_guard::tests::join_draft_rejects_oversized_draft_code
+        PASS [   0.068s] (405/805) server-core draft_wire_guard::tests::wire_guard_keeps_remote_quick_drafts_inside_the_public_range
+        PASS [   0.070s] (406/805) server-core draft_wire_guard::tests::wire_guard_refuses_two_seat_commander_pod
+        PASS [   0.047s] (407/805) server-core filter::tests::opponent_hand_cards_are_hidden
+        PASS [   0.062s] (408/805) server-core filter::tests::manifest_dread_hides_card_ids_from_opponent
+        PASS [   0.068s] (409/805) server-core filter::tests::filter_preserves_hand_size
+        PASS [   0.061s] (410/805) server-core filter::tests::non_seat_spectator_sees_no_player_hands
+        PASS [   0.082s] (411/805) server-core filter::tests::effect_zone_choice_from_hand_redacts_cards_for_opponent
+        PASS [   0.055s] (412/805) server-core filter::tests::pending_trigger_and_event_batch_redact_for_opponent
+        PASS [   0.084s] (413/805) server-core filter::tests::library_contents_hidden_for_both
+        PASS [   0.101s] (414/805) server-core filter::tests::deferred_triggers_redact_per_entry_for_opponent
+        PASS [   0.089s] (415/805) server-core filter::tests::mass_library_order_choice_redacts_cards_and_provenance_for_opponent
+        PASS [   0.076s] (416/805) server-core filter::tests::pending_trigger_order_redacts_private_payload_for_opponent
+        PASS [   0.048s] (417/805) server-core game_action_payload_guard::tests::replacement_removal_bounds_opaque_selector_strings
+        PASS [   0.101s] (418/805) server-core filter::tests::own_hand_is_fully_visible
+        PASS [   0.099s] (419/805) server-core filter::tests::pending_trigger_order_redacts_per_group_in_multi_group_order
+        PASS [   0.103s] (420/805) server-core filter::tests::order_triggers_waiting_for_passes_through_to_both_players
+        PASS [   0.050s] (421/805) server-core game_log::tests::closing_session_stream_does_not_lose_flushed_events_stream_content
+        PASS [   0.086s] (422/805) server-core filter::tests::redacts_opponent_deck_pool_details
+        PASS [   0.074s] (423/805) server-core game_action_payload_guard::tests::bounded_meld_actions_are_accepted
+        PASS [   0.088s] (424/805) server-core filter::tests::server_snapshot_omits_internal_resolution_frames
+        PASS [   0.066s] (425/805) server-core game_log::tests::format_timestamp_is_valid_iso8601
+        PASS [   0.081s] (426/805) server-core game_action_payload_guard::tests::end_continuous_effect_presentation_payload_is_bounded
+        PASS [   0.088s] (427/805) server-core filter::tests::wrapper_preserves_only_viewer_entitled_search_records_and_events
+        PASS [   0.069s] (428/805) server-core game_log::tests::game_file_cache_appends_across_reopen_after_close
+        PASS [   0.100s] (429/805) server-core filter::tests::revealed_cards_remain_visible_in_opponent_hand
+        PASS [   0.063s] (430/805) server-core game_log::tests::game_file_cache_creates_session_stream_file
+        PASS [   0.046s] (431/805) server-core game_reconnect_guard::tests::game_reconnect_accepts_valid_fields
+        PASS [   0.067s] (432/805) server-core game_log::tests::game_file_cache_disabled_write_touches_no_state
+        PASS [   0.084s] (433/805) server-core game_log::tests::open_file_sentinel_on_bad_path_does_not_panic_or_retry_loop
+        PASS [   0.068s] (434/805) server-core game_state_snapshot_wire_guard::tests::snapshot_accepts_empty_board
+        PASS [   0.082s] (435/805) server-core game_reconnect_guard::tests::game_reconnect_rejects_oversized_game_code
+        PASS [   0.083s] (436/805) server-core game_reconnect_guard::tests::game_reconnect_rejects_oversized_player_token
+        PASS [   0.093s] (437/805) server-core game_log::tests::write_game_log_entries_preserves_category_and_timestamps
+        PASS [   0.183s] (438/805) server-core filter::tests::property_filter_hides_opponent_hidden_zones
+        PASS [   0.077s] (439/805) server-core game_state_snapshot_wire_guard::tests::snapshot_rejects_oversized_event_batch
+        PASS [   0.106s] (440/805) server-core game_log::tests::write_game_log_entries_writes_one_line_per_entry_in_order_not_overwritten
+        PASS [   0.082s] (441/805) server-core game_state_snapshot_wire_guard::tests::snapshot_rejects_oversized_legal_action_list
+        PASS [   0.084s] (442/805) server-core game_state_snapshot_wire_guard::tests::snapshot_rejects_oversized_log_batch
+        PASS [   0.061s] (443/805) server-core harness::tests::disconnect_multiple_seats_during_drafting
+        PASS [   0.061s] (444/805) server-core harness::tests::disconnect_and_reconnect_during_drafting
+        PASS [   0.059s] (445/805) server-core interaction_payload_guard::tests::rejection_string_matches_the_wasm_transport
+        PASS [   0.157s] (446/805) server-core harness::tests::all_connected_false_after_restore
+        PASS [   0.083s] (447/805) server-core interaction_payload_guard::tests::accepts_a_realistic_submission
+        PASS [   0.115s] (448/805) server-core harness::tests::picks_continue_after_disconnect_reconnect
+        PASS [   0.117s] (449/805) server-core harness::tests::restore_rebuilds_token_to_draft_index
+        PASS [   0.110s] (450/805) server-core harness::tests::simultaneous_disconnect_of_multiple_seats_during_drafting
+        PASS [   0.077s] (451/805) server-core interaction_payload_guard::tests::rejects_an_oversized_interaction_id
+        PASS [   0.045s] (452/805) server-core interaction_payload_guard::tests::rejects_an_oversized_select_list
+        PASS [   0.090s] (453/805) server-core interaction_payload_guard::tests::rejects_an_oversized_nested_shortcut_amount_budget
+        PASS [   0.051s] (454/805) server-core interaction_payload_guard::tests::rejects_an_oversized_text_value
+        PASS [   0.083s] (455/805) server-core interaction_payload_guard::tests::rejects_an_oversized_nested_shortcut_pin_budget
+        PASS [   0.053s] (456/805) server-core legacy_deck_guard::tests::legacy_deck_rejects_oversized_main
+        PASS [   0.044s] (457/805) server-core legacy_join_guard::tests::legacy_join_rejects_oversized_game_code
+        PASS [   0.070s] (458/805) server-core legacy_join_guard::tests::legacy_join_accepts_valid_fields
+        PASS [   0.052s] (459/805) server-core lobby_subscriber_wire_guard::tests::lobby_subscriber_capacity_rejects_slot_at_cap
+        PASS [   0.060s] (460/805) server-core lobby_subscriber_wire_guard::tests::lobby_subscriber_capacity_accepts_slot_below_cap
+        PASS [   0.102s] (461/805) server-core legacy_deck_guard::tests::legacy_deck_accepts_valid_payload
+        PASS [   0.048s] (462/805) server-core p2p_backup_guard::tests::accepts_snapshot_at_limit
+        PASS [   0.020s] (463/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_drops_unredactable_serialized_draft_sessions
+        PASS [   0.096s] (464/805) server-core legacy_join_guard::tests::legacy_join_rejects_oversized_deck
+        PASS [   0.070s] (465/805) server-core p2p_backup_guard::tests::accepts_host_peer_id_at_limit
+        PASS [   0.043s] (466/805) server-core p2p_backup_guard::tests::guard_p2p_backup_overwrite_rejects_peer_mismatch
+        PASS [   0.067s] (467/805) server-core p2p_backup_guard::tests::accepts_valid_backup
+        PASS [   0.051s] (468/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_drops_direct_inline_non_record_sessions
+        PASS [   0.041s] (469/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_strips_nested_draft_session_secrets
+        PASS [   0.075s] (470/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_keeps_null_draft_session
+        PASS [   0.080s] (471/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_strips_all_cube_aliases_in_every_session_shape
+        PASS [   0.089s] (472/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_rejects_non_object
+        PASS [   0.101s] (473/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_keeps_uniform_layout_unchanged
+        PASS [   0.058s] (474/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_strips_shared_stack
+        PASS [   0.106s] (475/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_strips_chaos_assignments_but_keeps_intent
+        PASS [   0.050s] (476/805) server-core p2p_backup_guard::tests::rejects_blank_host_peer_id
+        PASS [   0.042s] (477/805) server-core p2p_backup_guard::tests::rejects_blank_snapshot
+        PASS [   0.119s] (478/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_strips_object_shaped_draft_session
+        PASS [   0.062s] (479/805) server-core p2p_backup_guard::tests::rejects_host_peer_id_with_control_char
+        PASS [   0.067s] (480/805) server-core p2p_backup_guard::tests::rejects_oversized_host_peer_id
+        PASS [   0.072s] (481/805) server-core p2p_backup_guard::tests::rejects_oversized_snapshot
+        PASS [   0.061s] (482/805) server-core protocol::tests::ai_seat_request_roundtrips
+        PASS [   0.079s] (483/805) server-core p2p_backup_guard::tests::validate_p2p_backup_host_peer_id_rejects_blank
+        PASS [   0.164s] (484/805) server-core p2p_backup_guard::tests::redact_p2p_backup_snapshot_secrets_strips_seat_and_kicked_tokens
+        PASS [   0.076s] (485/805) server-core persist::tests::chaos_lobby_label_exposes_candidates_not_resolved_assignments
+        PASS [   0.063s] (486/805) server-core protocol::tests::ai_seat_request_uses_camel_case_keys
+        PASS [   0.053s] (487/805) server-core protocol::tests::authoritative_state_export_messages_roundtrip
+        PASS [   0.042s] (488/805) server-core protocol::tests::client_hello_roundtrips
+        PASS [   0.064s] (489/805) server-core protocol::tests::client_message_abandon_game_roundtrips
+        PASS [   0.092s] (490/805) server-core protocol::tests::build_commit_is_nonempty
+        PASS [   0.084s] (491/805) server-core protocol::tests::client_hello_defaults_missing_and_future_wire_formats_safely
+        PASS [   0.077s] (492/805) server-core protocol::tests::client_message_action_roundtrips
+        PASS [   0.081s] (493/805) server-core protocol::tests::client_message_cancel_takeback_roundtrips
+        PASS [   0.077s] (494/805) server-core protocol::tests::client_message_concede_match_roundtrips_without_authority_payload
+        PASS [   0.079s] (495/805) server-core protocol::tests::client_message_create_game_roundtrips
+        PASS [   0.098s] (496/805) server-core protocol::tests::client_message_concede_roundtrips
+        PASS [   0.059s] (497/805) server-core protocol::tests::client_message_create_game_with_settings_roundtrips
+        PASS [   0.062s] (498/805) server-core protocol::tests::client_message_emote_roundtrips
+        PASS [   0.070s] (499/805) server-core protocol::tests::client_message_create_sealed_draft_with_settings_roundtrips
+        PASS [   0.048s] (500/805) server-core protocol::tests::client_message_join_draft_with_password_roundtrips
+        PASS [   0.065s] (501/805) server-core protocol::tests::client_message_draft_action_roundtrips
+        PASS [   0.037s] (502/805) server-core protocol::tests::client_message_join_game_with_password_roundtrips
+        PASS [   0.079s] (503/805) server-core protocol::tests::client_message_interaction_preview_roundtrips_and_an_unknown_tag_is_a_benign_err
+        PASS [   0.054s] (504/805) server-core protocol::tests::client_message_join_game_roundtrips
+        PASS [   0.050s] (505/805) server-core protocol::tests::client_message_request_takeback_roundtrips
+        PASS [   0.052s] (506/805) server-core protocol::tests::client_message_ping_roundtrips
+        PASS [   0.069s] (507/805) server-core protocol::tests::client_message_lookup_join_target_roundtrips
+        PASS [   0.044s] (508/805) server-core protocol::tests::client_message_spectate_draft_roundtrips
+        PASS [   0.049s] (509/805) server-core protocol::tests::client_message_respond_takeback_roundtrips
+        PASS [   0.099s] (510/805) server-core protocol::tests::client_message_mana_payment_preview_roundtrips
+        PASS [   0.070s] (511/805) server-core protocol::tests::client_message_subscribe_lobby_roundtrips
+        PASS [   0.111s] (512/805) server-core protocol::tests::client_message_reconnect_draft_roundtrips
+        PASS [   0.050s] (513/805) server-core protocol::tests::create_draft_frame_serializes_chaos_candidates_without_assignments
+        PASS [   0.072s] (514/805) server-core protocol::tests::client_message_unsubscribe_lobby_roundtrips
+        PASS [   0.072s] (515/805) server-core protocol::tests::create_draft_frame_accepts_the_legacy_single_set_code
+        PASS [   0.077s] (516/805) server-core protocol::tests::create_draft_frame_accepts_the_legacy_set_codes_sequence_as_uniform
+        PASS [   0.071s] (517/805) server-core protocol::tests::create_draft_frame_preserves_pack_order_and_repeats
+        PASS [   0.059s] (518/805) server-core protocol::tests::create_draft_frame_serializes_the_tagged_uniform_source
+        PASS [   0.047s] (519/805) server-core protocol::tests::create_game_with_settings_ai_seats_roundtrips
+        PASS [   0.035s] (520/805) server-core protocol::tests::create_game_with_settings_missing_match_config_defaults_to_bo1
+        PASS [   0.043s] (521/805) server-core protocol::tests::create_game_with_settings_missing_ai_seats_defaults_to_empty
+        PASS [   0.058s] (522/805) server-core protocol::tests::create_game_with_settings_host_peer_id_roundtrips
+        PASS [   0.047s] (523/805) server-core protocol::tests::create_game_with_settings_missing_requested_code_defaults_to_none
+        PASS [   0.031s] (524/805) server-core protocol::tests::full_game_floor_is_current_only_not_a_rollout_window
+        PASS [   0.076s] (525/805) server-core protocol::tests::create_game_with_settings_missing_host_peer_id_defaults_to_none
+        PASS [   0.045s] (526/805) server-core protocol::tests::emote_guard_tests::emote_accepts_valid_text
+        PASS [   0.063s] (527/805) server-core protocol::tests::create_game_with_settings_requested_code_roundtrips
+        PASS [   0.033s] (528/805) server-core protocol::tests::join_target_info_roundtrips
+        PASS [   0.052s] (529/805) server-core protocol::tests::draft_pool_groups_nested_workspace_metadata_is_strict_and_legacy_compatible
+        PASS [   0.048s] (530/805) server-core protocol::tests::emote_guard_tests::emote_rejects_oversized_text
+        PASS [   0.069s] (531/805) server-core protocol::tests::game_started_fixture_matches_server_message_contract
+        PASS [   0.043s] (532/805) server-core protocol::tests::lobby_game_with_full_metadata_roundtrips
+        PASS [   0.036s] (533/805) server-core protocol::tests::request_takeback_without_data_decodes_as_last_action
+        PASS [   0.040s] (534/805) server-core protocol::tests::protocol_version_is_109_for_hand_entry_ownership_rebind
+        PASS [   0.049s] (535/805) server-core protocol::tests::lobby_game_without_optional_metadata_deserializes_with_defaults
+        PASS [   0.043s] (536/805) server-core protocol::tests::request_takeback_turn_start_roundtrips_with_exact_wire_bytes
+        PASS [   0.050s] (537/805) server-core protocol::tests::meld_actions_roundtrip
+        PASS [   0.063s] (538/805) server-core protocol::tests::peer_info_roundtrips
+        PASS [   0.033s] (539/805) server-core protocol::tests::server_message_action_no_op_roundtrips
+        PASS [   0.036s] (540/805) server-core protocol::tests::server_hello_roundtrips
+        PASS [   0.046s] (541/805) server-core protocol::tests::seat_mutation_deck_list_choice_roundtrips
+        PASS [   0.044s] (542/805) server-core protocol::tests::server_hello_omits_public_url_when_none
+        PASS [   0.042s] (543/805) server-core protocol::tests::server_message_ai_driver_fault_roundtrips_with_client_wire_keys
+        PASS [   0.054s] (544/805) server-core protocol::tests::server_message_draft_action_rejected_roundtrips
+        PASS [   0.038s] (545/805) server-core protocol::tests::server_message_draft_created_roundtrips
+        PASS [   0.072s] (546/805) server-core protocol::tests::server_message_conceded_roundtrips
+        PASS [   0.044s] (547/805) server-core protocol::tests::server_message_draft_match_start_roundtrips
+        PASS [   0.044s] (548/805) server-core protocol::tests::server_message_draft_spectator_view_roundtrips
+        PASS [   0.052s] (549/805) server-core protocol::tests::server_message_draft_over_roundtrips
+        PASS [   0.050s] (550/805) server-core protocol::tests::server_message_draft_state_update_roundtrips
+        PASS [   0.041s] (551/805) server-core protocol::tests::server_message_emote_roundtrips
+        PASS [   0.063s] (552/805) server-core protocol::tests::server_message_draft_timer_sync_roundtrips
+        PASS [   0.049s] (553/805) server-core protocol::tests::server_message_game_created_roundtrips
+        PASS [   0.037s] (554/805) server-core protocol::tests::server_message_game_over_roundtrips
+        PASS [   0.032s] (555/805) server-core protocol::tests::server_message_lobby_update_roundtrips
+        PASS [   0.035s] (556/805) server-core protocol::tests::server_message_mana_payment_preview_roundtrips
+        PASS [   0.065s] (557/805) server-core protocol::tests::server_message_lobby_game_added_roundtrips
+        PASS [   0.070s] (558/805) server-core protocol::tests::server_message_interaction_preview_roundtrips
+        PASS [   0.067s] (559/805) server-core protocol::tests::server_message_lobby_game_removed_roundtrips
+        PASS [   0.066s] (560/805) server-core protocol::tests::server_message_lobby_game_updated_roundtrips
+        PASS [   0.096s] (561/805) server-core protocol::tests::server_message_game_started_with_opponent_name_roundtrips
+        PASS [   0.031s] (562/805) server-core protocol::tests::server_message_tagged_json_format
+        PASS [   0.114s] (563/805) server-core protocol::tests::server_message_game_started_without_opponent_name_roundtrips
+        PASS [   0.058s] (564/805) server-core protocol::tests::server_message_password_required_roundtrips
+        PASS [   0.048s] (565/805) server-core protocol::tests::server_message_player_count_roundtrips
+        PASS [   0.055s] (566/805) server-core protocol::tests::server_message_pong_roundtrips
+        PASS [   0.051s] (567/805) server-core protocol::tests::server_message_takeback_resolved_omits_resolved_by_when_none
+        PASS [   0.041s] (568/805) server-core protocol::tests::server_message_timer_update_roundtrips
+        PASS [   0.038s] (569/805) server-core protocol::tests::session_attached_roundtrips_with_only_its_own_token
+        PASS [   0.062s] (570/805) server-core protocol::tests::server_message_takeback_resolved_roundtrips
+        PASS [   0.069s] (571/805) server-core protocol::tests::server_message_takeback_requested_roundtrips
+        PASS [   0.029s] (572/805) server-core protocol::tests::unregister_lobby_roundtrips
+        PASS [   0.049s] (573/805) server-core protocol::tests::terminal_bootstrap_request_roundtrips_with_exact_full_key
+        PASS [   0.038s] (574/805) server-core protocol::tests::terminal_delivery_response_roundtrips
+        PASS [   0.072s] (575/805) server-core protocol::tests::state_update_fixture_matches_server_message_contract
+        PASS [   1.180s] (576/805) server-core game_state_snapshot_wire_guard::tests::game_state_guard_rejects_oversized_objects
+        PASS [   0.060s] (577/805) server-core reconnect::tests::check_expired_retains_non_expired
+        PASS [   0.068s] (578/805) server-core reconnect::tests::check_expired_reports_a_multi_seat_game_once
+        PASS [   0.049s] (579/805) server-core reconnect::tests::expired_attempt_does_not_consume_the_forfeit_record
+        PASS [   0.070s] (580/805) server-core reconnect::tests::check_expired_returns_expired_games
+        PASS [   0.108s] (581/805) server-core protocol::tests::state_update_rewind_targets_roundtrip_and_omission
+        PASS [   0.053s] (582/805) server-core reconnect::tests::per_disconnect_grace_periods_are_independent
+        PASS [   0.061s] (583/805) server-core reconnect::tests::check_expired_with_players_stays_per_seat
+        PASS [   0.029s] (584/805) server-core reconnect::tests::reconnect_within_grace_period_succeeds
+        PASS [   0.036s] (585/805) server-core reconnect::tests::reconnect_unknown_game_returns_not_found
+        PASS [   0.067s] (586/805) server-core reconnect::tests::reconnect_after_expiry_fails
+        PASS [   1.213s] (587/805) server-core game_state_snapshot_wire_guard::tests::snapshot_rejects_oversized_object_map
+        PASS [   0.066s] (588/805) server-core reconnect::tests::reporting_an_expired_game_does_not_consume_its_records
+        PASS [   0.061s] (589/805) server-core seat_mutation_wire_guard::tests::seat_mutation_guard_accepts_valid_ai_named_deck
+        PASS [   0.061s] (590/805) server-core seat_mutation_wire_guard::tests::seat_mutation_guard_rejects_oversized_named_deck
+        PASS [   0.064s] (591/805) server-core seat_mutation_wire_guard::tests::seat_mutation_guard_rejects_oversized_seat_index
+        PASS [   0.071s] (592/805) server-core session::tests::a_human_seats_choice_is_recorded_but_never_reaches_the_wire
+        PASS [   0.060s] (593/805) server-core session::tests::a_join_advances_the_persistence_revision
+        PASS [   0.098s] (594/805) server-core session::tests::a_faulted_session_is_still_a_no_op_even_with_a_missing_seat_deck
+        PASS [   0.059s] (595/805) server-core session::tests::a_named_ai_deck_choice_is_not_coerced_to_a_list
+        PASS [   0.093s] (596/805) server-core session::tests::a_human_seats_recorded_choice_re_resolves_to_its_payload
+        PASS [   0.071s] (597/805) server-core session::tests::a_legacy_snapshot_without_deck_choices_still_loads
+        PASS [   0.065s] (598/805) server-core session::tests::a_no_op_seat_edit_still_allocates_a_revision
+        PASS [   0.121s] (599/805) server-core session::tests::a_host_seat_created_without_provenance_is_refused_after_a_restart
+        PASS [   0.055s] (600/805) server-core session::tests::a_pregame_room_issues_no_seat_while_its_host_is_away
+        PASS [   0.059s] (601/805) server-core session::tests::a_requested_code_is_claimed
+        PASS [   0.081s] (602/805) server-core session::tests::a_requested_code_held_by_a_live_session_is_code_in_use
+        PASS [   0.073s] (603/805) server-core session::tests::a_restored_ai_seat_keeps_its_deck_and_its_choice
+        PASS [   0.086s] (604/805) server-core session::tests::a_restore_seeds_the_pool_encoding_it_was_rebuilt_from
+        PASS [   0.162s] (605/805) server-core session::tests::a_live_room_still_starts_and_deals_cards
+        PASS [   0.106s] (606/805) server-core session::tests::a_restored_cedh_table_still_starts
+        PASS [   0.098s] (607/805) server-core session::tests::a_restored_deck_whose_cards_are_gone_leaves_its_seat_empty
+        PASS [   0.093s] (608/805) server-core session::tests::a_restored_named_deck_this_build_dropped_leaves_its_seat_empty
+        PASS [   0.061s] (609/805) server-core session::tests::a_seat_edit_advances_the_persistence_revision
+        PASS [   0.133s] (610/805) server-core session::tests::a_restored_non_cedh_deck_under_a_cedh_seat_is_still_refused
+        PASS [   0.152s] (611/805) server-core session::tests::a_restored_named_seat_resolves_to_its_starter_deck
+        PASS [   0.130s] (612/805) server-core session::tests::a_restored_random_choice_invents_no_deck_and_the_guard_refuses
+        PASS [   0.055s] (613/805) server-core session::tests::a_started_game_is_not_refused_as_host_away
+        PASS [   0.118s] (614/805) server-core session::tests::a_start_the_guard_refuses_leaves_the_room_editable
+        PASS [   0.127s] (615/805) server-core session::tests::a_reversed_activation_records_no_takeback_point
+        PASS [   0.297s] (616/805) server-core session::tests::a_restore_rebuilds_conjure_faces_seeded_only_by_a_deck_pool
+        PASS [   0.057s] (617/805) server-core session::tests::action_from_wrong_player_rejected
+        PASS [   0.221s] (618/805) server-core session::tests::a_restored_room_keeps_every_seats_deck_and_deals_real_libraries
+        PASS [   0.112s] (619/805) server-core session::tests::a_started_snapshot_that_still_carries_choices_restores_without_re_resolving
+        PASS [   0.097s] (620/805) server-core session::tests::action_rejected_while_takeback_pending
+        PASS [   0.144s] (621/805) server-core session::tests::a_started_sessions_snapshot_carries_no_deck_choices
+        PASS [   0.270s] (622/805) server-core session::tests::a_restored_session_that_kept_the_saved_stream_position_panics_on_its_next_shuffle
+        PASS [   0.081s] (623/805) server-core session::tests::ai_driver_fault_blocks_takebacks_and_match_concede
+        PASS [   0.074s] (624/805) server-core session::tests::an_ai_resolve_all_does_not_prompt_the_human
+        PASS [   0.124s] (625/805) server-core session::tests::ai_driver_failure_gate_requires_an_authorized_ai_submitter
+        PASS [   0.122s] (626/805) server-core session::tests::ai_driver_fault_fences_persistence_without_synthetic_state_transition
+        PASS [   0.097s] (627/805) server-core session::tests::an_ai_deck_that_fails_re_resolution_refuses_to_start
+        PASS [   0.159s] (628/805) server-core session::tests::an_ai_create_claims_and_collides_on_a_requested_code
+        PASS [   0.060s] (629/805) server-core session::tests::both_projections_echo_the_installed_ai_deck
+        PASS [   0.075s] (630/805) server-core session::tests::create_game_defaults_undeclared_config_to_a_seat_compatible_format
+        PASS [   0.099s] (631/805) server-core session::tests::bound_session_does_not_report_authority_unbound
+        PASS [   0.173s] (632/805) server-core session::tests::approved_takeback_rekeys_all_interaction_capabilities
+        PASS [   0.043s] (633/805) server-core session::tests::create_game_defaults_undeclared_config_to_standard_at_two_seats
+        PASS [   0.031s] (634/805) server-core session::tests::create_game_error_maps_onto_the_wire_error
+        PASS [   0.063s] (635/805) server-core session::tests::create_game_honors_a_configured_starting_life
+        PASS [   0.049s] (636/805) server-core session::tests::create_game_path_skips_occupied_code_before_inserting_session
+        PASS [   0.063s] (637/805) server-core session::tests::create_game_rejects_limited_range_until_supported
+        PASS [   0.523s] (638/805) server-core session::tests::a_started_session_restores_without_re_resolving_its_seat_decks
+        PASS [   0.059s] (639/805) server-core session::tests::create_game_rejects_player_count_outside_format_registry_range
+        PASS [   0.060s] (640/805) server-core session::tests::create_game_returns_code_and_token
+        PASS [   0.075s] (641/805) server-core session::tests::create_game_rejects_starting_life_outside_bounds
+        PASS [   0.050s] (642/805) server-core session::tests::deck_pools_are_encoded_once_until_their_content_changes
+        PASS [   0.081s] (643/805) server-core session::tests::create_then_join_works
+        PASS [   0.069s] (644/805) server-core session::tests::created_session_binds_interaction_authority
+        PASS [   2.052s] (645/805) server-core harness::tests::full_8_player_premier_draft_picks_complete
+        PASS [   0.108s] (646/805) server-core session::tests::create_game_with_ai_records_the_host_choice_it_was_given
+        PASS [   0.067s] (647/805) server-core session::tests::disconnect_and_reconnect_works
+        PASS [   0.057s] (648/805) server-core session::tests::duplicate_opening_hand_bottom_selection_is_rejected
+        PASS [   0.067s] (649/805) server-core session::tests::duplicate_mulligan_bottom_selection_is_rejected
+        PASS [   0.061s] (650/805) server-core session::tests::every_generated_code_is_a_valid_requested_code
+        PASS [   0.041s] (651/805) server-core session::tests::explicit_restore_resume_is_a_revision_preserving_noop_for_ordinary_priority
+        PASS [   0.053s] (652/805) server-core session::tests::from_persisted_rejects_a_persisted_player_count_outside_the_format_registry_range
+        PASS [   0.028s] (653/805) server-core session::tests::game_code_generation_skips_a_live_session_code
+        PASS [   0.080s] (654/805) server-core session::tests::explicit_restore_resume_repairs_a_legacy_latch_whose_run_is_gone
+        PASS [   0.030s] (655/805) server-core session::tests::game_code_is_uppercase_alphanumeric
+        PASS [   0.051s] (656/805) server-core session::tests::grant_outside_sandbox_is_rejected
+        PASS [   0.043s] (657/805) server-core session::tests::handle_interaction_binds_the_actor_to_the_authenticated_token
+        PASS [   0.119s] (658/805) server-core session::tests::full_persist_snapshot_roundtrips_exact_generation_and_revision
+        PASS [   0.197s] (659/805) server-core session::tests::engine_apply_accepts_manual_payment_mode_casts
+        PASS [   0.083s] (660/805) server-core session::tests::handle_action_hook_writes_real_events_stream_file
+        PASS [   0.046s] (661/805) server-core session::tests::handle_interaction_rejects_an_unknown_token
+        PASS [   0.034s] (662/805) server-core session::tests::host_can_grant_debug_to_guest
+        PASS [   0.068s] (663/805) server-core session::tests::handle_interaction_rejects_a_stale_submission_benignly
+        PASS [   0.089s] (664/805) server-core session::tests::handle_interaction_defers_to_a_pending_takeback
+        PASS [   0.072s] (665/805) server-core session::tests::handle_interaction_rejects_an_oversized_response_before_the_reducer
+        PASS [   0.029s] (666/805) server-core session::tests::loop_detection_config_persists_across_bo3_rebuild
+        PASS [   0.038s] (667/805) server-core session::tests::join_nonexistent_game_fails
+        PASS [   0.045s] (668/805) server-core session::tests::host_cannot_self_revoke
+        PASS [   0.063s] (669/805) server-core session::tests::join_full_game_fails
+        PASS [   0.060s] (670/805) server-core session::tests::keep_on_blocker_combat_damage_is_accepted_and_wrong_total_rejected
+        PASS [   0.028s] (671/805) server-core session::tests::match_concede_distinguishes_lifecycle_refusal_from_operational_failure
+        PASS [   0.038s] (672/805) server-core session::tests::no_requested_code_mints_one
+        PASS [   0.033s] (673/805) server-core session::tests::non_sandbox_game_has_empty_debug_permitted
+        PASS [   0.072s] (674/805) server-core session::tests::native_cube_pool_survives_start_and_disk_recovery_without_deduplication
+        PASS [   0.053s] (675/805) server-core session::tests::non_host_cannot_grant_debug
+        PASS [   0.049s] (676/805) server-core session::tests::non_sandbox_rejects_debug_action
+        PASS [   0.030s] (677/805) server-core session::tests::pending_takeback_survives_disconnect_and_reconnect
+        PASS [   0.048s] (678/805) server-core session::tests::pending_takeback_message_reflects_request_state
+        PASS [   0.033s] (679/805) server-core session::tests::persisted_session_with_limited_range_is_rejected
+        PASS [   0.027s] (680/805) server-core session::tests::player_slot_info_includes_two_headed_giant_team_metadata
+        PASS [   0.028s] (681/805) server-core session::tests::player_slot_info_omits_team_metadata_for_individual_formats
+        PASS [   0.022s] (682/805) server-core session::tests::player_token_is_hex
+        PASS [   2.478s] (683/805) server-core harness::tests::crash_and_restore_during_drafting_preserves_state
+        PASS [   0.073s] (684/805) server-core session::tests::persisted_takeback_restore_rekeys_abandoned_interaction_capabilities
+        PASS [   0.058s] (685/805) server-core session::tests::preview_interaction_binds_the_actor_to_the_authenticated_token
+        PASS [   0.030s] (686/805) server-core session::tests::re_sending_the_same_ai_seat_yields_an_empty_delta
+        PASS [   0.074s] (687/805) server-core session::tests::preview_interaction_commits_nothing
+        PASS [   0.067s] (688/805) server-core session::tests::preview_interaction_refuses_while_either_interlock_holds
+        PASS [   0.068s] (689/805) server-core session::tests::priority_passing_mode_route_updates_recommendation_without_history_or_advance
+        PASS [   0.031s] (690/805) server-core session::tests::reconnect_restores_between_games_waiting_state
+        PASS [   0.033s] (691/805) server-core session::tests::remove_game_clears_token_index_and_reconnect_entries
+        PASS [   0.053s] (692/805) server-core session::tests::remove_counters_intermediate_submit_is_validated_by_engine
+        PASS [   0.035s] (693/805) server-core session::tests::remove_nonexistent_game_reports_no_entry
+        PASS [   0.036s] (694/805) server-core session::tests::removing_a_seat_renumbers_deck_and_choice_together
+        PASS [   0.041s] (695/805) server-core session::tests::reorder_hand_invalid_permutation_is_rejected
+        PASS [   0.037s] (696/805) server-core session::tests::reorder_hand_succeeds_while_opponent_has_priority
+        PASS [   0.038s] (697/805) server-core session::tests::reordered_dig_selection_is_accepted_not_rejected_as_illegal
+        PASS [   2.621s] (698/805) server-core harness::tests::full_lifecycle_picks_then_deckbuild
+        PASS [   0.091s] (699/805) server-core session::tests::remove_game_evicts_cached_log_writers
+        PASS [   0.052s] (700/805) server-core session::tests::reordered_mulligan_bottom_selection_is_accepted_not_rejected_as_illegal
+        PASS [   0.058s] (701/805) server-core session::tests::reordered_scry_selection_is_accepted_not_rejected_as_illegal
+        PASS [   0.052s] (702/805) server-core session::tests::resolve_all_at_an_ai_table_needs_no_ai_consent
+        PASS [   2.729s] (703/805) server-core harness::tests::all_seats_have_42_cards_after_all_picks
+        PASS [   0.075s] (704/805) server-core session::tests::restore_keeps_a_sandbox_games_capability_including_its_revocations
+        PASS [   0.104s] (705/805) server-core session::tests::reordered_opening_hand_bottom_selection_is_accepted_not_rejected_as_illegal
+        PASS [   0.063s] (706/805) server-core session::tests::restore_session_stamps_this_instances_hosting
+        PASS [   0.047s] (707/805) server-core session::tests::restored_session_rebinds_interaction_authority
+        PASS [   0.058s] (708/805) server-core session::tests::restored_session_resumes_a_coherent_automation_once_on_explicit_request
+        PASS [   0.047s] (709/805) server-core session::tests::revoked_seat_cannot_create_debug_cards_through_server_card_database
+        PASS [   0.192s] (710/805) server-core session::tests::repeated_walk_back_still_requires_unanimity_at_each_step
+        PASS [   0.053s] (711/805) server-core session::tests::run_ai_is_noop_while_takeback_is_pending
+        PASS [   0.051s] (712/805) server-core session::tests::run_ai_publishes_the_completed_shared_session
+        PASS [   0.033s] (713/805) server-core session::tests::sandbox_accepts_debug_action_from_host
+        PASS [   0.044s] (714/805) server-core session::tests::sandbox_game_seeds_all_seats_in_debug_permitted
+        PASS [   0.180s] (715/805) server-core session::tests::restore_keeps_the_sidecars_capability_when_it_resumes_its_own_game
+        PASS [   0.044s] (716/805) server-core session::tests::sandbox_rejects_debug_from_revoked_seat
+        PASS [   0.041s] (717/805) server-core session::tests::seat_ai_records_the_choice_it_was_given
+        PASS [   0.034s] (718/805) server-core session::tests::seat_delta_rebuild_rederives_debug_capability
+        PASS [   0.245s] (719/805) server-core session::tests::restore_drops_a_sidecar_blobs_debug_capability_on_a_shared_server
+        PASS [   0.029s] (720/805) server-core session::tests::seat_mutation_unindexes_invalidated_human_token
+        PASS [   0.062s] (721/805) server-core session::tests::server_debug_create_preflight_runs_before_database_lookup
+        PASS [   0.061s] (722/805) server-core session::tests::server_debug_create_zeroes_skip_lifecycle_and_takeback_side_effects
+        PASS [   0.073s] (723/805) server-core session::tests::server_card_database_resolves_debug_card_batches
+        PASS [   0.057s] (724/805) server-core session::tests::session_exclusive_refuses_while_a_handle_is_outstanding
+        PASS [   0.082s] (725/805) server-core session::tests::set_phase_stops_lands_on_authenticated_players_entry
+        PASS [   0.098s] (726/805) server-core session::tests::shared_instance_does_not_seed_debug_capability
+        PASS [   1.528s] (727/805) server-core session::tests::a_turn_opened_inside_run_ai_is_rewindable_and_resumes_instead_of_freezing
+        PASS [   0.083s] (728/805) server-core session::tests::single_user_instance_seeds_human_seats_through_start_game
+        PASS [   0.035s] (729/805) server-core session::tests::start_game_rejects_non_cedh_deck_when_any_ai_seat_is_cedh
+        PASS [   0.337s] (730/805) server-core session::tests::restore_reseeds_the_rng_and_drops_the_saved_stream_position
+        PASS [   0.085s] (731/805) server-core session::tests::start_game_hook_writes_real_events_stream_file
+        PASS [   0.033s] (732/805) server-core session::tests::takeback_cancel_is_requester_only
+        PASS [   0.121s] (733/805) server-core session::tests::split_attack_declaration_is_admitted_and_validated_by_the_engine
+        PASS [   0.044s] (734/805) server-core session::tests::takeback_auto_approves_for_sole_human_seat
+        PASS [   1.945s] (735/805) server-core session::tests::a_bo3_game_boundary_retires_both_rewind_rings
+        PASS [   0.155s] (736/805) server-core session::tests::single_user_human_seat_may_submit_debug_action_but_ai_seat_may_not
+        PASS [   0.055s] (737/805) server-core session::tests::takeback_decline_leaves_state_untouched
+        PASS [   0.037s] (738/805) server-core session::tests::the_bracket_message_is_unchanged_and_is_not_reused
+        PASS [   0.050s] (739/805) server-core session::tests::takeback_requires_unanimous_human_approval
+        PASS [   0.052s] (740/805) server-core session::tests::takeback_with_no_history_is_rejected
+        PASS [   0.037s] (741/805) server-core session::tests::try_session_is_none_while_contended_and_some_when_idle
+        PASS [   0.089s] (742/805) server-core session::tests::takeback_restores_requesters_own_action_not_latest_global_action
+        PASS [   0.036s] (743/805) server-core session::tests::two_games_lock_independently
+        PASS [   0.082s] (744/805) server-core session::tests::the_start_guard_refuses_instead_of_dealing_empty_libraries
+        PASS [   0.071s] (745/805) server-core session::tests::turning_an_ai_seat_back_into_a_waiting_seat_clears_both_arrays
+        PASS [   0.056s] (746/805) server-core session::tests::undeclared_config_session_at_four_seats_survives_persist_round_trip
+        PASS [   0.039s] (747/805) server-core session::tests::unindex_tokens_removes_only_named_tokens
+        PASS [   0.043s] (748/805) server-core session::tests::with_sandbox_sets_flag_and_is_idempotent
+        PASS [   0.037s] (749/805) server-core spectator_wire_guard::tests::draft_spectator_capacity_rejects_slot_at_cap
+        PASS [   0.040s] (750/805) server-core spectator_wire_guard::tests::draft_spectator_capacity_accepts_slot_below_cap
+        PASS [   0.028s] (751/805) server-core spectator_wire_guard::tests::game_spectator_capacity_accepts_slot_below_cap
+        PASS [   0.026s] (752/805) server-core spectator_wire_guard::tests::spectator_join_rejects_oversized_code
+        PASS [   0.042s] (753/805) server-core spectator_wire_guard::tests::game_spectator_capacity_rejects_slot_at_cap
+        PASS [   0.036s] (754/805) server-core spectator_wire_guard::tests::spectate_draft_rejects_oversized_code
+        PASS [   0.035s] (755/805) server-core spectator_wire_guard::tests::spectator_join_accepts_valid_code
+        PASS [   0.035s] (756/805) server-core takeback::tests::a_batch_with_no_turn_boundary_records_nothing
+        PASS [   0.044s] (757/805) server-core takeback::tests::a_batch_carrying_two_boundaries_records_only_the_one_it_rests_in
+        PASS [   0.039s] (758/805) server-core takeback::tests::a_batch_that_started_and_ended_a_turn_records_nothing
+        PASS [   0.046s] (759/805) server-core takeback::tests::record_turn_rewind_point_stores_the_boundary_it_came_to_rest_in
+        PASS [   0.152s] (760/805) server-core session::tests::undo_is_repeatable_without_an_intervening_action
+        PASS [   0.032s] (761/805) server-core takeback::tests::turn_rewind_capture_is_silent_on_a_shared_host
+        PASS [   1.694s] (762/805) server-core session::tests::an_online_session_publishes_no_rewind_targets_and_refuses_a_turn_start
+        PASS [   0.016s] (763/805) server-core::game_action_payload_guard accepts_reasonably_sized_action_list
+        PASS [   0.038s] (764/805) server-core::game_action_payload_guard accepts_realistic_fixed_shortcut_count
+        PASS [   0.053s] (765/805) server-core takeback::tests::turn_rewind_ring_is_bounded_and_drops_oldest
+        PASS [   0.051s] (766/805) server-core::game_action_payload_guard accepts_debug_token_preset_pt_override_fields
+        PASS [   0.042s] (767/805) server-core::game_action_payload_guard accepts_realistic_tap_land_semantic_selection
+        PASS [   0.025s] (768/805) server-core::game_action_payload_guard accepts_scalar_deferred_mana_quantity_without_new_collection_budget
+        PASS [   0.017s] (769/805) server-core::game_action_payload_guard accepts_within_bound_declare_shortcut_template
+        PASS [   0.019s] (770/805) server-core::game_action_payload_guard rejects_over_cap_fixed_shortcut_count
+        PASS [   0.024s] (771/805) server-core::game_action_payload_guard passes_scalar_only_action
+        PASS [   0.024s] (772/805) server-core::game_action_payload_guard rejects_debug_create_count_above_engine_ceiling
+        PASS [   0.041s] (773/805) server-core::game_action_payload_guard rejects_over_cap_shortcut_ranking_on_every_scheduled_arm
+        PASS [   0.028s] (774/805) server-core::game_action_payload_guard rejects_oversized_category_choice_payload
+        PASS [   0.045s] (775/805) server-core::game_action_payload_guard rejects_over_cap_shortcut_schedule
+        PASS [   0.042s] (776/805) server-core::game_action_payload_guard rejects_oversized_action_list
+        PASS [   0.042s] (777/805) server-core::game_action_payload_guard rejects_oversized_choice_string
+        PASS [   0.027s] (778/805) server-core::game_action_payload_guard rejects_oversized_debug_keyword_ast_payload
+        PASS [   0.029s] (779/805) server-core::game_action_payload_guard rejects_oversized_debug_counter_name
+        PASS [   0.022s] (780/805) server-core::game_action_payload_guard rejects_oversized_debug_token_keyword_ast_payload
+        PASS [   0.044s] (781/805) server-core::game_action_payload_guard rejects_oversized_debug_payload
+        PASS [   0.036s] (782/805) server-core::game_action_payload_guard rejects_oversized_debug_token_counter_name
+        PASS [   1.822s] (783/805) server-core session::tests::an_approved_rollback_rebuilds_the_ai_session
+        PASS [   0.034s] (784/805) server-core::game_action_payload_guard rejects_oversized_mana_choice_payloads
+        PASS [   0.043s] (785/805) server-core::game_action_payload_guard rejects_oversized_declare_shortcut_template
+        PASS [   0.034s] (786/805) server-core::game_action_payload_guard rejects_oversized_nested_sideboard_card_name
+        PASS [   0.037s] (787/805) server-core::game_action_payload_guard rejects_oversized_phyrexian_choice_payload
+        PASS [   0.022s] (788/805) server-core::lobby_wire_contract lobby_client_messages_roundtrip_into_canonical
+        PASS [   0.026s] (789/805) server-core::lobby_wire_contract canonical_create_frame_keeps_requested_code_through_the_broker_parse
+        PASS [   0.036s] (790/805) server-core::lobby_wire_contract canonical_client_frames_parse_via_broker
+        PASS [   0.047s] (791/805) server-core::game_action_payload_guard rejects_oversized_tap_land_selection_vectors
+        PASS [   0.051s] (792/805) server-core::game_action_payload_guard rejects_tap_land_selection_cumulative_entry_and_string_budgets
+        PASS [   0.027s] (793/805) server-core::lobby_wire_contract lobby_server_messages_byte_identical_to_canonical
+        PASS [   0.022s] (794/805) server-core::lobby_wire_contract server_hello_mode_byte_identical
+        PASS [   0.033s] (795/805) server-core::lobby_wire_contract non_lobby_frame_routes_to_reject
+        PASS [   0.221s] (796/805) server-core::game_action_payload_guard compact_selector_removes_a_real_saved_key_larger_than_the_ast_wire_budget
+        PASS [   0.553s] (797/805) server-core session::tests::starting_two_seat_room_rebinds_first_interaction_projection
+        PASS [   0.690s] (798/805) server-core session::tests::turn_rewind_requires_unanimity_at_a_multi_human_table
+        PASS [   3.892s] (799/805) server-core harness::tests::crash_and_restore_during_deckbuilding_preserves_pools
+        PASS [   0.928s] (800/805) server-core session::tests::turn_rewind_reaches_a_boundary_the_action_ring_cannot
+        PASS [   1.147s] (801/805) server-core session::tests::single_user_turn_rewind_auto_approves_and_stays_reselectable
+        PASS [   4.253s] (802/805) server-core harness::tests::advance_round_then_generate_pairs_round_two
+        PASS [   2.591s] (803/805) server-core session::tests::approved_rewind_prunes_only_the_discarded_branch
+        PASS [   4.948s] (804/805) server-core session::tests::approved_takeback_rekeys_precast_shortcut_capabilities
+        PASS [   7.143s] (805/805) server-core session::tests::persisted_session_restores_legacy_raw_state_and_current_trusted_envelope
+────────────
+     Summary [  10.770s] 805 tests run: 805 passed, 0 skipped

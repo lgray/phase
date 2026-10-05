@@ -1,0 +1,18 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 52s
+────────────
+ Nextest run ID c860a1b1-b559-4890-b494-2f4a509d7666 with nextest profile: default
+    Starting 11 tests across 1 binary (23204 tests skipped)
+        PASS [   0.024s] ( 1/11) phase-engine game::zones::hand_entry_rebind_tests::the_replay_precondition_is_the_pre_rebind_owner
+        PASS [   0.025s] ( 2/11) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_card_leaving_a_per_seat_zone_keeps_its_owner
+        PASS [   0.025s] ( 3/11) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_taker_who_already_owns_the_card_journals_no_rebind
+        PASS [   0.025s] ( 4/11) phase-engine game::zones::hand_entry_rebind_tests::a_later_zone_change_does_not_resurrect_the_old_owner_as_controller
+        PASS [   0.025s] ( 5/11) phase-engine game::zones::hand_entry_rebind_tests::replaying_the_command_reproduces_the_live_rebind
+        PASS [   0.025s] ( 6/11) phase-engine game::zone_pipeline::hand_entry_receiver_tests::the_hand_entry_axis_gates_the_rebind
+        PASS [   0.026s] ( 7/11) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_card_redirected_to_command_keeps_its_owner
+        PASS [   0.027s] ( 8/11) phase-engine game::zones::hand_entry_rebind_tests::the_journal_validator_accepts_the_rebind_and_refuses_each_malformed_form
+        PASS [   0.027s] ( 9/11) phase-engine game::zones::hand_entry_rebind_tests::an_unrebound_command_omits_the_field_and_old_saves_default_it
+        PASS [   0.031s] (10/11) phase-engine game::zone_pipeline::hand_entry_receiver_tests::declining_the_redirect_delivers_both_members_to_the_taker
+        PASS [   0.034s] (11/11) phase-engine game::zone_pipeline::hand_entry_receiver_tests::the_taker_survives_a_serialized_pause_and_a_redirect_clears_the_rebind
+────────────
+     Summary [   0.054s] 11 tests run: 11 passed, 23204 skipped

@@ -1,0 +1,49 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: unused import: `GameScenario`
+ --> crates/engine/tests/integration/dandan_hand_entry_ownership.rs:8:42
+  |
+8 | use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+  |                                          ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-engine` (test "integration") generated 1 warning (run `cargo fix --test "integration" -p phase-engine` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 38s
+────────────
+ Nextest run ID ed462d67-8b0c-4ffc-bc5b-1dbcb5ed1e8a with nextest profile: default
+    Starting 11 tests across 1 binary (9422 tests skipped)
+        PASS [   4.395s] ( 1/11) phase-engine::integration dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows
+        PASS [   4.444s] ( 2/11) phase-engine::integration dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand
+        PASS [   4.535s] ( 3/11) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer
+        PASS [   4.844s] ( 4/11) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+        PASS [   4.999s] ( 5/11) phase-engine::integration dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership
+        PASS [   5.053s] ( 6/11) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+        PASS [   5.159s] ( 7/11) phase-engine::integration dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile
+        PASS [   5.287s] ( 8/11) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_from_the_pile_holder_and_in_standard_are_unchanged
+        PASS [   5.596s] ( 9/11) phase-engine::integration dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand
+        PASS [   5.774s] (10/11) phase-engine::integration dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat
+        FAIL [   5.814s] (11/11) phase-engine::integration dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 5.75s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand' (148938) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:34:9:
+    assertion `left == right` failed: the sought creature: ObjectId(2) is in exactly PlayerId(1)'s hand (checked PlayerId(1))
+      left: false
+     right: true
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   5.839s] 11 tests run: 10 passed, 1 failed, 9422 skipped
+        FAIL [   5.814s] (11/11) phase-engine::integration dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+error: test run failed

@@ -1,0 +1,13 @@
+    Checking phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling server-core v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/server-core)
+    Checking phase-ai v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Checking draft-core v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-core)
+    Checking lobby-broker v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/lobby-broker)
+    Checking manabrew-compat v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/manabrew-compat)
+    Checking seat-reducer v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+    Checking phase-llm v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Checking draft-wasm v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-wasm)
+    Checking engine-wasm v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Checking phase-server v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11m 37s
+done rc=0

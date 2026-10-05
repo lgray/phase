@@ -1,0 +1,18 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+== control (candidate)
+        PASS [   2.097s] (1/3) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+        PASS [   2.111s] (2/3) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+        PASS [   2.139s] (3/3) phase-engine::integration dandan_hand_entry_ownership::v4c_dig_put_all_into_hand_belongs_to_the_receiver
+     Summary [   2.164s] 3 tests run: 3 passed, 32736 skipped
+== mutant: put-all taker removed
+        PASS [   1.966s] (1/3) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+        PASS [   1.980s] (2/3) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+        FAIL [   1.978s] (3/3) phase-engine::integration dandan_hand_entry_ownership::v4c_dig_put_all_into_hand_belongs_to_the_receiver
+     Summary [   2.006s] 3 tests run: 2 passed, 1 failed, 32736 skipped
+        FAIL [   1.978s] (3/3) phase-engine::integration dandan_hand_entry_ownership::v4c_dig_put_all_into_hand_belongs_to_the_receiver
+== control after restore
+        PASS [   2.042s] (1/3) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+        PASS [   2.138s] (2/3) phase-engine::integration dandan_hand_entry_ownership::v4c_dig_put_all_into_hand_belongs_to_the_receiver
+        PASS [   2.158s] (3/3) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+     Summary [   2.182s] 3 tests run: 3 passed, 32736 skipped
+done rc=0

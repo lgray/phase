@@ -1,0 +1,61 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: unused import: `GameScenario`
+ --> crates/engine/tests/integration/dandan_hand_entry_ownership.rs:8:42
+  |
+8 | use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+  |                                          ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-engine` (test "integration") generated 1 warning (run `cargo fix --test "integration" -p phase-engine` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 58s
+────────────
+ Nextest run ID fc1327f8-1783-4793-b42a-b6b2e8728abd with nextest profile: default
+    Starting 22 tests across 2 binaries (32626 tests skipped)
+        PASS [   0.036s] ( 1/22) phase-engine game::zones::hand_entry_rebind_tests::the_replay_precondition_is_the_pre_rebind_owner
+        PASS [   0.046s] ( 2/22) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_card_redirected_to_command_keeps_its_owner
+        PASS [   0.047s] ( 3/22) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_taker_who_already_owns_the_card_journals_no_rebind
+        PASS [   0.048s] ( 4/22) phase-engine game::zones::hand_entry_rebind_tests::an_unrebound_command_omits_the_field_and_old_saves_default_it
+        PASS [   0.054s] ( 5/22) phase-engine game::zones::hand_entry_rebind_tests::the_journal_validator_accepts_the_rebind_and_refuses_each_malformed_form
+        PASS [   0.054s] ( 6/22) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_card_leaving_a_per_seat_zone_keeps_its_owner
+        PASS [   0.061s] ( 7/22) phase-engine game::zone_pipeline::hand_entry_receiver_tests::the_hand_entry_axis_gates_the_rebind
+        PASS [   0.068s] ( 8/22) phase-engine game::zones::hand_entry_rebind_tests::replaying_the_command_reproduces_the_live_rebind
+        PASS [   0.073s] ( 9/22) phase-engine game::zones::hand_entry_rebind_tests::a_later_zone_change_does_not_resurrect_the_old_owner_as_controller
+        PASS [   0.091s] (10/22) phase-engine game::zone_pipeline::hand_entry_receiver_tests::the_taker_survives_a_serialized_pause_and_a_redirect_clears_the_rebind
+        PASS [   0.097s] (11/22) phase-engine game::zone_pipeline::hand_entry_receiver_tests::declining_the_redirect_delivers_both_members_to_the_taker
+        PASS [   2.742s] (12/22) phase-engine::integration dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat
+        FAIL [   2.843s] (13/22) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+  stdout ───
+
+    running 1 test
+    test dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer ... FAILED
+
+    failures:
+
+    failures:
+        dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9432 filtered out; finished in 2.80s
+
+  stderr ───
+
+    thread 'dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer' (261863) panicked at crates/engine/tests/integration/dandan_hand_entry_ownership.rs:325:5:
+    assertion `left == right` failed: the exile record is the base value
+      left: Some(PlayerId(1))
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   2.935s] (14/22) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_from_the_pile_holder_and_in_standard_are_unchanged
+        PASS [   2.961s] (15/22) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer
+        PASS [   2.923s] (16/22) phase-engine::integration dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+        PASS [   2.980s] (17/22) phase-engine::integration dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows
+        PASS [   2.998s] (18/22) phase-engine::integration dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership
+        PASS [   3.057s] (19/22) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+        PASS [   3.013s] (20/22) phase-engine::integration dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand
+        PASS [   3.053s] (21/22) phase-engine::integration dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand
+        PASS [   3.185s] (22/22) phase-engine::integration dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile
+────────────
+     Summary [   3.212s] 22 tests run: 21 passed, 1 failed, 32626 skipped
+        FAIL [   2.843s] (13/22) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+error: test run failed

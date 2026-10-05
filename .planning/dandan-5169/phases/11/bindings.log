@@ -1,0 +1,12 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: function `resolve_and_apply_zone_change` is never used
+   --> crates/engine/src/game/zones.rs:913:8
+    |
+913 | pub fn resolve_and_apply_zone_change(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-engine` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 43s
+     Running `/home/lgray/vibe-coding/dandan-run/target-dandan/debug/interaction-bindings --check`

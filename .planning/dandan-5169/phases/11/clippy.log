@@ -1,0 +1,22 @@
+    Checking phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling server-core v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/server-core)
+    Checking phase-ai v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Checking draft-core v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-core)
+    Checking lobby-broker v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/lobby-broker)
+    Checking manabrew-compat v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/manabrew-compat)
+error: unused import: `GameScenario`
+ --> crates/engine/tests/integration/dandan_hand_entry_ownership.rs:8:42
+  |
+8 | use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+  |                                          ^^^^^^^^^^^^
+  |
+  = note: `-D unused-imports` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+    Checking seat-reducer v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+    Checking phase-llm v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+    Checking engine-wasm v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Checking draft-wasm v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-wasm)
+    Checking phase-server v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-server)
+error: could not compile `phase-engine` (test "integration") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

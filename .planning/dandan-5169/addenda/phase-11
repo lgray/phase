@@ -1,0 +1,1 @@
+Decision: S3 hand-entry rebind. crates/engine/tests/integration/dandan_shared_pile_storage.rs admitted (compiler-forced class): its one call of resolve_and_apply_zone_change gains the receiver argument when the function takes a single signature with `receiver: Option<PlayerId>`; every charter decision stands. 2026-10-05.

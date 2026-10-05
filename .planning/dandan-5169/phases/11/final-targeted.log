@@ -1,0 +1,272 @@
+   Compiling phase-engine v0.102.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 41s
+────────────
+ Nextest run ID 841d19b5-837d-4998-b62d-573f5a84336c with nextest profile: default
+    Starting 265 tests across 2 binaries (32383 tests skipped)
+        PASS [   0.029s] (  1/265) phase-engine game::costs::dandan_read_sweep_tests::payer_scoped_graveyard_exile_reads_the_shared_pile
+        PASS [   0.029s] (  2/265) phase-engine game::effects::choose_card::dandan_read_sweep_tests::offers_the_shared_pile_to_the_non_canonical_seat
+        PASS [   0.030s] (  3/265) phase-engine game::casting::dandan_read_sweep_tests::non_owner_grants_list_each_pile_card_once
+        PASS [   0.029s] (  4/265) phase-engine game::casting::dandan_read_sweep_tests::non_owner_grants_in_a_per_seat_format_read_the_other_seats_graveyard
+        PASS [   0.032s] (  5/265) phase-engine game::engine_payment_choices::dandan_read_sweep_tests::top_library_exile_cost_pays_from_the_shared_pile
+        PASS [   0.032s] (  6/265) phase-engine game::effects::dandan_read_sweep_tests::candidate_graveyard_size_reads_the_storage_authority
+        PASS [   0.032s] (  7/265) phase-engine game::engine::dandan_read_sweep_tests::recast_frame_prunes_the_shared_pile_graveyard
+        PASS [   0.033s] (  8/265) phase-engine game::casting::dandan_read_sweep_tests::non_owner_graveyard_ids_dedup_the_shared_pile
+        PASS [   0.032s] (  9/265) phase-engine game::augment::dandan_read_sweep_tests::candidates_read_the_storage_authority
+        PASS [   0.032s] ( 10/265) phase-engine game::cost_payability::dandan_read_sweep_tests::exile_cost_enumerators_read_the_shared_pile
+        PASS [   0.036s] ( 11/265) phase-engine game::effects::exile_face_down_pile::dandan_read_sweep_tests::the_non_canonical_seat_exiles_the_shared_pile_top
+        PASS [   0.036s] ( 12/265) phase-engine game::effects::stack_reach::dandan_read_sweep_tests::surveil_moves_come_from_the_shared_pile
+        PASS [   0.044s] ( 13/265) phase-engine game::effects::free_cast_from_zones::dandan_read_sweep_tests::the_graveyard_candidates_come_from_the_shared_pile
+        PASS [   0.051s] ( 14/265) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+        PASS [   0.053s] ( 15/265) phase-engine game::effects::bounce::dandan_read_sweep_tests::chosen_non_canonical_player_returns_a_card_from_the_shared_pile_graveyard
+        PASS [   0.031s] ( 16/265) phase-engine game::filter::dandan_axis_collapse_tests::an_unlicensed_filter_keeps_one_comparison
+        PASS [   0.032s] ( 17/265) phase-engine game::filter::dandan_axis_collapse_tests::a_filter_naming_the_shared_zone_admits_every_seat
+        PASS [   0.033s] ( 18/265) phase-engine game::filter::dandan_axis_collapse_tests::a_per_seat_format_never_collapses
+        PASS [   0.035s] ( 19/265) phase-engine game::filter::dandan_axis_collapse_tests::a_per_seat_zone_never_collapses
+        PASS [   0.039s] ( 20/265) phase-engine game::filter::dandan_axis_collapse_tests::a_destroy_observer_ignores_the_other_seats_creature_in_the_shared_graveyard
+        PASS [   0.033s] ( 21/265) phase-engine game::filter::dandan_axis_collapse_tests::the_owner_zone_entry_collapses_through_the_licensed_arm
+        PASS [   0.038s] ( 22/265) phase-engine game::filter::dandan_axis_collapse_tests::an_event_object_condition_licenses_only_a_named_origin
+        PASS [   0.039s] ( 23/265) phase-engine game::engine_payment_choices::dandan_read_sweep_tests::unless_mill_payment_mills_the_shared_pile
+        PASS [   0.034s] ( 24/265) phase-engine game::filter::dandan_axis_collapse_tests::each_door_licenses_only_the_zone_it_states
+        PASS [   0.038s] ( 25/265) phase-engine game::filter::dandan_axis_collapse_tests::a_chosen_players_shared_graveyard_admits_every_owner
+        PASS [   0.039s] ( 26/265) phase-engine game::filter::dandan_axis_collapse_tests::a_battlefield_resident_is_judged_by_its_controller
+        PASS [   0.032s] ( 27/265) phase-engine game::quantity::dandan_scoped_zone_tests::graveyard_aggregates_count_the_shared_pile_once
+        PASS [   0.044s] ( 28/265) phase-engine game::filter::dandan_axis_collapse_tests::a_zone_change_record_collapses_only_for_a_shared_origin
+        PASS [   0.033s] ( 29/265) phase-engine game::quantity::dandan_scoped_zone_tests::seats_reading_one_container_are_one_holder
+        PASS [   0.049s] ( 30/265) phase-engine game::quantity::dandan_scoped_zone_tests::graveyards_with_n_cards_counts_a_shared_pile_once
+        PASS [   0.034s] ( 31/265) phase-engine game::restrictions::dandan_read_sweep_tests::zone_count_conditions_read_the_shared_pile
+        PASS [   0.035s] ( 32/265) phase-engine game::restrictions::dandan_read_sweep_tests::zone_count_conditions_in_a_per_seat_format_read_the_seats_own_zone
+        PASS [   0.036s] ( 33/265) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_card_leaving_a_per_seat_zone_keeps_its_owner
+        PASS [   0.037s] ( 34/265) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_card_redirected_to_command_keeps_its_owner
+        PASS [   0.037s] ( 35/265) phase-engine game::zone_pipeline::hand_entry_receiver_tests::a_taker_who_already_owns_the_card_journals_no_rebind
+        PASS [   0.042s] ( 36/265) phase-engine game::quantity::dandan_scoped_zone_tests::zone_change_aggregate_from_the_shared_graveyard_claims_the_pile
+        PASS [   0.035s] ( 37/265) phase-engine game::zones::hand_entry_rebind_tests::replaying_the_command_reproduces_the_live_rebind
+        PASS [   0.042s] ( 38/265) phase-engine game::zones::hand_entry_rebind_tests::a_later_zone_change_does_not_resurrect_the_old_owner_as_controller
+        PASS [   0.047s] ( 39/265) phase-engine game::zone_pipeline::hand_entry_receiver_tests::the_hand_entry_axis_gates_the_rebind
+        PASS [   0.051s] ( 40/265) phase-engine game::zones::hand_entry_rebind_tests::an_unrebound_command_omits_the_field_and_old_saves_default_it
+        PASS [   0.045s] ( 41/265) phase-engine game::zones::hand_entry_rebind_tests::the_journal_validator_accepts_the_rebind_and_refuses_each_malformed_form
+        PASS [   0.055s] ( 42/265) phase-engine game::zone_pipeline::hand_entry_receiver_tests::declining_the_redirect_delivers_both_members_to_the_taker
+        PASS [   0.033s] ( 43/265) phase-engine types::format::tests::dandan_config_and_registry_entry
+        PASS [   0.039s] ( 44/265) phase-engine game::zones::hand_entry_rebind_tests::the_replay_precondition_is_the_pre_rebind_owner
+        PASS [   0.029s] ( 45/265) phase-engine::integration cr733_resolved_commands_p1::legacy_zero_pip_allocator_self_heals_instead_of_minting_the_sentinel
+        PASS [   0.027s] ( 46/265) phase-engine::integration cr733_resolved_commands_p1::provenance_journal_is_not_exposed_in_a_viewer_projection
+        PASS [   0.086s] ( 47/265) phase-engine game::zone_pipeline::hand_entry_receiver_tests::the_taker_survives_a_serialized_pause_and_a_redirect_clears_the_rebind
+        PASS [   0.059s] ( 48/265) phase-engine::integration cr733_resolved_attachment::equip_journals_an_exact_resolved_attachment
+        PASS [   0.022s] ( 49/265) phase-engine::integration cr733_resolved_commands_p2::exact_scalar_resource_removal_rejects_a_second_underflowing_apply
+        PASS [   0.077s] ( 50/265) phase-engine::integration cr733_resolved_attachment::unattach_journals_a_host_removal_without_a_timestamp_draw
+        PASS [   0.090s] ( 51/265) phase-engine::integration cr733_resolved_combat_membership::become_blocked_journals_a_mark_blocked_edit_and_replays_it
+        PASS [   0.049s] ( 52/265) phase-engine::integration cr733_resolved_commands_p2::real_damage_spell_replays_recorded_final_life_delta
+        PASS [   0.075s] ( 53/265) phase-engine::integration cr733_resolved_commands_p1::provenance_journal_is_truncated_at_the_turn_boundary
+        PASS [   0.075s] ( 54/265) phase-engine::integration cr733_resolved_commands_p1::real_mana_activation_records_exact_produced_and_spent_units
+        PASS [   0.108s] ( 55/265) phase-engine::integration cr733_resolved_combat_membership::place_blocking_journals_a_block_edit_and_replays_every_write
+        PASS [   0.048s] ( 56/265) phase-engine::integration cr733_resolved_commands_p2::real_mana_activation_replays_recorded_insert_and_spend_commands
+        PASS [   0.020s] ( 57/265) phase-engine::integration cr733_resolved_commands_p2::scalar_commands_compose_across_life_energy_counters_and_speed
+        PASS [   0.079s] ( 58/265) phase-engine::integration cr733_resolved_commands_p2::exact_mana_spend_rejects_a_second_removal
+        PASS [   0.103s] ( 59/265) phase-engine::integration cr733_resolved_commands_p2::real_counter_spell_replays_recorded_object_counter_delivery
+        PASS [   0.051s] ( 60/265) phase-engine::integration cr733_resolved_commands_p2::recorded_tap_rejects_double_apply_and_stale_incarnation
+        PASS [   0.088s] ( 61/265) phase-engine::integration cr733_resolved_commands_p2::real_spell_cast_replays_its_exact_ledger_record_once
+        PASS [   0.163s] ( 62/265) phase-engine::integration cr733_resolved_combat_membership::replay_fails_closed_when_the_recorded_precondition_no_longer_holds
+        PASS [   0.082s] ( 63/265) phase-engine::integration cr733_resolved_commands_p2::recorded_counter_rejects_double_apply_and_stale_incarnation
+        PASS [   0.174s] ( 64/265) phase-engine::integration cr733_resolved_combat_membership::enters_attacking_journals_and_replays_its_recorded_defender
+        PASS [   0.170s] ( 65/265) phase-engine::integration cr733_resolved_combat_membership::removal_journals_exact_participation_and_replays_it
+        PASS [   0.039s] ( 66/265) phase-engine::integration cr733_resolved_enter_tapped::enter_tapped_delivery_tail_journals_an_exact_resolved_tap
+        PASS [   0.086s] ( 67/265) phase-engine::integration cr733_resolved_copy_token_creation::copy_token_birth_journals_and_replays_exactly
+        PASS [   0.027s] ( 68/265) phase-engine::integration cr733_resolved_frame_transition::failed_resolve_keeps_only_the_proposal_slot_without_a_semantic_entry
+        PASS [   0.035s] ( 69/265) phase-engine::integration cr733_resolved_frame_transition::direct_choice_install_rejects_a_second_optional_owner_atomically
+        PASS [   0.202s] ( 70/265) phase-engine::integration cr733_resolved_combat_membership::replay_installs_recorded_defender_when_ambient_derivation_diverges
+        PASS [   0.109s] ( 71/265) phase-engine::integration cr733_resolved_copy_token_creation::copy_token_birth_folds_immediate_exceptions_and_replays_them
+        PASS [   0.046s] ( 72/265) phase-engine::integration cr733_resolved_frame_transition::current_resolution_wire_round_trip_preserves_frame_transition_journal_and_stack
+        PASS [   0.102s] ( 73/265) phase-engine::integration cr733_resolved_copy_token_creation::copy_token_birth_replays_the_cast_only_strip
+        PASS [   0.024s] ( 74/265) phase-engine::integration cr733_resolved_frame_transition::optional_effect_frame_cannot_survive_into_search_choice_parent_insertion
+        PASS [   0.024s] ( 75/265) phase-engine::integration cr733_resolved_frame_transition::malformed_prompt_coherence_errors_atomically
+        PASS [   0.038s] ( 76/265) phase-engine::integration cr733_resolved_frame_transition::frame_transition_commands_round_trip_and_apply_exact_stack_results
+        PASS [   0.081s] ( 77/265) phase-engine::integration cr733_resolved_entry_retags::ability_driven_entry_journals_an_exact_provenance_stamp
+        PASS [   0.027s] ( 78/265) phase-engine::integration cr733_resolved_frame_transition::production_parent_insertions_preserve_adjacency_and_journal_the_transition
+        PASS [   0.036s] ( 79/265) phase-engine::integration cr733_resolved_frame_transition::parking_beneath_a_live_prompt_journals_its_operand_and_replays_to_the_same_stack
+        PASS [   0.097s] ( 80/265) phase-engine::integration cr733_resolved_draw::divination_draw_replays_zone_changes_and_ledger_bookkeeping_exactly
+        PASS [   0.043s] ( 81/265) phase-engine::integration cr733_resolved_frame_transition::parentless_and_wrong_kind_frame_transitions_error_atomically
+        PASS [   0.084s] ( 82/265) phase-engine::integration cr733_resolved_entry_retags::entering_under_your_control_journals_an_exact_controller_override
+        PASS [   0.043s] ( 83/265) phase-engine::integration cr733_resolved_frame_transition::serialized_frame_transition_with_tampered_cause_is_rejected
+        PASS [   0.050s] ( 84/265) phase-engine::integration cr733_resolved_object_cease::token_cease_to_exist_journals_an_exact_resolved_removal
+        PASS [   0.175s] ( 85/265) phase-engine::integration cr733_resolved_copy_token_creation::copy_token_birth_with_post_birth_modifications_refuses_to_replay
+        PASS [   0.072s] ( 86/265) phase-engine::integration cr733_resolved_player_leave::losing_the_game_journals_an_exact_player_leave_under_its_own_node
+        PASS [   0.058s] ( 87/265) phase-engine::integration cr733_resolved_stack_entry_finalize::a_divergent_paid_facts_predecessor_installs_neither_half
+        PASS [   0.078s] ( 88/265) phase-engine::integration cr733_resolved_modifier_install::pump_spell_journals_an_exact_resolved_continuous_effect_install
+        PASS [   0.060s] ( 89/265) phase-engine::integration cr733_resolved_stack_entry_finalize::legacy_none_resulting_cast_occurrence_remains_replayable
+        PASS [   0.067s] ( 90/265) phase-engine::integration cr733_resolved_stack_entry_finalize::a_recorded_prior_snapshot_is_required_to_match_before_install
+        PASS [   0.067s] ( 91/265) phase-engine::integration cr733_resolved_stack_entry_finalize::real_cast_journals_an_exact_stack_entry_finalize
+        PASS [   0.062s] ( 92/265) phase-engine::integration cr733_resolved_stack_entry_finalize::stack_entry_finalize_rejects_a_divergent_predecessor
+        PASS [   0.093s] ( 93/265) phase-engine::integration cr733_resolved_stack_entry_finalize::a_divergent_cast_occurrence_predecessor_installs_nothing
+        PASS [   0.084s] ( 94/265) phase-engine::integration cr733_resolved_stack_entry_finalize::malformed_resulting_cast_occurrence_installs_nothing
+        PASS [   0.158s] ( 95/265) phase-engine::integration cr733_resolved_modifier_install::rebound_journals_an_exact_resolved_delayed_trigger_install
+        PASS [   0.120s] ( 96/265) phase-engine::integration cr733_resolved_stack_push::recorded_push_carries_the_bound_force_block_source
+        PASS [   0.058s] ( 97/265) phase-engine::integration cr733_resolved_transform::transform_journals_an_exact_resolved_transform
+        PASS [   0.393s] ( 98/265) phase-engine::integration cr733_resolved_commands_p2::shield_broker_expiry_replays_before_later_growth_install
+        PASS [   0.034s] ( 99/265) phase-engine::integration cr733_resolved_trigger_collection::apply_preserves_the_exact_append_order_for_both_trigger_collections
+        PASS [   0.021s] (100/265) phase-engine::integration cr733_resolved_trigger_collection::empty_trigger_collections_are_not_applied_or_journaled
+        PASS [   0.040s] (101/265) phase-engine::integration cr733_resolved_trigger_collection::paused_sacrifice_cost_settlement_journals_consumed_occurrences_without_recollecting
+        PASS [   0.055s] (102/265) phase-engine::integration cr733_resolved_trigger_collection::paused_mana_cost_settlement_journals_consumed_occurrences_without_recollecting
+        PASS [   0.029s] (103/265) phase-engine::integration cr733_resolved_trigger_collection::resolved_trigger_collection_records_under_its_live_journal_cause
+        PASS [   0.331s] (104/265) phase-engine::integration cr733_resolved_stack_push::real_cast_journals_an_exact_put_stack_push
+        PASS [   0.030s] (105/265) phase-engine::integration cr733_resolved_trigger_collection::trigger_collection_command_variants_round_trip_inside_the_journal_envelope
+        PASS [   0.315s] (106/265) phase-engine::integration cr733_resolved_stack_removal::resolving_a_spell_journals_an_exact_pop
+        PASS [   0.337s] (107/265) phase-engine::integration cr733_resolved_stack_removal::a_recorded_pop_unblocks_a_later_push_replay
+        PASS [   0.342s] (108/265) phase-engine::integration cr733_resolved_stack_removal::pop_rejects_a_divergent_predecessor
+        PASS [   0.101s] (109/265) phase-engine::integration cr733_resolved_trigger_collection::real_change_zone_resolver_journals_its_collected_trigger_occurrences
+        PASS [   0.028s] (110/265) phase-engine::integration cr733_resolved_zone_change::a_zone_change_that_drew_no_timestamp_advances_no_allocator_on_replay
+        PASS [   0.368s] (111/265) phase-engine::integration cr733_resolved_stack_removal::resolving_two_spells_journals_two_pops_in_lifo_order
+        PASS [   0.307s] (112/265) phase-engine::integration cr733_resolved_token_creation::token_creation_journals_an_exact_resolved_birth
+        PASS [   0.037s] (113/265) phase-engine::integration cr733_resolved_zone_change::zone_change_command_round_trips_and_replays_the_exact_transition_core
+        PASS [   0.022s] (114/265) phase-engine::integration cr733_resolved_zone_change::zone_change_rejects_occurrence_and_destination_position_mismatches
+        PASS [   0.383s] (115/265) phase-engine::integration cr733_resolved_token_creation::token_birth_then_same_turn_zone_change_replays_in_index_lockstep
+        PASS [   0.030s] (116/265) phase-engine::integration cr733_resolved_zone_change::zone_change_journal_rejects_an_unrelated_cause
+        PASS [   0.105s] (117/265) phase-engine::integration cr733_resolved_trigger_removal::declining_an_optional_trigger_journals_an_exact_removal
+        PASS [   0.022s] (118/265) phase-engine::integration custom_format_schema::from_lobby_config_rejects_dandan_source
+        PASS [   0.034s] (119/265) phase-engine::integration cr733_resolved_zone_change::zone_change_replay_validates_the_nested_records_turn_number
+        PASS [   0.134s] (120/265) phase-engine::integration cr733_resolved_trigger_removal::a_removal_that_popped_nothing_still_clears_the_cursor
+        PASS [   0.117s] (121/265) phase-engine::integration cr733_resolved_trigger_removal::removal_rejects_a_divergent_predecessor
+        PASS [   0.100s] (122/265) phase-engine::integration cr733_resolved_zone_change::production_change_zone_pipeline_records_the_transition_command
+        PASS [   0.110s] (123/265) phase-engine::integration cr733_resolved_zone_change::cancelled_delve_cast_leaves_a_replayable_zone_change_journal
+        PASS [   0.475s] (124/265) phase-engine::integration cr733_resolved_stack_push::twincast_copy_journals_a_copy_origin_push
+        PASS [   0.447s] (125/265) phase-engine::integration cr733_resolved_token_creation::predefined_token_birth_replays_its_injected_abilities
+        PASS [   0.492s] (126/265) phase-engine::integration cr733_resolved_stack_removal::eliminating_a_player_journals_one_removal_per_controlled_stack_entry
+        PASS [   0.548s] (127/265) phase-engine::integration cr733_resolved_stack_removal::countering_a_buried_spell_journals_a_removal_at_the_recorded_index
+        PASS [   3.458s] (128/265) phase-engine::integration best_of_three_ceiling::r1_dandan_bo3_plays_as_bo1_and_never_enters_between_games
+        PASS [   2.997s] (129/265) phase-engine::integration dandan_analysis_ai_support_reads::v5_an_empty_pile_graveyard_offers_no_activation
+        PASS [   3.175s] (130/265) phase-engine::integration dandan_analysis_ai_support_reads::v6_a_graveyard_mana_ability_is_offered_from_the_pile
+        PASS [   3.285s] (131/265) phase-engine::integration dandan_analysis_ai_support_reads::v5_a_graveyard_activated_ability_is_offered_from_the_pile
+        PASS [   3.208s] (132/265) phase-engine::integration dandan_filter_owner_axis::in_standard_a_milled_card_is_not_a_permanent_you_control
+        PASS [   3.284s] (133/265) phase-engine::integration dandan_filter_owner_axis::a_card_milled_from_a_library_is_not_a_permanent_you_control
+        PASS [   3.584s] (134/265) phase-engine::integration dandan_filter_owner_axis::an_entrant_from_the_shared_pile_entered_from_your_graveyard
+        PASS [   3.665s] (135/265) phase-engine::integration dandan_filter_owner_axis::a_creature_from_the_shared_pile_entered_from_your_graveyard_for_a_graveyard_watcher
+        PASS [   3.710s] (136/265) phase-engine::integration dandan_filter_owner_axis::in_standard_a_creature_from_the_other_seats_graveyard_does_not_wake_the_watcher
+        PASS [   4.040s] (137/265) phase-engine::integration dandan_analysis_ai_support_reads::v8_card_name_candidates_come_from_the_pile
+        PASS [   4.063s] (138/265) phase-engine::integration dandan_filter_owner_axis::a_creature_you_control_from_the_shared_pile_transforms_a_graveyard_grist
+        PASS [   3.989s] (139/265) phase-engine::integration dandan_filter_owner_axis::in_standard_an_entrant_from_the_other_seats_graveyard_did_not_enter_from_yours
+        PASS [   4.127s] (140/265) phase-engine::integration dandan_analysis_ai_support_reads::v7_the_block_read_out_covers_the_pile_graveyard
+        PASS [   4.729s] (141/265) phase-engine::integration dandan_filter_owner_axis::in_standard_a_card_from_the_other_seats_graveyard_does_not_transform_grist
+        PASS [   5.928s] (142/265) phase-engine game::casting::dandan_read_sweep_tests::graveyard_permission_slot_demand_counts_the_shared_pile
+        PASS [   3.058s] (143/265) phase-engine::integration dandan_filter_owner_axis::v16_a_dies_observer_ignores_the_other_seats_creature_in_the_shared_graveyard
+        PASS [   3.538s] (144/265) phase-engine::integration dandan_filter_owner_axis::v14_a_sacrifice_observer_ignores_the_other_seats_sacrifice_into_the_shared_graveyard
+        PASS [   3.267s] (145/265) phase-engine::integration dandan_filter_owner_axis::v17_an_artifact_card_in_your_graveyard_in_standard_offers_only_your_own
+        PASS [   3.442s] (146/265) phase-engine::integration dandan_filter_owner_axis::v18_a_card_leaving_the_shared_graveyard_left_your_graveyard
+        PASS [   3.529s] (147/265) phase-engine::integration dandan_filter_owner_axis::v19_a_card_reanimated_from_the_shared_graveyard_left_your_graveyard
+        PASS [   4.070s] (148/265) phase-engine::integration dandan_filter_owner_axis::v17_exile_all_opponents_graveyards_takes_the_whole_shared_pile
+        PASS [   3.874s] (149/265) phase-engine::integration dandan_filter_owner_axis::v18_in_standard_only_your_own_graveyard_counts
+        PASS [   3.453s] (150/265) phase-engine::integration dandan_filter_owner_axis::v19_in_standard_only_your_own_graveyard_triggers_on_reanimation
+        PASS [   3.597s] (151/265) phase-engine::integration dandan_filter_owner_axis::v1_fengraf_in_standard_returns_only_the_activators_own_graveyard_card
+        PASS [   4.486s] (152/265) phase-engine::integration dandan_filter_owner_axis::v17_an_artifact_card_in_your_graveyard_offers_the_whole_shared_pile
+        PASS [   4.513s] (153/265) phase-engine::integration dandan_filter_owner_axis::v17_exile_all_opponents_graveyards_in_standard_leaves_the_casters_own
+        PASS [   3.140s] (154/265) phase-engine::integration dandan_filter_owner_axis::v1_fengraf_returns_the_other_seats_creature_from_the_shared_graveyard
+        PASS [   4.160s] (155/265) phase-engine::integration dandan_filter_owner_axis::v19_in_standard_only_your_own_graveyard_triggers
+        PASS [   4.627s] (156/265) phase-engine::integration dandan_filter_owner_axis::v19_a_creature_card_leaving_the_shared_graveyard_left_your_graveyard
+        PASS [   4.400s] (157/265) phase-engine::integration dandan_filter_owner_axis::v20_a_controller_form_origin_trigger_reads_the_whole_shared_pile
+        PASS [   3.494s] (158/265) phase-engine::integration dandan_filter_owner_axis::v20_a_library_origin_controller_form_reads_the_whole_shared_library
+        PASS [   3.634s] (159/265) phase-engine::integration dandan_filter_owner_axis::v20_a_one_of_origin_trigger_reads_the_whole_shared_library
+        PASS [   2.970s] (160/265) phase-engine::integration dandan_filter_owner_axis::v2_mystic_sanctuary_in_standard_cannot_reach_the_other_seats_graveyard
+        PASS [   3.197s] (161/265) phase-engine::integration dandan_filter_owner_axis::v20_in_standard_only_your_own_library_triggers_the_one_of_origin
+        PASS [   4.381s] (162/265) phase-engine::integration dandan_filter_owner_axis::v20_a_reanimation_by_either_seat_leaves_the_shared_graveyard_of_the_watcher
+        PASS [   3.725s] (163/265) phase-engine::integration dandan_filter_owner_axis::v20_in_standard_only_your_own_library_triggers_the_library_origin
+        PASS [   3.351s] (164/265) phase-engine::integration dandan_filter_owner_axis::v3_disposal_mummy_in_standard_excludes_the_casters_own_graveyard
+        PASS [   3.601s] (165/265) phase-engine::integration dandan_filter_owner_axis::v22_a_creature_you_control_entering_is_judged_as_the_permanent
+        PASS [   3.519s] (166/265) phase-engine::integration dandan_filter_owner_axis::v2_mystic_sanctuary_targets_the_other_seats_instant_in_the_shared_graveyard
+        PASS [   3.489s] (167/265) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_draw_from_the_pile_is_owned_by_the_drawer
+        PASS [   4.435s] (168/265) phase-engine::integration dandan_filter_owner_axis::v20_in_standard_only_your_own_graveyard_triggers_the_controller_form
+        PASS [   4.201s] (169/265) phase-engine::integration dandan_filter_owner_axis::v3_disposal_mummy_treats_the_shared_graveyard_as_an_opponents
+        PASS [   4.003s] (170/265) phase-engine::integration dandan_hand_entry_ownership::v1_brainstorm_from_the_pile_holder_and_in_standard_are_unchanged
+        PASS [   4.205s] (171/265) phase-engine::integration dandan_hand_entry_ownership::v2_a_drawn_land_is_played_by_the_drawer_and_sacrificed_into_the_pile
+        PASS [   3.543s] (172/265) phase-engine::integration dandan_hand_entry_ownership::v4_telling_time_puts_the_kept_card_into_the_receivers_hand
+        PASS [   3.615s] (173/265) phase-engine::integration dandan_hand_entry_ownership::v4b_dig_to_exile_does_not_name_a_performer
+        PASS [   4.075s] (174/265) phase-engine::integration dandan_hand_entry_ownership::v3_opening_deal_and_mulligan_redraw_belong_to_the_receiving_seat
+        PASS [   3.202s] (175/265) phase-engine::integration dandan_hand_entry_ownership::v5_haunted_fengraf_returns_the_pile_card_to_the_activators_ownership
+        PASS [   2.978s] (176/265) phase-engine::integration dandan_hand_entry_ownership::v8_every_card_in_a_hand_is_owned_by_its_holder_after_mixed_flows
+        PASS [   3.399s] (177/265) phase-engine::integration dandan_hand_entry_ownership::v7_seek_puts_the_found_card_into_the_seekers_hand
+        PASS [   3.719s] (178/265) phase-engine::integration dandan_hand_entry_ownership::v7_explore_puts_a_revealed_land_into_the_explorers_hand
+        PASS [   3.229s] (179/265) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_top_card_of_a_standard_library
+        PASS [   4.179s] (180/265) phase-engine::integration dandan_hand_entry_ownership::v6_a_stolen_drawn_creature_returns_to_the_drawers_hand
+        PASS [   3.252s] (181/265) phase-engine::integration dandan_read_sweep::v1_telling_time_looks_at_the_pile_top_three_from_either_seat
+        PASS [   3.604s] (182/265) phase-engine::integration dandan_read_sweep::v10_debug_views_and_mill_act_on_the_pile
+        PASS [   3.580s] (183/265) phase-engine::integration dandan_read_sweep::v15_clash_reveals_the_pile_top_for_either_seat
+        PASS [   3.213s] (184/265) phase-engine::integration dandan_read_sweep::v2_mental_note_mills_the_top_two_of_the_pile
+        PASS [   3.697s] (185/265) phase-engine::integration dandan_read_sweep::v2_predict_mills_the_pile_for_either_target_and_counts_the_name
+        PASS [   3.399s] (186/265) phase-engine::integration dandan_read_sweep::v3_brainstorm_draws_from_and_puts_back_onto_the_pile
+        PASS [   3.850s] (187/265) phase-engine::integration dandan_read_sweep::v3_accumulated_knowledge_counts_the_shared_graveyard_once
+        PASS [   3.201s] (188/265) phase-engine::integration dandan_read_sweep::v4_consider_surveils_the_pile_front_into_the_shared_graveyard
+        PASS [   3.045s] (189/265) phase-engine::integration dandan_read_sweep::v4_ethrimik_manifests_dread_from_the_pile_top_two
+        PASS [   3.699s] (190/265) phase-engine::integration dandan_read_sweep::v3_metamorphose_puts_the_target_on_top_of_the_owners_library
+        PASS [   3.648s] (191/265) phase-engine::integration dandan_read_sweep::v3_surgical_bay_draws_from_the_pile_and_is_sacrificed_into_it
+        PASS [   3.285s] (192/265) phase-engine::integration dandan_read_sweep::v4_explore_over_an_empty_pile_adds_a_counter
+        PASS [   2.982s] (193/265) phase-engine::integration dandan_read_sweep::v4_merfolk_branchwalker_explores_the_pile_top
+        PASS [   3.213s] (194/265) phase-engine::integration dandan_read_sweep::v4_fact_or_fiction_reveals_the_pile_front_five
+        PASS [   3.340s] (195/265) phase-engine::integration dandan_read_sweep::v4_grave_expectations_heists_the_opponents_pile
+        PASS [   3.501s] (196/265) phase-engine::integration dandan_read_sweep::v4_opt_scries_the_pile_front_and_bottoms_it
+        PASS [   3.664s] (197/265) phase-engine::integration dandan_read_sweep::v4_mirelurk_queen_rad_counters_mill_the_pile
+        PASS [   3.290s] (198/265) phase-engine::integration dandan_read_sweep::v4_reckless_impulse_exiles_the_pile_top_two
+        PASS [   4.063s] (199/265) phase-engine::integration dandan_read_sweep::v4_nesting_instinct_seeks_the_land_in_the_pile
+        PASS [   3.813s] (200/265) phase-engine::integration dandan_read_sweep::v4_sifter_wurm_reveals_the_pile_top_for_life
+        PASS [   3.367s] (201/265) phase-engine::integration dandan_read_sweep::v4_sweet_gum_recluse_cascades_from_the_pile
+        PASS [   3.416s] (202/265) phase-engine::integration dandan_read_sweep::v4_thrumming_stone_ripples_the_pile_front_four
+        PASS [   3.175s] (203/265) phase-engine::integration dandan_read_sweep::v4_trumpeting_carnosaur_discovers_from_the_pile
+        PASS [   3.670s] (204/265) phase-engine::integration dandan_read_sweep::v4_tashas_hideous_laughter_exiles_the_opponents_pile_to_twenty
+        PASS [   3.351s] (205/265) phase-engine::integration dandan_read_sweep::v4_treasure_hunt_reveals_the_pile_down_to_the_first_nonland
+        PASS [   3.077s] (206/265) phase-engine::integration dandan_read_sweep::v6_altar_of_the_wretched_crafts_from_the_pile_graveyard
+        PASS [   3.684s] (207/265) phase-engine::integration dandan_read_sweep::v5_doomsday_searches_the_pile_library_and_graveyard
+        PASS [   3.240s] (208/265) phase-engine::integration dandan_read_sweep::v6_baron_helmut_zemo_boasts_by_exiling_black_cards_from_the_pile_graveyard
+        PASS [   3.338s] (209/265) phase-engine::integration dandan_read_sweep::v5_parker_luck_reveals_the_pile_top_for_each_targeted_seat
+        PASS [   3.307s] (210/265) phase-engine::integration dandan_read_sweep::v6_corpseberry_cultivator_forages_from_the_pile_graveyard
+        PASS [   3.292s] (211/265) phase-engine::integration dandan_read_sweep::v6_gruesome_menagerie_chooses_from_the_pile_graveyard
+        PASS [   3.339s] (212/265) phase-engine::integration dandan_read_sweep::v6_kylox_voltstrider_collects_evidence_from_the_pile_graveyard
+        PASS [   3.477s] (213/265) phase-engine::integration dandan_read_sweep::v6_organ_grinder_exiles_three_from_the_pile_graveyard
+        PASS [   3.357s] (214/265) phase-engine::integration dandan_read_sweep::v7_crucible_of_worlds_plays_a_land_from_the_pile_graveyard
+        PASS [   3.342s] (215/265) phase-engine::integration dandan_read_sweep::v7_think_twice_flashback_is_offered_from_the_pile_graveyard
+        PASS [   3.173s] (216/265) phase-engine::integration dandan_read_sweep::v8_fblthp_offers_plot_for_a_nonland_pile_top_only
+        PASS [   3.185s] (217/265) phase-engine::integration dandan_read_sweep::v8_soul_summons_manifests_the_pile_top_whoever_owns_it
+        PASS [   3.318s] (218/265) phase-engine::integration dandan_read_sweep::v8_future_sight_reveals_and_casts_from_the_pile_top
+        PASS [   3.972s] (219/265) phase-engine::integration dandan_read_sweep::v8_crown_of_convergence_offers_the_pile_to_bottom
+        PASS [   3.726s] (220/265) phase-engine::integration dandan_read_sweep::v8_mul_daya_channelers_reads_the_pile_top_type
+        PASS [   3.548s] (221/265) phase-engine::integration dandan_read_sweep::v8_sphinx_of_jwar_isle_lets_the_controller_see_the_pile_top
+        PASS [   3.554s] (222/265) phase-engine::integration dandan_read_sweep::v9_deep_spawn_pays_its_upkeep_mill_from_the_pile
+        PASS [   2.951s] (223/265) phase-engine::integration dandan_scoped_counts::v10_an_empty_library_condition_sees_the_shared_pile
+        PASS [   3.593s] (224/265) phase-engine::integration dandan_read_sweep::v9_golgari_thug_dredge_reads_the_pile_size
+        PASS [   3.361s] (225/265) phase-engine::integration dandan_read_sweep::v9_manakin_and_millikin_mills_the_pile_to_pay
+        PASS [   0.027s] (226/265) phase-engine::integration dandan_shared_pile_storage::shuffling_the_empty_seat_consumes_no_entropy
+        PASS [   3.779s] (227/265) phase-engine::integration dandan_read_sweep::v9_eldritch_pact_counts_the_targets_pile_graveyard
+        PASS [   0.013s] (228/265) phase-engine::integration dandan_shared_pile_storage::v14_wasm_boot_guard_reads_the_library_accessor
+        PASS [   3.165s] (229/265) phase-engine::integration dandan_scoped_counts::v11_instants_in_all_graveyards_count_the_pile_once
+        PASS [   3.230s] (230/265) phase-engine::integration dandan_scoped_counts::v11_instants_in_all_graveyards_in_standard_sum_every_seat
+        PASS [   3.721s] (231/265) phase-engine::integration dandan_scoped_counts::v10_cards_in_your_library_count_the_shared_pile
+        PASS [   3.397s] (232/265) phase-engine::integration dandan_scoped_counts::v5_delirium_in_standard_reads_only_the_controllers_graveyard
+        PASS [   3.052s] (233/265) phase-engine::integration dandan_scoped_counts::v6_opponents_graveyard_types_in_standard_read_the_other_seat
+        PASS [   3.281s] (234/265) phase-engine::integration dandan_scoped_counts::v6_all_graveyards_types_count_the_pile_once
+        PASS [   3.117s] (235/265) phase-engine::integration dandan_scoped_counts::v7_threshold_in_standard_reads_only_the_controllers_graveyard
+        PASS [   3.868s] (236/265) phase-engine::integration dandan_scoped_counts::v5_delirium_reads_the_shared_graveyard_from_either_seat
+        PASS [   2.958s] (237/265) phase-engine::integration dandan_scoped_counts::v8_a_graveyard_with_twenty_cards_is_the_pile_for_either_threshold_side
+        PASS [   3.613s] (238/265) phase-engine::integration dandan_scoped_counts::v6_opponents_graveyard_types_read_the_shared_pile_from_either_seat
+        PASS [   3.084s] (239/265) phase-engine::integration dandan_shared_pile_storage::v10_pool_resolver_maps_both_seats_to_the_pile_holder
+        PASS [   3.073s] (240/265) phase-engine::integration dandan_shared_pile_storage::v15_dig_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   3.333s] (241/265) phase-engine::integration dandan_scoped_counts::v9_each_graveyard_with_seven_cards_in_standard_counts_each_seat
+        PASS [   3.679s] (242/265) phase-engine::integration dandan_scoped_counts::v7_threshold_reads_the_shared_graveyard_from_either_seat
+        PASS [   3.556s] (243/265) phase-engine::integration dandan_scoped_counts::v9_each_graveyard_with_seven_cards_counts_the_shared_pile_once
+        PASS [   3.123s] (244/265) phase-engine::integration dandan_shared_pile_storage::v15_library_placement_by_the_zone_pipeline_targets_the_pile
+        PASS [   3.003s] (245/265) phase-engine::integration dandan_shared_pile_storage::v15_surveil_keeps_cards_on_top_of_the_pile_for_the_non_canonical_seat
+        PASS [   0.225s] (246/265) phase-engine::integration issue_8183_static_gate_fail_open::dandan_attack_legality_follows_the_defending_players_board
+        PASS [   0.104s] (247/265) phase-engine::integration issue_8183_static_gate_fail_open::dandan_parses_a_condition_gated_cant_attack_static
+        PASS [   3.514s] (248/265) phase-engine::integration dandan_shared_pile_storage::v15_scry_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   0.444s] (249/265) phase-engine::integration unmaterialized_lki_serialization::dies_lki_trigger_restoration_keeps_game_state_serializable
+        PASS [   0.478s] (250/265) phase-engine::integration unmaterialized_lki_serialization::legacy_ceased_token_trigger_payloads_restore_after_trigger_is_stacked
+        PASS [   0.427s] (251/265) phase-engine::integration unmaterialized_lki_serialization::legacy_zone_change_trigger_records_restore_before_client_serialization
+        PASS [   3.313s] (252/265) phase-engine::integration dandan_shared_pile_storage::v1_boot_loads_one_pile_into_the_canonical_seat
+        PASS [   2.941s] (253/265) phase-engine::integration dandan_shared_pile_storage::v2_fixed_list_resolves_against_the_real_database
+        PASS [   3.533s] (254/265) phase-engine::integration dandan_shared_pile_storage::v1_non_shared_formats_keep_per_seat_libraries
+        PASS [   3.371s] (255/265) phase-engine::integration dandan_shared_pile_storage::v1_pile_stays_in_the_lowest_seat_when_another_seat_starts
+        PASS [   2.941s] (256/265) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+        PASS [   2.842s] (257/265) phase-engine::integration dandan_shared_pile_storage::v5_v6_standard_format_cycles_in_the_owners_own_zones
+        PASS [   3.256s] (258/265) phase-engine::integration dandan_shared_pile_storage::v3_mulligan_by_either_seat_shuffles_the_pile
+        PASS [   2.735s] (259/265) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+        PASS [   3.388s] (260/265) phase-engine::integration dandan_shared_pile_storage::v4_opening_deal_draws_both_hands_from_the_pile
+        PASS [   2.774s] (261/265) phase-engine::integration dandan_shared_pile_storage::v9_library_boundary_by_either_seat_forgets_the_looked_at_pile
+        PASS [   2.953s] (262/265) phase-engine::integration dandan_shared_pile_storage::v8_library_shuffle_acts_on_the_pile_and_replays
+        PASS [   2.731s] (263/265) phase-engine::integration dandan_shared_pile_storage::v9_standard_shuffle_keeps_the_other_players_library_knowledge
+        PASS [   3.161s] (264/265) phase-engine::integration dandan_shared_pile_storage::v7_conjure_into_the_library_lands_in_the_pile_only
+        PASS [  33.967s] (265/265) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+────────────
+     Summary [  34.100s] 265 tests run: 265 passed, 32383 skipped
