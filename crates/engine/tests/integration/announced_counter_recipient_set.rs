@@ -2867,3 +2867,64 @@ fn equip_does_not_attach_a_flickered_equipment() {
     );
     assert_eq!(equip_bear(true), None);
 }
+
+const WINTER_SOLDIER_ORACLE: &str = "Vigilance, menace\nWinter Soldier gets +2/+0 for each Equipment attached to him.\n{3}{W}{B}: Return this card from your graveyard to the battlefield with a finality counter on him. Then you may attach an Equipment you control to him. (If a creature with a finality counter on it would die, exile it instead.)";
+
+/// CR 400.7j: an activated ability that returns its own source can attach to the returned object.
+#[test]
+fn self_returning_activated_ability_attaches_equipment_to_returned_source() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let sword = scenario
+        .add_creature(P0, "Test Sword", 0, 0)
+        .as_artifact()
+        .with_subtypes(vec!["Equipment"])
+        .from_oracle_text(TEST_SWORD_ORACLE)
+        .id();
+    let soldier = scenario
+        .add_creature_to_graveyard(P0, "Winter Soldier, Icy Assassin", 2, 2)
+        .from_oracle_text(WINTER_SOLDIER_ORACLE)
+        .id();
+    let mut pool = floating_mana(4, ManaType::White);
+    pool.extend(floating_mana(1, ManaType::Black));
+    scenario.with_mana_pool(P0, pool);
+    let mut runner = scenario.build();
+    grant_priority(&mut runner, P0);
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: soldier,
+            ability_index: 0,
+        })
+        .expect("activate");
+    let mut accepted_attach = false;
+    for _ in 0..40 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::OrderTriggers { .. } => {
+                drain_order_triggers_with_identity(runner.state_mut());
+            }
+            WaitingFor::OptionalEffectChoice { .. } => {
+                accepted_attach = true;
+                runner
+                    .act(GameAction::DecideOptionalEffect { accept: true })
+                    .expect("accept attach");
+            }
+            WaitingFor::EffectZoneChoice { .. } => {
+                runner
+                    .act(GameAction::SelectCards { cards: vec![sword] })
+                    .expect("pick Equipment");
+            }
+            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => break,
+            WaitingFor::Priority { .. } => {
+                runner.act(GameAction::PassPriority).expect("pass");
+            }
+            other => panic!("unexpected {}", waiting_label(&other)),
+        }
+    }
+    assert!(accepted_attach, "the optional attach was offered");
+    assert_eq!(live(&runner, soldier).zone, Zone::Battlefield);
+    assert_eq!(counters(&runner, soldier, CounterType::Finality), 1);
+    assert_eq!(
+        live(&runner, sword).attached_to,
+        Some(engine::game::game_object::AttachTarget::Object(soldier))
+    );
+}
