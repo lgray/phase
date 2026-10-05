@@ -28409,6 +28409,10 @@ pub struct SpellContext {
     /// Used by AbilityCondition::effect_performed() to gate dependent sub_abilities.
     #[serde(default)]
     pub optional_effect_performed: bool,
+    /// CR 118.12: A mandatory instruction of this run ("sacrifice it and attach …")
+    /// that did nothing, so a later member's "if you do" is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unperformed_compound_instruction: Option<EffectKind>,
     /// CR 608.2d: The just-resolved `Effect::OpponentGuess` outcome, stamped onto
     /// the stashed continuation chain by the guess answer handler. Tri-state:
     /// `None` = no guess happened (impossible commit per CR 609.3 / empty hand),
