@@ -528,9 +528,16 @@ fn v8_zone_change_commands_record_and_replay_pile_positions() {
                 "reach: the target container is non-empty"
             );
             let record = state.objects[&card].snapshot_for_zone_change(card, Some(Zone::Hand), to);
-            let command =
-                zones::resolve_and_apply_zone_change(&mut state, card, Zone::Hand, to, P1, record)
-                    .expect("zone change applies");
+            let command = zones::resolve_and_apply_zone_change(
+                &mut state,
+                card,
+                Zone::Hand,
+                to,
+                P1,
+                None,
+                record,
+            )
+            .expect("zone change applies");
 
             assert_eq!(command.owner, P1);
             assert_eq!(

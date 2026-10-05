@@ -4798,6 +4798,7 @@ mod tests {
             Zone::Hand,
             Zone::Graveyard,
             PlayerId(0),
+            None,
             crate::types::game_state::ZoneChangeRecord::test_minimal(
                 card,
                 Some(Zone::Hand),
@@ -4862,6 +4863,7 @@ mod tests {
             Zone::Graveyard,
             Zone::Exile,
             PlayerId(0),
+            None,
             crate::types::game_state::ZoneChangeRecord::test_minimal(
                 card,
                 Some(Zone::Graveyard),

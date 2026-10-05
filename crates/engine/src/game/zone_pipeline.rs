@@ -559,8 +559,9 @@ impl ZoneMoveRequest {
     }
 
     /// CR 121.1 + CR 608.2c: name the player whose hand receives the card, only
-    /// when the requested destination is Hand, so an Exile delivery never gains
-    /// a performer.
+    /// when the requested destination is Hand, so a requested Exile never gains a
+    /// performer; a Hand request that a `Moved` replacement redirects to Exile
+    /// keeps it.
     pub fn hand_taker(self, player: PlayerId) -> Self {
         if self.to == Zone::Hand {
             self.performed_by(player)
@@ -7179,7 +7180,7 @@ mod hand_entry_receiver_tests {
     }
 
     #[test]
-    fn the_hand_entry_axis_gates_the_rebind() {
+    fn a_format_without_shared_zones_does_not_rebind() {
         let mut standard = GameState::new_two_player(42);
         let card = card_in(&mut standard, 1, P0, Zone::Library);
         take(&mut standard, card, P1);

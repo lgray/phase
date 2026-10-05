@@ -911,35 +911,10 @@ fn destination_position_after_removal(
 /// installation to [`apply_resolved_zone_change`]. Replay never allocates a
 /// timestamp or a new object identity.
 ///
-/// Receiver-free form for callers outside the engine: production code always
-/// supplies the receiver decision to [`resolve_and_apply_zone_change_to_receiver`].
-#[cfg(any(test, feature = "test-support"))]
-pub fn resolve_and_apply_zone_change(
-    state: &mut GameState,
-    object_id: ObjectId,
-    from: Zone,
-    to: Zone,
-    owner: PlayerId,
-    zone_change_record: crate::types::game_state::ZoneChangeRecord,
-) -> Result<ResolvedZoneChangeCommand, ResolvedZoneChangeReplayInvariantError> {
-    resolve_and_apply_zone_change_to_receiver(
-        state,
-        object_id,
-        from,
-        to,
-        owner,
-        None,
-        zone_change_record,
-    )
-}
-
-/// [`resolve_and_apply_zone_change`] for a Hand entry whose receiver owns the
-/// card afterwards.
-///
 /// `owner` is the object's owner before the move; `receiver` is `Some` only when
 /// the move rebinds ownership, and then names the new owner whose hand holds the
 /// card.
-pub(crate) fn resolve_and_apply_zone_change_to_receiver(
+pub fn resolve_and_apply_zone_change(
     state: &mut GameState,
     object_id: ObjectId,
     from: Zone,
@@ -1581,7 +1556,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
             }
             (pre_bump_incarnation, obj_mut.incarnation, false)
         } else {
-            let resolved_zone_change = resolve_and_apply_zone_change_to_receiver(
+            let resolved_zone_change = resolve_and_apply_zone_change(
                 state,
                 object_id,
                 from,
@@ -4933,6 +4908,7 @@ mod tests {
             Zone::Stack,
             Zone::Graveyard,
             PlayerId(0),
+            None,
             record,
         )
         .expect("live transition must resolve");
@@ -4982,6 +4958,7 @@ mod tests {
                 Zone::Stack,
                 destination,
                 PlayerId(0),
+                None,
                 record,
             )
             .expect("live Stack exit resolves");
@@ -5687,16 +5664,9 @@ mod hand_entry_rebind_tests {
         let card = create_object(&mut state, CardId(1), P0, "Pile Card".to_string(), from);
         let pre = state.clone();
         let record = state.objects[&card].snapshot_for_zone_change(card, Some(from), to);
-        let command = resolve_and_apply_zone_change_to_receiver(
-            &mut state,
-            card,
-            from,
-            to,
-            P0,
-            Some(P1),
-            record,
-        )
-        .expect("the rebinding move applies");
+        let command =
+            resolve_and_apply_zone_change(&mut state, card, from, to, P0, Some(P1), record)
+                .expect("the rebinding move applies");
         (pre, state, card, command)
     }
 
@@ -5799,9 +5769,16 @@ mod hand_entry_rebind_tests {
         let card = create_object(&mut state, CardId(1), P0, "Own".to_string(), Zone::Library);
         let record =
             state.objects[&card].snapshot_for_zone_change(card, Some(Zone::Library), Zone::Hand);
-        let command =
-            resolve_and_apply_zone_change(&mut state, card, Zone::Library, Zone::Hand, P0, record)
-                .expect("an ordinary move applies");
+        let command = resolve_and_apply_zone_change(
+            &mut state,
+            card,
+            Zone::Library,
+            Zone::Hand,
+            P0,
+            None,
+            record,
+        )
+        .expect("an ordinary move applies");
         assert_eq!(command.rebound_from, None);
 
         let wire =

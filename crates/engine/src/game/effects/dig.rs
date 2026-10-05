@@ -553,7 +553,8 @@ pub(crate) fn move_mass_put_all_selected(
                 object_id,
                 destination,
                 source_id,
-            );
+            )
+            .hand_taker(player);
             request.mods.enter_tapped = enter_tapped;
             request.mods.enters_attacking = enters_attacking;
             request

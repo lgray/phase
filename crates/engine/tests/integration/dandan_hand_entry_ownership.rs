@@ -325,6 +325,38 @@ fn v4b_dig_to_exile_does_not_name_a_performer() {
     assert_eq!(object.exiled_by, None, "the exile record is the base value");
 }
 
+#[test]
+fn v4c_dig_put_all_into_hand_belongs_to_the_receiver() {
+    let Some(db) = shared_card_db() else { return };
+    for (format, actor, owner) in [
+        (dandan(), P1, P0),
+        (dandan(), P0, P0),
+        (FormatConfig::standard(), P1, P1),
+    ] {
+        let mut sc = scenario(format);
+        let mut cards = vec![(owner, "Control Magic")];
+        cards.extend([(owner, "Island"); 6]);
+        let staged = stage(&mut sc, db, Zone::Library, &cards);
+        let marina = sc.add_real_card(actor, "Marina Vendrell", Zone::Hand, db);
+        let mut runner = start(sc, actor);
+        assert_eq!(
+            runner.state().objects[&staged[0]].zone,
+            Zone::Library,
+            "reach: the enchantment starts in the library"
+        );
+
+        runner.cast(marina).commit();
+        run_to_prompt(&mut runner);
+
+        assert_hand(
+            runner.state(),
+            actor,
+            staged[0],
+            &format!("{actor:?} Marina over {owner:?}'s cards"),
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // V5: ChangeZone graveyard to hand
 // ---------------------------------------------------------------------------
