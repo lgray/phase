@@ -1904,6 +1904,19 @@ fn quote_closes_sentence_before_sequence(current: &str, remainder: &str) -> bool
         return true;
     }
 
+    // CR 602.2b + CR 601.2f: a "This ability costs {N} less/more to activate …"
+    // sentence after a closed quote modifies the OUTER activated ability's total
+    // cost — "this ability" names the ability whose text holds the sentence, never
+    // the quoted grant (Llanowar Greenwidow: `It gains "If this permanent would
+    // leave the battlefield, exile it instead …" This ability costs {1} less to
+    // activate for each basic land type among lands you control.`). Splitting here
+    // lets the sentence reach `extract_cost_reduction_from_chain` as its own chain
+    // node; otherwise the quoted grant's static text swallows it and the reduction
+    // is lost.
+    if crate::parser::oracle_cost::is_self_cost_reduction_prefix(trimmed_lower.as_str()) {
+        return true;
+    }
+
     // CR 608.2c: read the whole text and apply the rules of English — a
     // granted-ability quote that ends a sentence can be followed by a fresh
     // causative "may have …" sentence directed at the affected object's
@@ -6206,6 +6219,52 @@ pub(super) fn apply_clause_continuation(
                 )
                 .or_else(|| defs.len().checked_sub(1));
             if let Some(target_idx) = target_idx {
+                // CR 608.2c: instructions are followed in the order written. When
+                // another instruction sits between the reveal and this pile
+                // placement (Goblin Charbelcher's damage), folding the placement
+                // into the reveal would move the pile BEFORE that instruction.
+                // Leave the cards where the reveal found them and emit the
+                // placement as a later chain instruction over the revealed set.
+                // Scoped to an intervening damage instruction: damage is the
+                // replaceable event whose replacement effects (CR 615.5) act on the
+                // revealed cards before the placement.
+                let intervening_damage = defs[target_idx + 1..]
+                    .iter()
+                    .any(super::def_is_damage_dealer);
+                if intervening_damage && defs[target_idx].sub_ability.is_none() {
+                    if let Effect::RevealUntil {
+                        matched_disposition,
+                        ..
+                    } = &mut *defs[target_idx].effect
+                    {
+                        *matched_disposition = RevealUntilDisposition::RevealOnly;
+                        let mut placement = AbilityDefinition::new(
+                            kind,
+                            Effect::ChangeZoneAll {
+                                origin: Some(Zone::Library),
+                                destination,
+                                // The cards this reveal revealed — those still in the
+                                // library: a card an intervening replacement moved
+                                // elsewhere (Swans's draw) is no longer part of the pile.
+                                target: TargetFilter::LastRevealed,
+                                enters_under: None,
+                                enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                                enters_attacking: false,
+                                enter_with_counters: vec![],
+                                face_down_profile: None,
+                                library_position: (destination == Zone::Library)
+                                    .then_some(LibraryPosition::Bottom),
+                                library_shuffle: Default::default(),
+                                random_order: matches!(rest_order, DigRestOrder::Random),
+                            },
+                        );
+                        // An independent following instruction, performed on every
+                        // branch of an intervening "instead" override.
+                        placement.sub_link = SubAbilityLink::SequentialSibling;
+                        defs.push(placement);
+                        return;
+                    }
+                }
                 patch_reveal_until_all_to_zone_recursively(
                     &mut defs[target_idx],
                     destination,
