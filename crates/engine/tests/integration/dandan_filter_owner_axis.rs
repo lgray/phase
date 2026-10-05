@@ -524,17 +524,29 @@ fn pile_run(
     targeted: bool,
     pile_owner: PlayerId,
 ) -> (GameRunner, ObjectId) {
+    pile_run_by(format, watcher, spell, targeted, pile_owner, P0)
+}
+
+/// `pile_run` with the spell held, and the turn played, by `caster`.
+fn pile_run_by(
+    format: FormatConfig,
+    watcher: &str,
+    spell: &str,
+    targeted: bool,
+    pile_owner: PlayerId,
+    caster: PlayerId,
+) -> (GameRunner, ObjectId) {
     let db = shared_card_db().expect("card db");
     let mut sc = scenario(format);
     sc.add_real_card(P0, watcher, Zone::Battlefield, db);
-    let spell = sc.add_real_card(P0, spell, Zone::Hand, db);
+    let spell = sc.add_real_card(caster, spell, Zone::Hand, db);
     let bears = stage(
         &mut sc,
         db,
         Zone::Graveyard,
         &[(pile_owner, "Grizzly Bears")],
     )[0];
-    let mut runner = start(sc, P0);
+    let mut runner = start(sc, caster);
     if targeted {
         runner.cast(spell).target_object(bears).resolve();
     } else {
@@ -751,6 +763,44 @@ fn v20_in_standard_only_your_own_graveyard_triggers_the_controller_form() {
     );
 }
 
+/// P0 watches with Along the Crooked Way while `caster` reanimates a pile Bears owned by
+/// `pile_owner`.
+fn goblin_armies_by_caster(format: FormatConfig, pile_owner: PlayerId, caster: PlayerId) -> usize {
+    let (runner, bears) = pile_run_by(
+        format,
+        "Along the Crooked Way",
+        "Reanimate",
+        true,
+        pile_owner,
+        caster,
+    );
+    assert_eq!(
+        runner.state().objects[&bears].zone,
+        Zone::Battlefield,
+        "reach: the pile card was reanimated"
+    );
+    battlefield_named(&runner, "Goblin Army")
+}
+
+#[test]
+fn v20_a_reanimation_by_either_seat_leaves_the_shared_graveyard_of_the_watcher() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    for pile_owner in [P0, P1] {
+        assert_eq!(
+            goblin_armies_by_caster(dandan(), pile_owner, P1),
+            1,
+            "P1 reanimates a card owned by {pile_owner:?}: it left P0's graveyard, the pile"
+        );
+    }
+    assert_eq!(
+        goblin_armies_by_caster(dandan(), P0, P0),
+        1,
+        "paired: the watcher reanimates its own card"
+    );
+}
+
 /// P0 controls `watcher` and casts `spell` aimed at `target` over a library of four
 /// `library_card`s owned by `pile_owner`.
 fn mill_run(
@@ -864,4 +914,39 @@ fn v20_in_standard_only_your_own_library_triggers_the_one_of_origin() {
         "reach: the trigger fires for P0's own Deserts"
     );
     assert_eq!(desert_warfare_triggers(FormatConfig::standard(), P1, P1), 0);
+}
+
+// ---------------------------------------------------------------------------
+// V22: a live entrant with no named origin is the permanent (Impact Tremors)
+// ---------------------------------------------------------------------------
+
+/// P0 watches with Impact Tremors while `caster` reanimates a P0-owned pile Bears; returns the
+/// life totals (P0, P1).
+fn tremors_life(format: FormatConfig, caster: PlayerId) -> (i32, i32) {
+    let (runner, bears) = pile_run_by(format, "Impact Tremors", "Reanimate", true, P0, caster);
+    assert_eq!(
+        runner.state().objects[&bears].zone,
+        Zone::Battlefield,
+        "reach: the pile card was reanimated"
+    );
+    (runner.life(P0), runner.life(P1))
+}
+
+#[test]
+fn v22_a_creature_you_control_entering_is_judged_as_the_permanent() {
+    if shared_card_db().is_none() {
+        return;
+    }
+    for format in [dandan(), FormatConfig::standard()] {
+        assert_eq!(
+            tremors_life(format.clone(), P0),
+            (18, 19),
+            "reach: P0's reanimated creature pings P1"
+        );
+        assert_eq!(
+            tremors_life(format, P1),
+            (20, 18),
+            "P1's creature is not a creature P0 controls"
+        );
+    }
 }

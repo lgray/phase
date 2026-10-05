@@ -1221,20 +1221,9 @@ pub struct FilterContext<'a> {
     /// the same storage id is recognized as the DIFFERENT object it is and is
     /// admitted to the "another" population.
     pub triggering_object: Option<TriggeringObjectRef>,
-    /// CR 400.1: Zones the caller scans on a field outside the filter; they license the
-    /// shared-zone player-axis collapse like the filter's own `InZone`/`InAnyZone`.
-    pub claimed_zones: &'a [Zone],
 }
 
 impl<'a> FilterContext<'a> {
-    /// CR 400.1: Rebind the zones this evaluation scans on the caller's behalf.
-    pub fn with_claimed_zones(&self, zones: &'a [Zone]) -> FilterContext<'a> {
-        FilterContext {
-            claimed_zones: zones,
-            ..*self
-        }
-    }
-
     /// CR 603.4 + CR 603.6a: Rebind the triggering-object referent for the
     /// duration of one intervening-`if` evaluation. Takes `&self` and returns a
     /// fresh value (the struct is `Copy`), so the caller's borrowed context is
@@ -1291,7 +1280,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1311,7 +1299,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1327,7 +1314,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1343,7 +1329,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1362,7 +1347,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1383,7 +1367,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: Some(recipient_id),
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1399,7 +1382,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1417,7 +1399,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: Some(recipient_id),
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 
@@ -1438,7 +1419,6 @@ impl<'a> FilterContext<'a> {
             recipient_id: None,
             scoped_iteration_player: None,
             triggering_object: None,
-            claimed_zones: &[],
         }
     }
 }
@@ -1508,9 +1488,15 @@ enum ControllerLookup {
     /// Normal filter matching: off-stack/off-battlefield objects may need
     /// at-departure controller information for look-back effects.
     LiveOrLki,
-    /// Owner-zone matching has already substituted ownership for controller;
-    /// stale LKI must not override that owner-scoped value.
+    /// Neither stale LKI nor departure information applies (phased-out and event-snapshot
+    /// doors).
     LiveOnly,
+    /// Owner-zone matching has already substituted ownership for controller; the card is
+    /// judged as a resident of its owner-scoped zone (CR 109.5).
+    OwnerZone,
+    /// The card is judged as of the zone it departed (the zone-change record's `from_zone`):
+    /// CR 603.10a look-back for a card that left a graveyard and is now elsewhere.
+    Departed(Zone),
 }
 
 /// CR 608.2h + CR 400.7: The effective controller of `obj` for filter
@@ -1545,27 +1531,25 @@ fn effective_controller(
     obj.controller
 }
 
-/// The zone whose shared-container player axis may collapse: one the filter names via
-/// `InZone`/`InAnyZone` or the caller claims. A battlefield resident has no shared container
-/// of its own, so it takes the first zone the caller claims (the origin it arrived from).
-fn claimed_shared_zone(
+/// The zone whose shared container answers the player axis for a live card: the zone it
+/// departed, its own zone when the door asks the owner-zone question (CR 109.5), or its own zone
+/// when the filter itself names it with `InZone`/`InAnyZone`.
+fn resident_zone(
     properties: &[FilterProp],
-    claimed: &[Zone],
-    object_zone: Option<Zone>,
+    obj_zone: Zone,
+    lookup: ControllerLookup,
 ) -> Option<Zone> {
-    let zone = object_zone?;
-    let named = properties.iter().any(|prop| match prop {
-        FilterProp::InZone { zone: named } => *named == zone,
-        FilterProp::InAnyZone { zones } => zones.contains(&zone),
-        _ => false,
-    });
-    if named {
-        return Some(zone);
-    }
-    if zone == Zone::Battlefield {
-        claimed.iter().copied().find(|&z| z != Zone::Battlefield)
-    } else {
-        claimed.contains(&zone).then_some(zone)
+    match lookup {
+        ControllerLookup::Departed(from) => Some(from),
+        ControllerLookup::OwnerZone => Some(obj_zone),
+        ControllerLookup::LiveOrLki | ControllerLookup::LiveOnly => properties
+            .iter()
+            .any(|prop| match prop {
+                FilterProp::InZone { zone } => *zone == obj_zone,
+                FilterProp::InAnyZone { zones } => zones.contains(&obj_zone),
+                _ => false,
+            })
+            .then_some(obj_zone),
     }
 }
 
@@ -3088,6 +3072,25 @@ pub fn matches_target_filter(
     filter_inner(state, object_id, filter, ctx)
 }
 
+/// CR 603.10a: evaluate a live card whose zone-change record says it departed `from`: the
+/// player axis reads the card as a resident of that zone, while every other property reads the
+/// live card.
+pub(crate) fn matches_target_filter_on_departure(
+    state: &GameState,
+    object_id: ObjectId,
+    from: Zone,
+    filter: &TargetFilter,
+    ctx: &FilterContext<'_>,
+) -> bool {
+    filter_inner_with_lookup(
+        state,
+        object_id,
+        filter,
+        ctx,
+        ControllerLookup::Departed(from),
+    )
+}
+
 /// CR 701.20e + CR 608.2c: Look-then-cast chains publish cards via
 /// `last_revealed_ids` while the parser still binds later steps to
 /// `ExiledBySource`. When resolving those steps against library cards,
@@ -3366,7 +3369,6 @@ pub fn matches_target_filter_including_phased_out(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
         ControllerLookup::LiveOnly,
     )
 }
@@ -3704,8 +3706,7 @@ pub fn matches_target_filter_in_owner_zone(
             ctx.recipient_id,
             ctx.scoped_iteration_player,
             ctx.triggering_object,
-            ctx.claimed_zones,
-            ControllerLookup::LiveOnly,
+            ControllerLookup::OwnerZone,
         );
     }
 
@@ -3723,8 +3724,7 @@ pub fn matches_target_filter_in_owner_zone(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
-        ControllerLookup::LiveOnly,
+        ControllerLookup::OwnerZone,
     )
 }
 
@@ -3831,7 +3831,6 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
-                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 );
             }
@@ -3858,7 +3857,6 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
-                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 )
             } else if let Some(entry) = state.liminal_entries.get(object_id) {
@@ -3874,7 +3872,6 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
-                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 )
             } else {
@@ -3895,7 +3892,6 @@ pub fn matches_target_filter_on_battlefield_entry(
                     ctx.recipient_id,
                     ctx.scoped_iteration_player,
                     ctx.triggering_object,
-                    ctx.claimed_zones,
                     ControllerLookup::LiveOrLki,
                 )
             })
@@ -3919,7 +3915,6 @@ pub fn matches_target_filter_on_battlefield_entry(
                 ctx.recipient_id,
                 ctx.scoped_iteration_player,
                 ctx.triggering_object,
-                ctx.claimed_zones,
                 ControllerLookup::LiveOrLki,
             )
         }
@@ -3981,7 +3976,6 @@ pub fn matches_target_filter_on_counter_added_record(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4028,7 +4022,6 @@ pub fn matches_target_filter_on_attack_declaration_record(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4079,7 +4072,6 @@ pub fn matches_target_filter_on_damage_record_source(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
         ControllerLookup::LiveOrLki,
     )
 }
@@ -4319,7 +4311,6 @@ pub(crate) fn matches_target_filter_on_event_snapshot(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
         ControllerLookup::LiveOnly,
     )
 }
@@ -4451,6 +4442,16 @@ fn filter_inner(
     filter: &TargetFilter,
     ctx: &FilterContext<'_>,
 ) -> bool {
+    filter_inner_with_lookup(state, object_id, filter, ctx, ControllerLookup::LiveOrLki)
+}
+
+fn filter_inner_with_lookup(
+    state: &GameState,
+    object_id: ObjectId,
+    filter: &TargetFilter,
+    ctx: &FilterContext<'_>,
+    controller_lookup: ControllerLookup,
+) -> bool {
     // CR 702.26b: a phased-out permanent is treated as though it does not
     // exist. The only exception the rules allow — "rules and effects that
     // specifically mention phased-out permanents" — is extraordinarily rare
@@ -4474,8 +4475,7 @@ fn filter_inner(
         ctx.recipient_id,
         ctx.scoped_iteration_player,
         ctx.triggering_object,
-        ctx.claimed_zones,
-        ControllerLookup::LiveOrLki,
+        controller_lookup,
     )
 }
 
@@ -4492,7 +4492,6 @@ fn filter_inner_for_object(
     recipient_id: Option<ObjectId>,
     scoped_iteration_player: Option<PlayerId>,
     triggering_object: Option<TriggeringObjectRef>,
-    claimed_zones: &[Zone],
     controller_lookup: ControllerLookup,
 ) -> bool {
     match filter {
@@ -4547,7 +4546,7 @@ fn filter_inner_for_object(
                     return false;
                 }
             }
-            let licensed = claimed_shared_zone(properties, claimed_zones, Some(obj.zone));
+            let licensed = resident_zone(properties, obj.zone, controller_lookup);
             // Controller check
             //
             // CR 109.4 + CR 608.2h + CR 400.7: All ControllerRef arms compare
@@ -4775,7 +4774,6 @@ fn filter_inner_for_object(
             recipient_id,
             scoped_iteration_player,
             triggering_object,
-            claimed_zones,
             controller_lookup,
         ),
         TargetFilter::Or { filters } => filters.iter().any(|f| {
@@ -4791,7 +4789,6 @@ fn filter_inner_for_object(
                 recipient_id,
                 scoped_iteration_player,
                 triggering_object,
-                claimed_zones,
                 controller_lookup,
             )
         }),
@@ -4808,7 +4805,6 @@ fn filter_inner_for_object(
                 recipient_id,
                 scoped_iteration_player,
                 triggering_object,
-                claimed_zones,
                 controller_lookup,
             )
         }),
@@ -4827,7 +4823,6 @@ fn filter_inner_for_object(
                     recipient_id,
                     scoped_iteration_player,
                     triggering_object,
-                    claimed_zones,
                 },
             )
         }
@@ -5029,7 +5024,6 @@ fn filter_inner_for_object(
                     recipient_id,
                     scoped_iteration_player,
                     triggering_object,
-                    claimed_zones,
                     controller_lookup,
                 )
         }
@@ -5175,7 +5169,6 @@ fn filter_inner_for_object(
                 recipient_id,
                 scoped_iteration_player,
                 triggering_object,
-                claimed_zones,
             };
             state
                 .last_chosen_damage_source
@@ -5324,7 +5317,7 @@ fn zone_change_filter_inner(
 
             // CR 400.1 + CR 109.4: a zone without controllers answers the controller axis
             // for every seat reading the same container, like the live-object door.
-            let licensed = claimed_shared_zone(properties, ctx.claimed_zones, record.from_zone);
+            let licensed = record.from_zone;
             if let Some(ctrl) = controller {
                 let admits = |obj_ctrl: PlayerId| -> bool {
                 match ctrl {
@@ -7018,7 +7011,6 @@ fn aura_can_enchant_referenced_target(
                 recipient_id: source.recipient_id,
                 scoped_iteration_player: None,
                 triggering_object: source.triggering_object,
-                claimed_zones: &[],
             };
             filter_inner(state, *target_id, enchant_filter, &ctx)
         }
@@ -9249,7 +9241,6 @@ fn object_shares_quality_with_reference_filter(
         // entrant and the exclusion is silently inert.
         scoped_iteration_player: None,
         triggering_object: source.triggering_object,
-        claimed_zones: &[],
     };
     // CR 109.2 + CR 205.3m: resolve a bare descriptive reference such as "a
     // creature you control" or "a creature card in your graveyard" to the zone
@@ -19614,24 +19605,16 @@ mod dandan_axis_collapse_tests {
         }
     }
 
-    /// The licence is the filter's own claim: without it the comparison stays single.
+    /// At the plain door a bare leaf keeps one comparison: the card's zone alone is no licence.
     #[test]
     fn an_unlicensed_filter_keeps_one_comparison() {
         let mut state = dandan();
         let id = creature(&mut state, Zone::Graveyard);
         let you = Some(ControllerRef::You);
-        assert_eq!(
-            admitted(&state, id, &typed(you.clone(), vec![])),
-            OWNER_ONLY
-        );
+        assert_eq!(admitted(&state, id, &typed(you, vec![])), OWNER_ONLY);
         assert_eq!(
             admitted(&state, id, &typed(None, vec![owned(ControllerRef::You)])),
             OWNER_ONLY
-        );
-        assert_eq!(
-            admitted_for_zone(&state, id, Zone::Graveyard, &typed(you, vec![])),
-            OWNER_ONLY,
-            "the explicit zone argument is not a licence"
         );
         let nested = typed(
             None,
@@ -19759,9 +19742,9 @@ mod dandan_axis_collapse_tests {
         })
     }
 
-    /// The record door licenses on the origin zone the filter itself names.
+    /// The record door licenses on the zone the card left.
     #[test]
-    fn a_zone_change_record_collapses_only_for_a_named_shared_origin() {
+    fn a_zone_change_record_collapses_only_for_a_shared_origin() {
         let state = dandan();
         let owned_you = |zone| typed(None, vec![in_zone(zone), owned(ControllerRef::You)]);
         assert_eq!(
@@ -19792,8 +19775,8 @@ mod dandan_axis_collapse_tests {
                 &record(Some(Zone::Graveyard)),
                 &typed(None, vec![owned(ControllerRef::You)])
             ),
-            OWNER_ONLY,
-            "no naming property"
+            BOTH,
+            "the origin is the licence, the filter need not name it"
         );
         let controller_axis = typed(Some(ControllerRef::You), vec![in_zone(Zone::Graveyard)]);
         assert_eq!(
@@ -19814,114 +19797,155 @@ mod dandan_axis_collapse_tests {
         );
     }
 
-    fn claimed_admitted(
+    fn departed_admitted(
         state: &GameState,
-        record: &ZoneChangeRecord,
-        object: ObjectId,
+        id: ObjectId,
+        from: Zone,
         filter: &TargetFilter,
-        claimed: &[Zone],
-    ) -> ([bool; 2], [bool; 2]) {
-        let ctx = |seat| {
-            FilterContext::from_source_with_controller(SOURCE, seat).with_claimed_zones(claimed)
+    ) -> [bool; 2] {
+        [P0, P1].map(|seat| {
+            let ctx = FilterContext::from_source_with_controller(SOURCE, seat);
+            matches_target_filter_on_departure(state, id, from, filter, &ctx)
+        })
+    }
+
+    /// A P0-owned card resting in the pile zone `zone`, judged by every door under a bare
+    /// player-axis leaf: only a door that states the pile zone admits both seats.
+    #[test]
+    fn each_door_licenses_only_the_zone_it_states() {
+        let you = |controller: Option<ControllerRef>, owned_by: Option<ControllerRef>| {
+            typed(controller, owned_by.map(owned).into_iter().collect())
         };
-        (
-            [P0, P1].map(|seat| matches_target_filter(state, object, filter, &ctx(seat))),
-            [P0, P1].map(|seat| {
-                matches_target_filter_on_zone_change_record(state, record, filter, &ctx(seat))
-            }),
-        )
-    }
-
-    /// A caller's claim licenses both axes on both doors for the claimed shared zone only.
-    #[test]
-    fn caller_claimed_zones_license_exactly_the_claimed_shared_zone() {
-        let mut state = dandan();
-        let id = creature(&mut state, Zone::Graveyard);
-        let pile_record = record(Some(Zone::Graveyard));
-        let by_controller = typed(Some(ControllerRef::You), vec![]);
-        let by_owner = typed(None, vec![owned(ControllerRef::You)]);
-        for filter in [&by_controller, &by_owner] {
-            assert_eq!(
-                claimed_admitted(&state, &pile_record, id, filter, &[Zone::Graveyard]),
-                (BOTH, BOTH),
-                "claimed pile"
-            );
-            assert_eq!(
-                claimed_admitted(&state, &pile_record, id, filter, &[]),
-                (OWNER_ONLY, OWNER_ONLY),
-                "no claim"
-            );
-            assert_eq!(
-                claimed_admitted(&state, &pile_record, id, filter, &[Zone::Hand]),
-                (OWNER_ONLY, OWNER_ONLY),
-                "another zone claimed"
-            );
-            assert_eq!(
-                claimed_admitted(&state, &pile_record, id, filter, &[Zone::Battlefield]),
-                (OWNER_ONLY, OWNER_ONLY),
-                "the battlefield is never claimed"
-            );
-        }
-        let mut per_seat = standard();
-        let standard_id = creature(&mut per_seat, Zone::Graveyard);
-        assert_eq!(
-            claimed_admitted(
-                &per_seat,
-                &pile_record,
-                standard_id,
-                &by_owner,
-                &[Zone::Graveyard]
-            ),
-            (OWNER_ONLY, OWNER_ONLY),
-            "a per-seat format has no shared container to read"
-        );
-    }
-
-    /// A battlefield entrant is read through the shared container of the zone it arrived from.
-    #[test]
-    fn a_claimed_origin_licenses_a_battlefield_resident_on_the_live_door() {
-        let mut state = dandan();
-        let entrant = creature(&mut state, Zone::Battlefield);
-        let pile_record = record(Some(Zone::Graveyard));
-        let by_controller = typed(Some(ControllerRef::You), vec![]);
-        let by_owner = typed(None, vec![owned(ControllerRef::You)]);
-        for filter in [&by_controller, &by_owner] {
-            assert_eq!(
-                claimed_admitted(&state, &pile_record, entrant, filter, &[Zone::Graveyard]).0,
-                BOTH,
-                "claimed pile origin"
-            );
-            for (claim, why) in [
-                (&[][..], "no claim"),
-                (&[Zone::Hand][..], "per-seat origin claimed"),
-                (&[Zone::Battlefield][..], "the battlefield is never claimed"),
-            ] {
-                assert_eq!(
-                    claimed_admitted(&state, &pile_record, entrant, filter, claim).0,
-                    OWNER_ONLY,
-                    "{why}"
-                );
+        for shared in [true, false] {
+            for zone in [Zone::Graveyard, Zone::Library] {
+                let mut state = if shared { dandan() } else { standard() };
+                let pile = creature(&mut state, zone);
+                for (label, filter, single) in [
+                    (
+                        "controller You",
+                        you(Some(ControllerRef::You), None),
+                        OWNER_ONLY,
+                    ),
+                    (
+                        "controller Opponent",
+                        you(Some(ControllerRef::Opponent), None),
+                        [false, true],
+                    ),
+                    ("Owned You", you(None, Some(ControllerRef::You)), OWNER_ONLY),
+                    (
+                        "Owned Opponent",
+                        you(None, Some(ControllerRef::Opponent)),
+                        [false, true],
+                    ),
+                ] {
+                    let licensed = if shared { BOTH } else { single };
+                    let why = format!("{label} {zone:?} shared={shared}");
+                    assert_eq!(admitted(&state, pile, &filter), single, "plain {why}");
+                    assert_eq!(
+                        admitted_for_zone(&state, pile, zone, &filter),
+                        licensed,
+                        "owner-zone {why}"
+                    );
+                    assert_eq!(
+                        departed_admitted(&state, pile, zone, &filter),
+                        licensed,
+                        "departed pile zone {why}"
+                    );
+                    for other in [Zone::Hand, Zone::Battlefield] {
+                        assert_eq!(
+                            departed_admitted(&state, pile, other, &filter),
+                            single,
+                            "departed {other:?} {why}"
+                        );
+                        assert_eq!(
+                            record_admitted(&state, &record(Some(other)), &filter),
+                            single,
+                            "record {other:?} {why}"
+                        );
+                    }
+                    assert_eq!(
+                        record_admitted(&state, &record(Some(zone)), &filter),
+                        licensed,
+                        "record pile zone {why}"
+                    );
+                    assert_eq!(
+                        record_admitted(&state, &record(None), &filter),
+                        single,
+                        "record without origin {why}"
+                    );
+                }
             }
         }
-        let in_hand = creature(&mut state, Zone::Hand);
+    }
+
+    /// A battlefield resident has controllers: no door but the departure door that names
+    /// the pile reads another seat for it.
+    #[test]
+    fn a_battlefield_resident_is_judged_by_its_controller() {
+        let mut state = dandan();
+        let id = creature(&mut state, Zone::Battlefield);
+        let filter = typed(Some(ControllerRef::You), vec![]);
+        assert_eq!(admitted(&state, id, &filter), OWNER_ONLY);
         assert_eq!(
-            claimed_admitted(&state, &pile_record, in_hand, &by_owner, &[Zone::Graveyard]).0,
-            OWNER_ONLY,
-            "a non-battlefield object is licensed only by its own zone"
+            admitted_for_zone(&state, id, Zone::Battlefield, &filter),
+            OWNER_ONLY
         );
-        let mut per_seat = standard();
-        let standard_entrant = creature(&mut per_seat, Zone::Battlefield);
         assert_eq!(
-            claimed_admitted(
-                &per_seat,
-                &pile_record,
-                standard_entrant,
-                &by_owner,
-                &[Zone::Graveyard]
-            )
-            .0,
-            OWNER_ONLY,
-            "a per-seat format has no shared container to read"
+            departed_admitted(&state, id, Zone::Battlefield, &filter),
+            OWNER_ONLY
         );
+        assert_eq!(
+            record_admitted(&state, &record(Some(Zone::Battlefield)), &filter),
+            OWNER_ONLY
+        );
+        assert_eq!(
+            departed_admitted(&state, id, Zone::Graveyard, &filter),
+            BOTH,
+            "the departure door judges the entrant as the pile card it was"
+        );
+    }
+
+    /// A `Destroyed` observer reads the already-moved pile card through the plain door, so a
+    /// bare "you control" leaf keeps one comparison.
+    #[test]
+    fn a_destroy_observer_ignores_the_other_seats_creature_in_the_shared_graveyard() {
+        use crate::types::ability::TriggerDefinition;
+        use crate::types::events::GameEvent;
+        use crate::types::triggers::TriggerMode;
+        let mut state = dandan();
+        let watcher = create_object(
+            &mut state,
+            CardId(5),
+            P0,
+            "Watcher".into(),
+            Zone::Battlefield,
+        );
+        let mut trigger = TriggerDefinition::new(TriggerMode::Destroyed);
+        trigger.valid_card = Some(typed(Some(ControllerRef::You), vec![]));
+        let source_context =
+            crate::game::trigger_matchers::test_trigger_source_context(&state, watcher);
+        let mut destroyed = |owner: PlayerId, card_id: u64| {
+            let id = create_object(
+                &mut state,
+                CardId(card_id),
+                owner,
+                "Bear".into(),
+                Zone::Graveyard,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.controller = owner;
+            GameEvent::CreatureDestroyed {
+                object_id: id,
+                source_id: None,
+            }
+        };
+        let own = destroyed(P0, 6);
+        let theirs = destroyed(P1, 7);
+        let observes = |event: &GameEvent| {
+            crate::game::trigger_matchers::match_destroyed(event, &trigger, &source_context, &state)
+        };
+        assert!(observes(&own), "reach: P0's own pile creature matches");
+        assert!(!observes(&theirs), "P1's pile creature is not P0's");
     }
 }

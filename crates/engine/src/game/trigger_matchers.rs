@@ -1167,6 +1167,19 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+fn destination_constraint_names(
+    destination: Option<&Zone>,
+    constraint: &DestinationConstraint,
+    zone: Zone,
+) -> bool {
+    destination == Some(&zone)
+        || match constraint {
+            DestinationConstraint::Equals(expected) => *expected == zone,
+            DestinationConstraint::OneOf(zones) => zones.contains(&zone),
+            DestinationConstraint::Any | DestinationConstraint::NotEquals(_) => false,
+        }
+}
+
 fn destination_matches_constraint(zone: Zone, constraint: &DestinationConstraint) -> bool {
     match constraint {
         DestinationConstraint::Any => true,
@@ -1212,22 +1225,33 @@ fn zone_change_clause_matches(
         return false;
     }
     if let Some(filter) = valid_card {
-        // CR 400.1: the zone the event left is the origin the trigger names, not a property
-        // of `valid_card`, so it is claimed for the shared-zone owner axis on both doors.
-        let origin_claim: &[Zone] = match (origin, from) {
-            (OriginConstraint::Equals(_) | OriginConstraint::OneOf(_), Some(zone))
-                if *zone != Zone::Battlefield =>
+        let ctx = super::filter::FilterContext::from_trigger_source(source_context);
+        let live_entrant =
+            *to == Zone::Battlefield && state.objects.contains_key(&record.object_id);
+        // CR 603.6a: an enters trigger reads the permanent as it exists on the battlefield;
+        // CR 603.10a: a trigger that names the zone a card leaves reads the card as it was there.
+        let departed = match (origin, record.from_zone) {
+            (OriginConstraint::Equals(_) | OriginConstraint::OneOf(_), Some(from))
+                if !destination_constraint_names(destination, destination_constraint, *to) =>
             {
-                std::slice::from_ref(zone)
+                Some(from)
             }
-            _ => &[],
+            _ => None,
         };
-        let ctx = super::filter::FilterContext::from_trigger_source(source_context)
-            .with_claimed_zones(origin_claim);
-        let matches = if *to == Zone::Battlefield && state.objects.contains_key(&record.object_id) {
-            super::filter::matches_target_filter(state, record.object_id, filter, &ctx)
-        } else {
-            super::filter::matches_target_filter_on_zone_change_record(state, record, filter, &ctx)
+        let matches = match (live_entrant, departed) {
+            (true, Some(from)) => super::filter::matches_target_filter_on_departure(
+                state,
+                record.object_id,
+                from,
+                filter,
+                &ctx,
+            ),
+            (true, None) => {
+                super::filter::matches_target_filter(state, record.object_id, filter, &ctx)
+            }
+            (false, _) => super::filter::matches_target_filter_on_zone_change_record(
+                state, record, filter, &ctx,
+            ),
         };
         if !matches {
             return false;
@@ -18415,5 +18439,77 @@ mod tests {
             ),
             "a non-artifact token must fail the Artifact type filter even via LKI"
         );
+    }
+
+    /// A card reanimated from the shared graveyard by `reanimator`, judged by P0's creature-you-
+    /// control trigger over `origin`/`destination`; returns whether the trigger matches.
+    fn reanimation_matches(
+        pile_owner: PlayerId,
+        reanimator: PlayerId,
+        destination: Option<Zone>,
+    ) -> bool {
+        let mut state = GameState::new(crate::types::format::FormatConfig::dandan(), 2, 1);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Watcher".to_string(),
+            Zone::Battlefield,
+        );
+        let entrant = create_object(
+            &mut state,
+            CardId(2),
+            pile_owner,
+            "Entrant".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, entrant);
+        state.objects.get_mut(&entrant).unwrap().controller = reanimator;
+        let mut trigger = make_trigger(TriggerMode::ChangesZone);
+        trigger.origin = Some(Zone::Graveyard);
+        trigger.destination = destination;
+        trigger.valid_card = Some(TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: Some(ControllerRef::You),
+            properties: vec![],
+        }));
+        let event = GameEvent::ZoneChanged {
+            object_id: entrant,
+            from: Some(Zone::Graveyard),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord {
+                core_types: vec![CoreType::Creature],
+                owner: pile_owner,
+                controller: reanimator,
+                ..ZoneChangeRecord::test_minimal(entrant, Some(Zone::Graveyard), Zone::Battlefield)
+            }),
+        };
+        match_changes_zone(
+            &event,
+            &trigger,
+            &test_trigger_source_context(&state, source),
+            &state,
+        )
+    }
+
+    /// CR 603.6a: a trigger naming the battlefield as destination reads the permanent, so only
+    /// its controller counts; without a named destination it reads the departed pile.
+    #[test]
+    fn a_named_battlefield_destination_judges_the_permanent_not_the_pile() {
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let named = Some(Zone::Battlefield);
+        assert!(
+            reanimation_matches(p1, p0, named),
+            "reach: P0's own permanent matches"
+        );
+        assert!(
+            !reanimation_matches(p0, p1, named),
+            "P1's permanent is not a creature P0 controls"
+        );
+        assert!(
+            reanimation_matches(p0, p1, None),
+            "paired: the pile reading"
+        );
+        assert!(reanimation_matches(p1, p0, None));
     }
 }

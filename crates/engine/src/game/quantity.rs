@@ -6052,25 +6052,22 @@ fn resolve_ref(
         }
         // CR 400.7 + CR 700.4: Count zone-change snapshots from this turn
         // using last-known characteristics for the moved object.
-        QuantityRef::ZoneChangeCountThisTurn { from, to, filter } => {
-            let filter_ctx = filter_ctx.with_claimed_zones(from.as_slice());
-            usize_to_i32_saturating(
-                state
-                    .zone_changes_this_turn
-                    .iter()
-                    .filter(|record| {
-                        from.is_none_or(|zone| record.from_zone == Some(zone))
-                            && to.is_none_or(|zone| record.to_zone == zone)
-                            && matches_target_filter_on_zone_change_record(
-                                state,
-                                record,
-                                filter,
-                                &filter_ctx,
-                            )
-                    })
-                    .count(),
-            )
-        }
+        QuantityRef::ZoneChangeCountThisTurn { from, to, filter } => usize_to_i32_saturating(
+            state
+                .zone_changes_this_turn
+                .iter()
+                .filter(|record| {
+                    from.is_none_or(|zone| record.from_zone == Some(zone))
+                        && to.is_none_or(|zone| record.to_zone == zone)
+                        && matches_target_filter_on_zone_change_record(
+                            state,
+                            record,
+                            filter,
+                            &filter_ctx,
+                        )
+                })
+                .count(),
+        ),
         // CR 400.7 + CR 603.10a: Reduce `property` over this turn's matching
         // zone-change snapshots. Mirrors ZoneChangeCountThisTurn's population scan
         // but sums/maxes/mins the per-record P/T/MV (CR 208.1 / CR 202.3) instead
@@ -6082,7 +6079,6 @@ fn resolve_ref(
             function,
             property,
         } => {
-            let filter_ctx = filter_ctx.with_claimed_zones(from.as_slice());
             let vals = state
                 .zone_changes_this_turn
                 .iter()
