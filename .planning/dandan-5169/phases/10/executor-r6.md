@@ -1,0 +1,25 @@
+# Phase 10 executor r6 (phase mode, implementation/fix)
+
+MODEL: claude-sonnet-5-5
+Mode: implementation/fix. START_SHA == 5148aafffbdf04e80054d66916dbdd5ee124901c. IMPLEMENTATION_WORKTREE: /home/lgray/vibe-coding/dandan-run/wt-dandan. Start clean at START_SHA. End: HEAD unchanged, nothing staged, unstaged delta = game/filter.rs, game/trigger_matchers.rs, tests/integration/dandan_filter_owner_axis.rs. No fixture regeneration needed (Reanimate already resolves in the integration db; the red run shows it reached). Preparatory only.
+
+## Fix
+- filter.rs `claimed_shared_zone` (the one licence authority for both doors): a battlefield resident, which has no shared container of its own, takes the first non-Battlefield zone the caller claims; other objects keep "licensed only by their own zone if claimed". A filter-named InZone/InAnyZone still licenses first.
+- trigger_matchers.rs `zone_change_clause_matches`: the ctx is built once with `with_claimed_zones(origin_claim)` and used by BOTH branches. Channel chosen: the claim is narrowed to the single zone the event left (`from`, which `origin.matches_from` already guarantees is among the Equals/OneOf zones), so a OneOf origin (Hand+Graveyard) cannot pick the wrong zone for an entrant; helper signature unchanged. Record-door result is identical (it only tests `claimed.contains(record.from_zone)`).
+- Live-door walk (`grep with_claimed_zones`): change_zone.rs `resolution_zone_candidates` and ChangeZoneAll mass path scan objects in the claimed zones (obj.zone in claimed, unchanged branch); quantity.rs ZoneChangeCountThisTurn/AggregateThisTurn are record-door and pre-filter `record.from_zone == from`, so the battlefield-resident rule is never reached. Trigger seam is the only one that changes. Single occurrence in each of 4 files, no other callers.
+
+## Tests
+- Integration (real Chalk Outline, text verified in card-data: "Whenever one or more creature cards leave your graveyard, ..."; real Reanimate): `v19_a_card_reanimated_from_the_shared_graveyard_left_your_graveyard` (P0-owned pile card = 1 Detective control, P1-owned = 1) and Standard twin `v19_in_standard_only_your_own_graveyard_triggers_on_reanimation` (own = 1 reach, P1 card = 0). `detectives` reach assertion extended: Reanimate -> card on Battlefield.
+- Unit (filter.rs): `a_claimed_origin_licenses_a_battlefield_resident_on_the_live_door` (claimed Graveyard -> BOTH on controller/Owned forms; none / [Hand] / [Battlefield] -> OWNER_ONLY; Hand-resident object under a Graveyard claim -> OWNER_ONLY; Standard -> OWNER_ONLY). Existing `caller_claimed_zones_license_exactly_the_claimed_shared_zone` unchanged and green.
+- Red at 5148aafffb (git-archive scratch + only the new integration test file, own reflinked target, deleted afterwards): `v19_a_card_reanimated_...` FAIL at the P1 assertion (left 0, right 1; P0 control passed so reach holds); 23/24 others in dandan_filter_owner_axis pass incl. Standard twin. Unit row not separately reverted (same helper; its Graveyard-claim BOTH row fails at base by construction because `claimed_shared_zone` returned None for a battlefield object).
+- Green at working tree: p10r6-t1.log 522/522 (dandan_filter_owner_axis, dandan_axis_collapse_tests, dandan_scoped_counts, trigger_matchers, change_zone, perpetual_gains, logical_zone_production_carriers); p10r6-t2.log 3456/3456 (filter, trigger_matchers, change_zone, quantity, dandan, perpetual_gains, triggers, logical_zone_production_carriers), including the 3 Standard tests and v17..v20.
+
+## PREPARATORY verification (not completion evidence)
+rustfmt --check on the 3 paths clean; `cargo clippy --workspace --all-targets -- -D warnings` rc=0 (p10r6-clippy.log). Parser gate: no parser file touched. CR gate: only CR 400.1 appears in the diff; verified at docs/MagicCompRules.txt ("A zone is a place..."; each player has their own graveyard, which the format's shared pile overrides).
+
+## Maintainer-simulation row
+Seam: live door of `zone_change_clause_matches` (to == Battlefield, entrant still on battlefield). Authority: the trigger's origin constraint. Bound at event match time from `from`. Live predicate (CR 400.1 shared container read for the origin zone). Stored: transient `FilterContext.claimed_zones`. Hostile rows: P1-owned pile card reanimated (Dandan 1, Standard 0), Hand/Battlefield/no claim and Standard refusals in the unit row. New-field threading: no field added.
+
+## Judgement calls / risks
+- Pre-existing Along the Crooked Way controller-form case (reanimation by another player) is not counted; note that it now reads through the pile in Dandan for the reason above (the entrant's controller collapses across seats for a claimed Graveyard origin) and is unchanged in Standard. No test asserts either way.
+- The battlefield-resident rule is in the shared helper, so the record door gets it for a Battlefield `from_zone` only if a caller claims a non-Battlefield zone against such a record; all four callers pre-filter or narrow by `from`, so unreachable today.

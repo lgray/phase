@@ -1,0 +1,9 @@
+sha=d7c1237a6f783952740fd48254c5f8cf7a816a3f
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [   0.019s] (  586/37394) lobby-broker protocol::tests::protocol_version_tracks_full_game_wire_additions
+     Summary [1550.460s] 37394 tests run: 37393 passed (52 slow), 1 failed, 51 skipped
+done rc=0

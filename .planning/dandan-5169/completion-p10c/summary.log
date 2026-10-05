@@ -1,0 +1,11 @@
+sha=7eaadea7bc6cb43af573bffdde849702c51d1db3
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [   0.051s] (14313/37292) phase-engine game::triggers::tests::logical_zone_production_carriers_settle_a_nonbattlefield_only_owner_without_a_fake_pause
+        FAIL [   0.361s] (33693/37292) phase-engine::integration perpetual_gains::opponent_qualified_union_fires_on_opponent_events_only
+        FAIL [   0.627s] (33705/37292) phase-engine::integration perpetual_gains::oglor_repeated_grants_retain_multiplicity_across_zone_cycles
+     Summary [1081.720s] 37292 tests run: 37289 passed (37 slow), 3 failed, 51 skipped
+done rc=0

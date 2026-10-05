@@ -1,0 +1,5 @@
+sha=0825f1f505f0685a2c67ee2df0385fc65d81d750
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
