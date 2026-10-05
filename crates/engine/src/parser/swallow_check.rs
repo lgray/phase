@@ -1780,12 +1780,24 @@ fn effect_is_replacement_carrier(effect: &Effect) -> bool {
         } => static_abilities
             .iter()
             .flat_map(|grant| grant.modifications.iter())
-            .any(|modification| {
-                matches!(
-                    modification,
-                    ContinuousModification::GrantStaticAbility { definition }
-                        if static_is_replacement_carrier(definition)
-                )
+            .any(|modification| match modification {
+                ContinuousModification::GrantStaticAbility { definition } => {
+                    static_is_replacement_carrier(definition)
+                }
+                // CR 614.1a: a quoted "If this permanent would leave the battlefield,
+                // exile it instead …" grant (Geth, Thane of Contracts; Llanowar
+                // Greenwidow) carries its `ReplacementDefinition` directly — the same
+                // payload `parsed.replacements` holds for a printed replacement.
+                // Deliberately presence-based rather than event-checked like
+                // `static_is_replacement_carrier`: it mirrors the detector's
+                // `!parsed.replacements.is_empty()` early return, which accepts any
+                // parsed replacement as the represented "instead". Who the grant is
+                // bound to (`affected`) is an anaphor question this detector does not
+                // answer; note a `SelfRef` grant after a `forward_result` zone move is
+                // rebound to the moved object at resolution
+                // (`rebind_child_to_forwarded_objects`, CR 400.7j — Spirit-Sister's Call).
+                ContinuousModification::GrantReplacement { .. } => true,
+                _ => false,
             }),
         _ => false,
     }
@@ -6348,6 +6360,49 @@ If you sang a song the whole time you were searching and shuffling, you may unta
                 antecedent: "you would create one or more tokens".to_string()
             }),
             "full warning: {warning:?}"
+        );
+    }
+
+    /// CR 614.1a: a quoted grant whose ability is a replacement ("It gains \"If this
+    /// creature would leave the battlefield, exile it instead …\"") lowers to a
+    /// `GrantReplacement` modification, which IS the "instead" clause — not a swallow.
+    #[test]
+    fn replacement_instead_is_represented_by_a_granted_replacement() {
+        let parsed = parse_named(
+            "{1}{B}{B}, {T}: Return target creature card from your graveyard to the \
+             battlefield. It gains \"If this creature would leave the battlefield, exile it \
+             instead of putting it anywhere else.\" Activate only as a sorcery.",
+            "Geth, Thane of Contracts",
+            &["Creature"],
+        );
+        // Reach guard: the line parsed cleanly (so the detector ran) and the grant
+        // carries the replacement.
+        assert!(
+            !any_ability_has_unimplemented(&parsed),
+            "{:?}",
+            parsed.abilities
+        );
+        let grant = parsed.abilities[0]
+            .sub_ability
+            .as_deref()
+            .expect("the quoted grant chains after the return");
+        assert!(
+            matches!(
+                &*grant.effect,
+                Effect::GenericEffect { static_abilities, .. }
+                    if static_abilities.iter().any(|definition| {
+                        definition.modifications.iter().any(|modification| {
+                            matches!(modification, ContinuousModification::GrantReplacement { .. })
+                        })
+                    })
+            ),
+            "{:?}",
+            grant.effect
+        );
+        assert!(
+            !has_swallowed_detector(&parsed, "Replacement_Instead"),
+            "{:?}",
+            parsed.parse_warnings
         );
     }
 
