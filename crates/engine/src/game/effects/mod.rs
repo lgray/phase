@@ -6763,6 +6763,15 @@ fn is_scoped_pile_return(effect: &Effect) -> bool {
     )
 }
 
+/// `node` with its chain-position fields (`sub_ability`, `sub_link`) normalized, so the
+/// shared rider predicate, which judges a standalone node, sees only the node's own riders.
+fn standalone_view(node: &ResolvedAbility) -> ResolvedAbility {
+    let mut alone = node.clone();
+    alone.sub_ability = None;
+    alone.sub_link = SubAbilityLink::ContinuationStep;
+    alone
+}
+
 /// CR 400.1 as modified by a shared-library format + CR 701.24a + CR 608.2c: the
 /// parsed per-player wheel ("each player moves their <zones> into their library,
 /// then draws N") is one all-players move phase, one shuffle of the single pile,
@@ -6781,9 +6790,7 @@ fn shared_library_wheel_split(
         return None;
     }
     let plain = |node: &ResolvedAbility| {
-        let mut own = node.clone();
-        own.sub_ability = None;
-        scoped_library_search::has_no_resolution_riders(&own)
+        scoped_library_search::has_no_resolution_riders(&standalone_view(node))
     };
     fn continuation(node: &ResolvedAbility) -> Option<&ResolvedAbility> {
         node.sub_ability
@@ -43395,6 +43402,30 @@ mod tests {
         assert!(
             scoped_library_search::has_no_resolution_riders(&draw_clause),
             "the dealer's seat is a bare scoped draw"
+        );
+    }
+
+    /// CR 608.2c: a wheel that follows an earlier instruction (Time Spiral's
+    /// exile) is the class whichever link the head carries; a mid-chain link
+    /// that is not a continuation still ends the class.
+    #[test]
+    fn shared_library_wheel_split_ignores_the_heads_own_link() {
+        let mut ability = days_undoing_ability();
+        let scope = ability.player_scope.clone().unwrap();
+        let state = dandan_state();
+        assert!(
+            shared_library_wheel_split(&state, &ability, &scope).is_some(),
+            "reach: the ContinuationStep head is the class"
+        );
+        ability.sub_link = SubAbilityLink::SequentialSibling;
+        assert!(
+            shared_library_wheel_split(&state, &ability, &scope).is_some(),
+            "a SequentialSibling head is still the wheel"
+        );
+        chain_node(&mut ability, 2).sub_link = SubAbilityLink::SequentialSibling;
+        assert!(
+            shared_library_wheel_split(&state, &ability, &scope).is_none(),
+            "a SequentialSibling shuffle node is not a continuation"
         );
     }
 
