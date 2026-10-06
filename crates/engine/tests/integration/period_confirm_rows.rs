@@ -1,20 +1,24 @@
 //! CR 732.2a: the confirmer's replay of a trace candidate, and the cover it certifies on.
 
 use engine::analysis::decision_template::IterationCount;
-use engine::analysis::loop_check::ShortcutResponse;
+use engine::analysis::loop_check::{OfferRoad, ShortcutResponse};
 use engine::analysis::resource::{FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis};
+use engine::game::effects::attach::attach_to;
 use engine::game::engine::certify_object_growth_frames_for_tests;
+use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
+use engine::game::{play_trace_view, NamingCause};
 use engine::types::ability::{AbilityKind, ResolvedAbility, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor,
+    CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::ManaType;
+use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
+use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
 
 use crate::food_chain_board::{self, BoardCMember};
@@ -160,15 +164,9 @@ fn kiki_copy_board(copied: &str) -> Option<(GameRunner, ObjectId, ObjectId)> {
     Some((runner, kiki, copied))
 }
 
-/// One Kiki-Jiki cycle, declining an offer it meets; what the offered period's replay performs.
-fn kiki_copy_cycle(
-    runner: &mut GameRunner,
-    kiki: ObjectId,
-    copied: ObjectId,
-) -> Option<Result<Vec<String>, OfferRefusal>> {
-    let index = ability(runner.state(), kiki, false);
-    activate(runner, kiki, index);
-    let score = |action: &GameAction| match action {
+/// Kiki-Jiki's answers: Kiki-Jiki untapped by the copy of `copied` it targets.
+fn kiki_score(kiki: ObjectId, copied: ObjectId) -> impl Fn(&GameAction) -> i32 {
+    move |action| match action {
         GameAction::ChooseTarget {
             target: Some(TargetRef::Object(id)),
         } if *id == kiki => 3,
@@ -180,8 +178,23 @@ fn kiki_copy_cycle(
         // Pestermite's "tap or untap": the untap branch.
         GameAction::ChooseBranch { index: 1 } => 2,
         _ => 0,
-    };
-    settle(runner, &score);
+    }
+}
+
+fn kiki_activates(runner: &mut GameRunner, kiki: ObjectId, score: &dyn Fn(&GameAction) -> i32) {
+    let index = ability(runner.state(), kiki, false);
+    activate(runner, kiki, index);
+    settle(runner, score);
+}
+
+/// One Kiki-Jiki cycle, declining an offer it meets; what the offered period's replay performs.
+fn kiki_copy_cycle(
+    runner: &mut GameRunner,
+    kiki: ObjectId,
+    copied: ObjectId,
+) -> Option<Result<Vec<String>, OfferRefusal>> {
+    let score = kiki_score(kiki, copied);
+    kiki_activates(runner, kiki, &score);
     let performed = is_offer(runner.state()).then(|| {
         let performed = performed_for_tests(runner.state()).expect("an offered span");
         act(runner, GameAction::DeclineShortcut);
@@ -474,8 +487,7 @@ fn a_replaced_sacrifice_arriving_where_recorded_is_admitted() {
 
 /// Basalt Monolith ("{T}: Add {C}{C}{C}. {3}: Untap this artifact.") enchanted by Power Artifact,
 /// tapped and untapped `cycles` times beside Llanowar Elves, six Mountains, and five Mountains in
-/// hand; with `helm`, each cycle also activates Coral Helm ("{3}, Discard a card at random: Target
-/// creature gets +2/+2 until end of turn.") on the Elves.
+/// hand; with `pyromancy`, each cycle also activates Pyromancy at the Elves.
 fn basalt_cycles(pyromancy: bool, cycles: usize) -> Option<GameRunner> {
     let db = shared_card_db()?;
     let mut rig = crate::loop_shortcut_mana_engine::setup(true, LoopDetectionMode::Interactive, db);
@@ -575,24 +587,9 @@ fn marks_mana(state: &GameState) -> bool {
 /// while Basalt Monolith's unrestricted period takes the ∞ mark.
 #[test]
 fn a_take_whose_period_adds_restricted_mana_performs_it() {
-    let member = BoardCMember::C1EternalScourge;
-    let Some(mut board) = food_chain_board::build(member) else {
+    let Some(mut board) = board_c_offered(BoardCMember::C1EternalScourge) else {
         return;
     };
-    board.runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
-    for _ in 0..3 {
-        if is_offer(board.runner.state()) {
-            break;
-        }
-        food_chain_board::exile_with_food_chain(
-            &mut board.runner,
-            board.food_chain,
-            board.creature,
-            member.mana(),
-        );
-        food_chain_board::cast_spell(&mut board.runner, board.creature).expect("cast from exile");
-        settle(&mut board.runner, &|_| 0);
-    }
     assert!(
         is_offer(board.runner.state()),
         "reach: the Food Chain period is offered"
@@ -625,4 +622,738 @@ fn a_take_whose_period_adds_restricted_mana_performs_it() {
         marks_mana(basalt.state()),
         "the unrestricted period takes the ∞ mark"
     );
+}
+
+/// Board C driven until its period is offered, at most three cycles.
+pub(crate) fn board_c_offered(member: BoardCMember) -> Option<food_chain_board::FoodChainBoard> {
+    let mut board = food_chain_board::build(member)?;
+    board.runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    for _ in 0..3 {
+        if is_offer(board.runner.state()) {
+            break;
+        }
+        food_chain_board::exile_with_food_chain(
+            &mut board.runner,
+            board.food_chain,
+            board.creature,
+            member.mana(),
+        );
+        food_chain_board::cast_spell(&mut board.runner, board.creature).expect("cast from exile");
+        settle(&mut board.runner, &|_| 0);
+    }
+    Some(board)
+}
+
+fn road(state: &GameState) -> Option<OfferRoad> {
+    match &state.waiting_for {
+        WaitingFor::LoopShortcut { road, .. } => Some(*road),
+        _ => None,
+    }
+}
+
+fn token_count(state: &GameState) -> usize {
+    state
+        .battlefield
+        .iter()
+        .filter(|id| state.objects[id].is_token)
+        .count()
+}
+
+fn incarnations(state: &GameState, ids: &[ObjectId]) -> u64 {
+    ids.iter().map(|id| state.objects[id].incarnation).sum()
+}
+
+/// CR 732.2a + CR 732.2c: each Board C member is offered on the recorded road, and a take of it
+/// moves the creature through exile and back once per cycle (CR 400.7).
+#[test]
+fn board_c_members_are_offered_on_the_recorded_road_and_taken() {
+    for member in [
+        BoardCMember::C1EternalScourge,
+        BoardCMember::C2SqueeTheImmortal,
+    ] {
+        let Some(mut board) = board_c_offered(member) else {
+            return;
+        };
+        assert_eq!(
+            road(board.runner.state()),
+            Some(OfferRoad::RecordedPeriod),
+            "{member:?}"
+        );
+        let before = incarnations(board.runner.state(), &[board.creature]);
+        take(&mut board.runner, 3);
+        let state = board.runner.state();
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { .. }),
+            "{member:?}: {}",
+            state.waiting_for.variant_name()
+        );
+        let after = incarnations(state, &[board.creature]);
+        assert!(
+            after > before,
+            "{member:?}: the take moved the creature ({before} -> {after})"
+        );
+    }
+}
+
+/// Board C's take: its per-cycle history work and pool walk do not grow with its count.
+#[test]
+fn board_c_take_work_is_flat_per_cycle() {
+    use crate::loop_shortcut::{
+        assert_take_history_work_is_flat, assert_take_pool_walk_is_flat, TakeHistoryVector,
+    };
+
+    let metered = |n: u32| {
+        let mut board =
+            board_c_offered(BoardCMember::C1EternalScourge).expect("the fixture holds Board C");
+        assert!(is_offer(board.runner.state()), "reach: Board C is offered");
+        engine::game::perf_counters::reset();
+        take(&mut board.runner, n);
+        board.runner.state().clone()
+    };
+    assert_take_history_work_is_flat(
+        32,
+        &[
+            TakeHistoryVector::JournalEntries,
+            TakeHistoryVector::ProducedMana,
+            TakeHistoryVector::SpentMana,
+            TakeHistoryVector::BattlefieldEntries,
+        ],
+        &[],
+        metered,
+    );
+    assert_take_pool_walk_is_flat(32, metered);
+}
+
+/// CR 732.2a: Kiki-Jiki's first span refuses at its target prompt; the window after the second
+/// activation offers the period on the recorded road, and the take's collapse at the step's end
+/// mints the copies it counted (CR 732.1b).
+#[test]
+fn kiki_jiki_is_refused_at_its_first_span_then_offered_and_taken() {
+    let Some((mut runner, kiki, exarch)) = kiki_copy_board("Deceiver Exarch") else {
+        return;
+    };
+    let score = kiki_score(kiki, exarch);
+    kiki_activates(&mut runner, kiki, &score);
+    assert!(!is_offer(runner.state()), "the first span is not offered");
+    assert_eq!(
+        latest_verdict(runner.state()),
+        Err(OfferRefusal::UnanswerablePrompt)
+    );
+    kiki_activates(&mut runner, kiki, &score);
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    let tokens = token_count(runner.state());
+    take(&mut runner, 2);
+    let phase = runner.state().phase;
+    while matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        && runner.state().phase == phase
+    {
+        act(&mut runner, GameAction::PassPriority);
+    }
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::PayAmountChoice { max: 2, .. }
+        ),
+        "reach: the collapse asks for the taken count; got {:?}",
+        runner.state().waiting_for
+    );
+    act(&mut runner, GameAction::SubmitPayAmount { amount: 2 });
+    assert_eq!(token_count(runner.state()), tokens + 2);
+}
+
+/// Grand Architect ("{U}: Target artifact creature becomes blue until end of turn. Tap an untapped
+/// blue creature you control: Add {C}{C}. …") and Pili-Pala ("{2}, {Q}: Add one mana of any
+/// color."), with Pili-Pala recolored first when `blue`, cycled until an offer; whether one came.
+pub(crate) fn grand_architect_pili_pala(
+    db: &engine::database::card_db::CardDatabase,
+    blue: bool,
+) -> (GameRunner, ObjectId, bool) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let architect = scenario.add_real_card(P0, "Grand Architect", Zone::Battlefield, db);
+    let pili = scenario.add_real_card(P0, "Pili-Pala", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Island", Zone::Battlefield, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let prefer_pili =
+        |action: &GameAction| 2 * names(&[pili])(action) + chooses_color(ManaType::Blue)(action);
+    if blue {
+        let recolor = ability(runner.state(), architect, false);
+        activate(&mut runner, architect, recolor);
+        settle(&mut runner, &prefer_pili);
+    }
+    let (tap_blue, untap) = (
+        ability(runner.state(), architect, true),
+        ability(runner.state(), pili, true),
+    );
+    for _ in 0..3 {
+        activate(&mut runner, architect, tap_blue);
+        settle(&mut runner, &prefer_pili);
+        if is_offer(runner.state()) {
+            return (runner, pili, true);
+        }
+        let untapped = runner.act(GameAction::ActivateAbility {
+            source_id: pili,
+            ability_index: untap,
+        });
+        if untapped.is_err() {
+            break;
+        }
+        settle(&mut runner, &prefer_pili);
+    }
+    (runner, pili, false)
+}
+
+/// Before the recolor Pili-Pala cannot be tapped for {C}{C}, so there is no cycle and no offer;
+/// once it is blue, the window after the second tap offers the two-play period on the recorded
+/// road, and the take adds the mana its cycles net.
+#[test]
+fn grand_architect_pili_pala_is_offered_only_once_pili_pala_is_blue() {
+    let Some(db) = shared_card_db() else { return };
+    let (runner, pili, offered) = grand_architect_pili_pala(db, false);
+    assert!(!offered, "no offer before the recolor");
+    assert!(
+        !runner.state().objects[&pili].tapped,
+        "Pili-Pala was never tapped"
+    );
+
+    let (mut runner, _, offered) = grand_architect_pili_pala(db, true);
+    assert!(offered, "reach: the recolored board offers");
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    let pool = |state: &GameState| state.players[0].mana_pool.units().count();
+    let before = pool(runner.state());
+    take(&mut runner, 3);
+    assert!(
+        pool(runner.state()) > before,
+        "the take added the cycles' mana ({before} -> {})",
+        pool(runner.state())
+    );
+}
+
+/// CR 732.1b: on Food Chain + Eternal Scourge + Misthollow Griffin, the first window's span begins
+/// at Food Chain's activation inside the Griffin's payment, which a replay from the priority frame
+/// never makes, so the step ends first; the next cycle's window offers on the recorded road, and
+/// the take moves the creatures through exile.
+#[test]
+fn griffin_board_is_refused_at_its_first_window_and_offered_at_the_next() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let food_chain = scenario.add_real_card(P0, "Food Chain", Zone::Battlefield, db);
+    let scourge = scenario.add_real_card(P0, "Eternal Scourge", Zone::Battlefield, db);
+    let griffin = scenario.add_real_card(P0, "Misthollow Griffin", Zone::Exile, db);
+    for seat in [P0, P1, PlayerId(2), PlayerId(3)] {
+        for _ in 0..8 {
+            scenario.add_real_card(seat, "Swamp", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let cast_paying_with_food_chain =
+        |runner: &mut GameRunner, creature: ObjectId, other: ObjectId| {
+            cast(runner, creature, vec![], CastPaymentMode::Manual);
+            activate(runner, food_chain, 0);
+            act(runner, GameAction::SelectCards { cards: vec![other] });
+            act(
+                runner,
+                GameAction::ChooseManaColor {
+                    choice: ManaChoice::SingleColor(ManaType::Blue),
+                    count: 1,
+                },
+            );
+            act(runner, GameAction::PassPriority);
+            settle(runner, &|_| 0);
+        };
+    cast_paying_with_food_chain(&mut runner, griffin, scourge);
+    assert!(!is_offer(runner.state()));
+    assert_eq!(
+        latest_verdict(runner.state()),
+        Err(OfferRefusal::NoRecurrence)
+    );
+    cast_paying_with_food_chain(&mut runner, scourge, griffin);
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    let before = incarnations(runner.state(), &[griffin, scourge]);
+    take(&mut runner, 2);
+    let after = incarnations(runner.state(), &[griffin, scourge]);
+    assert!(
+        after > before,
+        "the take moved the creatures ({before} -> {after})"
+    );
+}
+
+/// CR 732.1b + CR 704.5a: Phyrexian Altar recurring Gravecrawler is refused by name: with no
+/// payoff nothing grows, Altar of the Brood's mill keeps the frames from covering, and Zulaport
+/// Cutthroat's "each opponent loses 1 life" moves the opponents toward losing.
+#[test]
+fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
+    let Some(db) = shared_card_db() else { return };
+    let Some(board) = board_c_offered(BoardCMember::C2SqueeTheImmortal) else {
+        return;
+    };
+    assert!(is_offer(board.runner.state()), "reach: Board C is offered");
+    type Expected = fn(&Result<Vec<String>, OfferRefusal>) -> bool;
+    let refused: [(Option<&str>, Expected); 3] = [
+        (None, |v| *v == Err(OfferRefusal::NoAxis)),
+        (Some("Altar of the Brood"), |v| {
+            matches!(
+                v,
+                Err(OfferRefusal::Cover(
+                    ObjectGrowthVerdict::ResourceRecurrence(false)
+                ))
+            )
+        }),
+        (Some("Zulaport Cutthroat"), |v| {
+            *v == Err(OfferRefusal::LossAxis)
+        }),
+    ];
+    for (payoff, expected) in refused {
+        let (mut runner, altar, gravecrawler) = altar_board(payoff, db);
+        let score = |action: &GameAction| {
+            2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+        };
+        for cycle in 0..3 {
+            cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+            settle(&mut runner, &score);
+            let index = ability(runner.state(), altar, true);
+            activate(&mut runner, altar, index);
+            settle(&mut runner, &score);
+            assert!(!is_offer(runner.state()), "{payoff:?} cycle {cycle}");
+        }
+        let verdict = latest_verdict(runner.state());
+        assert!(expected(&verdict), "{payoff:?}: {verdict:?}");
+    }
+}
+
+/// CR 732.1b: once both rotations of the Altar + Gravecrawler period are named, each later cycle
+/// asks one new span and drives none, every span the retry meets having been refused before.
+#[test]
+fn an_altar_gravecrawler_meter_is_flat_once_both_rotations_are_named() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = altar_board(None, db);
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+    };
+    let mut per_cycle = Vec::new();
+    for _ in 0..6 {
+        let before = play_trace_counters();
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        let run = play_trace_counters().since(before);
+        per_cycle.push((run.confirm_asks, run.confirm_drives));
+    }
+    let rotations = play_trace_view(runner.state())
+        .expect("a trace")
+        .named
+        .iter()
+        .filter(|span| span.cause == NamingCause::Repeat)
+        .count();
+    assert!(rotations >= 2, "reach: both rotations are named");
+    assert!(per_cycle[0].1 > 0, "reach: the first span is driven");
+    assert_eq!(per_cycle[2..], [(1, 0); 4], "{per_cycle:?}");
+}
+
+/// CR 732.1b: while Altar of the Brood ("Whenever another permanent you control enters, each
+/// opponent mills a card.") has a library to mill, the Altar + Gravecrawler period does not come
+/// round; once the library is empty it does, and Soul Warden ("Whenever another creature enters,
+/// you gain 1 life.") makes it worth repeating, so the same plays are asked again and offered.
+#[test]
+fn an_altar_gravecrawler_period_is_offered_once_the_milled_library_is_empty() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let altar = scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Walking Corpse", Zone::Battlefield, db);
+    let gravecrawler = scenario.add_real_card(P0, "Gravecrawler", Zone::Graveyard, db);
+    for payoff in ["Swamp", "Altar of the Brood", "Soul Warden"] {
+        scenario.add_real_card(P0, payoff, Zone::Battlefield, db);
+    }
+    for (seat, cards) in [(P0, 10), (P1, 3)] {
+        for _ in 0..cards {
+            scenario.add_real_card(seat, "Swamp", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+    };
+    let library = |state: &GameState| state.players[1].library.len();
+    let mut refused_while_milling = false;
+    for _ in 0..6 {
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        refused_while_milling |= library(runner.state()) > 0
+            && latest_verdict(runner.state())
+                == Err(OfferRefusal::Cover(
+                    ObjectGrowthVerdict::ResourceRecurrence(false),
+                ));
+    }
+    assert!(
+        refused_while_milling,
+        "reach: the cover refused it mid-mill"
+    );
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    assert_eq!(library(runner.state()), 0);
+}
+
+/// CR 732.3: two seats each tapping and untapping their own Basalt Monolith under Power Artifact
+/// ("Enchanted artifact's activated abilities cost {2} less to activate. …") name a span holding
+/// both seats' plays, which is refused before any replay; nothing is offered.
+#[test]
+fn a_span_holding_two_seats_plays_is_refused_as_fragmented_without_a_drive() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let monoliths =
+        [P0, P1].map(|seat| scenario.add_real_card(seat, "Basalt Monolith", Zone::Battlefield, db));
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Wastes", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    for (seat, monolith) in [P0, P1].into_iter().zip(monoliths) {
+        let power = place(runner.state_mut(), seat, "Power Artifact", db);
+        attach_to(runner.state_mut(), power, monolith);
+    }
+    let indices = monoliths.map(|monolith| {
+        (
+            ability(runner.state(), monolith, true),
+            ability(runner.state(), monolith, false),
+        )
+    });
+    let mut fragmented = None;
+    for _ in 0..3 {
+        for ((seat, monolith), (mana, untap)) in [P0, P1].into_iter().zip(monoliths).zip(indices) {
+            assert!(
+                matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == seat)
+            );
+            activate(&mut runner, monolith, mana);
+            let before = play_trace_counters();
+            activate(&mut runner, monolith, untap);
+            let run = play_trace_counters().since(before);
+            let last = play_trace_view(runner.state()).and_then(|view| view.named.last().copied());
+            if let (Some(span), true, true) = (last, seat == P1, fragmented.is_none()) {
+                let verdict = confirm_for_tests(runner.state())
+                    .into_iter()
+                    .find(|(named, _)| *named == span)
+                    .map(|(_, verdict)| verdict);
+                fragmented = Some((run.confirm_asks, run.confirm_drives, verdict));
+            }
+            act(&mut runner, GameAction::PassPriority);
+        }
+        settle(&mut runner, &|_| 0);
+        assert!(!is_offer(runner.state()));
+    }
+    let view = play_trace_view(runner.state()).expect("a trace");
+    assert!(
+        view.named
+            .iter()
+            .any(|span| span.cause == NamingCause::Repeat),
+        "reach: repeats name spans"
+    );
+    assert_eq!(
+        fragmented,
+        Some((
+            1,
+            0,
+            Some(Err(OfferRefusal::Fragmented {
+                seats: vec![P0, P1]
+            }))
+        ))
+    );
+}
+
+/// Presence of Gond on Grizzly Bears with Intruder Alarm and Llanowar Elves; `extra` is a card in
+/// P0's hand, or a Forest on the battlefield.
+fn gond_board(
+    db: &engine::database::card_db::CardDatabase,
+    extra: Option<&str>,
+) -> (GameRunner, ObjectId, ObjectId, Option<ObjectId>) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let bears = scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Intruder Alarm", Zone::Battlefield, db);
+    let elves = scenario.add_real_card(P0, "Llanowar Elves", Zone::Battlefield, db);
+    let extra = extra.map(|name| {
+        let zone = if name == "Forest" {
+            Zone::Battlefield
+        } else {
+            Zone::Hand
+        };
+        scenario.add_real_card(P0, name, zone, db)
+    });
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Forest", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let gond = place(runner.state_mut(), P0, "Presence of Gond", db);
+    attach_to(runner.state_mut(), gond, bears);
+    (runner, bears, elves, extra)
+}
+
+/// One Gond cycle: Llanowar Elves taps for {G}, `between` runs, the Bears make an Elf, and the
+/// stack settles. The meter's asks at the Bears' window.
+fn gond_cycle(
+    runner: &mut GameRunner,
+    bears: ObjectId,
+    elves: ObjectId,
+    between: impl FnOnce(&mut GameRunner),
+) -> u64 {
+    let green = chooses_color(ManaType::Green);
+    let tap = ability(runner.state(), elves, true);
+    activate(runner, elves, tap);
+    settle(runner, &green);
+    between(runner);
+    let before = play_trace_counters();
+    let make = ability(runner.state(), bears, false);
+    activate(runner, bears, make);
+    settle(runner, &green);
+    play_trace_counters().since(before).confirm_asks
+}
+
+/// CR 732.2a + CR 117.3c: the Gond board's first span, Llanowar Elves' tap and Mobilize ("Untap
+/// all creatures you control."), is refused, and the retry offers the Bears' span at the same
+/// window after two asks; without Mobilize the first span offers and nothing is retried.
+#[test]
+fn the_gond_board_offers_the_bears_span_after_refusing_the_first() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, bears, elves, mobilize) = gond_board(db, Some("Mobilize"));
+    let mobilize = mobilize.expect("Mobilize");
+    let asks = gond_cycle(&mut runner, bears, elves, |runner| {
+        cast(runner, mobilize, vec![], CastPaymentMode::Auto);
+        settle(runner, &|_| 0);
+    });
+    let view = play_trace_view(runner.state()).expect("a trace");
+    let offered = view.offered.expect("the Bears' span is offered");
+    let first = view
+        .named
+        .iter()
+        .find(|span| span.end == offered.end)
+        .copied()
+        .expect("the window's first span");
+    assert!(first.start < offered.start, "{:?}", view.named);
+    assert_eq!(asks, 2);
+
+    let (mut runner, bears, elves, _) = gond_board(db, None);
+    let asks = gond_cycle(&mut runner, bears, elves, |_| {});
+    assert!(
+        is_offer(runner.state()),
+        "reach: the board without Mobilize offers"
+    );
+    assert_eq!(asks, 1);
+}
+
+/// Hostiles on the Gond board without Mobilize: Giant Growth ("Target creature gets +3/+3 until
+/// end of turn.") cast while the Bears' ability is on the stack is not replayable, so that window
+/// offers nothing and the next cycle's does; a Forest tapped between the Elves and the Bears is
+/// left out of the span the retry offers.
+#[test]
+fn the_gond_board_hostiles_are_offered_where_the_period_recurs() {
+    let Some(db) = shared_card_db() else { return };
+    let mut canary =
+        crate::loop_shortcut_activation::setup(true, true, LoopDetectionMode::Interactive, db);
+    let index =
+        crate::loop_shortcut_activation::token_ability_index(canary.runner.state(), canary.host)
+            .expect("Gond's granted ability");
+    crate::loop_shortcut_activation::activate_and_drive(&mut canary.runner, canary.host, index);
+    assert!(is_offer(canary.runner.state()), "reach: the canary offers");
+
+    let (mut runner, bears, elves, growth) = gond_board(db, Some("Giant Growth"));
+    let growth = growth.expect("Giant Growth");
+    let green = chooses_color(ManaType::Green);
+    let tap = ability(runner.state(), elves, true);
+    activate(&mut runner, elves, tap);
+    settle(&mut runner, &green);
+    let make = ability(runner.state(), bears, false);
+    activate(&mut runner, bears, make);
+    cast(&mut runner, growth, vec![bears], CastPaymentMode::Auto);
+    settle(&mut runner, &green);
+    assert!(
+        !is_offer(runner.state()),
+        "the Giant Growth window offers nothing"
+    );
+    assert!(
+        confirm_for_tests(runner.state())
+            .iter()
+            .all(|(_, verdict)| *verdict == Err(OfferRefusal::IllegalReplayedPlay)),
+        "{:?}",
+        confirm_for_tests(runner.state())
+    );
+    gond_cycle(&mut runner, bears, elves, |_| {});
+    assert!(is_offer(runner.state()), "the next cycle's window offers");
+
+    let (mut runner, bears, elves, forest) = gond_board(db, Some("Forest"));
+    let forest = forest.expect("Forest");
+    gond_cycle(&mut runner, bears, elves, |runner| {
+        activate(runner, forest, 0);
+        settle(runner, &green);
+    });
+    let view = play_trace_view(runner.state()).expect("a trace");
+    let offered = view.offered.expect("the retry offers");
+    assert!(view.named[0].start < offered.start, "{:?}", view.named);
+}
+
+/// Witherbloom, the Balancer ("Instant and sorcery spells you cast have affinity for creatures.")
+/// with Sprout Swarm ("Convoke", "Buyback {3}", "Create a 1/1 green Saproling creature token.") in
+/// hand and nine Forests; the opponent holds Murder ("Destroy target creature.") and three Swamps.
+fn sprout_swarm_board() -> Option<(GameRunner, ObjectId, ObjectId, ObjectId)> {
+    let db = shared_card_db()?;
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let witherbloom =
+        scenario.add_real_card(P0, "Witherbloom, the Balancer", Zone::Battlefield, db);
+    let sprout = scenario.add_real_card(P0, "Sprout Swarm", Zone::Hand, db);
+    let murder = scenario.add_real_card(P1, "Murder", Zone::Hand, db);
+    for _ in 0..9 {
+        scenario.add_real_card(P0, "Forest", Zone::Battlefield, db);
+    }
+    for _ in 0..3 {
+        scenario.add_real_card(P1, "Swamp", Zone::Battlefield, db);
+    }
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Forest", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    Some((runner, sprout, witherbloom, murder))
+}
+
+fn saprolings(state: &GameState) -> usize {
+    state
+        .battlefield
+        .iter()
+        .filter(|id| state.objects[id].name == "Saproling")
+        .count()
+}
+
+/// CR 732.2a + CR 702.51a: three Sprout Swarm casts spend the Forests and leave three Saprolings,
+/// and the window after the third offers the recast: its replay pays by convoke what the recorded
+/// cast paid with Forests, and each earlier window's refusal was made from a different board.
+#[test]
+fn a_sprout_swarm_ramp_up_is_offered_once_its_forests_are_spent() {
+    let Some((mut runner, sprout, _, _)) = sprout_swarm_board() else {
+        return;
+    };
+    for cast in 0..3 {
+        assert!(!is_offer(runner.state()), "before cast {cast}");
+        runner.cast(sprout).accept_optional().commit();
+        settle(&mut runner, &|_| 0);
+    }
+    assert_eq!(saprolings(runner.state()), 3, "reach: each cast resolved");
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+}
+
+/// CR 732.3: the same board with Murder cast in response to the third Sprout Swarm: the span
+/// holds both seats' plays and is refused before any replay.
+#[test]
+fn an_opponents_response_fragments_the_sprout_swarm_span() {
+    let Some((mut runner, sprout, witherbloom, murder)) = sprout_swarm_board() else {
+        return;
+    };
+    for _ in 0..2 {
+        runner.cast(sprout).accept_optional().commit();
+        settle(&mut runner, &|_| 0);
+        assert!(!is_offer(runner.state()));
+    }
+    assert_eq!(
+        saprolings(runner.state()),
+        2,
+        "reach: each cast made a Saproling"
+    );
+    let before = play_trace_counters();
+    runner.cast(sprout).accept_optional().commit();
+    act(&mut runner, GameAction::PassPriority);
+    cast(
+        &mut runner,
+        murder,
+        vec![witherbloom],
+        CastPaymentMode::Auto,
+    );
+    settle(&mut runner, &names(&[witherbloom]));
+    let run = play_trace_counters().since(before);
+    let state = runner.state();
+    assert_eq!(
+        state.objects[&witherbloom].zone,
+        Zone::Graveyard,
+        "reach: Murder resolved"
+    );
+    assert_eq!(saprolings(state), 3, "reach: Sprout Swarm resolved");
+    assert!(!is_offer(state));
+    assert_eq!(
+        latest_verdict(state),
+        Err(OfferRefusal::Fragmented {
+            seats: vec![P0, P1]
+        })
+    );
+    assert_eq!((run.confirm_asks, run.confirm_drives), (1, 0));
+
+    let offered = board_c_offered(BoardCMember::C2SqueeTheImmortal).expect("Board C");
+    assert!(
+        is_offer(offered.runner.state()),
+        "reach: Board C is offered"
+    );
+}
+
+/// CR 732.2a: Food Chain ("Add X mana of any one color ... Spend this mana only to cast creature
+/// spells.") making green cannot recast Squee, the Immortal ({1}{R}{R}) once the red in the pool
+/// is spent, so the replay refuses; the same plays with red chosen are asked again and offered.
+#[test]
+fn a_replay_refused_for_want_of_red_mana_is_asked_again_once_food_chain_makes_red() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let food_chain = scenario.add_real_card(P0, "Food Chain", Zone::Battlefield, db);
+    let squee = scenario.add_real_card(P0, "Squee, the Immortal", Zone::Battlefield, db);
+    scenario.with_mana_pool(
+        P0,
+        (0..6)
+            .map(|unit| ManaUnit::new(ManaType::Red, ObjectId(9_900 + unit), false, Vec::new()))
+            .collect(),
+    );
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let exile_for = |runner: &mut GameRunner, color: ManaType| {
+        activate(runner, food_chain, 0);
+        act(runner, GameAction::SelectCards { cards: vec![squee] });
+        act(
+            runner,
+            GameAction::ChooseManaColor {
+                choice: ManaChoice::SingleColor(color),
+                count: 1,
+            },
+        );
+    };
+    for _ in 0..2 {
+        exile_for(&mut runner, ManaType::Green);
+        assert!(!is_offer(runner.state()), "no offer while green is made");
+        cast(&mut runner, squee, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &|_| 0);
+        assert!(!is_offer(runner.state()), "no offer while green is made");
+    }
+    assert_eq!(
+        latest_verdict(runner.state()),
+        Err(OfferRefusal::IllegalReplayedPlay),
+        "reach: the green cycle was refused by its replay"
+    );
+    exile_for(&mut runner, ManaType::Red);
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
 }

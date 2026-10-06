@@ -3109,10 +3109,9 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
 /// the paused `pending_copy_token_resolution` instead of advancing the phase / overwriting
 /// `waiting_for = Priority`.
 ///
-/// DELIBERATELY FIREWALL-UNREACHABLE: the offer firewall (`game/engine.rs`'s
-/// `drive_loop_action_iteration`, whose exhaustive fail-closed `_ => Err(RecastAbort)` arm has no
-/// replacement-/target-choice branch) guarantees a certified shortcut's per-cycle fodder mint cannot
-/// pause, so this state cannot arise in real play. The test constructs it directly — installing an
+/// DELIBERATELY UNREACHABLE IN PLAY: the confirmer's replay refuses a prompt no recorded answer
+/// answers (`OfferRefusal::UnanswerablePrompt`), so a certified shortcut's per-cycle fodder mint
+/// cannot pause. The test constructs it directly — installing an
 /// OPTIONAL token-creation replacement (CR 616.1 single optional candidate → `replace_event` returns
 /// `NeedsChoice` from `game/replacement.rs`'s `replacement_is_optional` single-candidate branch) on a P0
 /// battlefield object AFTER accept — to exercise the defensive guard. (Two IDENTICAL replacements

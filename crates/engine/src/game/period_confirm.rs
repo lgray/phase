@@ -55,6 +55,26 @@ pub enum OfferRefusal {
     DrivingResourcesDecrease,
 }
 
+impl OfferRefusal {
+    /// Whether the refusal was decided after the replay completed and came round again, so that
+    /// it read only the period's deltas and the frame as it compares modulo resources.
+    pub(crate) fn decided_after_end_check(&self) -> bool {
+        match self {
+            OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(_))
+            | OfferRefusal::NoAxis
+            | OfferRefusal::LossAxis
+            | OfferRefusal::DrivingResourcesDecrease => true,
+            OfferRefusal::Fragmented { .. }
+            | OfferRefusal::Randomness
+            | OfferRefusal::UnanswerablePrompt
+            | OfferRefusal::IllegalReplayedPlay
+            | OfferRefusal::ArrivalDiverged
+            | OfferRefusal::NoRecurrence
+            | OfferRefusal::Cover(ObjectGrowthVerdict::FodderGrowth(_)) => false,
+        }
+    }
+}
+
 /// One recorded play or answer of a period, as the replay makes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PeriodItem {
@@ -280,13 +300,14 @@ fn step(
     Ok(())
 }
 
-/// CR 601.2h + CR 702.51a: pays a recorded convoke with the tap set the live board offers, in the
-/// detection replay's fodder-first order; `false` when this prompt is not that payment.
-fn rebind_convoke(replay: &mut GameState) -> Result<bool, OfferRefusal> {
+/// CR 601.2h + CR 702.51a: pays a cast's mana payment with the convoke tap set the live board
+/// offers, in the detection replay's fodder-first order; how many creatures it tapped, or `None`
+/// when this prompt is not such a payment.
+fn rebind_convoke(replay: &mut GameState) -> Result<Option<usize>, OfferRefusal> {
     let (WaitingFor::ManaPayment { player, .. }, Some(pending)) =
         (&replay.waiting_for, replay.pending_cast.as_ref())
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let player = *player;
     let Some(taps) = select_convoke_taps(
@@ -295,9 +316,10 @@ fn rebind_convoke(replay: &mut GameState) -> Result<bool, OfferRefusal> {
         &pending.cost,
         ConvokeTapOrder::DetectionFodderFirst,
     ) else {
-        return Ok(false);
+        return Ok(None);
     };
     let before = replay.clone();
+    let tapped = taps.len();
     for (object_id, mana_type) in taps {
         let tapped = step(
             replay,
@@ -312,12 +334,12 @@ fn rebind_convoke(replay: &mut GameState) -> Result<bool, OfferRefusal> {
             Ok(()) => {}
             Err(OfferRefusal::UnanswerablePrompt) => {
                 *replay = before;
-                return Ok(false);
+                return Ok(None);
             }
             Err(refusal) => return Err(refusal),
         }
     }
-    Ok(true)
+    Ok(Some(tapped))
 }
 
 /// One replayed cycle from `replay`'s current state; the source of each triggered ability it
@@ -430,7 +452,7 @@ fn answer(
         let item = &items[at];
         if matches!(item.action, GameAction::TapForConvoke { .. }) {
             let convoked = convoke_choice(replay);
-            if rebind_convoke(replay)? {
+            if rebind_convoke(replay)?.is_some() {
                 choices.extend(convoked);
                 for convoke in candidates.clone() {
                     if matches!(items[convoke].action, GameAction::TapForConvoke { .. }) {
@@ -459,6 +481,13 @@ fn answer(
                 return Err(OfferRefusal::ArrivalDiverged);
             }
         }
+        return Ok(true);
+    }
+    // CR 601.2h + CR 702.51a: a recorded payment the live board cannot repeat is made with the
+    // creatures it can tap instead, as a recorded convoke is.
+    let convoked = convoke_choice(replay);
+    if rebind_convoke(replay)?.is_some_and(|tapped| tapped > 0) {
+        choices.extend(convoked);
         return Ok(true);
     }
     Ok(false)

@@ -1143,8 +1143,7 @@ pub(crate) fn identity_projection_for_unseated_viewer(
 /// DETECTION ONLY. `analysis`'s boundary collapse is the shortcut being TAKEN
 /// (CR 732.2c) and runs on authoritative state; it must never call this. And this is
 /// deliberately NOT [`filter_state_for_viewer`], which additionally clears
-/// rules-execution carriers, zeroes the RNG whose word position the offer hook compares,
-/// and RETAINS `cards_drawn_this_turn` only for the players the viewer holds private
+/// rules-execution carriers, zeroes the RNG, and RETAINS `cards_drawn_this_turn` only for the players the viewer holds private
 /// access to — deleting every opponent's entry from the very journal an instructed-
 /// departure certificate reads. This wrapper is structurally incapable of that strip: it
 /// clones and then applies leaves through an `ObjectId`-keyed map that no `GameState`

@@ -447,7 +447,7 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         family: ResourceFamily::Engine,
         win_kind: WinKind::Advantage,
         gated_on: None,
-        deferral: Some(DeferralBucket::ObjectReentry),
+        deferral: None,
     },
     ComboRow {
         name: "Tidespout Tyrant + Sol Ring",
@@ -568,6 +568,14 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         win_kind: WinKind::Decking,
         gated_on: None,
         deferral: Some(DeferralBucket::Other),
+    },
+    ComboRow {
+        name: "Food Chain + Squee, the Immortal",
+        cards: &["Food Chain", "Squee, the Immortal"],
+        family: ResourceFamily::Engine,
+        win_kind: WinKind::Advantage,
+        gated_on: None,
+        deferral: None,
     },
 ];
 
@@ -697,7 +705,9 @@ pub(crate) const DRIVERS: &[(usize, ComboDriver)] = &[
     (17, ComboDriver::LiveDrain),
     (18, ComboDriver::LiveDrain),
     (22, ComboDriver::PrecastShortcut),
+    (40, ComboDriver::Offline(drive_food_chain_scourge_offer)),
     (50, ComboDriver::Offline(drive_offline_spike_archangel)),
+    (54, ComboDriver::Offline(drive_food_chain_squee_offer)),
 ];
 
 /// Number of rows in the corpus.
@@ -2214,6 +2224,83 @@ pub(crate) fn first_gameover_beat(trace: &[BeatTrace]) -> Option<(usize, PlayerI
         } => Some((t.beat, winner)),
         _ => None,
     })
+}
+
+/// CR 732.2a: Food Chain exiling `creature`, which its own text lets be cast from exile, then that
+/// cast, cycle by cycle through `apply()` on a four-seat board until the engine offers the loop;
+/// the offer's certificate.
+fn drive_food_chain_offer(
+    db: &CardDatabase,
+    creature: &str,
+    land: &str,
+    color: ManaType,
+) -> Option<LoopCertificate> {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let food_chain = scenario.add_real_card(P0, "Food Chain", Zone::Battlefield, db);
+    let creature = scenario.add_real_card(P0, creature, Zone::Battlefield, db);
+    for seat in 0..4 {
+        for _ in 0..8 {
+            scenario.add_real_card(PlayerId(seat), land, Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = crate::types::game_state::LoopDetectionMode::Interactive;
+    let offered = |runner: &GameRunner| match &runner.state().waiting_for {
+        WaitingFor::LoopShortcut { certificate, .. } => Some(certificate.clone()),
+        _ => None,
+    };
+    for _ in 0..4 {
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: food_chain,
+                ability_index: 0,
+            })
+            .ok()?;
+        runner
+            .act(GameAction::SelectCards {
+                cards: vec![creature],
+            })
+            .ok()?;
+        runner
+            .act(GameAction::ChooseManaColor {
+                choice: crate::types::game_state::ManaChoice::SingleColor(color),
+                count: 1,
+            })
+            .ok()?;
+        let card_id = runner.state().objects.get(&creature)?.card_id;
+        runner
+            .act(GameAction::CastSpell {
+                object_id: creature,
+                card_id,
+                targets: Vec::new(),
+                payment_mode: Default::default(),
+            })
+            .ok()?;
+        for _ in 0..16 {
+            if let Some(certificate) = offered(&runner) {
+                return Some(certificate);
+            }
+            if runner.state().stack.is_empty() {
+                break;
+            }
+            runner.act(GameAction::PassPriority).ok()?;
+        }
+        if let Some(certificate) = offered(&runner) {
+            return Some(certificate);
+        }
+    }
+    None
+}
+
+/// C1: Eternal Scourge ("You may cast this card from exile. …").
+pub(crate) fn drive_food_chain_scourge_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    drive_food_chain_offer(db, "Eternal Scourge", "Swamp", ManaType::Black)
+}
+
+/// C2: Squee, the Immortal ("You may cast this card from your graveyard or from exile.").
+pub(crate) fn drive_food_chain_squee_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    drive_food_chain_offer(db, "Squee, the Immortal", "Mountain", ManaType::Red)
 }
 
 /// Drive one live drain cascade (idx 17 / idx 18) to its first `GameOver`. The two

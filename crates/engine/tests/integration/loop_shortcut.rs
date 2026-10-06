@@ -3116,7 +3116,7 @@ const WITHERBLOOM_AFFINITY_ORACLE: &str =
 /// Build the 51st fixture: Witherbloom (granted affinity) + `n_fodder` untapped green
 /// 1/1 Saproling creatures + Sprout Swarm ({1}{G}, Buyback {3}, Convoke) in P0's hand.
 /// Returns `(runner, sprout_id, fodder_ids)`. `Interactive` loop-detection ON.
-fn sprout_swarm_scenario(n_fodder: usize) -> (GameRunner, ObjectId, Vec<ObjectId>) {
+pub(crate) fn sprout_swarm_scenario(n_fodder: usize) -> (GameRunner, ObjectId, Vec<ObjectId>) {
     sprout_swarm_scenario_with_drain(n_fodder, None)
 }
 

@@ -7,6 +7,7 @@
 
 use std::cell::Cell;
 
+use crate::analysis::resource::loop_states_equal_modulo_resources;
 use crate::game::engine::in_simulation_probe;
 use crate::game::period_confirm::OfferRefusal;
 use crate::types::ability::{
@@ -289,10 +290,12 @@ struct PendingRead {
     locus: PlayLocus,
 }
 
-/// A span the confirmer refused, by the nodes it plays and resolves in order.
+/// A span the confirmer refused, by the nodes it plays and resolves in order and the frame it was
+/// asked from.
 #[derive(Clone, Debug)]
 struct Refused {
     nodes: Vec<usize>,
+    frame: std::sync::Arc<GameState>,
     refusal: OfferRefusal,
 }
 
@@ -1346,29 +1349,40 @@ fn span_nodes(trace: &PlayTrace, span: NamedSpan) -> Vec<usize> {
         .collect()
 }
 
-/// CR 732.2a: the refusal a span with `span`'s node sequence was given, while every play since
-/// has been of that span's nodes.
+/// CR 732.2a: the refusal a span with `span`'s node sequence was given from a frame equal to
+/// `state` modulo resources, which is all a refusal decided after the replay's end check reads.
 pub(crate) fn refused_before(state: &GameState, span: NamedSpan) -> Option<OfferRefusal> {
     let trace = current(state)?;
     let nodes = span_nodes(trace, span);
     trace
         .refused
         .iter()
-        .find(|refused| refused.nodes == nodes)
+        .find(|refused| {
+            refused.nodes == nodes && loop_states_equal_modulo_resources(&refused.frame, state)
+        })
         .map(|refused| refused.refusal.clone())
 }
 
-/// Keeps the confirmer's refusal of `span` for the spans named after it.
+/// Keeps a refusal of `span` the confirmer decided after the replay's end check, asked from
+/// `state`, for the spans named after it; a refusal the replay itself gave is asked again.
 pub(crate) fn note_refusal(state: &mut GameState, span: NamedSpan, refusal: OfferRefusal) {
-    let window = WindowKey::of(state);
-    if let Some(trace) = state
-        .play_trace
-        .as_deref_mut()
-        .filter(|trace| trace.window == window)
-    {
-        let nodes = span_nodes(trace, span);
-        trace.refused.push_back(Refused { nodes, refusal });
+    if !refusal.decided_after_end_check() {
+        return;
     }
+    let window = WindowKey::of(state);
+    let Some(mut trace) = state.play_trace.take() else {
+        return;
+    };
+    if trace.window == window {
+        let frame = std::sync::Arc::new(state.clone());
+        let nodes = span_nodes(&trace, span);
+        trace.refused.push_back(Refused {
+            nodes,
+            frame,
+            refusal,
+        });
+    }
+    state.play_trace = Some(trace);
 }
 
 /// Notes the span an offer was made for.

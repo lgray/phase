@@ -628,10 +628,8 @@ pub enum TargetPin {
 }
 
 impl TargetPin {
-    /// CR 400.7 + CR 732.2a: this pin with its object named at whatever incarnation is live. A
-    /// trigger-driven replay is entered one occurrence after the record, by when every object the
-    /// recorded interval named has been replaced by its next incarnation, and the proposal's
-    /// sequence of game choices names that successor.
+    /// CR 400.7 + CR 732.2a: this pin with its object named at whatever incarnation is live, since
+    /// a replayed period meets the successor of every object its recorded plays named.
     pub(crate) fn at_live_incarnation(&self) -> TargetPin {
         let mut pin = self.clone();
         if let TargetPin::ByIdentity(YieldTarget::ThisObject { incarnation, .. }) = &mut pin {

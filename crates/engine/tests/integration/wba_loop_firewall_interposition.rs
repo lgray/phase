@@ -547,7 +547,7 @@ const GAEAS_BLESSING: (&str, &str, &[&str]) = (
 /// loop's period mills every opponent. ONE object away from `load_realistic_dump()`, which is
 /// why a hostile row built on it is one object away from an offering board and its silence has
 /// exactly one cause.
-fn mill_base() -> GameState {
+pub(crate) fn mill_base() -> GameState {
     let mut state = load_realistic_dump();
     graft_altar(&mut state, P0);
     state
@@ -1211,7 +1211,7 @@ fn took_the_replay(state: &GameState, why: &str) -> bool {
 }
 
 /// The board driven by one real buyback+convoke recast to its CR 732.2a offer.
-fn offer_state(state: GameState) -> GameState {
+pub(crate) fn offer_state(state: GameState) -> GameState {
     let state = drive_sprout_cast(state).state().clone();
     assert!(
         matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),

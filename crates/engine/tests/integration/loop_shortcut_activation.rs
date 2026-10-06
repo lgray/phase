@@ -55,7 +55,7 @@ fn place_on_battlefield(
 /// Find the token-creating activated ability on `host`'s LAYER-DERIVED abilities (Gond's
 /// granted `{T}: Create a 1/1 green Elf Warrior`). Reads OFF the host — never injects. `None`
 /// when the grant is absent (the board-lever negative control).
-fn token_ability_index(state: &GameState, host: ObjectId) -> Option<usize> {
+pub(crate) fn token_ability_index(state: &GameState, host: ObjectId) -> Option<usize> {
     state
         .objects
         .get(&host)?
@@ -74,14 +74,19 @@ fn elf_count(state: &GameState) -> usize {
         .count()
 }
 
-struct Canary {
-    runner: GameRunner,
-    host: ObjectId,
+pub(crate) struct Canary {
+    pub(crate) runner: GameRunner,
+    pub(crate) host: ObjectId,
 }
 
 /// Build the 2-player canary board: a vanilla host creature, optional Intruder Alarm (the
 /// untapper), and an optional Presence of Gond attached to the host (the grant source).
-fn setup(with_gond: bool, with_alarm: bool, mode: LoopDetectionMode, db: &CardDatabase) -> Canary {
+pub(crate) fn setup(
+    with_gond: bool,
+    with_alarm: bool,
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> Canary {
     let mut scenario = GameScenario::new(); // new_two_player: P0 + P1
     scenario.at_phase(Phase::PreCombatMain);
     let host = scenario.add_real_card(P0, HOST, Zone::Battlefield, db);
@@ -110,7 +115,7 @@ fn setup(with_gond: bool, with_alarm: bool, mode: LoopDetectionMode, db: &CardDa
 /// Activate the host's `{T}` through the real reducer, then pass priority (both seats) to let
 /// the ability + downstream Elf-ETB/untap trigger resolve. Stop at the CR 732.2a `LoopShortcut`
 /// offer, or when the stack settles empty at a `Priority` window (no offer).
-fn activate_and_drive(runner: &mut GameRunner, host: ObjectId, ability_index: usize) {
+pub(crate) fn activate_and_drive(runner: &mut GameRunner, host: ObjectId, ability_index: usize) {
     runner
         .act(GameAction::ActivateAbility {
             source_id: host,

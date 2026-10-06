@@ -29805,10 +29805,10 @@ impl GameState {
     ///   answer (`game::play_trace::NamingCause`); a mandatory loop never produces this shape and
     ///   stays on the CR 104.4b draw / lethal paths. So in manual play the controller may stop
     ///   after any prefix.
-    /// * **L2 UNCONDITIONALITY BY CONSTRUCTION** — pins plus the static randomness scan plus the
-    ///   runtime rng-position backstop satisfy CR 732.2a's "predictable results" and
-    ///   no-conditional-actions clauses before an offer exists
-    ///   (`analysis::decision_template::predictability_gate`).
+    /// * **L2 UNCONDITIONALITY BY CONSTRUCTION** — pins plus the confirmer's refusal of a period
+    ///   whose replay draws a random outcome (`game::period_confirm::OfferRefusal::Randomness`)
+    ///   satisfy CR 732.2a's "predictable results" and no-conditional-actions clauses before an
+    ///   offer exists (`analysis::decision_template::predictability_gate`).
     /// * **L3 PREFIX CONSENT** — accepting a proposal of bound N is declining CR 732.2b shortening
     ///   at every place up to N, i.e. consenting to every prefix. The collapse prompt's `[0, N]`
     ///   range therefore only ever lands on a consented, manually-reachable prefix.

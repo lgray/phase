@@ -61,7 +61,7 @@ fn card_db() -> &'static CardDatabase {
 /// fails loudly: the row total, the card-gated rows, and their testable complement.
 #[test]
 fn corpus_table_shape_is_locked() {
-    assert_eq!(corpus::corpus_len(), 54, "corpus must hold all 54 rows");
+    assert_eq!(corpus::corpus_len(), 55, "corpus must hold all 55 rows");
     let gated = (0..corpus::corpus_len())
         .filter(|&i| corpus::row(i).gated_on.is_some())
         .count();
@@ -85,7 +85,7 @@ fn corpus_table_shape_is_locked() {
     }
     // The testable rows are the complement of the gated rows.
     let testable = corpus::corpus_len() - gated;
-    assert_eq!(testable, 50, "50 corpus combos are testable once driven");
+    assert_eq!(testable, 51, "51 corpus combos are testable once driven");
 }
 
 /// META-TEST: the corpus is a clean partition — every row is exactly one of
@@ -104,9 +104,9 @@ fn corpus_partition_is_locked() {
         .filter(|&i| corpus::row(i).deferral.is_some())
         .collect();
 
-    assert_eq!(driven.len(), 13, "13 driven rows");
+    assert_eq!(driven.len(), 15, "15 driven rows");
     assert_eq!(gated.len(), 4, "4 gated rows");
-    assert_eq!(deferred.len(), 37, "37 deferred rows");
+    assert_eq!(deferred.len(), 36, "36 deferred rows");
 
     assert!(driven.is_disjoint(&gated), "driven ∩ gated must be empty");
     assert!(
@@ -127,7 +127,7 @@ fn corpus_partition_is_locked() {
         n,
         "driven ∪ gated ∪ deferred must cover every one of the {n} rows"
     );
-    assert_eq!(n, 54);
+    assert_eq!(n, 55);
 
     // Exclusivity: a driven or gated row must not also declare a deferral bucket.
     for &i in driven.iter().chain(gated.iter()) {
@@ -274,6 +274,16 @@ fn drive_row_classifies_corpus_via_shared_pipeline() {
         match corpus::drive_row(db, idx).status {
             corpus::RowStatus::Gated { card: c } => assert_eq!(c, card),
             other => panic!("idx {idx} must be Gated (never Failed), got {other:?}"),
+        }
+    }
+
+    // Confirmed (offer): each Food Chain member is offered as an advantage loop through `apply()`.
+    for idx in [40usize, 54] {
+        match corpus::drive_row(db, idx).status {
+            corpus::RowStatus::Confirmed { win_kind, .. } => {
+                assert_eq!(win_kind, WinKind::Advantage)
+            }
+            other => panic!("idx {idx} (Food Chain) must be Confirmed, got {other:?}"),
         }
     }
 
