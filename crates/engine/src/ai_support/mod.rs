@@ -2589,14 +2589,20 @@ pub fn legal_actions_for_viewer(state: &GameState, viewer: PlayerId) -> LegalAct
 }
 
 /// Adds to a seat-agnostic enumeration the actions only `viewer`'s own seat is
-/// offered. `FreeReveal` names no seat, so no unscoped enumerator carries it:
-/// it is emitted here, from the viewer's own pending entry (CR 103.5, Dandan
-/// free reveal), and a surface that skips this call simply lacks it.
+/// offered. `UseSerumPowder` (CR 103.5b) and `FreeReveal` (CR 103.5, Dandan free
+/// reveal) depend on one seat's hand, so no unscoped enumerator carries them:
+/// they are emitted here, from the viewer's own pending entry, and a surface that
+/// skips this call simply lacks them.
 pub fn with_viewer_actions(
     state: &GameState,
     viewer: PlayerId,
     mut actions: Vec<GameAction>,
 ) -> Vec<GameAction> {
+    for object_id in crate::game::mulligan::serum_powders_offered_to(state, viewer) {
+        actions.push(GameAction::MulliganDecision {
+            choice: MulliganChoice::UseSerumPowder { object_id },
+        });
+    }
     if crate::game::mulligan::free_reveal_offered_to(state, viewer) {
         actions.push(GameAction::MulliganDecision {
             choice: MulliganChoice::FreeReveal,

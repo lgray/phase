@@ -210,6 +210,10 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 112 — DrawSequenceFrame gains `dealer`, the in-game simultaneous-draw dealer,
+ *      serialized in the resolution frames behind RESOLUTION_STATE_WIRE_VERSION 5.
+ *      A v111 peer refuses the version-5 resolution state. Wire 94 moves with it;
+ *      no lobby frame names it.
  * 111 — MulliganChoice gains `FreeReveal` and MulliganDeclaration gains `kind`:
  *      the Dandan free reveal mulligan, a MulliganDecision action payload and a
  *      held declaration in GameState.waiting_for. A v110 peer cannot parse the
@@ -715,7 +719,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 111;
+export const PROTOCOL_VERSION = 112;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

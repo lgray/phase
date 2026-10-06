@@ -106,6 +106,10 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  94 — game_setup and state_update carry GameState, whose resolution frames can
+ *       now hold a simultaneous-draw dealer (RESOLUTION_STATE_WIRE_VERSION 5). A
+ *       v93 peer refuses the version-5 resolution state, so first contact rejects
+ *       the skew. Bumped with full-game protocol 112.
  *  93 — game_setup and state_update carry GameState, whose waiting_for can now
  *       hold a held free reveal mulligan (MulliganDeclaration.kind) and whose
  *       MulliganDecision action gains the FreeReveal choice. A v92 peer would
@@ -562,7 +566,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 93 as const;
+export const WIRE_PROTOCOL_VERSION = 94 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

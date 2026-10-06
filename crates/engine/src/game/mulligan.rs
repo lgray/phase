@@ -324,6 +324,41 @@ pub(crate) fn free_reveal_offered(state: &GameState, entry: &MulliganDecisionEnt
     }
 }
 
+/// CR 103.5b + Serum Powder Oracle text: every object in `player`'s hand named
+/// "Serum Powder" (CR 201.2: name match is exact and case-insensitive).
+pub(crate) fn serum_powders_in_hand(state: &GameState, player: PlayerId) -> Vec<ObjectId> {
+    let Some(p) = state.players.iter().find(|p| p.id == player) else {
+        return Vec::new();
+    };
+    p.hand
+        .iter()
+        .copied()
+        .filter(|oid| {
+            state
+                .objects
+                .get(oid)
+                .is_some_and(|o| o.name.eq_ignore_ascii_case("Serum Powder"))
+        })
+        .collect()
+}
+
+/// The Serum Powders `seat`'s own pending entry may use now (CR 103.5b: "any
+/// time you could mulligan"). The single seat-scoped authority for emitting
+/// `MulliganChoice::UseSerumPowder`: the action names an object in one seat's
+/// hand, so only a list built for that seat may carry it.
+pub(crate) fn serum_powders_offered_to(state: &GameState, seat: PlayerId) -> Vec<ObjectId> {
+    match &state.waiting_for {
+        WaitingFor::MulliganDecision { pending, .. }
+            if pending.iter().any(|entry| {
+                entry.player == seat && matches!(entry.phase, MulliganDecisionPhase::Declare)
+            }) =>
+        {
+            serum_powders_in_hand(state, seat)
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Whether `seat`'s own pending entry may take the free reveal now. The single
 /// seat-scoped authority for emitting `MulliganChoice::FreeReveal`: the action
 /// names no seat, so only a list built for one seat may carry it.

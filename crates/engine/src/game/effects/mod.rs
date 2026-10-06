@@ -15060,6 +15060,46 @@ fn resolve_chain_body(
                 .into_iter()
                 .filter(|pid| chosen_players.contains(pid))
                 .collect();
+            // CR 121.2 + CR 121.2c as modified by the format's `DealOrder`: every
+            // chosen player's draw over a shared library is one dealt instruction.
+            let seats: Vec<(PlayerId, ResolvedAbility)> = fanout_players
+                .iter()
+                .map(|&pid| {
+                    let mut seat = per_target.clone();
+                    seat.targets = vec![TargetRef::Player(pid)];
+                    seat.multi_target = None;
+                    (pid, seat)
+                })
+                .collect();
+            if let Some(dealer_seats) = draw::plan_simultaneous_draw(state, &seats) {
+                let events_before_fanout = events.len();
+                match draw::start_simultaneous_draw(state, dealer_seats, events) {
+                    draw::SimultaneousDraw::Parked => {
+                        if let Some(tail) = after_fanout {
+                            state
+                                .insert_ability_continuation_parent_at_child_boundary(
+                                    PendingContinuation::new(tail, state),
+                                    child_stack_start,
+                                )
+                                .expect("the dealer's frames sit above the tail's boundary");
+                        }
+                    }
+                    draw::SimultaneousDraw::Completed => {
+                        for _ in &fanout_players {
+                            events.push(GameEvent::EffectResolved {
+                                kind: EffectKind::from(&per_target.effect),
+                                source_id: per_target.source_id,
+                                subject: None,
+                            });
+                        }
+                        record_player_actions_performed(state, &events[events_before_fanout..]);
+                        if let Some(after_fanout) = after_fanout {
+                            resolve_ability_chain(state, &after_fanout, events, depth + 1)?;
+                        }
+                    }
+                }
+                return Ok(());
+            }
             let initial_waiting_for = state.waiting_for.clone();
             for (i, pid) in fanout_players.iter().enumerate() {
                 let mut narrowed = per_target.clone();
@@ -15284,6 +15324,64 @@ fn resolve_chain_body(
             return Ok(());
         }
 
+        // CR 121.2 + CR 121.2c as modified by the format's `DealOrder`: a bare
+        // scoped draw over a shared library is one instruction dealt to every seat
+        // together, with the unscoped tail running once after it.
+        if !after_scope_needs_linked_exile && !next_sub_needs_tracked_set(ability) {
+            let seats: Vec<(PlayerId, ResolvedAbility)> = matching_players
+                .iter()
+                .map(|&pid| (pid, bind_scoped_seat(&scoped_template, controller, pid)))
+                .collect();
+            if let Some(dealer_seats) = draw::plan_simultaneous_draw(state, &seats) {
+                match draw::start_simultaneous_draw(state, dealer_seats, events) {
+                    draw::SimultaneousDraw::Parked => {
+                        // The tail belongs below the dealer's frames, not above a nested
+                        // instruction's, or it would run before the cards are dealt.
+                        if let Some(tail) = after_scope {
+                            state
+                                .insert_ability_continuation_parent_at_child_boundary(
+                                    PendingContinuation::new(tail, state),
+                                    child_stack_start,
+                                )
+                                .expect("the dealer's frames sit above the tail's boundary");
+                        }
+                        state.clause_minimum_snapshot = None;
+                    }
+                    draw::SimultaneousDraw::Completed => {
+                        for _ in &matching_players {
+                            events.push(GameEvent::EffectResolved {
+                                kind: EffectKind::from(&scoped_template.effect),
+                                source_id: scoped_template.source_id,
+                                subject: None,
+                            });
+                        }
+                        record_player_actions_performed(state, &events[scoped_events_before..]);
+                        let drawn_by_player = state.last_effect_counts_by_player.clone();
+                        publish_player_scope_clause_results(
+                            state,
+                            ability,
+                            &scoped_template,
+                            &matching_players,
+                            false,
+                            &events[scoped_events_before..],
+                        );
+                        // The generic publication clears a table its effect kind does
+                        // not produce from events.
+                        install_previous_effect_counts_by_player(
+                            state,
+                            Some(drawn_by_player),
+                            false,
+                        );
+                        state.clause_minimum_snapshot = None;
+                        if let Some(after_scope) = after_scope {
+                            resolve_ability_chain(state, &after_scope, events, depth + 1)?;
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
         let initial_waiting_for = state.waiting_for.clone();
         let mut paused = false;
         // CR 608.2c: the zero-fill's reduction domain is the set of players the
@@ -15325,7 +15423,6 @@ fn resolve_chain_body(
         // post-clause-N board. See §8 of the Balance plan.
         capture_clause_minimum_snapshot(state, &scoped_template);
         for (i, pid) in matching_players.iter().enumerate() {
-            let mut scoped = scoped_template.clone();
             // CR 608.2c + CR 101.3: Each scoped iteration is a fresh
             // sub-resolution of the scoped template — read the whole
             // instruction per iteration. The cost-payment-failed signal is
@@ -15339,17 +15436,7 @@ fn resolve_chain_body(
             // safety: no corpus card relies on cross-iteration carry-over
             // of this flag.
             state.cost_payment_failed_flag = false;
-            scoped.set_original_controller_recursive(controller);
-            // CR 608.2: The scoped player is the acting controller for the
-            // WHOLE per-player chain, not just the top clause. A co-scoped
-            // sub-clause kept in this iteration (Duskmantle Seer's "loses life
-            // equal to that card's mana value, then puts it into their hand")
-            // must resolve its implicit-controller recipient and any generic
-            // handler against the iterating player — so rebind recursively. The
-            // printed controller is preserved via `original_controller` above,
-            // keeping "you" references stable (CR 109.5).
-            scoped.set_controller_recursive(*pid);
-            scoped.set_scoped_player_recursive(*pid);
+            let scoped = bind_scoped_seat(&scoped_template, controller, *pid);
             resolve_ability_chain(state, &scoped, events, depth + 1)?;
 
             // CR 608.2e: Break if inner effect entered a player-choice state —
@@ -15419,13 +15506,8 @@ fn resolve_chain_body(
                 // Each remaining player gets the scoped instruction only; the
                 // unscoped tail runs once after the final scoped iteration.
                 for &remaining_pid in remaining.iter().rev() {
-                    let mut remaining_scoped = scoped_template.clone();
-                    remaining_scoped.set_original_controller_recursive(controller);
-                    // CR 608.2: mirror the in-loop recursive controller rebind so
-                    // a co-scoped sub-clause resumed via continuation also acts as
-                    // the iterating player.
-                    remaining_scoped.set_controller_recursive(remaining_pid);
-                    remaining_scoped.set_scoped_player_recursive(remaining_pid);
+                    let mut remaining_scoped =
+                        bind_scoped_seat(&scoped_template, controller, remaining_pid);
                     // CR 608.2c: each remaining player's clause is an INDEPENDENT
                     // following instruction, not a continuation of the prior
                     // player's. When the scoped template carries a conditional
@@ -16821,25 +16903,7 @@ fn resolve_chain_body(
     } else {
         ability
     };
-    // CR 608.2c + CR 109.5: Accumulate player actions across the chain for
-    // `PlayerFilter::PerformedActionThisWay`. This is distinct from
-    // `last_zone_changed_ids`: "searched this way" keys off the player action
-    // even when the search finds no card.
-    for event in &events[events_before..] {
-        if let GameEvent::PlayerPerformedAction {
-            player_id, action, ..
-        } = event
-        {
-            state.player_actions_this_way.insert((*player_id, *action));
-            // Draw completions record their turn-ledger entry at the single event
-            // emission site in `draw.rs`; overlapping nested chain windows may
-            // still see that event for the resolution-local set, but must not
-            // append it to the Vec more than once.
-            if *action != PlayerActionKind::Draw {
-                record_player_action_this_turn(state, *player_id, *action);
-            }
-        }
-    }
+    record_player_actions_performed(state, &events[events_before..]);
 
     // CR 608.2c: Normalize the actual outcome before the printed tail is
     // evaluated. An effect that resolved as a no-op keeps `WhenYouDo` /
@@ -18594,6 +18658,43 @@ fn resolve_chain_body(
     }
 
     Ok(())
+}
+
+/// CR 608.2c + CR 109.5: Accumulate the player actions in `new_events` for
+/// `PlayerFilter::PerformedActionThisWay`. This is distinct from
+/// `last_zone_changed_ids`: "searched this way" keys off the player action even
+/// when the search finds no card.
+fn record_player_actions_performed(state: &mut GameState, new_events: &[GameEvent]) {
+    for event in new_events {
+        if let GameEvent::PlayerPerformedAction {
+            player_id, action, ..
+        } = event
+        {
+            state.player_actions_this_way.insert((*player_id, *action));
+            // Draw completions record their turn-ledger entry at the single event
+            // emission site in `draw.rs`; overlapping nested chain windows may
+            // still see that event for the resolution-local set, but must not
+            // append it to the Vec more than once.
+            if *action != PlayerActionKind::Draw {
+                record_player_action_this_turn(state, *player_id, *action);
+            }
+        }
+    }
+}
+
+/// CR 608.2 + CR 109.5: `template` bound to run for `seat`. The scoped player is
+/// the acting controller for the whole per-player chain; the printed controller
+/// stays in `original_controller` so "you" references are stable.
+fn bind_scoped_seat(
+    template: &ResolvedAbility,
+    controller: PlayerId,
+    seat: PlayerId,
+) -> ResolvedAbility {
+    let mut bound = template.clone();
+    bound.set_original_controller_recursive(controller);
+    bound.set_controller_recursive(seat);
+    bound.set_scoped_player_recursive(seat);
+    bound
 }
 
 /// Append one completed player action to the turn ledger. Draw frames call this

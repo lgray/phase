@@ -863,42 +863,28 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
         ],
         // CR 103.5 + 103.5b: For simultaneous mulligan, generate candidates
         // for each pending player. AI search iterates over the cross-product;
-        // the engine accepts them in any arrival order. When a pending player
-        // has one or more Serum Powders in hand, emit one `UseSerumPowder`
-        // candidate per Powder so the policy may pick that branch.
+        // the engine accepts them in any arrival order. Serum Powder and
+        // FreeReveal depend on one seat's own hand, so they are issued only by
+        // the owner-scoped enumerator.
         WaitingFor::MulliganDecision { pending, .. } => pending
             .iter()
             .flat_map(|entry| match &entry.phase {
-                MulliganDecisionPhase::Declare => {
-                    let mut actions = vec![
-                        candidate(
-                            GameAction::MulliganDecision {
-                                choice: MulliganChoice::Keep,
-                            },
-                            TacticalClass::Selection,
-                            Some(entry.player),
-                        ),
-                        candidate(
-                            GameAction::MulliganDecision {
-                                choice: MulliganChoice::Mulligan,
-                            },
-                            TacticalClass::Selection,
-                            Some(entry.player),
-                        ),
-                    ];
-                    for powder_id in serum_powders_in_hand(state, entry.player) {
-                        actions.push(candidate(
-                            GameAction::MulliganDecision {
-                                choice: MulliganChoice::UseSerumPowder {
-                                    object_id: powder_id,
-                                },
-                            },
-                            TacticalClass::Selection,
-                            Some(entry.player),
-                        ));
-                    }
-                    actions
-                }
+                MulliganDecisionPhase::Declare => vec![
+                    candidate(
+                        GameAction::MulliganDecision {
+                            choice: MulliganChoice::Keep,
+                        },
+                        TacticalClass::Selection,
+                        Some(entry.player),
+                    ),
+                    candidate(
+                        GameAction::MulliganDecision {
+                            choice: MulliganChoice::Mulligan,
+                        },
+                        TacticalClass::Selection,
+                        Some(entry.player),
+                    ),
+                ],
                 MulliganDecisionPhase::BottomCards { count, then } => {
                     let exclude = match then {
                         PendingMulliganAction::UseSerumPowder { object_id } => Some(*object_id),
@@ -3856,8 +3842,17 @@ pub(crate) fn candidate_actions_for_semantic_owner_with_probe(
             .semantic_owner
             .is_none_or(|actor| actor == semantic_owner)
     });
-    // CR 103.5: `FreeReveal` names no seat, so it is issued only to the owner
-    // whose own hand `free_reveal_offered_to` says qualifies.
+    // CR 103.5 + CR 103.5b: `UseSerumPowder` and `FreeReveal` depend on one
+    // seat's own hand, so they are issued only to the owner whose hand qualifies.
+    for object_id in mulligan::serum_powders_offered_to(state, semantic_owner) {
+        actions.push(candidate(
+            GameAction::MulliganDecision {
+                choice: MulliganChoice::UseSerumPowder { object_id },
+            },
+            TacticalClass::Selection,
+            Some(semantic_owner),
+        ));
+    }
     if mulligan::free_reveal_offered_to(state, semantic_owner) {
         actions.push(candidate(
             GameAction::MulliganDecision {
@@ -5625,25 +5620,6 @@ fn card_name_choice_candidates(
 
     choices.truncate(MAX_CARD_NAME_CANDIDATES);
     choices
-}
-
-/// CR 103.5b + Serum Powder Oracle text: collect every ObjectId in `player`'s
-/// hand whose object name is "Serum Powder" (CR 201.2 — name match is exact
-/// and case-insensitive on canonical English).
-fn serum_powders_in_hand(state: &GameState, player: PlayerId) -> Vec<ObjectId> {
-    let Some(p) = state.players.iter().find(|p| p.id == player) else {
-        return Vec::new();
-    };
-    p.hand
-        .iter()
-        .copied()
-        .filter(|oid| {
-            state
-                .objects
-                .get(oid)
-                .is_some_and(|o| o.name.eq_ignore_ascii_case("Serum Powder"))
-        })
-        .collect()
 }
 
 fn bottom_card_actions(

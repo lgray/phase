@@ -23696,6 +23696,103 @@ pub struct DrawSequenceFrame {
     /// (Dredge) contributes 0; a unit doubled by a count modifier contributes its
     /// post-replacement count.
     pub accumulated: u32,
+    /// Set when this frame serves several players drawing at once from a shared
+    /// library. `player`, `applied`, `accumulated` and `pending_delivery` are then
+    /// the working copy of the seat `player`; the dealer holds the others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dealer: Option<DrawDealer>,
+}
+
+/// CR 121.2 + the format's `DealOrder`: the seats of one simultaneous draw
+/// instruction, settled in dealing order and then dealt one card at a time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrawDealer {
+    pub stage: DrawDealerStage,
+    pub seats: Vec<DrawDealerSeat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrawDealerStage {
+    /// CR 121.2a: instruction counts settle in dealing order; `next` is the seat
+    /// whose instruction the frame holds.
+    Settling { next: usize },
+    /// The recipient of each individual draw still owed, next first.
+    Dealing { schedule: Vec<PlayerId> },
+}
+
+/// One player's share of a simultaneous draw instruction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrawDealerSeat {
+    pub player: PlayerId,
+    /// The instruction count, replaced by the settled count once the seat settles.
+    pub count: u32,
+    #[serde(
+        default,
+        serialize_with = "crate::types::deterministic_serde::hash_set"
+    )]
+    pub applied: HashSet<AppliedReplacementKey>,
+    pub accumulated: u32,
+}
+
+impl DrawSequenceFrame {
+    /// The seat whose instruction this frame is settling, if the dealer is in
+    /// the settling stage.
+    pub(crate) fn settling_seat(&self) -> Option<usize> {
+        match self.dealer.as_ref()?.stage {
+            DrawDealerStage::Settling { next } => Some(next),
+            DrawDealerStage::Dealing { .. } => None,
+        }
+    }
+
+    /// Take the next owed unit's recipient and its applied set, making that
+    /// recipient the working seat. A frame without a dealer draws for `player`.
+    pub(crate) fn begin_next_unit(&mut self) -> (PlayerId, HashSet<AppliedReplacementKey>) {
+        debug_assert!(
+            self.pending_delivery.is_none(),
+            "a seat switch never happens at a parked unit"
+        );
+        if let Some(DrawDealer {
+            stage: DrawDealerStage::Dealing { schedule },
+            seats,
+        }) = self.dealer.as_mut()
+        {
+            if !schedule.is_empty() {
+                let recipient = schedule.remove(0);
+                if recipient != self.player {
+                    if let Some(held) = seats.iter_mut().find(|seat| seat.player == self.player) {
+                        held.accumulated = self.accumulated;
+                        held.applied = std::mem::take(&mut self.applied);
+                    }
+                    if let Some(next) = seats.iter().find(|seat| seat.player == recipient) {
+                        self.player = recipient;
+                        self.applied = next.applied.clone();
+                        self.accumulated = next.accumulated;
+                    }
+                }
+            }
+        }
+        (self.player, self.applied.clone())
+    }
+
+    /// Each seat's delivered count in dealing order, with the working seat written
+    /// back; `None` for a frame without a dealer.
+    pub(crate) fn dealer_deliveries(&mut self) -> Option<Vec<(PlayerId, u32)>> {
+        let dealer = self.dealer.as_mut()?;
+        if let Some(held) = dealer
+            .seats
+            .iter_mut()
+            .find(|seat| seat.player == self.player)
+        {
+            held.accumulated = self.accumulated;
+        }
+        Some(
+            dealer
+                .seats
+                .iter()
+                .map(|seat| (seat.player, seat.accumulated))
+                .collect(),
+        )
+    }
 }
 
 /// CR 121.2 + CR 616.1g: the stack of draw instructions in flight.
@@ -23810,6 +23907,7 @@ impl DrawSequenceStack {
             delivery_owner: None,
             capture_next_child_delivery: false,
             accumulated: 0,
+            dealer: None,
         });
         debug_assert!(
             self.validate().is_ok(),
@@ -23862,6 +23960,7 @@ impl DrawSequenceStack {
                     && a.pending_delivery == b.pending_delivery
                     && a.delivery_owner.is_some() == b.delivery_owner.is_some()
                     && a.capture_next_child_delivery == b.capture_next_child_delivery
+                    && a.dealer == b.dealer
             })
     }
 
@@ -23907,8 +24006,51 @@ impl DrawSequenceStack {
                     frame.frame_id
                 ));
             }
+            if let Some(dealer) = &frame.dealer {
+                validate_draw_dealer(frame, dealer)?;
+            }
         }
         Ok(())
+    }
+}
+
+fn validate_draw_dealer(frame: &DrawSequenceFrame, dealer: &DrawDealer) -> Result<(), String> {
+    let id = frame.frame_id;
+    let mut players = HashSet::new();
+    if !dealer.seats.iter().all(|seat| players.insert(seat.player)) {
+        return Err(format!("draw frame {id:?} deals to a seat twice"));
+    }
+    if !players.contains(&frame.player) {
+        return Err(format!(
+            "draw frame {id:?} holds a player outside its seats"
+        ));
+    }
+    if frame.origin != DrawSequenceOrigin::Plain {
+        return Err(format!(
+            "draw frame {id:?} is a dealer frame with a tail origin"
+        ));
+    }
+    match &dealer.stage {
+        DrawDealerStage::Settling { next } if *next >= dealer.seats.len() => Err(format!(
+            "draw frame {id:?} settles seat {next} of {}",
+            dealer.seats.len()
+        )),
+        DrawDealerStage::Settling { .. } => Ok(()),
+        DrawDealerStage::Dealing { schedule } => {
+            if !schedule.iter().all(|player| players.contains(player)) {
+                return Err(format!(
+                    "draw frame {id:?} schedules a player outside its seats"
+                ));
+            }
+            if frame.remaining as usize != schedule.len() {
+                return Err(format!(
+                    "draw frame {id:?} owes {} draws against a schedule of {}",
+                    frame.remaining,
+                    schedule.len()
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -39821,6 +39963,141 @@ mod tests {
             later > abandoned,
             "a stale captured draw frame ID must never alias a later instruction"
         );
+    }
+
+    fn dealer_frame(
+        state: &mut GameState,
+        stage: DrawDealerStage,
+        remaining: u32,
+    ) -> DrawSequenceFrameId {
+        let marker = |index| HashSet::from([AppliedReplacementKey::Floating { index }]);
+        let id = state.push_draw_sequence_with_origin(
+            PlayerId(0),
+            0,
+            marker(10),
+            DrawSequenceOrigin::Plain,
+        );
+        let frame = state.draw_sequence_frame_mut(id).expect("frame");
+        frame.remaining = remaining;
+        frame.dealer = Some(DrawDealer {
+            stage,
+            seats: vec![
+                DrawDealerSeat {
+                    player: PlayerId(0),
+                    count: 2,
+                    applied: marker(10),
+                    accumulated: 0,
+                },
+                DrawDealerSeat {
+                    player: PlayerId(1),
+                    count: 2,
+                    applied: marker(11),
+                    accumulated: 5,
+                },
+            ],
+        });
+        id
+    }
+
+    #[test]
+    fn begin_next_unit_saves_the_held_seat_and_loads_the_recipient() {
+        let mut state = GameState::new_two_player(42);
+        let id = dealer_frame(
+            &mut state,
+            DrawDealerStage::Dealing {
+                schedule: vec![PlayerId(0), PlayerId(1), PlayerId(1)],
+            },
+            3,
+        );
+        let frame = state.draw_sequence_frame_mut(id).expect("frame");
+        frame.accumulated = 3;
+
+        let (player, applied) = frame.begin_next_unit();
+        assert_eq!(player, PlayerId(0), "same seat keeps the working copy");
+        assert_eq!(frame.accumulated, 3);
+        assert!(applied.contains(&AppliedReplacementKey::Floating { index: 10 }));
+
+        let (player, applied) = frame.begin_next_unit();
+        assert_eq!(player, PlayerId(1), "a seat switch loads the recipient");
+        assert_eq!(frame.player, PlayerId(1));
+        assert_eq!(frame.accumulated, 5, "the recipient's own count");
+        assert!(applied.contains(&AppliedReplacementKey::Floating { index: 11 }));
+        let held = &frame.dealer.as_ref().expect("dealer").seats[0];
+        assert_eq!(held.accumulated, 3, "the held seat's count was saved");
+        assert!(held
+            .applied
+            .contains(&AppliedReplacementKey::Floating { index: 10 }));
+    }
+
+    #[test]
+    fn begin_next_unit_without_a_dealer_draws_for_the_frame_player() {
+        let mut state = GameState::new_two_player(42);
+        let id = state.push_draw_sequence_with_origin(
+            PlayerId(1),
+            2,
+            HashSet::new(),
+            DrawSequenceOrigin::Plain,
+        );
+        let frame = state.draw_sequence_frame_mut(id).expect("frame");
+        assert_eq!(frame.begin_next_unit().0, PlayerId(1));
+        assert!(frame.dealer_deliveries().is_none());
+    }
+
+    #[test]
+    fn draw_dealer_frames_validate_their_seats_and_schedule() {
+        let mut state = GameState::new_two_player(42);
+        let id = dealer_frame(
+            &mut state,
+            DrawDealerStage::Dealing {
+                schedule: vec![PlayerId(0), PlayerId(1)],
+            },
+            2,
+        );
+        let valid = |state: &GameState| {
+            state
+                .active_multi_draw_frame()
+                .expect("multi draw")
+                .draw_sequences
+                .validate()
+        };
+        assert!(valid(&state).is_ok(), "reach: the fixture is valid");
+
+        let frame = state.draw_sequence_frame_mut(id).expect("frame");
+        frame.remaining = 1;
+        assert!(valid(&state).is_err(), "remaining must equal the schedule");
+
+        let frame = state.draw_sequence_frame_mut(id).expect("frame");
+        frame.remaining = 2;
+        frame.dealer.as_mut().expect("dealer").seats[1].player = PlayerId(0);
+        assert!(valid(&state).is_err(), "a seat appears twice");
+
+        let frame = state.draw_sequence_frame_mut(id).expect("frame");
+        frame.dealer.as_mut().expect("dealer").seats[1].player = PlayerId(1);
+        frame.dealer.as_mut().expect("dealer").stage = DrawDealerStage::Settling { next: 2 };
+        assert!(valid(&state).is_err(), "settling past the last seat");
+    }
+
+    #[test]
+    fn loop_equality_distinguishes_dealer_stages() {
+        let mut state = GameState::new_two_player(42);
+        dealer_frame(&mut state, DrawDealerStage::Settling { next: 0 }, 0);
+        let mut other = GameState::new_two_player(42);
+        dealer_frame(
+            &mut other,
+            DrawDealerStage::Dealing {
+                schedule: vec![PlayerId(0)],
+            },
+            1,
+        );
+        let stack = |state: &GameState| {
+            state
+                .active_multi_draw_frame()
+                .expect("multi draw")
+                .draw_sequences
+                .clone()
+        };
+        assert!(stack(&state).loop_equal(&stack(&state)), "reach: reflexive");
+        assert!(!stack(&state).loop_equal(&stack(&other)));
     }
 
     /// CR 614.6 + CR 615.5: abandoning a paused general replacement dispatch

@@ -5495,7 +5495,8 @@ fn resolve_ref(
                         AggregateFunction::Sum => total,
                         // An absent table means the producer published NO per-player
                         // breakdown: only `Effect::Discard | DiscardCard |
-                        // ChangeZoneAll` populate it; every other producer takes the
+                        // ChangeZoneAll` and the shared-library simultaneous Draw
+                        // dealer populate it; every other producer takes the
                         // `None` arm in `install_previous_effect_counts_by_player`,
                         // which clears it. For a SINGLE-subject producer the scalar
                         // IS the extremum, so the fallback is exact. For a
