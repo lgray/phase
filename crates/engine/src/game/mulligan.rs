@@ -324,6 +324,18 @@ pub(crate) fn free_reveal_offered(state: &GameState, entry: &MulliganDecisionEnt
     }
 }
 
+/// Whether `seat`'s own pending entry may take the free reveal now. The single
+/// seat-scoped authority for emitting `MulliganChoice::FreeReveal`: the action
+/// names no seat, so only a list built for one seat may carry it.
+pub(crate) fn free_reveal_offered_to(state: &GameState, seat: PlayerId) -> bool {
+    match &state.waiting_for {
+        WaitingFor::MulliganDecision { pending, .. } => pending
+            .iter()
+            .any(|entry| entry.player == seat && free_reveal_offered(state, entry)),
+        _ => false,
+    }
+}
+
 /// (lands, nonland cards) in `player`'s hand. CR 205.2a: land is a card type.
 fn hand_land_split(state: &GameState, player: PlayerId) -> (usize, usize) {
     let hand = state

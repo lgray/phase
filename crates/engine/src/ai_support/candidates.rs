@@ -866,8 +866,6 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
         // the engine accepts them in any arrival order. When a pending player
         // has one or more Serum Powders in hand, emit one `UseSerumPowder`
         // candidate per Powder so the policy may pick that branch.
-        // CR 103.5: a seat whose hand the engine says qualifies for the free
-        // reveal also gets one `FreeReveal` candidate (`free_reveal_offered`).
         WaitingFor::MulliganDecision { pending, .. } => pending
             .iter()
             .flat_map(|entry| match &entry.phase {
@@ -888,15 +886,6 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
                             Some(entry.player),
                         ),
                     ];
-                    if mulligan::free_reveal_offered(state, entry) {
-                        actions.push(candidate(
-                            GameAction::MulliganDecision {
-                                choice: MulliganChoice::FreeReveal,
-                            },
-                            TacticalClass::Selection,
-                            Some(entry.player),
-                        ));
-                    }
                     for powder_id in serum_powders_in_hand(state, entry.player) {
                         actions.push(candidate(
                             GameAction::MulliganDecision {
@@ -3867,6 +3856,17 @@ pub(crate) fn candidate_actions_for_semantic_owner_with_probe(
             .semantic_owner
             .is_none_or(|actor| actor == semantic_owner)
     });
+    // CR 103.5: `FreeReveal` names no seat, so it is issued only to the owner
+    // whose own hand `free_reveal_offered_to` says qualifies.
+    if mulligan::free_reveal_offered_to(state, semantic_owner) {
+        actions.push(candidate(
+            GameAction::MulliganDecision {
+                choice: MulliganChoice::FreeReveal,
+            },
+            TacticalClass::Selection,
+            Some(semantic_owner),
+        ));
+    }
     authorize_candidate_actors(state, &mut actions);
     actions
 }
@@ -9594,8 +9594,9 @@ mod tests {
     }
 
     fn free_reveal_actors(state: &GameState) -> Vec<Option<PlayerId>> {
-        candidate_actions(state)
+        [PlayerId(0), PlayerId(1)]
             .into_iter()
+            .flat_map(|owner| candidate_actions_for_semantic_owner_with_probe(state, owner, None))
             .filter(|c| {
                 c.action
                     == GameAction::MulliganDecision {
@@ -9610,13 +9611,23 @@ mod tests {
     fn free_reveal_is_issued_only_to_the_seat_whose_hand_the_engine_says_qualifies() {
         let state = dandan_mulligan(MulliganDecisionPhase::Declare, 0);
         assert_eq!(free_reveal_actors(&state), vec![Some(PlayerId(0))]);
-        let keep_and_mulligan = candidate_actions(&state)
-            .iter()
-            .filter(|c| c.metadata.actor == Some(PlayerId(1)))
-            .count();
+        let keep_and_mulligan =
+            candidate_actions_for_semantic_owner_with_probe(&state, PlayerId(1), None)
+                .iter()
+                .filter(|c| c.metadata.actor == Some(PlayerId(1)))
+                .count();
         assert_eq!(
             keep_and_mulligan, 2,
             "reach: the other seat still has Keep and Mulligan"
+        );
+        assert!(
+            !candidate_actions(&state).iter().any(|c| matches!(
+                c.action,
+                GameAction::MulliganDecision {
+                    choice: MulliganChoice::FreeReveal
+                }
+            )),
+            "the all-seat enumeration never carries it"
         );
     }
 

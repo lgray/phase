@@ -2328,6 +2328,8 @@ pub fn get_filtered_game_state(viewer: u8) -> JsValue {
 pub fn get_legal_actions_js() -> JsValue {
     match with_state_mut(|state| {
         engine::game::layers::flush_layers(state);
+        // Seat-agnostic: carries no seat-only action (Dandan `FreeReveal`); a
+        // surface serving a seat calls `get_legal_actions_for_viewer_js`.
         let (actions, spell_costs, legal_actions_by_object) = legal_actions_full(state);
         let auto_pass = auto_pass_recommended(state, &actions);
         let end_continuous_effect_offers = end_continuous_effect_offers(&actions);

@@ -3,7 +3,10 @@
 //! reveal it and redraw, before its first regular mulligan, without taking a
 //! mulligan.
 
-use engine::ai_support::{candidate_actions, legal_actions_for_viewer, legal_actions_full};
+use engine::ai_support::{
+    build_decision_context_for_semantic_owner, candidate_actions, candidate_actions_exact,
+    legal_actions, legal_actions_for_viewer, legal_actions_full, validated_candidate_actions,
+};
 use engine::database::card_db::CardDatabase;
 use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
 use engine::game::engine::{apply, start_game_with_starting_player};
@@ -126,16 +129,20 @@ fn arrange_named(state: &mut GameState, seat: PlayerId, card_names: &[&str]) {
     set_hand(state, seat, &wanted);
 }
 
+fn is_free_reveal(action: &GameAction) -> bool {
+    matches!(
+        action,
+        GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal
+        }
+    )
+}
+
 fn offered(state: &GameState, seat: PlayerId) -> bool {
-    candidate_actions(state).iter().any(|c| {
-        c.metadata.actor == Some(seat)
-            && matches!(
-                c.action,
-                GameAction::MulliganDecision {
-                    choice: MulliganChoice::FreeReveal
-                }
-            )
-    })
+    legal_actions_for_viewer(state, seat)
+        .0
+        .iter()
+        .any(is_free_reveal)
 }
 
 fn try_act(
@@ -512,11 +519,6 @@ fn v7_a_viewer_is_offered_the_free_reveal_only_for_their_own_hand() {
     };
     assert!(legal_actions_for_viewer(&state, P0).0.contains(&keep));
     assert!(legal_actions_for_viewer(&state, P1).0.contains(&keep));
-    assert!(legal_actions_full(&state)
-        .0
-        .contains(&GameAction::MulliganDecision {
-            choice: MulliganChoice::FreeReveal
-        }));
 
     assert!(viewer_sees_free_reveal(&state, P0));
     assert!(!viewer_sees_free_reveal(&state, P1));
@@ -527,4 +529,64 @@ fn v7_a_viewer_is_offered_the_free_reveal_only_for_their_own_hand() {
     arrange_counts(&mut state, P0, 3, 4);
     arrange_counts(&mut state, P1, 3, 4);
     assert!(!viewer_sees_free_reveal(&state, P0) && !viewer_sees_free_reveal(&state, P1));
+}
+
+#[test]
+fn v8_the_free_reveal_is_only_in_the_lists_scoped_to_its_own_seat() {
+    let Some(db) = shared_card_db() else { return };
+    let mut state = dandan(db, P0);
+    arrange_counts(&mut state, P0, 0, 7);
+    arrange_counts(&mut state, P1, 3, 4);
+    let keep = GameAction::MulliganDecision {
+        choice: MulliganChoice::Keep,
+    };
+    let unscoped: [(&str, Vec<GameAction>); 5] = [
+        ("legal_actions_full", legal_actions_full(&state).0),
+        ("legal_actions", legal_actions(&state)),
+        (
+            "candidate_actions",
+            candidate_actions(&state)
+                .into_iter()
+                .map(|c| c.action)
+                .collect(),
+        ),
+        (
+            "candidate_actions_exact",
+            candidate_actions_exact(&state)
+                .into_iter()
+                .map(|c| c.action)
+                .collect(),
+        ),
+        (
+            "validated_candidate_actions",
+            validated_candidate_actions(&state)
+                .into_iter()
+                .map(|c| c.action)
+                .collect(),
+        ),
+    ];
+    for (name, actions) in &unscoped {
+        assert!(
+            actions.contains(&keep),
+            "reach: {name} enumerates the prompt"
+        );
+        assert!(
+            !actions.iter().any(is_free_reveal),
+            "{name} must not carry a seat-specific FreeReveal"
+        );
+    }
+
+    let ai_issued = |seat| {
+        build_decision_context_for_semantic_owner(&state, seat)
+            .candidates
+            .into_iter()
+            .map(|c| c.action)
+            .collect::<Vec<_>>()
+    };
+    for seat in [P0, P1] {
+        assert!(ai_issued(seat).contains(&keep), "reach: Keep for {seat:?}");
+    }
+    assert!(ai_issued(P0).iter().any(is_free_reveal));
+    assert!(!ai_issued(P1).iter().any(is_free_reveal));
+    assert!(offered(&state, P0) && !offered(&state, P1));
 }

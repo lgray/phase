@@ -2579,7 +2579,7 @@ pub fn legal_actions_for_viewer(state: &GameState, viewer: PlayerId) -> LegalAct
     if crate::game::turn_control::is_authorized_submitter(state, viewer) {
         let (actions, spell_costs, grouped) = legal_actions_full(state);
         (
-            actions_visible_to_viewer(state, viewer, actions),
+            with_viewer_actions(state, viewer, actions),
             spell_costs,
             grouped,
         )
@@ -2588,30 +2588,18 @@ pub fn legal_actions_for_viewer(state: &GameState, viewer: PlayerId) -> LegalAct
     }
 }
 
-/// Drops the actions of a seat-agnostic `legal_actions_full` list that the
-/// engine would refuse from `viewer`. `FreeReveal` names no seat and is
-/// resolved against the submitter's own pending entry, so it is kept only
-/// when that entry qualifies (CR 103.5, Dandan free reveal); keeping it for
-/// another seat would offer a dead action and disclose that seat's hand shape.
-pub fn actions_visible_to_viewer(
+/// Adds to a seat-agnostic enumeration the actions only `viewer`'s own seat is
+/// offered. `FreeReveal` names no seat, so no unscoped enumerator carries it:
+/// it is emitted here, from the viewer's own pending entry (CR 103.5, Dandan
+/// free reveal), and a surface that skips this call simply lacks it.
+pub fn with_viewer_actions(
     state: &GameState,
     viewer: PlayerId,
     mut actions: Vec<GameAction>,
 ) -> Vec<GameAction> {
-    let offered = match &state.waiting_for {
-        WaitingFor::MulliganDecision { pending, .. } => pending
-            .iter()
-            .any(|e| e.player == viewer && crate::game::mulligan::free_reveal_offered(state, e)),
-        _ => false,
-    };
-    if !offered {
-        actions.retain(|action| {
-            !matches!(
-                action,
-                GameAction::MulliganDecision {
-                    choice: MulliganChoice::FreeReveal
-                }
-            )
+    if crate::game::mulligan::free_reveal_offered_to(state, viewer) {
+        actions.push(GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal,
         });
     }
     actions

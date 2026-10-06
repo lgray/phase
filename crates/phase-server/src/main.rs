@@ -22,12 +22,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use engine::ai_support::{
-    actions_visible_to_viewer as engine_actions_visible_to_viewer,
     activation_block_reasons_for_viewer as engine_activation_block_reasons_for_viewer,
     auto_pass_recommended_for_viewer as engine_auto_pass_for_viewer,
     end_continuous_effect_offers as engine_end_continuous_effect_offers,
     legal_actions_full as engine_legal_actions_full,
     mana_payment_shortcut_actions as engine_mana_payment_shortcut_actions,
+    with_viewer_actions as engine_with_viewer_actions,
 };
 use engine::database::CardDatabase;
 use engine::game::derived_views::derive_filtered_views;
@@ -516,14 +516,14 @@ fn derive_transport_views(
 }
 
 /// The `legal_actions` payload for one seat: empty unless the seat is acting,
-/// otherwise the full enumeration narrowed to what the engine accepts from it.
+/// otherwise the all-seat enumeration plus the actions only that seat is offered.
 fn legal_actions_for_seat(
     state: &GameState,
     player: PlayerId,
     legal_actions: &[GameAction],
 ) -> Vec<GameAction> {
     if server_core::is_acting(state, player) {
-        engine_actions_visible_to_viewer(state, player, legal_actions.to_vec())
+        engine_with_viewer_actions(state, player, legal_actions.to_vec())
     } else {
         Vec::new()
     }
@@ -12452,8 +12452,8 @@ mod state_transport_derived_tests {
             choice: MulliganChoice::Keep,
         };
         assert!(
-            result.2.contains(&free_reveal),
-            "reach: the all-seat enumeration carries FreeReveal"
+            result.2.contains(&keep) && !result.2.contains(&free_reveal),
+            "the all-seat enumeration holds Keep and never FreeReveal"
         );
         for seat in [PlayerId(0), PlayerId(1)] {
             assert!(state_update_legal_actions(&result, seat).contains(&keep));
