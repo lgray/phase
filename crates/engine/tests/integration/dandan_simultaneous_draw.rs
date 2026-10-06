@@ -17,7 +17,7 @@ use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
 use engine::types::events::{GameEvent, PlayerActionKind};
 use engine::types::format::FormatConfig;
-use engine::types::game_state::{GameState, ReplacementChoiceKind, WaitingFor};
+use engine::types::game_state::{DrawDealerStage, GameState, ReplacementChoiceKind, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
@@ -572,4 +572,60 @@ fn v11_without_a_prompt_the_tail_runs_after_both_hands_fill() {
         4,
         "reach: the dealer ran"
     );
+}
+
+// ---------------------------------------------------------------------------
+// V12: a prompt while the dealer is still settling (CR 121.2a)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v12_a_prompt_while_settling_parks_the_dealer_before_any_card_is_dealt() {
+    let Some(db) = shared_card_db() else { return };
+    let mut sc = scenario(dandan());
+    stage(&mut sc, db, Zone::Library, &[(P0, "Island"); 8]);
+    sc.add_real_card(P0, "Alms Collector", Zone::Battlefield, db);
+    sc.add_real_card(P1, "Quantum Riddler", Zone::Battlefield, db);
+    let spell = sc.add_real_card(P0, "Prosperity", Zone::Hand, db);
+    let mut runner = start(sc, P0);
+
+    let mut events = runner.cast(spell).x(2).resolve().events().to_vec();
+
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReplacementChoice { player, .. } if player == P1
+        ),
+        "reach: P1's instruction parked a replacement choice"
+    );
+    let frame = runner.state().active_draw_sequence().expect("parked frame");
+    assert!(
+        matches!(
+            frame.dealer.as_ref().map(|dealer| &dealer.stage),
+            Some(DrawDealerStage::Settling { next: 1 })
+        ),
+        "the dealer is parked settling P1's instruction: {:?}",
+        frame.dealer
+    );
+    assert!(
+        draw_order(&events).is_empty(),
+        "no card is dealt while settling"
+    );
+
+    events.extend(
+        runner
+            .act(GameAction::ChooseReplacement { index: 1 })
+            .expect("choice accepted")
+            .events,
+    );
+    events.extend(answer_every_prompt(&mut runner));
+
+    let state = runner.state();
+    assert!(state.active_draw_sequence().is_none(), "the frame retired");
+    assert_eq!(
+        hand_len(state, P0),
+        3,
+        "P0's own instruction is not replaced"
+    );
+    assert_eq!(hand_len(state, P1), 1, "P1's instruction became one draw");
+    assert_eq!(draw_order(&events).len(), 4);
 }
