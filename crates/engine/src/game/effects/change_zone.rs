@@ -281,6 +281,25 @@ pub(crate) fn change_zone_all_player_scope_member_matches(
         }
 }
 
+/// CR 108.3 + CR 400.1 as modified by a shared-zone format: `player`'s graveyard
+/// or library is the one pile every seat's cards sit in, so a card in it is the
+/// scoped player's whichever seat owns it. Returns the player to test `object`
+/// against with [`change_zone_all_player_scope_member_matches`].
+fn scope_player_for_member(
+    state: &GameState,
+    object: &crate::game::game_object::GameObject,
+    player: PlayerId,
+) -> PlayerId {
+    if object.zone != Zone::Battlefield
+        && state.zone_storage_seat(object.zone, object.owner)
+            == state.zone_storage_seat(object.zone, player)
+    {
+        object.owner
+    } else {
+        player
+    }
+}
+
 /// CR 400.7 + CR 603.7c: A delayed tracked-set move retains an object-anaphor
 /// member predicate until its creation-time pin has been recorded. At firing,
 /// bind that predicate to the stored referent before the mass scan: the object
@@ -2140,7 +2159,11 @@ pub fn resolve_all(
             .objects
             .iter()
             .filter(|(_, obj)| {
-                change_zone_all_player_scope_member_matches(obj, player, &origin_zones)
+                change_zone_all_player_scope_member_matches(
+                    obj,
+                    scope_player_for_member(state, obj, player),
+                    &origin_zones,
+                )
             })
             .map(|(id, _)| *id)
             .collect()

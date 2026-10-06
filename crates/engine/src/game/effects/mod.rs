@@ -27,6 +27,7 @@ use crate::types::ability::{
 #[cfg(test)]
 use crate::types::ability::{AttackSubject, CombatHistoryScope};
 use crate::types::events::{GameEvent, PlayerActionKind};
+use crate::types::format::ZoneScope;
 use crate::types::game_state::{
     AutoMayChoice, CastOfferKind, ClauseMinimumSnapshot, DayNight, DiscardBatchCursor,
     ExileLinkKind, GameState, LKISnapshot, ManaAbilityResume, MayTriggerAutoChoiceKey,
@@ -6702,65 +6703,130 @@ fn is_player_scope_local_continuation(
     // and graveyard into their library, then draws" is one per-player
     // instruction. Keep every parser-marked origin move, the terminal shuffle,
     // and its fixed or EventContextAmount draw in the current iteration.
-    let is_scoped_library_shuffle_chain = matches!(
-        (parent, child),
-        (
-            Effect::ChangeZoneAll {
-                origin: Some(_),
-                destination: Zone::Library,
-                target: TargetFilter::ScopedPlayer,
-                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
-                ..
-            },
-            Effect::ChangeZoneAll {
-                origin: Some(_),
-                destination: Zone::Library,
-                target: TargetFilter::ScopedPlayer,
-                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
-                ..
-            }
-        ) | (
-            Effect::ChangeZoneAll {
-                origin: Some(Zone::Hand),
-                destination: Zone::Library,
-                target: TargetFilter::ScopedPlayer,
-                ..
-            },
+    let scoped_shuffle = |effect: &Effect| {
+        matches!(
+            effect,
             Effect::Shuffle {
                 target: TargetFilter::ScopedPlayer,
-            }
-        ) | (
-            Effect::ChangeZoneAll {
-                origin: Some(_),
-                destination: Zone::Library,
-                target: TargetFilter::ScopedPlayer,
-                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
-                ..
-            },
-            Effect::Shuffle {
-                target: TargetFilter::ScopedPlayer,
-            }
-        ) | (
-            Effect::Shuffle {
-                target: TargetFilter::ScopedPlayer,
-            },
-            Effect::Draw {
-                target: TargetFilter::ScopedPlayer,
-                count: QuantityExpr::Ref {
-                    qty: QuantityRef::EventContextAmount,
-                },
-            }
-        ) | (
-            Effect::Shuffle {
-                target: TargetFilter::ScopedPlayer,
-            },
-            Effect::Draw {
-                target: TargetFilter::ScopedPlayer,
-                count: QuantityExpr::Fixed { .. },
             }
         )
-    );
+    };
+    let is_scoped_library_shuffle_chain = (is_scoped_pile_return(parent)
+        && (is_scoped_pile_return(child) || scoped_shuffle(child)))
+        || matches!(
+            (parent, child),
+            (
+                Effect::ChangeZoneAll {
+                    origin: Some(Zone::Hand),
+                    destination: Zone::Library,
+                    target: TargetFilter::ScopedPlayer,
+                    ..
+                },
+                Effect::Shuffle {
+                    target: TargetFilter::ScopedPlayer,
+                }
+            ) | (
+                Effect::Shuffle {
+                    target: TargetFilter::ScopedPlayer,
+                },
+                Effect::Draw {
+                    target: TargetFilter::ScopedPlayer,
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount,
+                    },
+                }
+            ) | (
+                Effect::Shuffle {
+                    target: TargetFilter::ScopedPlayer,
+                },
+                Effect::Draw {
+                    target: TargetFilter::ScopedPlayer,
+                    count: QuantityExpr::Fixed { .. },
+                }
+            )
+        );
     is_scoped_library_shuffle_chain && scope_keeps_scoped_whole_hand_shuffle_local(scope)
+}
+
+/// The parser-marked "put <zone> into their library" move whose terminal
+/// shuffle is left to a following `Shuffle`.
+fn is_scoped_pile_return(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::ChangeZoneAll {
+            origin: Some(_),
+            destination: Zone::Library,
+            target: TargetFilter::ScopedPlayer,
+            library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
+            ..
+        }
+    )
+}
+
+/// CR 400.1 as modified by a shared-library format + CR 701.24a + CR 608.2c: the
+/// parsed per-player wheel ("each player moves their <zones> into their library,
+/// then draws N") is one all-players move phase, one shuffle of the single pile,
+/// and a separate scoped draw. Re-tagging the shuffle as the next printed
+/// instruction makes the scope driver detach it, with the draw behind it, from
+/// the per-seat move template; the draw keeps its own scope and `ContinuationStep`
+/// link so the dealer sees a bare scoped draw. `None` leaves the chain as parsed.
+fn shared_library_wheel_split(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    scope: &PlayerFilter,
+) -> Option<ResolvedAbility> {
+    if state.format_config.format.shared_zones().library != ZoneScope::Shared
+        || ability.player_scope.as_ref() != Some(scope)
+    {
+        return None;
+    }
+    let plain = |node: &ResolvedAbility| !node.optional && node.condition.is_none();
+    fn continuation(node: &ResolvedAbility) -> Option<&ResolvedAbility> {
+        node.sub_ability
+            .as_deref()
+            .filter(|sub| sub.sub_link == SubAbilityLink::ContinuationStep)
+    }
+    let mut node = ability;
+    let mut moves = 0usize;
+    while is_scoped_pile_return(&node.effect) {
+        if !plain(node) || (moves > 0 && node.player_scope.is_some()) {
+            return None;
+        }
+        node = continuation(node)?;
+        moves += 1;
+    }
+    if moves == 0
+        || !plain(node)
+        || node.player_scope.is_some()
+        || !matches!(
+            node.effect,
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            }
+        )
+    {
+        return None;
+    }
+    let draw = continuation(node)?;
+    if !plain(draw)
+        || draw.player_scope.as_ref() != Some(scope)
+        || !matches!(
+            draw.effect,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { .. },
+                target: TargetFilter::ScopedPlayer,
+            }
+        )
+    {
+        return None;
+    }
+    let mut split = ability.clone();
+    let mut cursor = &mut split;
+    for _ in 0..moves {
+        cursor = cursor.sub_ability.as_deref_mut()?;
+    }
+    cursor.sub_link = SubAbilityLink::SequentialSibling;
+    Some(split)
 }
 
 /// CR 115.10 + CR 608.2c + CR 701.24a: Does this `player_scope` filter keep the
@@ -15322,6 +15388,8 @@ fn resolve_chain_body(
         // intentionally detaches a final searched-this-way shuffle, but it can
         // also detach arbitrary delivery riders; only the former is explicitly
         // preserved by the scoped simultaneous-search completion.
+        let wheel = shared_library_wheel_split(state, ability, scope);
+        let ability = wheel.as_ref().unwrap_or(ability);
         let scoped_search_delivery_is_safe =
             scoped_library_search::has_only_detachable_shuffle_tail(ability);
         let (scoped_template, after_scope) = split_player_scope_chain(ability, scope);
@@ -43250,6 +43318,163 @@ mod tests {
             ),
             "an intervening draw must remain a separate instruction"
         );
+    }
+
+    const DAYS_UNDOING_ORACLE: &str = "Each player shuffles their hand and graveyard into their library, then draws seven cards. If it's your turn, end the turn.";
+
+    fn days_undoing_ability() -> ResolvedAbility {
+        let definition = crate::parser::oracle_effect::parse_effect_chain(
+            DAYS_UNDOING_ORACLE,
+            AbilityKind::Spell,
+        );
+        build_resolved_from_def(&definition, ObjectId(100), PlayerId(0))
+    }
+
+    fn dandan_state() -> GameState {
+        let mut state = GameState::new_two_player(42);
+        state.format_config = crate::types::format::FormatConfig::dandan();
+        state
+    }
+
+    /// The node `depth` links below `ability`: graveyard move 1, shuffle 2, draw 3.
+    fn chain_node(ability: &mut ResolvedAbility, depth: usize) -> &mut ResolvedAbility {
+        let mut node = ability;
+        for _ in 0..depth {
+            node = node
+                .sub_ability
+                .as_deref_mut()
+                .expect("chain is long enough");
+        }
+        node
+    }
+
+    /// CR 400.1 + CR 701.24a: over a shared library the shuffle is the only
+    /// re-tagged link, so the draw reaches the dealer as its own scoped clause.
+    #[test]
+    fn shared_library_wheel_split_retags_only_the_shuffle() {
+        let ability = days_undoing_ability();
+        let scope = ability
+            .player_scope
+            .clone()
+            .expect("Day's Undoing is scoped");
+
+        let mut split = shared_library_wheel_split(&dandan_state(), &ability, &scope)
+            .expect("the shared-library wheel is split");
+        assert_eq!(
+            chain_node(&mut split, 2).sub_link,
+            SubAbilityLink::SequentialSibling,
+            "the shuffle starts the all-players tail"
+        );
+        chain_node(&mut split, 2).sub_link = SubAbilityLink::ContinuationStep;
+        assert_eq!(
+            format!("{split:?}"),
+            format!("{ability:?}"),
+            "no other field changed"
+        );
+
+        let split = shared_library_wheel_split(&dandan_state(), &ability, &scope).unwrap();
+        let (head, tail) = split_player_scope_chain(&split, &scope);
+        let shuffle = tail.expect("the shuffle detaches from the per-seat moves");
+        assert!(matches!(shuffle.effect, Effect::Shuffle { .. }));
+        assert!(
+            head.sub_ability
+                .as_deref()
+                .is_some_and(|graveyard| graveyard.sub_ability.is_none()),
+            "the per-seat template ends after the graveyard move"
+        );
+        let draw = shuffle.sub_ability.as_deref().expect("the draw follows");
+        let (draw_clause, end_turn) = split_player_scope_chain(draw, &scope);
+        assert!(
+            end_turn.is_some(),
+            "the end-the-turn tail detaches after the draw"
+        );
+        assert!(
+            scoped_library_search::has_no_resolution_riders(&draw_clause),
+            "the dealer's seat is a bare scoped draw"
+        );
+    }
+
+    #[test]
+    fn shared_library_wheel_split_leaves_separate_libraries_unchanged() {
+        let ability = days_undoing_ability();
+        let scope = ability.player_scope.clone().unwrap();
+        assert!(
+            shared_library_wheel_split(&GameState::new_two_player(42), &ability, &scope).is_none()
+        );
+    }
+
+    #[test]
+    fn shared_library_wheel_split_refuses_every_other_shape() {
+        let base = days_undoing_ability();
+        let scope = base.player_scope.clone().unwrap();
+        let state = dandan_state();
+        assert!(
+            shared_library_wheel_split(&state, &base, &scope).is_some(),
+            "reach: the unmutated chain is the class"
+        );
+
+        type Mutation = (&'static str, fn(&mut ResolvedAbility));
+        let mutations: [Mutation; 10] = [
+            ("EventContextAmount draw", |a| {
+                chain_node(a, 3).effect = Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount,
+                    },
+                    target: TargetFilter::ScopedPlayer,
+                }
+            }),
+            ("Controller draw", |a| {
+                chain_node(a, 3).effect = Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 7 },
+                    target: TargetFilter::Controller,
+                }
+            }),
+            ("unscoped draw", |a| chain_node(a, 3).player_scope = None),
+            ("optional root", |a| a.optional = true),
+            ("conditioned shuffle", |a| {
+                chain_node(a, 2).condition = Some(AbilityCondition::IsYourTurn)
+            }),
+            ("conditioned draw", |a| {
+                chain_node(a, 3).condition = Some(AbilityCondition::IsYourTurn)
+            }),
+            ("Controller shuffle", |a| {
+                chain_node(a, 2).effect = Effect::Shuffle {
+                    target: TargetFilter::Controller,
+                }
+            }),
+            ("non-terminal move", |a| {
+                chain_node(a, 1).effect =
+                    zone_to_library_effect(Zone::Graveyard, TargetFilter::ScopedPlayer)
+            }),
+            ("shuffle without a move", |a| {
+                chain_node(a, 0).effect = Effect::Shuffle {
+                    target: TargetFilter::ScopedPlayer,
+                }
+            }),
+            ("node between shuffle and draw", |a| {
+                let draw = chain_node(a, 2).sub_ability.take();
+                let mut between = ResolvedAbility::new(
+                    Effect::Shuffle {
+                        target: TargetFilter::ScopedPlayer,
+                    },
+                    vec![],
+                    ObjectId(100),
+                    PlayerId(0),
+                );
+                between.sub_ability = draw;
+                chain_node(a, 2).sub_ability = Some(Box::new(between));
+            }),
+        ];
+        let accepted: Vec<&str> = mutations
+            .into_iter()
+            .filter(|(_, mutate)| {
+                let mut ability = base.clone();
+                mutate(&mut ability);
+                shared_library_wheel_split(&state, &ability, &scope).is_some()
+            })
+            .map(|(label, _)| label)
+            .collect();
+        assert!(accepted.is_empty(), "not the wheel class: {accepted:?}");
     }
 
     /// CR 608.2c + CR 701.24a + CR 115.10 (#6957): a NON-`All` SCOPE-position
