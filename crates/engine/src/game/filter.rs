@@ -1559,7 +1559,7 @@ fn resident_zone(
 /// holds for `holder` or, when `licensed` names a zone, for any seat reading the same
 /// container as `holder` (every seat's "your graveyard" is the one shared pile).
 /// Unlicensed or per-seat zones try `holder` alone.
-fn zone_axis_admits(
+pub(crate) fn zone_axis_admits(
     state: &GameState,
     licensed: Option<Zone>,
     holder: PlayerId,

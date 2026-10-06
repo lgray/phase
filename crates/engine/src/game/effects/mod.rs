@@ -6780,7 +6780,11 @@ fn shared_library_wheel_split(
     {
         return None;
     }
-    let plain = |node: &ResolvedAbility| !node.optional && node.condition.is_none();
+    let plain = |node: &ResolvedAbility| {
+        let mut own = node.clone();
+        own.sub_ability = None;
+        scoped_library_search::has_no_resolution_riders(&own)
+    };
     fn continuation(node: &ResolvedAbility) -> Option<&ResolvedAbility> {
         node.sub_ability
             .as_deref()
@@ -43414,7 +43418,7 @@ mod tests {
         );
 
         type Mutation = (&'static str, fn(&mut ResolvedAbility));
-        let mutations: [Mutation; 10] = [
+        let mutations: [Mutation; 17] = [
             ("EventContextAmount draw", |a| {
                 chain_node(a, 3).effect = Effect::Draw {
                     count: QuantityExpr::Ref {
@@ -43441,6 +43445,28 @@ mod tests {
                 chain_node(a, 2).effect = Effect::Shuffle {
                     target: TargetFilter::Controller,
                 }
+            }),
+            ("repeat_for shuffle", |a| {
+                chain_node(a, 2).repeat_for = Some(QuantityExpr::Fixed { value: 2 })
+            }),
+            ("repeat_for move", |a| {
+                chain_node(a, 1).repeat_for = Some(QuantityExpr::Fixed { value: 2 })
+            }),
+            ("repeat_for draw", |a| {
+                chain_node(a, 3).repeat_for = Some(QuantityExpr::Fixed { value: 2 })
+            }),
+            ("else_ability shuffle", |a| {
+                let node = chain_node(a, 2);
+                node.else_ability = Some(Box::new(node.clone()));
+            }),
+            ("optional_player move", |a| {
+                chain_node(a, 1).optional_player = Some(TargetFilter::Controller)
+            }),
+            ("duration shuffle", |a| {
+                chain_node(a, 2).duration = Some(Duration::UntilEndOfTurn)
+            }),
+            ("forward_result move", |a| {
+                chain_node(a, 1).forward_result = true
             }),
             ("non-terminal move", |a| {
                 chain_node(a, 1).effect =

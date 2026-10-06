@@ -146,6 +146,7 @@ pub(crate) fn has_no_resolution_riders(ability: &ResolvedAbility) -> bool {
         && !ability.optional_targeting
         && !ability.optional
         && ability.optional_for.is_none()
+        && ability.optional_player.is_none()
         && ability.target_constraints.is_empty()
         && matches!(ability.target_choice_timing, TargetChoiceTiming::Stack)
         && ability.target_selection_mode.is_chosen()
@@ -1934,12 +1935,15 @@ mod tests {
         };
         assert!(has_no_resolution_riders(&bare()), "reach: a bare effect");
         type Mutation = fn(&mut ResolvedAbility);
-        let riders: [(&str, Mutation); 6] = [
+        let riders: [(&str, Mutation); 7] = [
             ("sub_ability", |a| a.sub_ability = Some(Box::new(a.clone()))),
             ("else_ability", |a| {
                 a.else_ability = Some(Box::new(a.clone()))
             }),
             ("optional", |a| a.optional = true),
+            ("optional_player", |a| {
+                a.optional_player = Some(TargetFilter::Controller)
+            }),
             ("min_x_value", |a| a.min_x_value = 1),
             ("forward_result", |a| a.forward_result = true),
             ("replacement_applied", |a| {
