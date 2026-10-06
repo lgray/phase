@@ -20,10 +20,12 @@ use engine::types::ability::{
 };
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
+use engine::types::events::GameEvent;
 use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
+use engine::types::TargetRef;
 
 fn equipment_types() -> (Vec<String>, Vec<String>) {
     (vec!["Artifact".to_string()], vec!["Equipment".to_string()])
@@ -945,9 +947,6 @@ fn self_grant_refused_name_demotes_its_grant() {
 /// from Quicksilver, so the refused self-grant installs no ability to copy.
 #[test]
 fn quicksilver_copies_no_ability_from_a_refused_iron_fist_grant() {
-    use engine::types::events::GameEvent;
-    use engine::types::TargetRef;
-
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let iron_fist = scenario

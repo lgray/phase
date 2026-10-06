@@ -2,8 +2,10 @@ use super::super::engine::apply_as_current;
 use super::*;
 use crate::game::zones;
 use crate::game::zones::create_object;
+use crate::parser::oracle::parse_oracle_text;
 use crate::parser::oracle_effect::parse_effect_chain;
 use crate::parser::oracle_static::parse_static_line;
+use crate::parser::oracle_util::normalize_card_name_refs_reporting;
 use crate::types::ability::{
     AbilityCost, AbilityTag, ActivationRestriction, AdditionalCost, AggregateFunction,
     AttackedYouScope, BasicLandType, CastPermissionConstraint, CastVariantPaid, CastingPermission,
@@ -44714,9 +44716,6 @@ const NECROMANCY_ORACLE_FULL: &str = "You may cast this spell as though it had f
 /// reanimation trigger.
 #[test]
 fn necromancy_etb_grant_line_lowers_to_the_granter_residual() {
-    use crate::parser::oracle::parse_oracle_text;
-    use crate::parser::oracle_util::normalize_card_name_refs_reporting;
-
     assert!(
         !normalize_card_name_refs_reporting(NECROMANCY_ORACLE_FULL, "Necromancy")
             .1

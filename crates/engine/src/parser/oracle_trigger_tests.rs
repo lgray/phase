@@ -32807,8 +32807,6 @@ const REANIMATOR_AURA_GRANT_ORACLE: &str = "You may cast this spell as though it
 /// `GenericEffect` grants the Aura subtype and Enchant keyword with no `RemoveKeyword`.
 #[test]
 fn reanimator_aura_grant_etb_lowers_to_grant_chain() {
-    use crate::types::zones::Zone;
-
     let parsed = parse_oracle_text(
         REANIMATOR_AURA_GRANT_ORACLE,
         "Necro Probe",
