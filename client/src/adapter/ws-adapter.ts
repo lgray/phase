@@ -210,31 +210,37 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
- * 112 — DrawSequenceFrame gains `dealer`, the in-game simultaneous-draw dealer,
+ * 113 — DrawSequenceFrame gains `dealer`, the in-game simultaneous-draw dealer,
  *      serialized in the resolution frames behind RESOLUTION_STATE_WIRE_VERSION 5.
- *      A v111 peer refuses the version-5 resolution state. Wire 94 moves with it;
+ *      A v112 peer refuses the version-5 resolution state. Wire 95 moves with it;
  *      no lobby frame names it.
- * 111 — MulliganChoice gains `FreeReveal` and MulliganDeclaration gains `kind`:
+ * 112 — MulliganChoice gains `FreeReveal` and MulliganDeclaration gains `kind`:
  *      the Dandan free reveal mulligan, a MulliganDecision action payload and a
- *      held declaration in GameState.waiting_for. A v110 peer cannot parse the
+ *      held declaration in GameState.waiting_for. A v111 peer cannot parse the
  *      choice and would carry out a held free reveal as a regular mulligan.
- *      Wire 93 moves with it; no lobby frame names it.
- * 110 — WaitingFor::MulliganDecision gains `declared`, the mulligans recorded
+ *      Wire 94 moves with it; no lobby frame names it.
+ * 111 — WaitingFor::MulliganDecision gains `declared`, the mulligans recorded
  *      in a CR 103.5 declare round until every player has declared. It is
- *      serialized in GameState.waiting_for, so a v109 peer would drop it
- *      silently. Wire 92 moves with it; no lobby frame names it.
- * 109 — ResolvedZoneChangeCommand gains `rebound_from`, the owner a card had
+ *      serialized in GameState.waiting_for, so a v110 peer would drop it
+ *      silently. Wire 93 moves with it; no lobby frame names it.
+ * 110 — ResolvedZoneChangeCommand gains `rebound_from`, the owner a card had
  *      before a Hand entry from a shared zone rebound it to the taker
  *      (CR 108.3 as modified by the Dandan announcement). It is serialized
- *      inside GameState.resolved_rules_journal, so a v108 peer would drop it
- *      silently. Wire 91 moves with it; no lobby frame names it.
- * 108 — ContinuousModification gains `SubstituteTextWord` (CR 612.1), serialized
- *      inside GameState's transient continuous effects, so a v107 peer cannot
+ *      inside GameState.resolved_rules_journal, so a v109 peer would drop it
+ *      silently. Wire 92 moves with it; no lobby frame names it.
+ * 109 — ContinuousModification gains `SubstituteTextWord` (CR 612.1), serialized
+ *      inside GameState's transient continuous effects, so a v108 peer cannot
  *      parse the tag.
- * 107 — GameFormat gains `Dandan`. It serializes as its Display string and
- *      deserializes through FromStr, so a v106 peer cannot parse a GameState or
- *      a lobby FormatConfig that names it. Wire 89 and lobby 16 move with it;
+ * 108 — GameFormat gains `Dandan`. It serializes as its Display string and
+ *      deserializes through FromStr, so a v107 peer cannot parse a GameState or
+ *      a lobby FormatConfig that names it. Wire 90 and lobby 16 move with it;
  *      see PROTOCOL_VERSION in crates/lobby-broker/src/protocol.rs.
+ * 107 — UntilCondition NextMatches gains count ("until you exile two nonland
+ *      cards …" — Invasion of Alara, CR 608.2c), the paused exile loop keeps
+ *      its hits, ZoneChoiceCandidateSource gains ParentTargets, and
+ *      SpellContext gains exile_until_batch. A v106 peer would run a counted
+ *      loop as a one-card loop; the exact-match handshake refuses the
+ *      pairing. P2P moves in lockstep (wire 89); lobby messages are unchanged.
  * 106 — Full-game replacement-choice preferences, exact source/definition
  *       identities, remembered ordering/optional actions, and prompt
  *       eligibility metadata. P2P moves in lockstep (wire 88); lobby-only
@@ -719,7 +725,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 112;
+export const PROTOCOL_VERSION = 113;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

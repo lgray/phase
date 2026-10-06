@@ -3348,26 +3348,31 @@ mod tests {
 
     /// `DrawSequenceFrame` gains `dealer` (the in-game simultaneous-draw dealer),
     /// serialized in the resolution frames behind `RESOLUTION_STATE_WIRE_VERSION`
-    /// 5; a v111 peer refuses that resolution state, so it must be refused before it
-    /// receives v112 state.
+    /// 5; a v112 peer refuses that resolution state, so it must be refused before it
+    /// receives v113 state.
     /// `MulliganChoice` gains `FreeReveal` and `MulliganDeclaration` gains `kind`
-    /// (the Dandân free reveal mulligan); a v110 peer cannot deserialize the
+    /// (the Dandân free reveal mulligan); a v111 peer cannot deserialize the
     /// choice and would carry out a held free reveal as a regular mulligan, so it
-    /// must be refused before it receives v111 state.
+    /// must be refused before it receives v112 state.
     /// `WaitingFor::MulliganDecision` gains `declared` (CR 103.5 declare round),
-    /// serialized in `GameState.waiting_for`; a v109 peer would drop it silently,
-    /// so it must be refused before it receives v110 state.
+    /// serialized in `GameState.waiting_for`; a v110 peer would drop it silently,
+    /// so it must be refused before it receives v111 state.
     /// `ResolvedZoneChangeCommand` gains `rebound_from` (CR 108.3 as modified by
     /// the Dandân hand-entry rebind), serialized inside
-    /// `GameState.resolved_rules_journal`; a v108 peer would drop it silently,
-    /// so it must be refused before it receives v109 state.
+    /// `GameState.resolved_rules_journal`; a v109 peer would drop it silently,
+    /// so it must be refused before it receives v110 state.
     /// `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized
-    /// inside `GameState`'s transient continuous effects; a v105 peer cannot parse
-    /// the tag, so it must be refused before it receives v106 state.
+    /// inside `GameState`'s transient continuous effects; a v108 peer cannot parse
+    /// the tag, so it must be refused before it receives v109 state.
     /// `GameFormat` gains `Dandan`, which serializes as its `Display` string and
-    /// deserializes through `FromStr`; a v104 peer cannot parse a `GameState`
-    /// whose format names it, so it must be refused before it receives v105
+    /// deserializes through `FromStr`; a v107 peer cannot parse a `GameState`
+    /// whose format names it, so it must be refused before it receives v108
     /// state.
+    /// `UntilCondition::NextMatches.count` (CR 608.2c), the paused loop's `hits`,
+    /// `ZoneChoiceCandidateSource::ParentTargets` and
+    /// `SpellContext.exile_until_batch` are new in serialized
+    /// full-game state; a v106 peer would run a counted loop as a one-card loop,
+    /// so it must be refused before it receives v107 state.
     /// `PendingCast` gains `delved_cards` and the pending cost-move resume swaps
     /// `DelveManaPayment` for `FinalizeDelvedCast` (#9400); a v103 peer cannot
     /// parse the parked delve commit, so it must be refused before it receives
@@ -3434,8 +3439,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_112_for_simultaneous_draw_dealer() {
-        assert_eq!(PROTOCOL_VERSION, 112);
+    fn protocol_version_is_113_for_simultaneous_draw_dealer() {
+        assert_eq!(PROTOCOL_VERSION, 113);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3446,7 +3451,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_112_for_simultaneous_draw_dealer` stays
+    /// `protocol_version_is_113_for_simultaneous_draw_dealer` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

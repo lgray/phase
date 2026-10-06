@@ -60,12 +60,20 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 112 — `RESOLUTION_STATE_WIRE_VERSION` 4 to 5: the multi-draw resolution frame gains the simultaneous-draw `dealer` (a shared-library format's in-game simultaneous draw), serialized in `GameState`'s resolution frames and omitted when absent. A v111 peer refuses the version-5 resolution state. Full-game peers and P2P move in lockstep (wire 94); no lobby carrier names it.
-/// 111 — `MulliganChoice` gains `FreeReveal` and `MulliganDeclaration` gains `kind`: the Dandân free reveal mulligan (CR 103.5 as modified by the Dandân rule), a `GameAction::MulliganDecision` payload and a held declaration in `GameState.waiting_for`. A v110 peer cannot deserialize the choice and would carry out a held free reveal as a regular mulligan. Full-game peers and P2P move in lockstep (wire 93); no lobby carrier names either.
-/// 110 — `WaitingFor::MulliganDecision` gains `declared`, the mulligans recorded in a CR 103.5 declare round until every player has declared. It is serialized in `GameState.waiting_for`, omitted when empty and defaulted when absent, so a v109 peer reading a v110 state in a shared-library format's mulligan round drops the held declarations. Full-game peers and P2P move in lockstep (wire 92); no lobby carrier names it.
-/// 109 — `ResolvedZoneChangeCommand` gains `rebound_from`, the owner a card had before a Hand entry from a shared zone rebound it to the taker (CR 108.3 as modified by the Dandân announcement). It is serialized inside `GameState.resolved_rules_journal`, omitted when ownership is unchanged, and defaulted when absent, so a v108 peer reading a v109 state with a rebound card drops the field silently. Full-game peers and P2P move in lockstep (wire 91); no lobby carrier names it.
-/// 108 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized inside `GameState`'s transient continuous effects, so a v107 peer cannot parse the tag and must be refused before it receives v108 state.
-/// 107 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v106 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 89); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 16.
+/// 113 — `RESOLUTION_STATE_WIRE_VERSION` 4 to 5: the multi-draw resolution frame gains the simultaneous-draw `dealer` (a shared-library format's in-game simultaneous draw), serialized in `GameState`'s resolution frames and omitted when absent. A v112 peer refuses the version-5 resolution state. Full-game peers and P2P move in lockstep (wire 95); no lobby carrier names it.
+/// 112 — `MulliganChoice` gains `FreeReveal` and `MulliganDeclaration` gains `kind`: the Dandân free reveal mulligan (CR 103.5 as modified by the Dandân rule), a `GameAction::MulliganDecision` payload and a held declaration in `GameState.waiting_for`. A v111 peer cannot deserialize the choice and would carry out a held free reveal as a regular mulligan. Full-game peers and P2P move in lockstep (wire 94); no lobby carrier names either.
+/// 111 — `WaitingFor::MulliganDecision` gains `declared`, the mulligans recorded in a CR 103.5 declare round until every player has declared. It is serialized in `GameState.waiting_for`, omitted when empty and defaulted when absent, so a v110 peer reading a v111 state in a shared-library format's mulligan round drops the held declarations. Full-game peers and P2P move in lockstep (wire 93); no lobby carrier names it.
+/// 110 — `ResolvedZoneChangeCommand` gains `rebound_from`, the owner a card had before a Hand entry from a shared zone rebound it to the taker (CR 108.3 as modified by the Dandân announcement). It is serialized inside `GameState.resolved_rules_journal`, omitted when ownership is unchanged, and defaulted when absent, so a v109 peer reading a v110 state with a rebound card drops the field silently. Full-game peers and P2P move in lockstep (wire 92); no lobby carrier names it.
+/// 109 — `ContinuousModification` gains `SubstituteTextWord` (CR 612.1), serialized inside `GameState`'s transient continuous effects, so a v108 peer cannot parse the tag and must be refused before it receives v109 state.
+/// 108 — `GameFormat` gains `Dandan`. It serializes as its `Display` string and deserializes through `FromStr`, whose unknown-name arm returns `Err`, so a v107 peer cannot parse a `GameState`, or a `FormatConfig` in a lobby frame, whose format names it. The six new `GameFormat` axis methods are read from the format and add no serialized shape. Full-game peers and P2P move in lockstep (wire 90); lobby carriers move too, see `LOBBY_PROTOCOL_VERSION` 16.
+/// 107 — `UntilCondition::NextMatches` gains `count` ("until you exile two
+///      nonland cards …" — Invasion of Alara, CR 608.2c), the paused loop
+///      (`PendingExileFromTopUntil`) keeps its `hits`,
+///      `ZoneChoiceCandidateSource` gains `ParentTargets`, and `SpellContext`
+///      gains `exile_until_batch` (the loop's cards, carried by a paused
+///      continuation). A v106 peer reads a counted loop as a one-card loop and
+///      cannot parse the new candidate source. P2P moves in lockstep
+///      (wire 89).
 /// 106 — Full-game replacement-choice preferences, exact source/definition
 ///       identities, remembered ordering/optional actions, and prompt
 ///       eligibility metadata. P2P moves in lockstep (wire 88); lobby-only
@@ -882,7 +890,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 112;
+pub const PROTOCOL_VERSION: u32 = 113;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2139,12 +2147,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 112);
+        assert_eq!(PROTOCOL_VERSION, 113);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 111);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 112);
     }
 
     #[test]
