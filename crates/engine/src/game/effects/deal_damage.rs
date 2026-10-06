@@ -7503,52 +7503,29 @@ mod tests {
     // battles (Screaming Nemesis precedent). These tests drive the real parsed
     // output through the activation/resolution pipeline.
 
-    /// Extract the activated ability definition that a parsed "gains
-    /// \"{T}: …\" until end of turn" trigger grants.
+    /// Iron Fist's granted body parsed as a printed ability, since the card's own grant line
+    /// lowers to the CR 201.5a granter residual.
     #[cfg(test)]
-    fn extract_granted_ability(
-        oracle: &str,
-        card_name: &str,
-    ) -> crate::types::ability::AbilityDefinition {
-        use crate::types::ability::{ContinuousModification, Effect};
-        let parsed = crate::parser::oracle::parse_oracle_text(
-            oracle,
-            card_name,
+    fn iron_fist_granted_body() -> crate::types::ability::AbilityDefinition {
+        crate::parser::oracle::parse_oracle_text(
+            "{T}: Iron Fist deals damage equal to his power to any other target",
+            "Iron Fist, Living Weapon",
             &[],
             &["Creature".into()],
             &[],
-        );
-        let trigger = parsed
-            .triggers
-            .into_iter()
-            .next()
-            .expect("cast trigger present");
-        let execute = trigger.execute.expect("trigger has an execute ability");
-        let Effect::GenericEffect {
-            static_abilities, ..
-        } = &*execute.effect
-        else {
-            panic!(
-                "expected GenericEffect granting an ability, got {:?}",
-                execute.effect
-            );
-        };
-        let modification = static_abilities
-            .iter()
-            .flat_map(|s| s.modifications.iter())
-            .find_map(|m| match m {
-                ContinuousModification::GrantAbility { definition } => Some((**definition).clone()),
-                _ => None,
-            });
-        modification.expect("a GrantAbility modification")
+        )
+        .abilities
+        .into_iter()
+        .next()
+        .expect("the activated ability")
     }
 
     /// CR 120.1 + CR 115.4 + CR 208.3 — DISCRIMINATING runtime gate for Iron
-    /// Fist, Living Weapon. Its cast-trigger grants "{T}: ~ deals damage equal
-    /// to his power to any other target". Parsing the full card, attaching the
-    /// granted ability to a 4-power Iron Fist, and activating it at an opponent
-    /// creature must deal exactly 4 damage. Reverting the gendered-pronoun
-    /// quantity fix makes "his power" fall to `Effect::Unimplemented`, so the
+    /// Fist, Living Weapon's granted "{T}: ~ deals damage equal to his power to
+    /// any other target". Attaching that ability to a 4-power Iron Fist and
+    /// activating it at an opponent creature must deal exactly 4 damage.
+    /// Reverting the gendered-pronoun quantity fix makes "his power" fall to
+    /// `Effect::Unimplemented`, so the
     /// granted ability deals no damage and `ActivateAbility` never reaches a
     /// damage resolution — this assertion flips.
     #[test]
@@ -7559,11 +7536,7 @@ mod tests {
         const P0: PlayerId = PlayerId(0);
         const P1: PlayerId = PlayerId(1);
 
-        let granted = extract_granted_ability(
-            "Whenever you cast a spell that targets a creature you control, Iron Fist gains \
-             \"{T}: Iron Fist deals damage equal to his power to any other target\" until end of turn.",
-            "Iron Fist, Living Weapon",
-        );
+        let granted = iron_fist_granted_body();
 
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);
@@ -7603,11 +7576,7 @@ mod tests {
         const P0: PlayerId = PlayerId(0);
         const P1: PlayerId = PlayerId(1);
 
-        let granted = extract_granted_ability(
-            "Whenever you cast a spell that targets a creature you control, Iron Fist gains \
-             \"{T}: Iron Fist deals damage equal to his power to any other target\" until end of turn.",
-            "Iron Fist, Living Weapon",
-        );
+        let granted = iron_fist_granted_body();
 
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);

@@ -897,13 +897,34 @@ fn meandered_towershell_refused_operand_demotes_its_grant() {
     );
 }
 
-/// CR 201.5a: a self-granted body's refused name reads the host, which is the granter.
+/// CR 201.5a: a self-granted body's refused name still names the granter once the granted
+/// ability is copied onto a new object, so the grant line is demoted.
 #[test]
-fn self_grant_refused_name_stays_supported() {
-    for (oracle, name, types) in [
-        (IRON_FIST, "Iron Fist, Living Weapon", "Creature"),
-        (MS_MARVEL, "Ms. Marvel, Kamala Khan", "Creature"),
-        (NECROMANCY, "Necromancy", "Enchantment"),
+fn self_grant_refused_name_demotes_its_grant() {
+    for (oracle, name, types, residual) in [
+        (
+            IRON_FIST,
+            "Iron Fist, Living Weapon",
+            "Creature",
+            "Whenever you cast a spell that targets a creature you control, ~ gains \"{T}: ~ \
+             deals damage equal to his power to any other target\" until end of turn.",
+        ),
+        (
+            MS_MARVEL,
+            "Ms. Marvel, Kamala Khan",
+            "Creature",
+            "Whenever you cast a spell that targets a creature you control, draw a card. Until \
+             end of turn, ~ gains \"~'s base power is equal to the number of cards in your hand.\"",
+        ),
+        (
+            NECROMANCY,
+            "Necromancy",
+            "Enchantment",
+            "When ~ enters, if it's on the battlefield, it becomes an Aura with \"enchant \
+             creature put onto the battlefield with ~.\" Put target creature card from a graveyard \
+             onto the battlefield under your control and attach ~ to it. When ~ leaves the \
+             battlefield, that creature's controller sacrifices it.",
+        ),
     ] {
         assert!(
             !normalize_card_name_refs_reporting(oracle, name)
@@ -912,14 +933,102 @@ fn self_grant_refused_name_stays_supported() {
             "reach-guard: {name}"
         );
         let parsed = parse_oracle_text(oracle, name, &[], &[types.to_string()], &[]);
-        assert!(
-            !parsed.triggers.is_empty(),
-            "reach-guard: {name}: {parsed:#?}"
+        assert_eq!(
+            granter_residuals(&parsed),
+            vec![residual],
+            "{name}: {parsed:#?}"
         );
-        assert!(granter_residuals(&parsed).is_empty(), "{name}: {parsed:#?}");
     }
 }
 
+/// CR 201.5a: Quicksilver Elemental copying Iron Fist's granted ability must not deal damage
+/// from Quicksilver, so the refused self-grant installs no ability to copy.
+#[test]
+fn quicksilver_copies_no_ability_from_a_refused_iron_fist_grant() {
+    use engine::types::events::GameEvent;
+    use engine::types::TargetRef;
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let iron_fist = scenario
+        .add_creature_from_oracle(P0, "Iron Fist, Living Weapon", 4, 4, IRON_FIST)
+        .id();
+    let quicksilver = scenario
+        .add_creature_from_oracle(P0, "Quicksilver Elemental", 2, 2, QUICKSILVER_ELEMENTAL)
+        .id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Untap Probe", true, "Untap target creature.")
+        .id();
+    scenario.with_mana_pool(
+        P0,
+        vec![ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![])],
+    );
+    let mut runner = scenario.build();
+    let p1_life = runner.life(P1);
+    let targeted_by = |events: &[GameEvent], source: ObjectId| {
+        events.iter().any(|e| {
+            matches!(e, GameEvent::BecomesTarget { target: TargetRef::Object(t), source_id, .. }
+                if *t == iron_fist && *source_id == source)
+        })
+    };
+
+    let cast = runner.cast(spell).target_object(iron_fist).resolve();
+    assert!(
+        targeted_by(cast.events(), spell),
+        "reach-guard: a spell targeting Iron Fist was cast"
+    );
+    runner.advance_until_stack_empty();
+    assert_eq!(
+        runner.state().objects[&spell].zone,
+        Zone::Graveyard,
+        "reach-guard: the spell resolved"
+    );
+
+    let gain = runner.state().objects[&quicksilver]
+        .abilities
+        .iter()
+        .position(|a| matches!(*a.effect, Effect::GainActivatedAbilitiesOfTarget { .. }))
+        .expect("Quicksilver's {U} ability");
+    let copied = runner
+        .activate(quicksilver, gain)
+        .target_object(iron_fist)
+        .resolve();
+    assert!(
+        targeted_by(copied.events(), quicksilver),
+        "reach-guard: Quicksilver's {{U}} targeted Iron Fist"
+    );
+    assert!(
+        copied
+            .events()
+            .iter()
+            .any(|e| matches!(e, GameEvent::StackResolved { .. })),
+        "reach-guard: Quicksilver's {{U}} resolved"
+    );
+    runner.advance_until_stack_empty();
+
+    let copied_damage = runner.state().objects[&quicksilver]
+        .abilities
+        .iter()
+        .position(|a| matches!(*a.effect, Effect::DealDamage { .. }));
+    let mut events = Vec::new();
+    if let Some(index) = copied_damage {
+        let out = runner
+            .activate(quicksilver, index)
+            .target_player(P1)
+            .resolve();
+        events.extend_from_slice(out.events());
+    }
+    assert_eq!(runner.life(P1), p1_life);
+    assert!(!events.iter().any(
+        |e| matches!(e, GameEvent::DamageDealt { source_id, .. } if *source_id == quicksilver)
+    ));
+    assert_eq!(copied_damage, None, "Quicksilver gained a damage ability");
+}
+
+const QUICKSILVER_ELEMENTAL: &str = "{U}: This creature gains all activated abilities of target \
+creature until end of turn. (If any of the abilities use that creature's name, use this \
+creature's name instead.)\nYou may spend blue mana as though it were mana of any color to pay the \
+activation costs of this creature's abilities.";
 const NECROMANCY: &str = "You may cast this spell as though it had flash. If you cast it any \
 time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it \
 at the beginning of the next cleanup step.\nWhen this enchantment enters, if it's on the \
@@ -1688,9 +1797,9 @@ mod concretizer_seams {
         obj.toughness = None;
         obj.base_power = None;
         obj.base_toughness = None;
-        obj.attached_to = Some(AttachTarget::Object(host));
         obj.static_definitions.push(grant.clone());
         Arc::make_mut(&mut obj.base_static_definitions).push(grant);
+        attach_to(st, granter, host);
         relayer(st);
     }
 

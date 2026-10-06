@@ -4508,11 +4508,7 @@ fn catalog_rules_text_abilities(
         // left as the host, would read the wrong object, so its line is refused as unparsed.
         let unreached = |def: &StaticDefinition| {
             let node = crate::types::ability_visit::DefinitionNode::Static(def);
-            crate::parser::oracle::granter_reference_unreached(node)
-                || (refusals.contains(&index)
-                    && !crate::parser::oracle::grants_only_to_its_source(
-                        crate::types::ability_visit::DefinitionNode::Static(def),
-                    ))
+            refusals.contains(&index) || crate::parser::oracle::granter_reference_unreached(node)
         };
         let refused =
             || crate::parser::oracle_util::render_granting_self_reference(line, card_name);

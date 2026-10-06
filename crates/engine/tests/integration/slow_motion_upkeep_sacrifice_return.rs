@@ -645,6 +645,10 @@ fn breath_of_fury_in_graveyard_is_not_attached() {
             total_damage: 1,
         }],
     );
+    assert!(
+        !runner.state().stack.is_empty(),
+        "reach-guard: Breath of Fury's combat damage trigger is on the stack"
+    );
     {
         let obj = runner.state_mut().objects.get_mut(&creature).unwrap();
         obj.base_controller = Some(P1);
@@ -658,6 +662,7 @@ fn breath_of_fury_in_graveyard_is_not_attached() {
     );
 
     runner.advance_until_stack_empty();
+    assert!(runner.state().stack.is_empty(), "the trigger resolved");
 
     let state = runner.state();
     assert_ne!(

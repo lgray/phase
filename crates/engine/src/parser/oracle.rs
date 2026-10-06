@@ -9528,7 +9528,7 @@ fn demote_granter_references(
 }
 
 /// CR 201.5a: lowers the definitions of each item whose quoted text names the card where
-/// the masker refused it, unless the item hands abilities only to its own source.
+/// the masker refused it.
 fn demote_refused_granter_names(
     result: &mut ParsedAbilities,
     ir: &OracleDocIr,
@@ -9558,24 +9558,8 @@ fn demote_refused_granter_names(
             DefinitionNode::Static(_) => statics.next(),
             DefinitionNode::Replacement(_) => replacements.next(),
         };
-        id.is_some_and(refused) && !grants_only_to_its_source(node)
+        id.is_some_and(refused)
     });
-}
-
-/// CR 201.5a: whether every object `node` hands an ability to is `node`'s own source, so the
-/// host `~` and the granter are one object.
-pub(crate) fn grants_only_to_its_source(node: DefinitionNode<'_>) -> bool {
-    let (mut to_source, mut elsewhere) = (false, false);
-    crate::types::ability_visit::granter_symbols::each_node(node, &mut |node| match node {
-        DefinitionNode::Static(def) => match def.affected {
-            Some(TargetFilter::SelfRef | TargetFilter::OriginalSource) => to_source = true,
-            _ => elsewhere = true,
-        },
-        // CR 111.1: a token is another object, though its own statics name it `SelfRef`.
-        DefinitionNode::Ability(def) => elsewhere |= matches!(*def.effect, Effect::Token { .. }),
-        DefinitionNode::Trigger(_) | DefinitionNode::Replacement(_) => {}
-    });
-    to_source && !elsewhere
 }
 
 /// CR 201.5a: whether `node` holds a granter reference that `each_granter_symbol` misses.
