@@ -1,96 +1,42 @@
-# RESUME — Dandan format run (phase-rs/phase#5169), parked 2026-10-01
+# RESUME — Dandan format run (phase-rs/phase#5169), handoff 2026-10-06 (local driver lineage)
 
-The user parked this lane. Resume from origin's two branches only:
-- `feat/dandan-format` holds the accepted code commits.
-- `dandan-run-state` (orphan) holds the run records. They live under `.planning/dandan-5169/`, with this file at the branch root.
-
-All paths below are relative to a checkout root (`$REPO`). No absolute path is assumed.
+Supersedes the 2026-10-01 cloud-lineage file. The binding driver brief is `/home/lgray/vibe-coding/dandan-run/local-driver-brief.md` (read it first, in full). Records: `.planning/dandan-5169/` on this branch (`git show origin/dandan-run-state:RESUME.md`); the working copy is `/home/lgray/vibe-coding/dandan-run/wt-dandan/.planning/dandan-5169/` (gitignored there; `mirror-state.sh "<msg>"` copies it here after each accepted phase).
 
 ## 1. Git state
-
 | Item | Value |
 |---|---|
-| Run base (`BASE_SHA`) | `b9ba93609631d6d4bfab7169c00a9e57cec58ae0` (upstream/main at run start) |
-| `feat/dandan-format` head | `772c18d1d3b99bac61557f42d790b4eea63efda2` (Phase 5 accepted) |
-| upstream/main at park | `c15470b9` (46 commits past BASE_SHA) |
+| Branch / worktree | `feat/dandan-format` in `/home/lgray/vibe-coding/dandan-run/wt-dandan` (clean at handoff, HEAD == pushed tip) |
+| Tip == last accepted (Phase 15) == **Phase 16 PHASE_BASE** | `bbce5c6bdab3c24a727d5d5f776cda093c46b15a` |
+| Upstream distance | 3 behind `upstream/main` (`8044043df1`, merge-base `3459d23a32`); keep ≤ 20 behind, merge never rebase, merge at ≥ 18 or at a phase boundary |
+| Run base (`BASE_SHA`) | `b9ba93609631d6d4bfab7169c00a9e57cec58ae0` |
+| Protocol | full-game **113**, P2P wire **95**, lobby **16**, `RESOLUTION_STATE_WIRE_VERSION` **5**, `MIN_SUPPORTED_PROTOCOL` = 112 (= PROTOCOL − 1); `scripts/check-protocol-version.mjs` offsets +42 / +41 |
 
-**Resume step 0:**
-1. Merge upstream/main into `feat/dandan-format`. Never rebase it: the branch is pushed.
-2. Re-run the accepted phases' checks on the merge: the full `phase-engine` suite, workspace clippy and the gates.
+Accepted candidates (phase → SHA): 1 `2cf3d3aa`; 2 `b96d6ef2`,`41b2e353`; 3 `06554d0e`; 4 `67cd221e`; 4b `c7dfc79e`,`695933e5`,`91ad0dff`; 5 `eccc407e`,`029b93dc`,`772c18d1`; 6 `8eecaec29b`,`1b112fdec9`; 7 `be100055ae`,`e0d9cb1208` (merge-fix `c1cf96cf63`); 8 `616148f99e`,`e35fc63606`; 9 `761f5ff216`,`1acc74bca6`; 10 `ac7d00e632` (abandoned candidates `45a9229a76 6f59a8e449 0825f1f505 7eaadea7bc 5148aafffb 9287a640b9`; the merge `e0a2dfdaa2` and fixture regen `32b58e3df2` sit inside its interval); 11 `4bc7c2a358`; 12 `995d99af2d`; 13 `2964d6818f` (`64a7cbf6a4 25606d19cb bc4c727113 2964d6818f`); 14 `630000f3c5` (`99fff2ab44 630000f3c5`); 15 `bbce5c6bda` (`ad382d02f3 6b8b2ace54 bbce5c6bda`). Upstream merges: #1 `e0a2dfdaa2` (+ fix `b934617384`), #2 `9ca36e7c83`, #3 `236a35f0b5` (each passed a full completion run before push). Chain integrity is recomputed at run level (tiling check in `chartered.md`), not recorded as a ledger.
 
-To restore the records into a checkout:
+## 2. Remaining work (Phases 16, 17, then run level)
+Phase 16 and 17 are the only phases left; do NOT re-plan accepted phases. Each phase: re-ground the plan at its PHASE_BASE (protocol numerals and earlier-phase names in every plan are stale; the executor re-derives), freeze `phases/<k>/scope.nul` (charter scope rule + addenda), run `/engine-implementer` chartered mode (`budget=standard`) Steps 3–7, push after acceptance, update `phases/summaries.md`, `phase-fit`, `journal.md`, run `mirror-state.sh`, report to `team-lead`.
+- **Phase 16 — S7 frontend shared-pile display.** Plan `.planning/dandan-5169/phases/16/plan.md` (CLEAN; `DerivedViews.shared_piles` + client `resolvePileSeat` display routing; its bump numerals 98→99/80→81 are stale — expect one bump → 114 / 96). Addenda `addenda/phase-16` (scope adds `client/src/components/zone/ZoneViewer.tsx` seat-gate deletion + the client test files named in the plan's "Charter scope additions"). Needs the 8-locale + i18n parity gate, `tsc -b --noEmit --force`, vitest; frontend verify needs a local `pnpm install --frozen-lockfile` in the worktree.
+- **Phase 17 — S8 AI consumer rerouting.** Plan `.planning/dandan-5169/phases/17/plan.md` (CLEAN after r2; executor constraint: V9 "both seats drew from it" must be shown per-seat, pile shrink alone is not discriminating). Addenda `addenda/phase-17` (scope adds `crates/phase-ai/src/policies/tests/mill_payoff.rs`).
+- **Open item (USER-routed, add to a remaining phase as one addendum line + a test that fails before the fix, do not change elsewhere):** `crates/engine/src/game/effects/cast_from_zone.rs::looked_at_controller_library_cards` filters `owner == controller`, so "look at the top N of your library" in Dandan skips opponent-owned cards in the shared library.
+- **Run-level acceptance** (after Phase 17): chain integrity (tiling: prior-accepted..phase-accepted holds only the phase's commits; abandoned candidates listed separately); integration review (`review-engine-impl` integration mode, zero findings; at most one fix phase per round); `cargo ai-gate` WITHOUT `--refresh-baseline` (owed since Phase 3); `cargo coverage`; `cargo semantic-audit`; full workspace suites; frontend gates (type-check, lint, vitest, i18n parity).
+- **PR:** follow `.claude/skills/engine-implementer/pr-handoff.md` and `docs/AI-CONTRIBUTOR.md` §5–7; one PR from `lgray:feat/dandan-format` to `phase-rs/phase:main` on the repo template (`pr-body.md` draft in the records); `Model: claude-sonnet-5-5`, `Tier: Frontier`; no attribution/co-author lines, no AI prefix. No `/ship-commits`, no enqueue, no `gh pr merge`. Stay alive for review/CI until MERGED, then remove the worktrees and targets and report.
+- **PR-body notes:** `.planning/dandan-5169/pr-notes.md` is current through Phase 15 (shipped-format change: Serum Powder per-viewer in every format; FreeReveal computed-not-stored + fail-closed enumeration; dealer scope limits; phase-llm Dandan generic strategy; the open item above).
 
-```bash
-git fetch origin feat/dandan-format dandan-run-state
-git checkout -B feat/dandan-format origin/feat/dandan-format
-git archive origin/dandan-run-state .planning | tar -x
-```
+## 3. Standing USER rules (binding)
+- Sonnet 5.5 for the driver and every sub-agent; never Haiku, never inherit; spawn sub-agents UNNAMED; `engine-implementation-executor` needs `model: "sonnet"`. Skills authority is the MAIN checkout `/home/lgray/vibe-coding/phase-rs-workdir/.claude/skills/`; executors have no Skill tool (give them the absolute `executor.md` path). After a compaction re-invoke `/engine-implementer` and `cat` `chartered.md` and SKILL.md (long lines truncated by Read).
+- `/tmp` is a 32G RAM tmpfs: NO tree copies, probe/mutation worktrees, logs or any `CARGO_TARGET_DIR` under `/tmp` or the session scratchpad. Scratch under `/home/lgray/vibe-coding/dandan-run/scratch/`; every cargo call (executors and reviewers too) sets `CARGO_TARGET_DIR` under `/home/lgray/vibe-coding/dandan-run/` (`target-dandan`, or `target-scratch-<name>`), in the SAME Bash call as `source /home/lgray/vibe-coding/cargo-isolate.sh <worktree>`, plus `MTGJSON_SKIP_REFRESH=1`. Completion runs use `wt-complete`/`target-complete` via `complete.sh <sha> <tag>` (CARGO_INCREMENTAL=0).
+- Merge upstream, never rebase; ≤ 20 behind. Protocol constants stack as upstream + delta: re-derive at every merge (grep asserted numerals and test TITLES, e.g. `v113`-style tokens, not just constants); merge conflicts/fixes go through a fix executor, logged in `phase-fit` with the SHA; the merge must not sit beneath a rebuilt phase range.
+- Phase base = the previous phase's ACCEPTED candidate; record any speculative base (USER: do not serialize the next phase behind a running completion; rerun flaky timing tests alone).
+- Loop rules: a design round is any round with a `behavior` finding; limit = 5th design round or two consecutive non-lowering rounds; past it ask `team-lead` with the three-line expansion case (never AskUserQuestion). `text` findings are applied by the orchestrator as a comment-only correction (diff predicate with a control) followed by a full completion rerun. Reports to `team-lead` (terse, verdict-first) only at: merge-upstream green; each phase accepted; PR opened; merged; blocker. Phase 13 precedent: USER chose the cause-level fix; a non-clean final round stops the phase with no PR and reports.
+- CLAUDE.md: commits of 1–2k lines of primary non-test code, PR one complete thought up to ~30k added LOC; author `lgray <lindsey.gray@gmail.com>`, conventional commits; one watcher per job (no stacked pollers), no large Workflow fan-outs, clean up finished sub-agents.
 
-Afterwards the records sit in `.planning/dandan-5169/`, which is gitignored on the code branch.
+## 4. Tooling and traps (this run)
+- Scripts in `/home/lgray/vibe-coding/dandan-run/`: `complete.sh <sha> <tag>` (fmt, protocol gate, clippy, bindings, nextest; log `wt-dandan/.planning/dandan-5169/completion-<tag>/summary.log`, ends `done rc=0`; frontend is NOT in it — run tsc/vitest/lint yourself at run level), `mirror-state.sh "<msg>"`, `regen-carddata.sh` (regenerate the machine-local card-data export, then `python3 scripts/gen-test-fixture.py` and `--check` before a completion run after a merge or when `--check` reports stale), `briefs/` (`common.md` = rules every sub-agent brief reads; `exec-*`, `impl-review-*`, `plan-*` are the working briefs per phase: copy the latest as the pattern).
+- Worktrees/targets: `wt-dandan` + `target-dandan` (implementation, ~158 GB), `wt-complete` + `target-complete` (completion), `state-wt` (state mirror). Keep them for the next driver; never `cargo clean` while a build runs.
+- Flaky under load (rerun alone at the exact SHA before calling a regression): phase-ai `search::tests::self_destruct_target_selection_prefers_lethal_over_nonlethal_body`, `prospective_fetch_choice_survives_to_the_real_search_prompt`, `untapped_fetchland_outscores_passing_on_its_own_turn`, `ai_quality control_prefers_mana_rock_over_comparable_creature_as_disclosed`, `midrange_still_ranks_creature_above_mana_rock_but_barely`.
+- Process traps: `pkill -f`/`kill -- -<pgid>` can self-kill the Bash tool shell (exit 144): find the pid with `pgrep -f '^bash complete.sh .* <tag>'` and compare its pgid to `ps -o pgid= -p $$` first; never wait with `pgrep -f <name in your own command>`; wrap every long job so it writes `done rc=$?` on EVERY exit path and wait on that line with one bounded Monitor (also matching `error: could not compile`); use `/usr/bin/grep -a` (the shell `grep` skips binary logs).
+- Reviewers/executors that start a cold scratch build run out of budget before their probes (two Phase 15 reviews returned INCOMPLETE): while `wt-dandan` is idle and clean, in-place revert probes on the warm `target-dandan` are allowed (start from clean tracked porcelain, restore with `git checkout -- <file>` on files the probe alone changed, touch them, end with empty porcelain and HEAD == candidate and show both). Never run an executor and in-place probes in `wt-dandan` at the same time.
+- Never run `rustfmt` directly on files (project flags differ; it reformats ~95 files): use `cargo fmt --all -- --check`.
 
-## 2. Phases
-
-The charter is `.planning/dandan-5169/phase-charter`, revision r5 plus a seam fix. Prior revisions are kept as `phase-charter.r0` to `phase-charter.r5`. The audit trail is `phase-fit`, append-only, sections 1–23. Phase k's directory is `.planning/dandan-5169/phases/<k>/`. It holds `plan.md` (the current plan), `plan.rN.md` (prior versions), `plan-review-rN.md`, `executor-rN.md` and `impl-review-rN.md`. Short summaries of the accepted phases are in `phases/summaries.md`.
-
-| # | Phase | State | Commit / plan |
-|---|---|---|---|
-| 1 | card-bot `/lfg` format autocomplete | ACCEPTED | `2cf3d3aa` |
-| 2 | S1 format registration + axes + protocol bump | ACCEPTED | `b96d6ef2`, `41b2e353` |
-| 3 | AI force-keep re-gate | ACCEPTED | `06554d0e` |
-| 4 | PREREQ-0 Memory Lapse swallow check | ACCEPTED | `67cd221e` |
-| 4b | Fix-first: CR 613.8b loop-only dependency ordering (defective-reference route) | ACCEPTED | `c7dfc79e`, `695933e5`, `91ad0dff` |
-| 5 | CR 612 text-changing primitive | ACCEPTED | `eccc407e`, `029b93dc`, `772c18d1` |
-| 6 | S2a canonical-seat storage + pool resolver | PLAN CLEAN (amended for the engine_resolution_choices reads; re-reviewed r3) | `phases/6/plan.md` |
-| 7 | S5 best-of-three ceiling | PLAN CLEAN | `phases/7/plan.md` |
-| 8 | S2b-1 read sweep `game/` | PLAN CLEAN | `phases/8/plan.md` |
-| 9 | S2b-2 read sweep analysis/ai_support/cross-crate | PLAN CLEAN | `phases/9/plan.md` |
-| 10 | S2c filter collapse + count dedup | PLAN CLEAN | `phases/10/plan.md` |
-| 11 | S3 hand-entry ownership rebind | PLAN CLEAN (charter r5 admitted `engine_resolution_choices.rs` DigChoice kept map) | `phases/11/plan.md` |
-| 12 | S4a declare round + pregame dealer | PLAN CLEAN, pending a charter scope addition (see §4) | `phases/12/plan.md` |
-| 13 | S4b FreeReveal | PLAN CLEAN | `phases/13/plan.md` |
-| 14 | S4c in-game dealer + S6 | PLAN CLEAN, pending a charter scope addition (see §4) | `phases/14/plan.md` |
-| 15 | S4d Day's Undoing wheel split | PLAN CLEAN | `phases/15/plan.md` |
-| 16 | S7 frontend shared-pile display | PLAN CLEAN, pending charter scope additions (see §4) | `phases/16/plan.md` |
-| 17 | S8 AI consumer rerouting (+ run-level `cargo ai-gate`) | PLAN WRITTEN, NOT YET REVIEWED | `phases/17/plan.md` |
-
-Every plan for Phases 6–17 was written against code that does not yet contain the earlier phases. Each phase's executor runs its plan's "step 0" re-measurement at its own `PHASE_BASE` before editing.
-
-## 3. Exact next steps
-
-1. **Merge upstream** (see §1).
-2. **No WIP patch remains.** Phase 5 was finished and accepted before parking.
-3. **Charter revision batch (USER-authorized).** Before Phase 12, run one charter-mode planner plus a whole-charter review that adds:
-   - Phase 12: `crates/engine/src/game/elimination.rs` (`prune_mulligan_pending`, compiler-forced plus behaviour), `client/src/adapter/types.ts` (mirror), and the Phase 6 and Phase 11 Dandan integration test files (lone-Mulligan rows need the other seat's Keep).
-   - Phase 14: `crates/engine/tests/integration/deterministic_game_state_serde.rs` (test-forced census row).
-   - Phase 16: `client/src/components/.../ZoneViewer.tsx` (delete the seat gate) and the client test files named in `phases/16/plan.md` "Charter scope additions".
-   - Phase 17: `crates/phase-ai/src/policies/tests/mill_payoff.rs` (test-only).
-4. **Phase 17 plan review** (`review-engine-plan`, phase-plan mode) before its turn.
-5. **Implement** Phases 6–17 in order, each running Steps 3–7 of `.claude/skills/engine-implementer/SKILL.md` (chartered mode). Push after each accepted phase.
-6. **Run-level acceptance.** Check chain integrity, then run the integration review in `review-engine-impl` integration mode. Then `cargo ai-gate` without `--refresh-baseline` (owed since Phase 3), `cargo coverage`, `cargo semantic-audit`, and the full workspace suites.
-7. **PR handoff.** Follow `.claude/skills/engine-implementer/pr-handoff.md` and `docs/AI-CONTRIBUTOR.md` §5–7, then finish `.planning/dandan-5169/pr-body.md`.
-
-## 4. Open decisions
-
-- **Charter scope additions above.** The USER already authorised charter revisions ("revising charter is fine", 2026-10-01) and continuation past loop limits when findings are narrow (phase-fit §18).
-- **Pre-existing defects found and left out of scope** (recorded in `pr-notes.md`):
-  - Shape-based `depends_on` false loops.
-  - Record-door "your graveyard" triggers stay owner-based.
-  - `gen-test-fixture.py --check` reports 76 uncovered cards at base, none from this run.
-- **No user decision is pending.**
-
-## 5. Environment
-
-- **Network:** allow `magic.wizards.com`, `media.wizards.com`, `mtgjson.com` and `api.scryfall.com`.
-  - `./scripts/fetch-comp-rules.sh` writes `docs/MagicCompRules.txt`.
-  - `./scripts/gen-card-data.sh` writes `client/public/card-data.json` and `coverage-data.json`. A cold run takes about 15–20 minutes.
-- **Machine:** the run used 4 cores, 15 GB RAM and about 38 GB of disk. Source `.planning/dandan-5169/cargo-env.sh` before every cargo command. It sets `CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0` and no debuginfo; the `phase-engine` test crate peaks at about 13 GB RSS and is OOM-killed at -j4.
-  - Run one cargo command at a time.
-  - The full `phase-engine` nextest takes about 32 minutes.
-  - When disk runs low, prune stale per-crate artifact hashes in `target/*/deps`.
-- **Client:** run `cd client && pnpm install --frozen-lockfile --ignore-scripts` once.
-- **Workers:** run Sonnet (`claude-sonnet-5-5` or newer) with effort high. Executors use the `engine-implementation-executor` agent type with `model: sonnet`. Role briefs are in `.planning/dandan-5169/roles.md`; worker rules are in `worker-env.md`. Update the paths in both to the new checkout root.
-- **Tooling:** `cargo-nextest` is needed. Tilt is not used.
-
-## 6. PR route
-
-From the cloud environment, `api.github.com` returned 403 and `gh` was not installed, as re-tested in journal J3, J5 and J6. Open the PR outside the cloud from `.planning/dandan-5169/pr-body.md`, with head `lgray:feat/dandan-format` and base `phase-rs/phase:main`. Do not open it before run-level acceptance.
+## 5. Open decisions
+None pending with the USER. phase-llm gives Dandan the generic strategy text (a content decision for a later PR, recorded in `pr-notes.md`).
