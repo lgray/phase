@@ -198,9 +198,11 @@ If the change touches the parser, find out whether it moves parser output: dispa
 
 ### Step 5 — Verify the committed candidate
 
-Run the checks in a clean worktree at `CANDIDATE_SHA`, not in the implementation worktree — a check that passes against uncommitted edits has told you nothing about what you are shipping. Run every gate the changed surface calls for: formatting for any implementation change, the Rust/engine/parser block, `./scripts/check-interaction-bindings.sh --check`, `cargo coverage` with no card regressed and `cargo semantic-audit` with zero new findings for Rust paths, the frontend block for frontend paths, the parser gate for parser paths. Markdown-only policy changes need scope and diff checks; do not run Cargo or Tilt for them.
+Run the checks in a clean worktree at `CANDIDATE_SHA`, not in the implementation worktree — a check that passes against uncommitted edits has told you nothing about what you are shipping.
 
-The full suite is owed at the tree being shipped. An intermediate fix round may narrow to the touched surface — say so plainly when reporting it, since a narrowed run is not a suite pass — and re-run unfiltered before acceptance.
+**Per-commit candidates** run formatting and the executor's focused set only. Report the result as narrowed; it is not a suite pass.
+
+**The acceptance candidate** — the candidate Step 6 closes on, which in a chartered run is the phase's last commit — runs every gate the changed surface calls for, once: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the full workspace test suite, `./scripts/check-interaction-bindings.sh --check`, `cargo coverage` with no card regressed and `cargo semantic-audit` with zero new findings for Rust paths, `pnpm run type-check`, `pnpm lint` and the frontend tests for frontend paths, the parser gate for parser paths. A failure goes to a fix executor, and its candidate repeats this full set. Markdown-only policy changes need scope and diff checks; do not run Cargo or Tilt for them.
 
 ### Step 6 — Review the immutable candidate
 

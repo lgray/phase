@@ -77,7 +77,7 @@ A "stop and return" is success, not failure. Bandaids that ship are far worse th
 
 ### Implementation/fix mode: preparatory evidence only
 
-Run the following only after implementation/fix edits land. Record the commands, starting SHA, ending SHA, and result as `PREPARATORY`; none completes the candidate gate. The orchestrator derives the committed-candidate completion set from these same surface-specific blocks and must rerun the applicable gates at `CANDIDATE_SHA`, retaining the Tilt-first path and isolated direct fallback specified here; it must not treat this preparatory output as their completion result. Existing discriminating-test, maintainer-simulation, selected-authority/provenance, coverage-honesty, and CR-annotation gates below remain single-sourced and mandatory for implementation/fix mode.
+Run the following only after implementation/fix edits land. Record the commands, starting SHA, ending SHA, and result as `PREPARATORY`; none completes the candidate gate. Per-commit checks are formatting and a focused test run only — no clippy, no full suite, no card-data generation; those run once, at the acceptance candidate ([SKILL.md Step 5](SKILL.md#step-5--verify-the-committed-candidate)). Existing discriminating-test, maintainer-simulation, selected-authority/provenance, coverage-honesty, and CR-annotation gates below remain single-sourced and mandatory for implementation/fix mode.
 
 After edits land, derive `RUST_PATHS` from the frozen authorized path list (only `*.rs` entries). If it is empty, skip formatting. Otherwise format only those exact paths; never run workspace-wide formatting in `IMPLEMENTATION_WORKTREE`, because it can create an out-of-scope delta:
 
@@ -85,31 +85,17 @@ After edits land, derive `RUST_PATHS` from the frozen authorized path list (only
 (cd "$IMPLEMENTATION_WORKTREE" && cargo fmt --all -- "${RUST_PATHS[@]}")
 ```
 
-For Rust / engine / parser work:
+For Rust / engine / parser work, run the focused set: every test the change adds or edits, the tests in each module the diff touches, and the tests that scan the source tree (named `*census*` by convention), since an edit anywhere can move their counts. Building that run is the per-commit compile check. Report `FOCUSED_FILTER` (a nextest filterset) with the result:
 
 ```bash
-(cd "$IMPLEMENTATION_WORKTREE" &&
-  if tilt get uiresource clippy >/dev/null 2>&1; then
-    ./scripts/tilt-wait.sh --timeout 240 clippy test-engine card-data
-  else
-    cargo clippy --all-targets -- -D warnings
-    cargo test -p phase-engine
-    ./scripts/gen-card-data.sh
-  fi)
+(cd "$IMPLEMENTATION_WORKTREE" && cargo nextest run -p phase-engine --features test-support -E "$FOCUSED_FILTER")
 ```
 
-For frontend work:
+For frontend work, run the test files the change adds, edits, or whose subject it touches:
 
 ```bash
-(cd "$IMPLEMENTATION_WORKTREE" &&
-  if tilt get uiresource clippy >/dev/null 2>&1; then
-    ./scripts/tilt-wait.sh --timeout 180 check-frontend
-  else
-    (cd client && pnpm run type-check && pnpm lint)
-  fi)
+(cd "$IMPLEMENTATION_WORKTREE/client" && pnpm vitest run "${FOCUSED_TEST_FILES[@]}")
 ```
-
-After a non-zero `tilt-wait.sh`, fetch details with `tilt logs <resource> --tail 50 --since 2m`. Distinguish your errors from concurrent-agent errors: if an error appears unrelated to your diff, wait several minutes and re-check before intervening — other agents fix their own errors.
 
 ### Parser preparatory gate
 
