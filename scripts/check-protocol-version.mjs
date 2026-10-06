@@ -44,7 +44,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v101 adds `ActivatedAbilityKind::Mana` (mana-ability activations now emit
 // `GameEvent::AbilityActivated`), the event's `departed_source_lki`, and
 // `AbilityActivationRecord.source_zone`.
-// v107 carries the CR 201.5a granter binding (ObjectScope + granting_object).
+// v108 carries the CR 201.5a granter binding (ObjectScope + granting_object).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -84,8 +84,9 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // the FinalizeDelvedCast completion; DelveManaPayment removed).
 // +34: v105 adds the nominal base quantity to deferred mana-source selections.
 // +35: v106 adds exact replacement-choice preferences and remembered response actions.
-// +36: the v107 CR 201.5a granter binding.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 36;
+// +36: v107 adds the counted exile-until loop and the ParentTargets zone choice.
+// +37: the v108 CR 201.5a granter binding.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 37;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -145,8 +146,9 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +32: wire 86 moves with full-game v104 for the delve payment state shape.
 // +33: wire 87 moves with full-game v105 for deferred mana-source quantities.
 // +34: wire 88 moves with full-game v106 for remembered replacement choices.
-// +35: wire 89 moves with full-game v107 for the CR 201.5a granter binding.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 35;
+// +35: wire 89 moves with full-game v107 for the counted exile-until loop.
+// +36: wire 90 moves with full-game v108 for the CR 201.5a granter binding.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 36;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse
