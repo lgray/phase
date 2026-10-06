@@ -1241,20 +1241,11 @@ impl LegalityPoisonGates {
                     | StaticMode::CantAttackOrBlock
                     | StaticMode::MustAttack
                     | StaticMode::MustAttackDefender { .. }
-                    | StaticMode::Goaded
                     | StaticMode::MustAttackAwayFromSource
                     | StaticMode::CanAttackWithDefender
                     | StaticMode::MaxAttackersEachCombat { .. }
                     | StaticMode::CombatAlone { .. }
-            ) || (def.mode == StaticMode::Continuous
-                && def.modifications.iter().any(|modification| {
-                    matches!(
-                        modification,
-                        ContinuousModification::AddStaticMode {
-                            mode: StaticMode::Goaded
-                        }
-                    )
-                }))
+            ) || crate::game::combat::static_designates_goad(def)
             {
                 g.has_declare_attacker = true;
             }

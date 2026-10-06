@@ -5650,13 +5650,17 @@ fn refresh_static_gate_truth(state: &mut GameState) {
 
 /// Rebuild the O(1) `StaticModeKind` presence index wholesale from the same
 /// `game_functioning_statics` iterator its consumers would otherwise scan, so the index is
-/// exactly `.any(|(_, d)| d.mode.kind() == kind)` for every kind — no false negatives. The
-/// fold accumulates into a local `StaticModePresence` first (the iterator borrows `state`),
-/// then assigns.
+/// the `.any(|(_, d)| d.mode.kind() == kind)` fold for every kind, plus `Goaded` for every
+/// def `combat::static_designates_goad` admits — no false negatives. The fold accumulates
+/// into a local `StaticModePresence` first (the iterator borrows `state`), then assigns.
 fn refresh_static_mode_presence(state: &mut GameState) {
     let mut presence = crate::types::statics::StaticModePresence::empty();
     for (_, def) in super::functioning_abilities::game_functioning_statics(state) {
         presence.insert(def.mode.kind());
+        // CR 701.15b: index goad by the matcher the combat goad gate guards.
+        if super::combat::static_designates_goad(def) {
+            presence.insert(crate::types::statics::StaticModeKind::Goaded);
+        }
     }
     state.static_mode_presence = presence;
 }
@@ -25548,8 +25552,9 @@ mod tests {
 
     /// Test F — building-block equivalence (the Unit 2/3 contract). After a full flush on a
     /// mixed board (a phased-out static, plus plain battlefield statics of distinct kinds),
-    /// the presence index must equal `game_functioning_statics().any(kind == K)` for EVERY
-    /// kind. `StaticModePresence: PartialEq` compares the whole discriminant array, so a
+    /// the presence index must equal the `game_functioning_statics().any(kind == K)` fold for
+    /// EVERY kind, plus `Goaded` for every def `combat::static_designates_goad` admits.
+    /// `StaticModePresence: PartialEq` compares the whole discriminant array, so a
     /// single `assert_eq!` IS the "for every K" check.
     #[test]
     fn static_mode_presence_equals_functioning_statics_fold() {
@@ -25579,6 +25584,9 @@ mod tests {
         let mut expected = StaticModePresence::empty();
         for (_, def) in crate::game::functioning_abilities::game_functioning_statics(&state) {
             expected.insert(def.mode.kind());
+            if crate::game::combat::static_designates_goad(def) {
+                expected.insert(StaticModeKind::Goaded);
+            }
         }
         assert_eq!(
             expected, state.static_mode_presence,

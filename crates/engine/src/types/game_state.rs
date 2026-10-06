@@ -20114,7 +20114,8 @@ declare_game_state! {
     /// O(1) presence index over `StaticModeKind` discriminants — "does any functioning
     /// static of kind K exist on the board?" Rebuilt wholesale from `game_functioning_statics`
     /// as a byproduct of the layers pipeline (`layers::refresh_static_mode_presence`), so it is
-    /// exactly `.any(kind)` for every kind. Lets discriminant-only scan gates (e.g. the
+    /// the `.any(kind)` fold for every kind, plus `Goaded` for every def
+    /// `combat::static_designates_goad` admits. Lets discriminant-only scan gates (e.g. the
     /// hexproof scans in `static_abilities`) skip an O(battlefield) `.any()` when zero statics
     /// of that kind exist.
     ///
