@@ -224,6 +224,13 @@ pub struct ShortcutProposal {
     pub shortened_by: Option<PlayerId>,
     /// The producer that minted the offer this proposal was declared against, copied off it.
     pub road: OfferRoad,
+    /// CR 732.2a: the confirmed period of the offer this proposal was declared against, copied
+    /// off it; stripped for every viewer.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::game::period_confirm::ConfirmedPeriod::is_empty"
+    )]
+    pub period: crate::game::period_confirm::ConfirmedPeriod,
     /// CR 732.2a: the declaration the offer PUBLISHED — `game::engine::build_bounded_declaration`'s
     /// validated output, copied off the offer at declare — beside `template`, the declaration the
     /// drive replays. The two differ wherever the declarer overrode the published aim, and

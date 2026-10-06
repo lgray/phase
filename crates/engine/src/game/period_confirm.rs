@@ -5,11 +5,17 @@
 //! The trace (`play_trace`) records and names; this module decides whether a named span is a
 //! period a shortcut may repeat.
 
+use serde::{Deserialize, Serialize};
+
+use crate::analysis::decision_template::{
+    ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
+};
 use crate::analysis::resource::{
     CertifiedInstructedDeparture, ObjectGrowthVerdict, ResourceVector,
 };
 use crate::game::engine::{
-    apply, certify_object_growth_frames, clear_frame_bookkeeping, period_sign_check,
+    announced_target_pins, apply, certify_object_growth_frames, clear_frame_bookkeeping,
+    object_decision_source, period_sign_check, pinnable_mana_color, proliferate_pins,
     SimulationProbeGuard,
 };
 use crate::game::mana_payment::{select_convoke_taps, ConvokeTapOrder};
@@ -18,7 +24,9 @@ use crate::game::play_trace::{
 };
 use crate::types::ability::TargetRef;
 use crate::types::actions::GameAction;
-use crate::types::game_state::{GameState, StackEntryKind, WaitingFor};
+use crate::types::game_state::{
+    CostResume, GameState, ManaChoiceContext, PayCostKind, StackEntryKind, WaitingFor, YieldTarget,
+};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 
@@ -48,12 +56,14 @@ pub enum OfferRefusal {
 }
 
 /// One recorded play or answer of a period, as the replay makes it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PeriodItem {
     seat: PlayerId,
     action: GameAction,
     /// For a play: the stack depth and prompt class it was made at.
     play: Option<(usize, PromptClass)>,
+    /// An answer the instruction asking it did not let its chooser decline.
+    mandatory_answer: bool,
     /// The object-id counter when it was recorded.
     next_object_id: u64,
     /// Ids from here up to `next_object_id` were minted in the period before it was recorded.
@@ -61,16 +71,32 @@ pub(crate) struct PeriodItem {
     cost_move: Option<CostMove>,
 }
 
+/// CR 732.2a: the plays and answers of a confirmed period, as an offer carries them to its take.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConfirmedPeriod(Vec<PeriodItem>);
+
+// `GameAction` derives no `Eq`, and no value an action carries is floating-point.
+impl Eq for ConfirmedPeriod {}
+
+impl ConfirmedPeriod {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// A confirmed period: what it replays, the replay's second frame pair, and the sign check's
 /// delta.
 #[derive(Debug, Clone)]
 pub(crate) struct Confirmation {
-    pub(crate) period: Vec<PeriodItem>,
+    pub(crate) period: ConfirmedPeriod,
     pub(crate) frames: Box<[GameState; 2]>,
     pub(crate) delta: ResourceVector,
     pub(crate) departure: Option<CertifiedInstructedDeparture>,
-    /// The source of each triggered ability the first replayed cycle resolved, in order.
+    /// The printed identity of each triggered ability the first replayed cycle resolved, in order.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) performed: Vec<String>,
+    /// CR 732.2a: the game choices the first replayed cycle's prompts were answered with.
+    pub(crate) choices: Vec<PinnedDecision>,
 }
 
 /// CR 732.3: the seats making optional choices in the span, when there is more than one.
@@ -104,21 +130,32 @@ fn period_items(entries: &im::Vector<TraceEntry>, span: NamedSpan) -> Vec<Period
         .filter_map(|at| {
             let entry = &entries[at];
             let minted_since = entries[at.saturating_sub(len)].next_object_id;
-            let (action, play, cost_move) = match &entry.kind {
-                EntryKind::Play { action, .. } => (action, Some((entry.depth, entry.prompt)), None),
+            let (action, play, cost_move, mandatory_answer) = match &entry.kind {
+                EntryKind::Play { action, .. } => {
+                    (action, Some((entry.depth, entry.prompt)), None, false)
+                }
                 EntryKind::Answer {
                     action: GameAction::PassPriority,
                     ..
                 } if entry.prompt == PromptClass::Priority => return None,
                 EntryKind::Answer {
-                    action, cost_move, ..
-                } => (action, None, cost_move.clone()),
+                    action,
+                    cost_move,
+                    optional,
+                    ..
+                } => (
+                    action,
+                    None,
+                    cost_move.clone(),
+                    *optional == AnswerOptionality::Mandatory,
+                ),
                 EntryKind::Resolution { .. } => return None,
             };
             Some(PeriodItem {
                 seat: entry.seat,
                 action: action.clone(),
                 play,
+                mandatory_answer,
                 next_object_id: entry.next_object_id,
                 minted_since,
                 cost_move,
@@ -279,6 +316,7 @@ fn replay_cycle(
     replay: &mut GameState,
     items: &[PeriodItem],
     end: &FrameEnd<'_>,
+    choices: &mut Vec<PinnedDecision>,
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
@@ -295,10 +333,10 @@ fn replay_cycle(
                 .unwrap_or(items.len())
         });
         if let WaitingFor::Priority { player } = replay.waiting_for {
+            if beat > 0 && end.reached(replay) && cycle_complete(items, &done) {
+                return Ok(performed);
+            }
             let Some(at) = next else {
-                if beat > 0 && end.reached(replay) {
-                    return Ok(performed);
-                }
                 pass(replay, player, &mut performed)?;
                 continue;
             };
@@ -324,11 +362,23 @@ fn replay_cycle(
             continue;
         }
         let candidates = at..next_play.unwrap_or(items.len());
-        if !answer(replay, items, &mut done, candidates)? {
+        if !answer(replay, items, &mut done, candidates, choices)? {
             return Err(OfferRefusal::UnanswerablePrompt);
         }
     }
     Err(OfferRefusal::NoRecurrence)
+}
+
+/// Every item is made, except mandatory answers the replay went past without being asked them.
+fn cycle_complete(items: &[PeriodItem], done: &[bool]) -> bool {
+    let last_done = done.iter().rposition(|made| *made);
+    items
+        .iter()
+        .zip(done)
+        .enumerate()
+        .all(|(at, (item, made))| {
+            *made || (item.mandatory_answer && last_done.is_some_and(|last| at < last))
+        })
 }
 
 /// CR 117.4: `player` passes, noting the triggered ability the pass resolves.
@@ -337,11 +387,8 @@ fn pass(
     player: PlayerId,
     performed: &mut Vec<String>,
 ) -> Result<(), OfferRefusal> {
-    let top = replay.stack.back().and_then(|entry| match &entry.kind {
-        StackEntryKind::TriggeredAbility { source_name, .. } => {
-            Some((entry.id, source_name.clone()))
-        }
-        _ => None,
+    let top = replay.stack.back().and_then(|entry| {
+        play_trace::resolution_identity(replay, entry).map(|identity| (entry.id, identity))
     });
     step(
         replay,
@@ -349,9 +396,9 @@ fn pass(
         GameAction::PassPriority,
         OfferRefusal::UnanswerablePrompt,
     )?;
-    if let Some((id, source_name)) = top {
+    if let Some((id, identity)) = top {
         if replay.stack.iter().all(|entry| entry.id != id) {
-            performed.push(source_name);
+            performed.push(identity);
         }
     }
     Ok(())
@@ -364,6 +411,7 @@ fn answer(
     items: &[PeriodItem],
     done: &mut [bool],
     candidates: std::ops::Range<usize>,
+    choices: &mut Vec<PinnedDecision>,
 ) -> Result<bool, OfferRefusal> {
     for at in candidates.clone() {
         if done[at] {
@@ -371,7 +419,9 @@ fn answer(
         }
         let item = &items[at];
         if matches!(item.action, GameAction::TapForConvoke { .. }) {
+            let convoked = convoke_choice(replay);
             if rebind_convoke(replay)? {
+                choices.extend(convoked);
                 for convoke in candidates.clone() {
                     if matches!(items[convoke].action, GameAction::TapForConvoke { .. }) {
                         done[convoke] = true;
@@ -386,12 +436,14 @@ fn answer(
             .as_ref()
             .and_then(|_| CostChoices::at(replay));
         let action = rebound(item, replay);
+        let choice = answered_choice(replay, &action);
         match step(replay, item.seat, action, OfferRefusal::UnanswerablePrompt) {
             Ok(()) => {}
             Err(OfferRefusal::UnanswerablePrompt) => continue,
             Err(refusal) => return Err(refusal),
         }
         done[at] = true;
+        choices.extend(choice);
         if let (Some(recorded), Some(offered)) = (&item.cost_move, offered) {
             if offered.moved(replay).arrivals != recorded.arrivals {
                 return Err(OfferRefusal::ArrivalDiverged);
@@ -400,6 +452,115 @@ fn answer(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// CR 702.51a: the convoke a replayed cast is about to pay, by the card cast.
+fn convoke_choice(replay: &GameState) -> Option<PinnedDecision> {
+    let pending = replay.pending_cast.as_ref()?;
+    let card_id = replay.objects.get(&pending.object_id)?.card_id;
+    Some(PinnedDecision::ConvokeTaps {
+        slot: DecisionSlot::first(
+            YieldTarget::AllCopies {
+                card_id,
+                trigger_description: None,
+            },
+            ChoicePoint::ConvokeTaps,
+        ),
+    })
+}
+
+/// CR 732.2a: the game choice `action` makes at the prompt in hand, as a declaration names it: a
+/// target (CR 601.2c, CR 603.3d), a cost's tapped creatures (CR 601.2h), a mana color (CR 605.3a),
+/// a "may" (CR 603.5), a proliferate set (CR 701.34a), or a set chosen at resolution (CR 608.2d);
+/// `None` for any other answer.
+fn answered_choice(replay: &GameState, action: &GameAction) -> Option<PinnedDecision> {
+    let source = |id: ObjectId| object_decision_source(replay, id);
+    let identities = |ids: &[ObjectId]| {
+        ids.iter()
+            .map(|id| source(*id).map(TargetPin::ByIdentity))
+            .collect::<Option<Vec<_>>>()
+            .filter(|pins| !pins.is_empty())
+    };
+    let set = |slot_source: ObjectId, point: ChoicePoint, targets: Option<Vec<TargetPin>>| {
+        Some(PinnedDecision::Targets {
+            slot: DecisionSlot::first(source(slot_source)?, point),
+            targets: targets?,
+        })
+    };
+    let announced = |slot_source: ObjectId, chosen: &[TargetRef]| {
+        let targets = announced_target_pins(replay, chosen).filter(|pins| !pins.is_empty());
+        set(slot_source, ChoicePoint::AnnouncedTarget, targets)
+    };
+    match (&replay.waiting_for, action) {
+        (
+            WaitingFor::TriggerTargetSelection {
+                source_id: Some(slot_source),
+                ..
+            },
+            GameAction::ChooseTarget { target },
+        ) => announced(*slot_source, target.as_slice()),
+        (
+            WaitingFor::TriggerTargetSelection {
+                source_id: Some(slot_source),
+                ..
+            },
+            GameAction::SelectTargets { targets },
+        ) => announced(*slot_source, targets),
+        (WaitingFor::TargetSelection { pending_cast, .. }, GameAction::ChooseTarget { target }) => {
+            announced(pending_cast.object_id, target.as_slice())
+        }
+        (
+            WaitingFor::TargetSelection { pending_cast, .. },
+            GameAction::SelectTargets { targets },
+        ) => announced(pending_cast.object_id, targets),
+        (
+            WaitingFor::PayCost {
+                kind: PayCostKind::TapCreatures { .. },
+                resume: CostResume::ManaAbility { mana_ability },
+                ..
+            },
+            GameAction::SelectCards { cards },
+        ) => set(
+            mana_ability.source_id,
+            ChoicePoint::TapCost,
+            identities(cards),
+        ),
+        (
+            WaitingFor::EffectZoneChoice {
+                source_id,
+                is_cost_payment: false,
+                ..
+            },
+            GameAction::SelectCards { cards },
+        ) => set(*source_id, ChoicePoint::ResolutionSet, identities(cards)),
+        (WaitingFor::ProliferateChoice { .. }, GameAction::SelectTargets { targets }) => set(
+            replay.active_proliferate_frame()?.source_id,
+            ChoicePoint::ProliferateSet,
+            Some(proliferate_pins(replay, targets)).filter(|pins| !pins.is_empty()),
+        ),
+        (
+            WaitingFor::OptionalEffectChoice { source_id, .. },
+            GameAction::DecideOptionalEffect { accept },
+        ) => Some(PinnedDecision::MayChoice {
+            slot: DecisionSlot::first(source(*source_id)?, ChoicePoint::MayGate),
+            take: if *accept {
+                MayChoiceOption::Take
+            } else {
+                MayChoiceOption::Decline
+            },
+        }),
+        (
+            WaitingFor::ChooseManaColor {
+                context: ManaChoiceContext::ManaAbility(pending),
+                ..
+            },
+            GameAction::ChooseManaColor { choice, .. },
+        ) => Some(PinnedDecision::ManaColor {
+            slot: DecisionSlot::first(source(pending.source_id)?, ChoicePoint::ManaColor),
+            color: pinnable_mana_color(choice)?,
+        }),
+        _ => None,
+    }
 }
 
 /// The frame with every object the period cast removed, since a cast card returns where it
@@ -436,6 +597,8 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         return Err(refusal);
     }
     let items = period_items(entries, span);
+    #[cfg(feature = "test-support")]
+    crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
     let _probe = SimulationProbeGuard::enter();
     let s_n = crate::game::visibility::proposer_hidden_view(frame, holder);
     let end = FrameEnd {
@@ -444,9 +607,11 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         top: top_of_stack(&s_n),
     };
     let mut replay = s_n.clone();
-    let performed = replay_cycle(&mut replay, &items, &end)?;
+    let mut choices = Vec::new();
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
+    let performed = replay_cycle(&mut replay, &items, &end, &mut choices)?;
     let s_n1 = replay.clone();
-    replay_cycle(&mut replay, &items, &end)?;
+    replay_cycle(&mut replay, &items, &end, &mut Vec::new())?;
     let s_n2 = replay;
     let casts: Vec<ObjectId> = items
         .iter()
@@ -465,11 +630,13 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     }
     let (delta, departure) = period_sign_check(&s_n1, &s_n2, holder)?;
     Ok(Confirmation {
-        period: items,
+        period: ConfirmedPeriod(items),
         frames: Box::new([s_n1, s_n2]),
         delta,
         departure,
+        #[cfg(any(test, feature = "test-support"))]
         performed,
+        choices,
     })
 }
 
@@ -486,4 +653,25 @@ pub fn confirm_for_tests(state: &GameState) -> Vec<(NamedSpan, Result<Vec<String
             )
         })
         .collect()
+}
+
+/// CR 608.1: one cycle of the span `state`'s trace last offered, replayed from `state` as its
+/// acting player's priority frame; the printed identity of each triggered ability it resolved, in
+/// order. `None` when nothing was offered.
+#[cfg(any(test, feature = "test-support"))]
+pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, OfferRefusal>> {
+    let span = play_trace::play_trace_view(state)?.offered?;
+    let holder = state.waiting_for.acting_player()?;
+    let items = period_items(play_trace::current_entries(state)?, span);
+    let mut frame = state.clone();
+    frame.waiting_for = WaitingFor::Priority { player: holder };
+    let _probe = SimulationProbeGuard::enter();
+    let frame = crate::game::visibility::proposer_hidden_view(&frame, holder);
+    let end = FrameEnd {
+        frame: &frame,
+        holder,
+        top: top_of_stack(&frame),
+    };
+    let mut replay = frame.clone();
+    Some(replay_cycle(&mut replay, &items, &end, &mut Vec::new()))
 }

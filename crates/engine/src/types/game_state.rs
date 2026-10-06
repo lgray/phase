@@ -13717,9 +13717,7 @@ impl GameState {
     /// `None` when no period is accumulating, or when the recorded steps do not all belong to one
     /// seat (fail-closed: a heterogeneous run is nobody's loop).
     ///
-    /// This is the SAME whole-period test `try_offer_object_growth_shortcut` applies to its own
-    /// admission, hoisted into one authority so the routing signal and the consumer it routes to
-    /// cannot disagree. It answers WHOSE RECORD THIS IS. Whether the OBJECT-GROWTH ROUTE IS LIVE
+    /// It answers WHOSE RECORD THIS IS. Whether the OBJECT-GROWTH ROUTE IS LIVE
     /// for a seat is the different question [`GameState::loop_period_driver`] below answers, this
     /// answer narrowed by the per-step premise those routes rest on; the two differ exactly when
     /// this one names a seat and that period holds a step no player takes at priority — a
@@ -15818,6 +15816,13 @@ pub enum WaitingFor {
         declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
         /// The producer that minted this offer; `game::engine`'s route authority reads it.
         road: crate::analysis::loop_check::OfferRoad,
+        /// CR 732.2a: the period the confirmer replayed for this offer; empty for an offer no
+        /// period was confirmed for. Stripped for every viewer.
+        #[serde(
+            default,
+            skip_serializing_if = "crate::game::period_confirm::ConfirmedPeriod::is_empty"
+        )]
+        period: crate::game::period_confirm::ConfirmedPeriod,
     },
     /// CR 732.2b/c: the APNAP accept-or-shorten window. After the proposer declares the
     /// shortcut, each other living player is prompted in turn order (drain-one-advance
@@ -22692,9 +22697,7 @@ declare_game_state! {
     /// recast, CR 601.2a, is a 1-element sequence; a multi-activation engine, CR 602.2a, accumulates
     /// one element per driving activation), each carrying the fixed in-cycle player choices recorded
     /// during the demonstrated iteration (FIX-1 `LoopActionContext.pins`). EMPTY = unarmed. Set at
-    /// each driving beat; `try_offer_object_growth_shortcut` reads it where
-    /// `recorded_period_at_frame` answers — for a priority-driven period at an empty stack, for a
-    /// trigger-driven one with its trigger on top.
+    /// each driving beat.
     ///
     /// Deserializes NORMALLY (so an offer-save's `pins` round-trip), but the PRODUCTION restore hook
     /// `GameState::migrate_transient_loop_sequence` (called from `PersistedGameState::into_game_state`)
@@ -31925,6 +31928,7 @@ mod forced_cascade_window_tests {
                     schema: Default::default(),
                     declaration: None,
                     road: crate::analysis::loop_check::OfferRoad::Ring,
+                    period: Default::default(),
                 },
             ),
             (
@@ -31943,6 +31947,7 @@ mod forced_cascade_window_tests {
                         shortened_by: None,
                         published_declaration: None,
                         road: crate::analysis::loop_check::OfferRoad::Ring,
+                        period: Default::default(),
                     },
                 },
             ),

@@ -3,11 +3,12 @@
 //!
 //! The trace records at the outermost `apply()` boundary, a triggered ability's resolution at
 //! the priority pass that resolves it, and names candidates at the base's priority window
-//! (`engine::reconcile_loop_shortcut`). Nothing reads it but the test-support accessor.
+//! (`engine::reconcile_loop_shortcut`), where the producer asks the confirmer about each span.
 
 use std::cell::Cell;
 
 use crate::game::engine::in_simulation_probe;
+use crate::game::period_confirm::OfferRefusal;
 use crate::types::ability::{
     AbilityDefinition, DelayedAbilityOrigin, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
     TriggerPrintedOrigin,
@@ -150,7 +151,7 @@ pub enum AnswerOptionality {
 
 /// Whether an entry was made at priority or at another prompt, such as a mana ability activated
 /// during a payment (CR 605.3a).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PromptClass {
     Priority,
     Other,
@@ -158,7 +159,7 @@ pub enum PromptClass {
 
 /// Where an object-moving cost sends its objects, and the zones the moved objects arrived in
 /// (CR 400.7), sorted; a replacement may send them elsewhere (CR 614.6).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CostMove {
     pub destination: Zone,
     /// `None` for an object that no longer exists.
@@ -264,7 +265,8 @@ pub struct TraceEntry {
 pub enum NamingCause {
     /// CR 104.4b + CR 732.1b: a node repeated with an optional choice between its occurrences.
     Repeat,
-    /// A triggered node whose resolution asked an optional answer is about to resolve again.
+    /// A triggered node is about to resolve again, and its resolution asked an optional answer, or
+    /// an optional answer and another node's repeat were made since its previous instance resolved.
     TriggerTop,
     /// A play the period consumed is legal again.
     Restored,
@@ -285,6 +287,13 @@ struct PendingRead {
     node: usize,
     seat: PlayerId,
     locus: PlayLocus,
+}
+
+/// A span the confirmer refused, by the nodes it plays and resolves in order.
+#[derive(Clone, Debug)]
+struct Refused {
+    nodes: Vec<usize>,
+    refusal: OfferRefusal,
 }
 
 /// An action that reverses a play the trace holds.
@@ -314,10 +323,17 @@ pub(crate) struct PlayTrace {
     last: im::HashMap<usize, usize>,
     repeated: im::HashSet<usize>,
     last_optional: Option<usize>,
+    last_play: Option<usize>,
     optional_triggers: im::HashSet<usize>,
     consumed: im::HashSet<usize>,
     pending_reads: im::Vector<PendingRead>,
     named: im::Vector<NamedSpan>,
+    /// The first named span no window has read.
+    unread: usize,
+    /// CR 732.2a: refusals that still stand, because every play since was of the span's nodes.
+    refused: im::Vector<Refused>,
+    /// The span the latest offer was made for.
+    offered: Option<NamedSpan>,
     undo: im::Vector<UndoPoint>,
     /// Entries that activate a mana ability or answer one of its choices (CR 605.3b).
     mana_ability_entries: im::HashSet<usize>,
@@ -332,10 +348,14 @@ impl PlayTrace {
             last: im::HashMap::new(),
             repeated: im::HashSet::new(),
             last_optional: None,
+            last_play: None,
             optional_triggers: im::HashSet::new(),
             consumed: im::HashSet::new(),
             pending_reads: im::Vector::new(),
             named: im::Vector::new(),
+            unread: 0,
+            refused: im::Vector::new(),
+            offered: None,
             undo: im::Vector::new(),
             mana_ability_entries: im::HashSet::new(),
         }
@@ -379,6 +399,8 @@ impl PlayTrace {
         if let EntryKind::Play { locus, .. } = entry.kind {
             // CR 117.1a + CR 117.1b: casting a spell or activating an ability is optional.
             self.last_optional = Some(at);
+            self.last_play = Some(at);
+            self.refused.retain(|refused| refused.nodes.contains(&node));
             if locus != PlayLocus::Unread {
                 self.pending_reads.push_back(PendingRead {
                     node,
@@ -1190,13 +1212,14 @@ fn read_legality(state: &GameState, holder: PlayerId, locus: &PlayLocus) -> Opti
 }
 
 /// The window's naming, at the base's priority window: a play the period made is named once it
-/// is available again (CR 732.1b, CR 732.2a), before it is repeated.
-pub(crate) fn name_window(state: &mut GameState) {
+/// is available again (CR 732.1b, CR 732.2a), before it is repeated. Returns every span named
+/// since the window before, repeats first, in the order they were named.
+pub(crate) fn name_window(state: &mut GameState) -> Vec<NamedSpan> {
     if !recording(state) {
-        return;
+        return Vec::new();
     }
     let WaitingFor::Priority { player: holder } = state.waiting_for else {
-        return;
+        return Vec::new();
     };
     let window = WindowKey::of(state);
     let Some(mut trace) = state
@@ -1205,7 +1228,7 @@ pub(crate) fn name_window(state: &mut GameState) {
         .filter(|trace| trace.window == window)
         .cloned()
     else {
-        return;
+        return Vec::new();
     };
     metered(|| {
         meter!(windows += 1);
@@ -1230,17 +1253,31 @@ pub(crate) fn name_window(state: &mut GameState) {
         trace.pending_reads = kept;
         let end = trace.entries.len();
         if let Some(top) = state.stack.back() {
-            // A play is named only with the stack empty; a trigger whose own resolution asked an
-            // optional answer is named as its next instance comes to the top.
+            // A play is named only with the stack empty; a trigger is named as its next instance
+            // comes to the top when its own resolution asked an optional answer, or when an
+            // optional answer and another node's repeat were both made since its previous
+            // instance resolved, so the span closes a recurrence the trace has already seen.
             let node = trigger_node(state, top, end).and_then(|key| trace.find(&key));
-            if let Some(node) = node.filter(|node| trace.optional_triggers.contains(node)) {
+            if let Some(node) = node {
                 meter!(node_map_reads += 1);
                 if let Some(&start) = trace.last.get(&node) {
-                    trace.named.push_back(NamedSpan {
-                        start,
-                        end,
-                        cause: NamingCause::TriggerTop,
-                    });
+                    let recurs_inside = || {
+                        trace
+                            .repeated
+                            .iter()
+                            .any(|repeated| trace.last.get(repeated).is_some_and(|&at| at > start))
+                    };
+                    if trace.optional_triggers.contains(&node)
+                        || (trace.last_optional.is_some_and(|optional| optional > start)
+                            && !trace.last_play.is_some_and(|play| play >= start)
+                            && recurs_inside())
+                    {
+                        trace.named.push_back(NamedSpan {
+                            start,
+                            end,
+                            cause: NamingCause::TriggerTop,
+                        });
+                    }
                 }
             }
         } else {
@@ -1276,7 +1313,79 @@ pub(crate) fn name_window(state: &mut GameState) {
             }
         }
     });
+    let unread = trace.named.iter().skip(trace.unread).copied().collect();
+    trace.unread = trace.named.len();
     state.play_trace = Some(Box::new(trace));
+    unread
+}
+
+/// The nodes `span` plays and resolves, in order.
+fn span_nodes(trace: &PlayTrace, span: NamedSpan) -> Vec<usize> {
+    trace
+        .entries
+        .iter()
+        .skip(span.start)
+        .take(span.end - span.start)
+        .filter_map(|entry| match entry.kind {
+            EntryKind::Play { node, .. } | EntryKind::Resolution { node } => Some(node),
+            EntryKind::Answer { .. } => None,
+        })
+        .collect()
+}
+
+/// CR 732.2a: the refusal a span with `span`'s node sequence was given, while every play since
+/// has been of that span's nodes.
+pub(crate) fn refused_before(state: &GameState, span: NamedSpan) -> Option<OfferRefusal> {
+    let trace = current(state)?;
+    let nodes = span_nodes(trace, span);
+    trace
+        .refused
+        .iter()
+        .find(|refused| refused.nodes == nodes)
+        .map(|refused| refused.refusal.clone())
+}
+
+/// Keeps the confirmer's refusal of `span` for the spans named after it.
+pub(crate) fn note_refusal(state: &mut GameState, span: NamedSpan, refusal: OfferRefusal) {
+    let window = WindowKey::of(state);
+    if let Some(trace) = state
+        .play_trace
+        .as_deref_mut()
+        .filter(|trace| trace.window == window)
+    {
+        let nodes = span_nodes(trace, span);
+        trace.refused.push_back(Refused { nodes, refusal });
+    }
+}
+
+/// Notes the span an offer was made for.
+pub(crate) fn note_offered(state: &mut GameState, span: NamedSpan) {
+    let window = WindowKey::of(state);
+    if let Some(trace) = state
+        .play_trace
+        .as_deref_mut()
+        .filter(|trace| trace.window == window)
+    {
+        trace.offered = Some(span);
+    }
+}
+
+/// The printed identity of the node a triggered stack entry resolves, as a replayed cycle reports
+/// what it performed; the source's name when the node has none.
+pub(crate) fn resolution_identity(state: &GameState, entry: &StackEntry) -> Option<String> {
+    let StackEntryKind::TriggeredAbility { source_name, .. } = &entry.kind else {
+        return None;
+    };
+    Some(match trigger_node(state, entry, 0)? {
+        NodeKey::Triggered(origin) => origin.printed_ref.face_name,
+        NodeKey::Delayed(origin) => origin.creator.face_name,
+        NodeKey::Cast(_)
+        | NodeKey::Activated(_)
+        | NodeKey::IntrinsicMana(_)
+        | NodeKey::KeywordActivated { .. }
+        | NodeKey::TriggeredOccurrence(_)
+        | NodeKey::Unkeyed(_) => source_name.clone(),
+    })
 }
 
 /// The current window's trace; `None` when none was recorded or it belongs to an ended step.
@@ -1327,6 +1436,7 @@ pub struct PlayTraceView {
     pub entries: Vec<TraceEntry>,
     pub named: Vec<NamedSpan>,
     pub node_count: usize,
+    pub offered: Option<NamedSpan>,
 }
 
 /// The current window's trace; `None` when none was recorded or it belongs to an ended step.
@@ -1337,6 +1447,7 @@ pub fn play_trace_view(state: &GameState) -> Option<PlayTraceView> {
         entries: trace.entries.iter().cloned().collect(),
         named: trace.named.iter().copied().collect(),
         node_count: trace.nodes.len(),
+        offered: trace.offered,
     })
 }
 

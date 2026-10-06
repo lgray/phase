@@ -18426,6 +18426,7 @@ mod tests {
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         let offer_json =
             serde_json::to_string(&offer).expect("the LoopShortcut payload carrying it must too");
@@ -18446,6 +18447,7 @@ mod tests {
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         let shipped_json = serde_json::to_string(&shipped).expect("serializes");
         assert!(
@@ -18584,6 +18586,7 @@ mod tests {
             shortened_by: None,
             published_declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         let wait = WaitingFor::RespondToShortcut {
             player: PlayerId(1),

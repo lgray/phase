@@ -1915,9 +1915,12 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
         ref schema,
         ref declaration,
         road,
+        period: _,
     } = state.waiting_for
     {
-        if !can_view_private_for_player(proposer) {
+        let (schema, declaration) = if can_view_private_for_player(proposer) {
+            (schema.clone(), declaration.clone())
+        } else {
             use crate::analysis::decision_template::{
                 DecisionPoint, DecisionPointKind, ShortcutDecisionSchema,
             };
@@ -1996,13 +1999,8 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
                     PinCarrier::OfferWithSchema,
                 )
             });
-            filtered.waiting_for = WaitingFor::LoopShortcut {
-                proposer,
-                predicted_winner,
-                certificate: certificate.clone(),
-                declaration,
-                road,
-                schema: ShortcutDecisionSchema {
+            (
+                ShortcutDecisionSchema {
                     iteration_count: schema.iteration_count.clone(),
                     // CR 732.2a: BOTH published answers are derived from PUBLIC board state
                     // (life, poison, library sizes over the living players) and the engine's own
@@ -2013,8 +2011,19 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
                     points,
                     convoke_tappable_count,
                 },
-            };
-        }
+                declaration,
+            )
+        };
+        // CR 732.2a: a confirmed period is the engine's own replay script, so no viewer receives it.
+        filtered.waiting_for = WaitingFor::LoopShortcut {
+            proposer,
+            predicted_winner,
+            certificate: certificate.clone(),
+            declaration,
+            road,
+            period: Default::default(),
+            schema,
+        };
     }
 
     // CR 732.2b: the RESPONDER-facing copy of the very declaration redacted above.
@@ -2056,6 +2065,11 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
         if pins_name_hidden_source(&step.pins, &target_hidden, PinCarrier::PinsOnly) {
             step.pins.clear();
         }
+    }
+
+    // CR 732.2a: the proposal carries the offer's confirmed period, which no viewer receives.
+    if let WaitingFor::RespondToShortcut { proposal, .. } = &mut filtered.waiting_for {
+        proposal.period = Default::default();
     }
 
     if let WaitingFor::DigChoice {
@@ -9647,6 +9661,7 @@ mod tests {
                 key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
             }),
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         state
     }
@@ -10062,6 +10077,7 @@ mod tests {
                 shortened_by: None,
                 published_declaration: Some(declaration),
                 road: crate::analysis::loop_check::OfferRoad::Ring,
+                period: Default::default(),
             },
         };
         state

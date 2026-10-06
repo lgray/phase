@@ -6772,6 +6772,7 @@ mod tests {
             schema: crate::analysis::decision_template::ShortcutDecisionSchema::default(),
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
 
         let candidates = candidate_actions(&state);
@@ -9445,6 +9446,7 @@ mod tests {
             },
             declaration,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         state
     }

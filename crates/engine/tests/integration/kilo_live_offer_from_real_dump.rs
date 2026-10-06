@@ -17,8 +17,6 @@
 //!
 //! DISCLOSED (FIX-3): a loaded PRE-fix save carries 6 pinless steps that the migration drops on
 //! load; one live cycle rebuilds a clean, fully-pinned 2-step period the detection drive can replay.
-//! The `kilo_reinjected_pinless_history_suppresses_offer` test is the matched-pair proof that the
-//! migration is load-bearing (re-injecting the stale prefix flips the offer OFF).
 
 use engine::analysis::decision_template::IterationCount;
 use engine::game::derived_views::{CollapseCertainty, FamilyCollapseState, UnboundedFamily};
@@ -30,8 +28,8 @@ use engine::game::visibility::filter_state_for_viewer;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    GameState, LoopAction, LoopActionContext, LoopCollapseAxis, ManaChoice, PayCostKind,
-    PayableResource, PersistedGameState, PersistentAxisMaterialization, WaitingFor,
+    GameState, LoopAction, LoopCollapseAxis, ManaChoice, PayCostKind, PayableResource,
+    PersistedGameState, PersistentAxisMaterialization, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::interaction::{
@@ -324,59 +322,6 @@ fn kilo_migrated_dump_fires_object_growth_offer() {
         }
         other => panic!("expected the CR 732.2a ∞-charge LoopShortcut offer for P0, got {other:?}"),
     }
-}
-
-/// FIX-3 non-vacuity (matched pair): re-injecting the dump's original 6 PINLESS steps before the
-/// drive reproduces the pre-migration load state — the drive appends a fresh pinned period AFTER
-/// the stale prefix, so `try_offer` re-drives from the pinless `seq[0]` (Relic → `PayCost` with no
-/// pin) and aborts ⇒ NO offer on this cycle. Undefused (migration ON) fires; migration disabled
-/// (stale prefix re-injected) does not. Flip ⇒ FIX-3 is load-bearing.
-#[test]
-fn kilo_reinjected_pinless_history_suppresses_offer() {
-    let mut state = load_migrated_dump();
-    assert!(
-        state.last_loop_action_sequence.is_empty(),
-        "precondition: the migration dropped the history"
-    );
-
-    // Re-inject the dump's original 6 pinless steps: [Activate 404#1, Activate 403#1] × 3.
-    let relic_card = state.objects[&RELIC].card_id;
-    let freed_card = state.objects[&FREED].card_id;
-    let mut pinless = Vec::new();
-    for _ in 0..3 {
-        pinless.push(LoopActionContext {
-            card_id: relic_card,
-            controller: P0,
-            action: LoopAction::Activate {
-                source_id: RELIC,
-                ability_index: RELIC_TAP_MANA,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        });
-        pinless.push(LoopActionContext {
-            card_id: freed_card,
-            controller: P0,
-            action: LoopAction::Activate {
-                source_id: FREED,
-                ability_index: FREED_UNTAP,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        });
-    }
-    state.last_loop_action_sequence = pinless;
-
-    drive_one_live_cycle(&mut state, &FIXTURE_IDS);
-
-    // The stale pinless prefix makes `try_offer` re-drive from a pinless `seq[0]` and abort ⇒
-    // no offer surfaces (the C2 / R3.0-A baseline).
-    assert!(
-        !matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }),
-        "with the migration disabled (stale pinless prefix re-injected) the offer must NOT fire, \
-         got {:?}",
-        state.waiting_for
-    );
 }
 
 /// Drive the APNAP accept of the ∞ offer through the PUBLIC `apply()` boundary at the harness

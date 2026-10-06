@@ -1140,6 +1140,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     let wf_b = WaitingFor::LoopShortcut {
         proposer: P2,
@@ -1148,6 +1149,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     assert_eq!(wf_a.acting_player(), Some(P1));
     assert_eq!(wf_b.acting_player(), Some(P2));
@@ -1164,6 +1166,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         shortened_by: None,
         published_declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     let wf_r = WaitingFor::RespondToShortcut {
         player: P2,
@@ -1186,6 +1189,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     apply(&mut delegated, P0, GameAction::DeclineShortcut)
         .expect("the turn controller may submit the priority holder's decline");
@@ -1776,6 +1780,7 @@ fn injected_3p_one_faller_no_crown() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -1922,6 +1927,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         schema: schema.clone(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -1944,6 +1950,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         schema,
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     runner2
         .act(GameAction::DeclareShortcut {
@@ -2002,6 +2009,7 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         runner
             .act(GameAction::DeclareShortcut {
@@ -4373,13 +4381,11 @@ fn sprout_shell_scenario(body: &str) -> (GameRunner, ObjectId, Vec<ObjectId>) {
 /// cover regardless of A2 — it cannot discriminate A2. The cover does NOT scan the resolving
 /// recast *spell's* body, so a coin flip there is exactly the gap A2 closes; MEASURED: with BOTH
 /// A2 halves reverted this fixture wrongly OFFERS (the coin advances the RNG 2→6 yet the cover
-/// passes). Each A2 half independently rejects it: the static scan (a) bails pre-drive
-/// (`spell_ability_bears_randomness`), and the runtime rng-position check (b) bails post-drive.
+/// passes).
 ///
 /// Non-vacuity: (1) item-5 — the body parses to `Token` (deterministic growth) + a `FlipCoin`
-/// sub-effect (asserted below), so the coin genuinely fires; (2) revert-probe — reverting BOTH A2
-/// halves flips this to an OFFER; (3) reach-guard — the SAME shell with a coin-free body offers,
-/// isolating the coin (not the shell) as the disqualifier.
+/// sub-effect (asserted below), so the coin genuinely fires; (2) reach-guard — the SAME shell with
+/// a coin-free body offers, isolating the coin (not the shell) as the disqualifier.
 #[test]
 fn object_growth_random_recast_body_does_not_offer() {
     // item-5: verify the recast body carries a deterministic Token AND a FlipCoin (so the board
@@ -4629,6 +4635,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
         schema,
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
 
     let targets_of = |wf: &WaitingFor| -> Vec<TargetRef> {
@@ -4759,6 +4766,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                 shortened_by: None,
                 published_declaration: None,
                 road: engine::analysis::loop_check::OfferRoad::Ring,
+                period: Default::default(),
             },
         };
         state
@@ -6437,6 +6445,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                 shortened_by: None,
                 published_declaration: None,
                 road: engine::analysis::loop_check::OfferRoad::Ring,
+                period: Default::default(),
             },
         };
         v["waiting_for"] = serde_json::to_value(&waiting).expect("a WaitingFor serializes");
@@ -7597,6 +7606,7 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
             schema: schema.clone(),
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
         };
         runner
             .act(GameAction::DeclareShortcut {
@@ -9796,6 +9806,7 @@ fn bounded_offer_parts(
             schema,
             declaration: _,
             road: _,
+            period: _,
         } => (*proposer, certificate, schema),
         other => panic!("expected a bounded LoopShortcut offer, got {other:?}"),
     }
@@ -13009,6 +13020,7 @@ fn restored_proposal(
         shortened_by: None,
         published_declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     }
 }
 
@@ -15248,6 +15260,7 @@ fn g1_declare_verdict(
         schema,
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -15947,6 +15960,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         schema,
         declaration: _,
         road,
+        period: _,
     } = runner.state().waiting_for.clone()
     else {
         panic!("staged from the live offer, never from thin air");
@@ -15965,6 +15979,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         // publishes no declaration, at the very fixture that stages an empty schema.
         declaration: None,
         road,
+        period: Default::default(),
     };
 }
 
@@ -15982,6 +15997,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         schema,
         declaration: _,
         road,
+        period: _,
     } = runner.state().waiting_for.clone()
     else {
         panic!("staged from the live offer, never from thin air");
@@ -16011,6 +16027,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         // `Some` here would add a second axis to a pair whose whole value is being one apart.
         declaration: None,
         road,
+        period: Default::default(),
     };
 }
 
@@ -16687,6 +16704,7 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
             key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
         }),
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
     };
 
     let mut json = serde_json::to_value(&offer).expect("the offer serializes");

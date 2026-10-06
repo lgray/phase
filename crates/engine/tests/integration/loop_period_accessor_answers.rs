@@ -179,10 +179,12 @@ fn capture_frames(
             state.waiting_for,
             WaitingFor::LoopShortcut { proposer, .. } if proposer == P0
         );
-        let window = (offer
-            || matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0))
-            && top_trigger_source(state) == Some(minting)
-            && !state.last_loop_action_sequence.is_empty();
+        // CR 117.3b/c: an offer can stand before the minting trigger's recurrence window, at the
+        // first window after a repeated resolution.
+        let window = offer
+            || (matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+                && top_trigger_source(state) == Some(minting)
+                && !state.last_loop_action_sequence.is_empty());
         if window {
             read.push(state.clone());
         }
@@ -195,7 +197,12 @@ fn capture_frames(
                 _ => engine::ai_support::legal_actions(state)
                     .into_iter()
                     .find(|action| !matches!(action, GameAction::PassPriority))
-                    .expect("a prompt the declared drive does not answer offers a legal action"),
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "a prompt the declared drive does not answer offers a legal action: {}",
+                            state.waiting_for.variant_name()
+                        )
+                    }),
             });
         if window && !offer {
             cover.push(state.clone());
@@ -325,6 +332,14 @@ fn every_census_read_answers_on_the_blink_boards_and_a_restored_offer_as_at_the_
         return;
     };
     for (frame, state) in board_a.read.iter().enumerate() {
+        // CR 117.3b/c: board A is offered at the first window after a repeated resolution.
+        assert_eq!(
+            engine::game::play_trace_view(state)
+                .and_then(|view| view.offered)
+                .map(|span| span.cause),
+            Some(engine::game::NamingCause::Repeat),
+            "board A frame {frame} is an offer of the span a repeat named"
+        );
         assert_reads(&format!("board A frame {frame}"), state, &trigger_driven);
     }
     for (frame, state) in board_b.read.iter().enumerate() {

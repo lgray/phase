@@ -312,11 +312,16 @@ fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
         1,
     );
 
-    assert_eq!(
-        reading.offered,
-        Some((OfferRoad::RecordedPeriod, Some(board.abdel))),
-        "the period is offered on the recorded road at the window where Abdel Adrian's trigger \
-         stands on top"
+    // CR 117.3b/c: the span a repeat names is offered at the first window after the repeated
+    // resolution, before Abdel Adrian's trigger is back on top.
+    assert!(
+        matches!(
+            reading.offered,
+            Some((OfferRoad::RecordedPeriod, top)) if top != Some(board.abdel)
+        ),
+        "the period is offered on the recorded road before Abdel Adrian's trigger stands on top \
+         again; got {:?}",
+        reading.offered
     );
     let at_mint = reading
         .at_mint

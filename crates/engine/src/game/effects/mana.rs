@@ -1002,8 +1002,7 @@ pub(crate) fn exiled_color_options(
 /// `state.objects.get(&link.exiled_id)`, so every yielded id provably HAS a live entry and no
 /// consumer needs an `else` arm that can never be taken.
 ///
-/// The single link authority for both [`exiled_color_options`] and the resource loop firewall's
-/// `exiled_colors_provably_exclude_class` arm, so the firewall cannot drift from the resolver.
+/// The single link authority for [`exiled_color_options`].
 ///
 /// ORDER IS PART OF THE CONTRACT: link order, not a set, because [`exiled_color_options`] returns
 /// its options in it. The guards are that function's `#[cfg(test)]` assertions

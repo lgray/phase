@@ -216,6 +216,18 @@ pub(crate) fn is_offer(state: &GameState) -> bool {
     matches!(state.waiting_for, WaitingFor::LoopShortcut { .. })
 }
 
+/// The span `runner`'s offer stands for, once it is declined and the drive settled; `None` with no
+/// offer. Declining restarts the trace.
+fn decline_offer(runner: &mut GameRunner, score: &dyn Fn(&GameAction) -> i32) -> Option<NamedSpan> {
+    if !is_offer(runner.state()) {
+        return None;
+    }
+    let span = trace_of(runner.state()).offered;
+    act(runner, GameAction::DeclineShortcut);
+    settle(runner, score);
+    span
+}
+
 /// A play or resolution the base's recorded period names, for comparison up to rotation.
 #[derive(Debug, Clone, PartialEq)]
 enum PeriodStep {
@@ -611,6 +623,10 @@ fn play_trace_names_each_members_period_food_chain_c1_c2() {
                 "{member:?}: each cycle names its own period"
             );
             previous_end = span.end;
+            // CR 732.2a: an offered cycle is declined, which restarts the trace.
+            if decline_offer(&mut board.runner, &|_| 0).is_some() {
+                previous_end = 0;
+            }
         }
     }
 }
@@ -669,6 +685,7 @@ fn play_trace_names_each_members_period_altar_gravecrawler_payoffs() {
 fn play_trace_names_each_members_period_kiki_exarch() {
     let Some(db) = shared_card_db() else { return };
     let (mut runner, kiki, exarch) = kiki_board(LoopDetectionMode::Interactive, db);
+    let mut offers = Vec::new();
     for cycle in 0..3 {
         kiki_cycle(&mut runner, kiki, exarch);
         assert!(
@@ -704,7 +721,16 @@ fn play_trace_names_each_members_period_kiki_exarch() {
             ])
             .collect();
         assert_eq!(steps(&view, span), expected, "cycle {cycle}");
+        if let Some(offered) = decline_offer(&mut runner, &|_| 0) {
+            offers.push((cycle, offered.cause));
+        }
     }
+    // CR 117.3b/c: the repeated trigger's span is offered at the window after it; once that offer
+    // is declined, the restored activation's span is offered.
+    assert_eq!(
+        offers,
+        [(1, NamingCause::Repeat), (2, NamingCause::Restored)]
+    );
 }
 
 #[test]
@@ -774,30 +800,43 @@ fn play_trace_names_each_members_period_grand_architect_pili_pala() {
         ability(runner.state(), architect, true),
         ability(runner.state(), pili, true),
     );
+    let mut offered = None;
     for cycle in 0..3 {
         activate(&mut runner, architect, tap_blue);
         settle(&mut runner, &prefer_pili);
+        if is_offer(runner.state()) {
+            offered = Some(cycle);
+            break;
+        }
         activate(&mut runner, pili, untap);
         settle(&mut runner, &prefer_pili);
         assert!(
-            is_offer(runner.state()),
-            "reach: cycle {cycle} reaches the base offer"
+            !is_offer(runner.state()),
+            "cycle {cycle}: no offer after Pili-Pala"
         );
-        if cycle > 0 {
-            let view = trace_of(runner.state());
-            assert_eq!(
-                entry_steps(&view, 0..view.entries.len()),
-                [
-                    Step::Play(0),
-                    Step::Answer(P0, "SelectCards"),
-                    Step::Play(1),
-                    Step::Answer(P0, "ChooseManaColor"),
-                ],
-                "cycle {cycle}: the two plays and their answers, under the same two nodes"
-            );
-        }
-        act(&mut runner, GameAction::DeclineShortcut);
     }
+    // CR 117.3c: the window after the second Grand Architect activation offers the period it and
+    // Pili-Pala's activation repeat.
+    assert_eq!(
+        offered,
+        Some(1),
+        "reach: the second cycle's activation is offered"
+    );
+    let view = trace_of(runner.state());
+    let span = view.offered.expect("the offered span");
+    assert_eq!(span.cause, NamingCause::Repeat);
+    assert_eq!(
+        plays(&view, &span),
+        [
+            play_node(&view, |action| *action
+                == GameAction::ActivateAbility {
+                    source_id: architect,
+                    ability_index: tap_blue,
+                }),
+            play_node(&view, activates(pili)),
+        ],
+        "the tap for {{C}}{{C}} and Pili-Pala's untap"
+    );
 }
 
 #[test]
@@ -839,44 +878,47 @@ fn play_trace_names_each_members_period_food_chain_griffin_scourge() {
             act(runner, GameAction::PassPriority);
             settle(runner, &|_| 0);
         };
-    for cycle in 0..2 {
-        cast_paying_with_food_chain(&mut runner, griffin, scourge);
-        let view = trace_of(runner.state());
-        let fc = play_node(&view, activates(food_chain));
-        let span = view
-            .named
-            .last()
-            .expect("a candidate is named after the Griffin resolves");
-        assert_eq!(span.cause, NamingCause::Restored);
-        assert!(
-            matches!(&view.entries[span.start].kind, EntryKind::Play { node, .. } if *node == fc),
-            "cycle {cycle}: the span starts at the in-payment Food Chain activation"
-        );
+    cast_paying_with_food_chain(&mut runner, griffin, scourge);
+    let view = trace_of(runner.state());
+    let fc = play_node(&view, activates(food_chain));
+    let span = view
+        .named
+        .last()
+        .expect("a candidate is named after the Griffin resolves");
+    assert_eq!(span.cause, NamingCause::Restored);
+    assert!(
+        matches!(&view.entries[span.start].kind, EntryKind::Play { node, .. } if *node == fc),
+        "the span starts at the in-payment Food Chain activation"
+    );
 
-        cast_paying_with_food_chain(&mut runner, scourge, griffin);
-        let state = runner.state();
-        assert!(
-            can_cast_object_now(state, P0, griffin),
-            "reach: the Griffin's exile cast is legal"
-        );
-        let view = trace_of(state);
-        // The window's first span starts at the earliest restored play, the Griffin's cast.
-        let span = view
-            .named
-            .iter()
-            .find(|span| span.end == view.entries.len())
-            .expect("a candidate is named after the Scourge resolves");
-        assert_eq!(span.cause, NamingCause::Restored);
-        let (g, s) = (
-            play_node(&view, casts(griffin)),
-            play_node(&view, casts(scourge)),
-        );
-        assert_eq!(
-            plays(&view, span),
-            [g, fc, s, fc],
-            "cycle {cycle}: two different casts, one Food Chain node"
-        );
-    }
+    cast_paying_with_food_chain(&mut runner, scourge, griffin);
+    let state = runner.state();
+    assert!(
+        can_cast_object_now(state, P0, griffin),
+        "reach: the Griffin's exile cast is legal"
+    );
+    let view = trace_of(state);
+    // The window's first span starts at the earliest restored play, the Griffin's cast.
+    let span = view
+        .named
+        .iter()
+        .find(|span| span.end == view.entries.len())
+        .expect("a candidate is named after the Scourge resolves");
+    assert_eq!(span.cause, NamingCause::Restored);
+    let (g, s) = (
+        play_node(&view, casts(griffin)),
+        play_node(&view, casts(scourge)),
+    );
+    assert_eq!(
+        plays(&view, span),
+        [g, fc, s, fc],
+        "two different casts, one Food Chain node"
+    );
+    assert_eq!(
+        view.offered,
+        Some(*span),
+        "CR 732.2a: the cycle is offered at its window"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1054,23 +1096,25 @@ fn play_trace_keys_activations_by_definition() {
 fn play_trace_keys_a_copied_trigger_by_its_printed_card() {
     let Some(db) = shared_card_db() else { return };
     let (mut runner, kiki, exarch) = kiki_board(LoopDetectionMode::Interactive, db);
-    for _ in 0..3 {
+    // Declining an offer restarts the trace, so the drive runs until one trace holds two copies.
+    for _ in 0..6 {
         kiki_cycle(&mut runner, kiki, exarch);
+        let view = trace_of(runner.state());
+        let resolved = view
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.kind, EntryKind::Resolution { .. }))
+            .count();
+        if resolved >= 2 {
+            assert_eq!(
+                view.node_count, 2,
+                "Kiki-Jiki's ability and Deceiver Exarch's trigger, over {resolved} copies"
+            );
+            return;
+        }
+        decline_offer(&mut runner, &|_| 0);
     }
-    let view = trace_of(runner.state());
-    let resolved = view
-        .entries
-        .iter()
-        .filter(|entry| matches!(entry.kind, EntryKind::Resolution { .. }))
-        .count();
-    assert_eq!(
-        resolved, 3,
-        "reach: three token copies' enters triggers resolved"
-    );
-    assert_eq!(
-        view.node_count, 2,
-        "Kiki-Jiki's ability and Deceiver Exarch's trigger, over three copies"
-    );
+    panic!("reach: no trace held two token copies' enters triggers");
 }
 
 #[test]

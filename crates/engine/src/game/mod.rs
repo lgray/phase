@@ -121,9 +121,7 @@ pub mod mulligan;
 pub mod object_state;
 pub(crate) mod off_zone_characteristics;
 pub mod pairing;
-// Until the producer asks the confirmer, only tests reach it.
 pub mod perf_counters;
-#[allow(dead_code)]
 pub mod period_confirm;
 // Tests for `archenemy` live in a sibling file (declared here, not in
 // `archenemy.rs`, so `archenemy.rs` stays implementation-only).

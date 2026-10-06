@@ -13,10 +13,11 @@ use engine::analysis::decision_template::{ChoicePoint, IterationCount};
 use engine::analysis::loop_check::{OfferRoad, ShortcutResponse};
 use engine::analysis::resource::{loop_detect_cost, reset_loop_detect_cost, LoopDetectCost};
 use engine::game::scenario::{GameRunner, P0};
+use engine::game::NamingCause;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopAction, LoopDetectionMode, StackEntryKind, WaitingFor,
+    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::zones::Zone;
@@ -48,10 +49,8 @@ struct Drive {
     policy: Policy,
 }
 
-/// One `apply()`: the frame it was handed, the action, and the detector cost it paid.
+/// One `apply()`: the detector cost it paid.
 struct Apply {
-    before: GameState,
-    action: GameAction,
     cost: LoopDetectCost,
 }
 
@@ -237,14 +236,11 @@ impl Drive {
     }
 
     fn apply(&mut self, action: GameAction) -> Apply {
-        let before = self.state().clone();
         reset_loop_detect_cost();
         self.runner
             .act(action.clone())
             .unwrap_or_else(|error| panic!("{action:?} was rejected: {error:?}"));
         Apply {
-            before,
-            action,
             cost: loop_detect_cost(),
         }
     }
@@ -308,11 +304,29 @@ fn offered(board: Board) -> Option<(Drive, Vec<Apply>)> {
         state.waiting_for.variant_name(),
         top_trigger_source(state)
     );
-    assert_eq!(
-        top_trigger_source(state),
-        Some(drive.minting),
-        "{board:?}: the offer stands at the window where the minting trigger is on top"
-    );
+    match board {
+        // CR 117.3b/c: a span a repeat names is offered at the first priority window after the
+        // repeated resolution, before the minting trigger is back on top.
+        Board::A => {
+            assert_eq!(
+                engine::game::play_trace_view(state)
+                    .and_then(|view| view.offered)
+                    .map(|span| span.cause),
+                Some(NamingCause::Repeat),
+                "A: the offered span is the one a repeat named"
+            );
+            assert_ne!(
+                top_trigger_source(state),
+                Some(drive.minting),
+                "A: the offer stands before the minting trigger's recurrence window"
+            );
+        }
+        Board::B => assert_eq!(
+            top_trigger_source(state),
+            Some(drive.minting),
+            "B: the offer stands at the window where the minting trigger is on top"
+        ),
+    }
     Some((drive, applies))
 }
 
@@ -465,155 +479,60 @@ fn an_accumulating_stack_beneath_the_recurrence_is_offered_and_taken() {
     assert!(state.last_loop_action_sequence.is_empty());
 }
 
-/// CR 605.3a + CR 732.2a: a land tap between two occurrences of the recurrence lies in the slice a
-/// proposal there replays, which is refused at the admission; once the tap is history, the pure
-/// slice is offered and taken.
+/// CR 117.3b/c + CR 608.1: Board A is offered before its recurrence window, for the period its base
+/// offer performs.
 #[test]
-fn a_land_tap_withholds_the_offer_only_while_it_lies_in_the_replayed_slice() {
-    let Some(mut drive) = start(Board::A) else {
+fn board_a_is_offered_early_for_its_base_period() {
+    let Some((drive, _)) = offered(Board::A) else {
         return;
     };
-    for _ in 0..BEAT_CAP {
-        let state = drive.state();
-        if matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
-            && !state.last_loop_action_sequence.is_empty()
-        {
-            break;
-        }
-        let action = drive.next_action();
-        drive.apply(action);
-    }
-    let (_, _, grouped) = engine::ai_support::legal_actions_full(drive.state());
-    let tap = grouped
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into_values()
-        .flatten()
-        .find(|action| matches!(action, GameAction::TapLandForMana { .. }))
-        .expect("P0 can tap a land at its first window with a record");
-    drive.apply(tap);
-
-    let mixed_window = drive.drive_to_window();
-    let state = drive.state();
+    let performed = engine::game::period_confirm::performed_for_tests(drive.state())
+        .expect("reach: the offer names its span")
+        .expect("the offered period replays");
     assert!(
-        recurrence_window(state, drive.minting),
-        "the next window is a P0 recurrence window; got {}",
-        state.waiting_for.variant_name()
-    );
-    let record = &state.last_loop_action_sequence;
-    let tapped_after_recurrence = record
-        .iter()
-        .position(|step| {
-            matches!(step.action, LoopAction::ResolveTrigger { source_id, .. }
-                if source_id == drive.minting)
-        })
-        .is_some_and(|recurrence| {
-            record.len() > recurrence + 1
-                && matches!(
-                    record.last().map(|step| &step.action),
-                    Some(LoopAction::TapLandForMana { .. })
-                )
-        });
-    assert!(
-        tapped_after_recurrence,
-        "reach guard: the replayed slice holds the recurrence, then the tap"
-    );
-    assert_eq!(state.loop_period_controller_for_tests(), Some(P0));
-    assert!(!state.loop_period_is_priority_driven_for_tests());
-    assert_eq!(
-        mixed_window
-            .last()
-            .expect("the window apply")
-            .cost
-            .object_growth_calls,
-        0,
-        "a slice that mixes kinds is refused at the admission, before any drive"
-    );
-
-    let mut offer_apply = None;
-    for _ in 0..BEAT_CAP {
-        let action = drive.next_action();
-        let apply = drive.apply(action);
-        if is_offer(drive.state()) {
-            offer_apply = Some(apply);
-            break;
-        }
-        if matches!(drive.state().waiting_for, WaitingFor::GameOver { .. }) {
-            break;
-        }
-    }
-    let offer_apply = offer_apply.expect("the post-tap pure slice is offered before the game ends");
-    let state = drive.state();
-    assert!(
-        matches!(
-            state.waiting_for,
-            WaitingFor::LoopShortcut { proposer, road: OfferRoad::RecordedPeriod, .. }
-                if proposer == P0
+        crate::loop_period_performs::same_up_to_rotation(
+            &performed,
+            &crate::loop_period_performs::BOARD_A_PERIOD
         ),
-        "the offer is a recorded-period offer to P0"
+        "{performed:?}"
     );
-    assert_eq!(offer_apply.cost.object_growth_calls, 1);
-    assert!(
-        !state.loop_period_is_priority_driven_for_tests()
-            && state
-                .last_loop_action_sequence
-                .iter()
-                .any(|step| matches!(step.action, LoopAction::TapLandForMana { .. })),
-        "reach guard: the whole record still holds the tap"
-    );
-    let tokens = token_count(state);
-    drive.take(IterationCount::Fixed(3));
-    let state = drive.state();
-    assert!(
-        matches!(state.waiting_for, WaitingFor::Priority { .. }),
-        "the take ends at priority; got {}",
-        state.waiting_for.variant_name()
-    );
-    assert_eq!(token_count(state), tokens + 3);
-    assert!(state.last_loop_action_sequence.is_empty());
 }
 
-/// CR 603.3d + CR 732.2a: a record that no longer answers the target prompt is refused by the
-/// producer's drive, one apply before the untouched record's offer.
+/// CR 603.3d + CR 732.2a: Board B is offered at the window where Preston's trigger is back on top,
+/// for the cycle it performed, and the offer asks the cycle's announced targets.
 #[test]
-fn a_record_missing_a_target_answer_is_not_offered() {
-    let Some((_, applies)) = offered(Board::B) else {
+fn board_b_is_offered_at_its_base_window_with_its_target_answers() {
+    let Some((drive, _)) = offered(Board::B) else {
         return;
     };
-    let offer_apply = applies.last().expect("the offer apply");
-    let replay = |strip: bool| {
-        let mut runner = GameRunner::from_state(offer_apply.before.clone());
-        let removed = runner
-            .state_mut()
-            .last_loop_action_sequence
-            .last_mut()
-            .map(|step| {
-                let before = step.pins.len();
-                if strip {
-                    step.pins
-                        .retain(|pin| pin.slot().point != ChoicePoint::AnnouncedTarget);
-                }
-                before - step.pins.len()
-            })
-            .expect("the record is non-empty one apply before the offer");
-        reset_loop_detect_cost();
-        runner
-            .act(offer_apply.action.clone())
-            .expect("the policy's answer is accepted");
-        (removed, is_offer(runner.state()), loop_detect_cost())
-    };
-
-    let (_, control, _) = replay(false);
-    assert!(control, "control: the untouched record is offered");
-    let (removed, offered, cost) = replay(true);
-    assert!(removed > 0, "the fixture removed the target answer");
-    assert!(
-        !offered,
-        "a record missing its target answer is not offered"
+    let state = drive.state();
+    assert_eq!(
+        engine::game::play_trace_view(state)
+            .and_then(|view| view.offered)
+            .map(|span| span.cause),
+        Some(NamingCause::TriggerTop)
     );
     assert_eq!(
-        cost.object_growth_calls, 1,
-        "the producer was entered and its drive refused"
+        engine::game::period_confirm::performed_for_tests(state),
+        Some(Ok(vec![
+            "Preston, the Vanisher".to_string(),
+            "Altar of the Brood".to_string(),
+            "Felidar Guardian".to_string(),
+            "Altar of the Brood".to_string(),
+            "Felidar Guardian".to_string(),
+        ])),
+        "one replayed cycle resolves Preston's trigger, then each Illusion's"
+    );
+    let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for else {
+        unreachable!("offered() asserted the offer");
+    };
+    assert!(
+        schema
+            .points
+            .iter()
+            .any(|point| point.slot.point == ChoicePoint::AnnouncedTarget),
+        "{:?}",
+        schema.points
     );
 }
 

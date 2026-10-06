@@ -207,7 +207,8 @@ impl TakeCostCounters {
 
 /// Test-only counters for the play trace's work: action boundaries entered (outermost, nested,
 /// inside a probe), entries recorded, the trace's node-map and node-key work, whole-state copies
-/// its own code makes, and the windows and legality reads its naming makes.
+/// its own code makes, the windows and legality reads its naming makes, and the spans the
+/// producer asks the confirmer and the replays it drives for them.
 #[cfg(feature = "test-support")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlayTraceCounters {
@@ -224,6 +225,8 @@ pub struct PlayTraceCounters {
     pub windows: u64,
     pub legality_reads: u64,
     pub legality_read_copies: u64,
+    pub confirm_asks: u64,
+    pub confirm_drives: u64,
 }
 
 #[cfg(feature = "test-support")]
@@ -245,6 +248,8 @@ impl PlayTraceCounters {
             windows: self.windows - earlier.windows,
             legality_reads: self.legality_reads - earlier.legality_reads,
             legality_read_copies: self.legality_read_copies - earlier.legality_read_copies,
+            confirm_asks: self.confirm_asks - earlier.confirm_asks,
+            confirm_drives: self.confirm_drives - earlier.confirm_drives,
         }
     }
 }
@@ -443,6 +448,8 @@ thread_local! {
             windows: 0,
             legality_reads: 0,
             legality_read_copies: 0,
+            confirm_asks: 0,
+            confirm_drives: 0,
         })
     };
     static LEGALITY_CLONE_PHASE: Cell<Option<LegalityClonePhase>> = const { Cell::new(None) };

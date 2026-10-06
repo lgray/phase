@@ -11911,6 +11911,7 @@ mod tests {
                 },
                 declaration: None,
                 road: OfferRoad::Ring,
+                period: Default::default(),
             };
             bind_interaction_authority(&mut state, InteractionSessionId("picker-ceiling".into()))
                 .expect("a valid interaction authority binding");

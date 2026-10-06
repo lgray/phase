@@ -434,7 +434,12 @@ fn recurrence_windows(
                 engine::ai_support::legal_actions(state)
                     .into_iter()
                     .find(|action| !matches!(action, GameAction::PassPriority))
-                    .expect("a prompt the declared drive does not answer offers a legal action")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "a prompt the declared drive does not answer offers a legal action: {}",
+                            state.waiting_for.variant_name()
+                        )
+                    })
             })
         };
         runner

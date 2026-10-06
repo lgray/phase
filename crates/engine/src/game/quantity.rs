@@ -7073,13 +7073,6 @@ fn object_for_scope<'a>(
 }
 
 /// Resolve an [`ObjectScope`] to a concrete object id under `ctx`.
-///
-/// `pub(crate)` for ONE reason: the resource loop firewall's
-/// `counters_on_source_provably_excludes_class` arm must ask THE SAME scope
-/// authority the `QuantityRef::CountersOn` resolver asks, rather than
-/// re-implementing "`ObjectScope::Source` means the ability's own source". Do not
-/// read this widened visibility as an invitation to resolve quantities outside
-/// `game::quantity` — every other caller is in this module.
 pub(crate) fn object_id_for_scope(
     state: &GameState,
     scope: ObjectScope,

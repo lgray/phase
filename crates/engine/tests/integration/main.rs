@@ -1658,6 +1658,7 @@ mod living_death_ordering_2932;
 mod locus_once_per_turn_cap;
 mod loop_counter_growth;
 mod loop_period_accessor_answers;
+mod loop_period_performs;
 mod loop_period_token_family_arming;
 mod loop_period_trigger_driven_arming;
 mod loop_period_trigger_driven_offer;

@@ -1119,9 +1119,8 @@ fn indexed_ability_window_reach(
 ///
 /// ## Fail-closed
 ///
-/// Exhaustive dispatch with a `_ => false` arm, mirroring
-/// [`crate::game::triggers::trigger_event_unreachable_in_phase`]: a mode this
-/// predicate cannot classify KEEPS its veto. A future mode is swallowed into
+/// Exhaustive dispatch with a `_ => false` arm: a mode this predicate cannot
+/// classify KEEPS its veto. A future mode is swallowed into
 /// conservatism, never into relief.
 fn trigger_event_unreachable_by_confined_action(
     def: &crate::types::ability::TriggerDefinition,

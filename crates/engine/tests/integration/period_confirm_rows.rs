@@ -2,7 +2,7 @@
 
 use engine::analysis::resource::{FodderCoverRefusal, ObjectGrowthVerdict};
 use engine::game::engine::certify_object_growth_frames_for_tests;
-use engine::game::period_confirm::{confirm_for_tests, OfferRefusal};
+use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::ability::{AbilityKind, ResolvedAbility, TargetRef};
@@ -158,11 +158,15 @@ fn kiki_copy_board(copied: &str) -> Option<(GameRunner, ObjectId, ObjectId)> {
     Some((runner, kiki, copied))
 }
 
-/// One Kiki-Jiki cycle; returns whether the cycle ended at an offer.
-fn kiki_copy_cycle(runner: &mut GameRunner, kiki: ObjectId, copied: ObjectId) -> bool {
+/// One Kiki-Jiki cycle, declining an offer it meets; what the offered period's replay performs.
+fn kiki_copy_cycle(
+    runner: &mut GameRunner,
+    kiki: ObjectId,
+    copied: ObjectId,
+) -> Option<Result<Vec<String>, OfferRefusal>> {
     let index = ability(runner.state(), kiki, false);
     activate(runner, kiki, index);
-    settle(runner, &|action| match action {
+    let score = |action: &GameAction| match action {
         GameAction::ChooseTarget {
             target: Some(TargetRef::Object(id)),
         } if *id == kiki => 3,
@@ -174,12 +178,19 @@ fn kiki_copy_cycle(runner: &mut GameRunner, kiki: ObjectId, copied: ObjectId) ->
         // Pestermite's "tap or untap": the untap branch.
         GameAction::ChooseBranch { index: 1 } => 2,
         _ => 0,
+    };
+    settle(runner, &score);
+    let performed = is_offer(runner.state()).then(|| {
+        let performed = performed_for_tests(runner.state()).expect("an offered span");
+        act(runner, GameAction::DeclineShortcut);
+        settle(runner, &score);
+        performed
     });
     assert!(
         !runner.state().objects[&kiki].tapped,
         "reach: the copy's trigger untapped Kiki-Jiki"
     );
-    is_offer(runner.state())
+    performed
 }
 
 fn grown_not_inert(verdict: &Result<Vec<String>, OfferRefusal>) -> bool {
@@ -199,21 +210,22 @@ fn kiki_jiki_confirms_with_deceiver_exarch_and_not_with_pestermite() {
     let Some((mut runner, kiki, exarch)) = kiki_copy_board("Deceiver Exarch") else {
         return;
     };
-    for _ in 0..4 {
-        kiki_copy_cycle(&mut runner, kiki, exarch);
-    }
+    let performed = (0..4).find_map(|_| kiki_copy_cycle(&mut runner, kiki, exarch));
     assert!(
-        latest_verdict(runner.state()).is_ok(),
-        "{:?}",
-        latest_verdict(runner.state())
+        matches!(&performed, Some(Ok(performed)) if crate::loop_period_performs::same_up_to_rotation(
+            performed,
+            &["Deceiver Exarch"]
+        )),
+        "{performed:?}"
     );
 
     let Some((mut runner, kiki, pestermite)) = kiki_copy_board("Pestermite") else {
         return;
     };
     for cycle in 0..4 {
-        assert!(
-            !kiki_copy_cycle(&mut runner, kiki, pestermite),
+        assert_eq!(
+            kiki_copy_cycle(&mut runner, kiki, pestermite),
+            None,
             "cycle {cycle}"
         );
     }
@@ -467,4 +479,73 @@ fn a_replaced_sacrifice_arriving_where_recorded_is_admitted() {
         ),
         "{verdict:?}"
     );
+}
+
+/// Basalt Monolith ("{T}: Add {C}{C}{C}. {3}: Untap this artifact.") enchanted by Power Artifact,
+/// tapped and untapped `cycles` times beside Llanowar Elves, six Mountains, and five Mountains in
+/// hand; with `helm`, each cycle also activates Coral Helm ("{3}, Discard a card at random: Target
+/// creature gets +2/+2 until end of turn.") on the Elves.
+fn basalt_cycles(pyromancy: bool, cycles: usize) -> Option<GameRunner> {
+    let db = shared_card_db()?;
+    let mut rig = crate::loop_shortcut_mana_engine::setup(true, LoopDetectionMode::Interactive, db);
+    let basalt = rig.basalt;
+    let state = rig.runner.state_mut();
+    let elves = place(state, P0, "Llanowar Elves", db);
+    let pyromancy = pyromancy.then(|| place(state, P0, "Pyromancy", db));
+    for _ in 0..6 {
+        place(state, P0, "Mountain", db);
+    }
+    for _ in 0..5 {
+        let face = db.get_face_by_name("Mountain").expect("card in fixture");
+        let id = engine::game::deck_loading::create_object_from_card_face(state, face, P0);
+        engine::game::zones::remove_from_zone(state, id, Zone::Library, P0);
+        engine::game::zones::add_to_zone(state, id, Zone::Hand, P0);
+        state.objects.get_mut(&id).expect("created").zone = Zone::Hand;
+    }
+    let runner = &mut rig.runner;
+    let mana = ability(runner.state(), basalt, true);
+    let untap = ability(runner.state(), basalt, false);
+    for _ in 0..cycles {
+        if is_offer(runner.state()) {
+            break;
+        }
+        activate(runner, basalt, mana);
+        settle(runner, &|_| 0);
+        if let Some(pyromancy) = pyromancy {
+            let index = ability(runner.state(), pyromancy, false);
+            activate(runner, pyromancy, index);
+            settle(runner, &names(&[elves]));
+        }
+        activate(runner, basalt, untap);
+        settle(runner, &|_| 0);
+    }
+    Some(rig.runner)
+}
+
+/// CR 701.9b + CR 732.2a: a period that activates Pyromancy discards a card at random as its
+/// cost, so the replay refuses it at that draw, before any cover; the same Basalt Monolith period
+/// without it is offered.
+#[test]
+fn a_period_paying_a_random_discard_cost_is_refused_as_random() {
+    let Some(plain) = basalt_cycles(false, 2) else {
+        return;
+    };
+    assert!(
+        is_offer(plain.state()),
+        "reach: the plain Basalt Monolith period is offered"
+    );
+    let random = basalt_cycles(true, 2).expect("the fixture holds Pyromancy");
+    let state = random.state();
+    assert!(
+        state.players[0].graveyard.len() >= 2,
+        "reach: each Pyromancy activation discarded a card"
+    );
+    let verdicts = confirm_for_tests(state);
+    assert!(
+        verdicts
+            .iter()
+            .any(|(_, verdict)| matches!(verdict, Err(OfferRefusal::Randomness))),
+        "{verdicts:?}"
+    );
+    assert!(!is_offer(state), "no offer");
 }

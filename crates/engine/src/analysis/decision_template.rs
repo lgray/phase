@@ -1356,9 +1356,9 @@ fn schedule_announces_every_declared_subject(schedule: &TargetSchedule) -> bool 
 /// choices" and says it "can't include conditional actions, where the outcome of a game event
 /// determines the next action a player takes". Pins fix every free choice BEFORE the offer is made,
 /// so the sequence the table accepts is the sequence that runs. The two companion gates are
-/// `game::engine::try_offer_object_growth_shortcut`'s static rejection of coin flip / die roll /
-/// random discard, and `analysis::resource::elimination_bounds` admitting no CR 704 threshold
-/// crossing except as the sequence's FINAL iteration — a MID-sequence death is what makes the
+/// `game::period_confirm`'s refusal of a replayed random outcome at its draw, and
+/// `analysis::resource::elimination_bounds` admitting no CR 704 threshold crossing except as the
+/// sequence's FINAL iteration — a MID-sequence death is what makes the
 /// remaining declared choices unmakeable, and a final-iteration crossing has none. "No conditional
 /// on a prior
 /// iteration's outcome" needs NO runtime check — it is unrepresentable in
