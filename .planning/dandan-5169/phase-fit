@@ -218,3 +218,14 @@
 
 [2026-10-06T01:27:04Z] Phase 13 impl-review r3 (cand bc4c727113): behavior 0, text 1 MED (two comments claim get_legal_actions_js serves single-player). Orchestrator applied comment-only correction (diff predicate: 0 non-comment lines; control: code diff shows 3) -> 2964d6818f8e0f18b4a652c21ed3fccedbedaf42. p13c killed; completion p13d on the correction commit. Pre-existing Serum Powder per-seat candidates unchanged (cut covers it at ~15 lines but changes shipped-format behavior; reported once to lead in phase-accepted report).
 [2026-10-06T02:54:44Z] Phase 13 accepted 2964d6818f; chain: PHASE_BASE 9ca36e7c83 .. 2964d6818f = 64a7cbf6a4, 25606d19cb, bc4c727113, 2964d6818f (phase's own commits).
+
+[2026-10-06T02:55:18Z] Phase 14 dispatch: executor r1 on PHASE_BASE 2964d6818f (Phase 13 accepted). scope.nul 19 paths = charter rule + plan §9 additions; plan CLEAN (r2 APPROVE). Scratchpad-moved dir deleted per lead.
+
+[2026-10-06T03:03:57Z] Phase 14: USER folds Serum Powder per-seat scoping into Phase 14 (addendum + scope +4 paths); sent to running executor.
+
+[2026-10-06T08:04:54Z] Phase 14 executor r1 stop-and-return: 5 existing tests assert resolution_state_version 4 (premise confirmed by grep); scope +2 test paths (25), addendum written; same executor continues with literal-only edits.
+
+[2026-10-06T09:20:26Z] Phase 14 impl-review r1 (cand 99fff2ab44): behavior 1 MED (no committed test parks the dealer at Settling; grep for settling in dandan_simultaneous_draw.rs empty), text 0, machinery 0. Fix executor r2 (test-only); p14a killed. LOW notes for PR body: dealer does not enforce never-parks-once-flagged-empty in general (charter scope limit; not reachable on the Dandan decklist); layer-1 intercept does not reset cost_payment_failed_flag per seat.
+
+[2026-10-06T10:12:30Z] Phase 14 impl-review r2 (delta 99fff2ab44..630000f3c5): behavior 0/text 0/machinery 0, MED closed. Awaiting completion p14b on 630000f3c5.
+[2026-10-06T10:58:27Z] Phase 14 accepted 630000f3c5; chain 2964d6818f..630000f3c5 = 99fff2ab44, 630000f3c5.
