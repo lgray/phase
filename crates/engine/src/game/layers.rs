@@ -7081,13 +7081,7 @@ pub(crate) fn latch_grants(
             stamp_grant(modification, granter);
         }
         // Not gated on `grant_names_granter`: a caster-only body names no granter object.
-        granter_symbols_mut::each_node_in(modification, &mut |node| {
-            granter_symbols_mut::node_fields(node, &mut |symbol| {
-                if let granter_symbols_mut::Symbol::Caster(f) = symbol {
-                    *f = lowered.clone();
-                }
-            });
-        });
+        granter_symbols_mut::each_caster_in(modification, &mut |f| *f = lowered.clone());
     }
 }
 

@@ -5988,6 +5988,217 @@ mod granted_caster_reference {
         assert_eq!(zone(&runner, second), Zone::Graveyard, "reach-guard");
         assert_eq!(runner.state().players[1].life, 18);
     }
+
+    const BODY: &str =
+        "When this creature deals damage to the player who cast Foo Bar, draw a card.";
+    const ANY_PLAYER: &str = "When this creature deals damage to a player, draw a card.";
+
+    fn foo_bar_gaps(oracle: &str, card_type: &str) -> (Vec<String>, String) {
+        let parsed = parse_oracle_text(oracle, "Foo Bar", &[], &[card_type.to_string()], &[]);
+        let json = serde_json::to_string(&parsed).expect("ParsedAbilities serializes");
+        let gaps = engine::game::coverage::card_face_gaps(&engine::types::card::CardFace {
+            name: "Foo Bar".to_string(),
+            oracle_text: Some(oracle.to_string()),
+            abilities: parsed.abilities,
+            triggers: parsed.triggers,
+            static_abilities: parsed.statics,
+            replacements: parsed.replacements,
+            ..Default::default()
+        });
+        (gaps, json)
+    }
+
+    /// Carriers of a quoted `body` that no cast reaches, with the card type each is printed on.
+    fn uncast_carriers(body: &str) -> [(String, &'static str); 8] {
+        let inner = body.replace('"', "'");
+        [
+            (format!("Creatures you control have \"{body}\""), "Creature"),
+            (
+                format!("Create a 1/1 white Spirit creature token with \"{body}\""),
+                "Instant",
+            ),
+            (
+                format!(
+                    "When Foo Bar enters, create a 1/1 white Spirit creature token with \"{body}\""
+                ),
+                "Creature",
+            ),
+            (
+                format!(
+                    "When this enchantment enters, you get an emblem with \"Creatures you \
+                     control have '{inner}'\""
+                ),
+                "Enchantment",
+            ),
+            (
+                format!(
+                    "When Foo Bar enters, creatures you control gain \"{body}\" until end of turn."
+                ),
+                "Creature",
+            ),
+            (
+                format!("{{T}}: Target creature gains \"{body}\" until end of turn."),
+                "Creature",
+            ),
+            (
+                format!(
+                    "At the beginning of the next end step, creatures you control gain \"{body}\" \
+                     until end of turn."
+                ),
+                "Instant",
+            ),
+            (
+                format!(
+                    "Flip a coin. If you win the flip, creatures you control gain \"{body}\" \
+                     until end of turn."
+                ),
+                "Instant",
+            ),
+        ]
+    }
+
+    /// CR 601.2i + CR 707.10: off a spell's own instructions there is no cast to name.
+    #[test]
+    fn caster_reference_no_cast_reaches_is_refused() {
+        let rows = |body: &str, expected: &[&str]| {
+            let carriers = uncast_carriers(body);
+            let actual: Vec<(String, Vec<String>)> = carriers
+                .iter()
+                .map(|(oracle, card_type)| (oracle.clone(), foo_bar_gaps(oracle, card_type).0))
+                .collect();
+            let expected: Vec<(String, Vec<String>)> = carriers
+                .into_iter()
+                .map(|(oracle, _)| (oracle, expected.iter().map(|g| g.to_string()).collect()))
+                .collect();
+            (actual, expected)
+        };
+        let (actual, expected) = rows(BODY, &["Effect:granter_reference_unreached"]);
+        assert_eq!(actual, expected);
+        let (actual, expected) = rows(ANY_PLAYER, &[]);
+        assert_eq!(actual, expected);
+    }
+
+    /// CR 601.2i: a grant anywhere on the cast spell's chain names that spell's caster.
+    #[test]
+    fn caster_reference_on_the_cast_spells_chain_stays_supported() {
+        let q = format!("\"{BODY}\"");
+        for oracle in [
+            format!("Draw a card. Creatures you control gain {q} until end of turn."),
+            format!("Draw a card, then creatures you control gain {q} until end of turn."),
+            format!(
+                "If you control an artifact, draw a card. Otherwise, creatures you control gain \
+                 {q} until end of turn."
+            ),
+            format!("If you control a creature, creatures you control gain {q} until end of turn."),
+            format!(
+                "Choose one \u{2014}\n\u{2022} Creatures you control gain {q} until end of \
+                 turn.\n\u{2022} Draw a card."
+            ),
+            format!(
+                "Kicker {{2}}\nDraw a card. If this spell was kicked, creatures you control gain \
+                 {q} until end of turn."
+            ),
+            format!(
+                "You may draw a card. If you do, creatures you control gain {q} until end of turn."
+            ),
+            format!(
+                "Spree\n+ {{1}} \u{2014} Draw a card.\n+ {{1}} \u{2014} Creatures you control \
+                 gain {q} until end of turn."
+            ),
+            format!("Until end of turn, creatures you control gain {q}."),
+            format!("Target creature gains {q} until end of turn. Draw a card."),
+        ] {
+            let (gaps, json) = foo_bar_gaps(&oracle, "Instant");
+            assert!(
+                json.contains("GrantingObjectCaster"),
+                "reach-guard: {oracle}: {json}"
+            );
+            assert_eq!(gaps, Vec::<String>::new(), "{oracle}");
+        }
+    }
+
+    /// P0 casts the Foo Bar `add_foo_bar` puts in hand, then P0's pinger deals 1 damage to P0.
+    fn cast_then_ping_self(
+        add_foo_bar: impl FnOnce(&mut GameScenario) -> ObjectId,
+    ) -> (GameRunner, ObjectId, ObjectId, usize) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_library_top(P0, &["Card A", "Card B", "Card C"]);
+        let pinger = scenario
+            .add_creature_from_oracle(P0, "Pinger", 1, 1, PINGER)
+            .id();
+        let foo_bar = add_foo_bar(&mut scenario);
+        let mut runner = scenario.build();
+        runner.cast(foo_bar).resolve();
+        runner.advance_until_stack_empty();
+        let before = runner.state().players[0].hand.len();
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: pinger,
+                ability_index: 0,
+            })
+            .expect("the pinger activates");
+        while matches!(
+            runner.state().waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ) {
+            runner
+                .act(GameAction::ChooseTarget {
+                    target: Some(TargetRef::Player(P0)),
+                })
+                .expect("P0 is a legal target");
+        }
+        runner.advance_until_stack_empty();
+        assert_eq!(
+            runner.state().players[0].life,
+            19,
+            "reach-guard: the ping resolved"
+        );
+        let drawn = runner.state().players[0].hand.len() - before;
+        (runner, pinger, foo_bar, drawn)
+    }
+
+    fn creature_foo_bar(oracle: String) -> impl FnOnce(&mut GameScenario) -> ObjectId {
+        move |scenario| {
+            scenario
+                .add_creature_to_hand_from_oracle(P0, "Foo Bar", 1, 1, &oracle)
+                .with_mana_cost(ManaCost::zero())
+                .id()
+        }
+    }
+
+    #[test]
+    fn refused_static_caster_grant_installs_nothing() {
+        let (runner, pinger, foo_bar, drawn) = cast_then_ping_self(creature_foo_bar(format!(
+            "Creatures you control have \"{BODY}\""
+        )));
+        assert_eq!(zone(&runner, foo_bar), Zone::Battlefield, "reach-guard");
+        let granted = serde_json::to_string(&runner.state().objects[&pinger].trigger_definitions)
+            .expect("triggers serialize");
+        assert!(
+            !granted.contains("GrantingObjectCaster"),
+            "a refused static must grant no caster trigger: {granted}"
+        );
+        assert_eq!(drawn, 0);
+
+        let (_, _, _, drawn) = cast_then_ping_self(creature_foo_bar(format!(
+            "Creatures you control have \"{ANY_PLAYER}\""
+        )));
+        assert_eq!(drawn, 1);
+    }
+
+    #[test]
+    fn spell_chain_caster_grant_draws_on_damage_to_the_caster() {
+        let oracle =
+            format!("Draw a card. Creatures you control gain \"{BODY}\" until end of turn.");
+        let (_, _, _, drawn) = cast_then_ping_self(|scenario| {
+            scenario
+                .add_spell_to_hand_from_oracle(P0, "Foo Bar", true, &oracle)
+                .with_mana_cost(ManaCost::zero())
+                .id()
+        });
+        assert_eq!(drawn, 1);
+    }
 }
 
 /// CR 111.1 + CR 114.1 + CR 201.5a: a token or an emblem is another object, so a granter

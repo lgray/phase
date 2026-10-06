@@ -25,7 +25,7 @@ use crate::types::ability::{
     TriggerDefinition, TypeFilter, TypedFilter, UnloweredGuard, VoteSubject,
 };
 use crate::types::ability_visit::{
-    each_granter_symbol, visit_ability_def_scoped, DefinitionNode, ResolutionScope,
+    each_granter_symbol, granter_symbols, visit_ability_def_scoped, DefinitionNode, ResolutionScope,
 };
 use crate::types::card::DraftEffect;
 use crate::types::card_type::CoreType;
@@ -9562,7 +9562,8 @@ fn demote_refused_granter_names(
     });
 }
 
-/// CR 201.5a: whether `node` holds a granter reference that `each_granter_symbol` misses.
+/// CR 201.5a: whether `node` holds a granter reference that `each_granter_symbol` misses,
+/// or a caster reference no cast latches.
 pub(crate) fn granter_reference_unreached(node: DefinitionNode<'_>) -> bool {
     let tree = match &node {
         DefinitionNode::Ability(def) => serde_json::to_value(def),
@@ -9570,9 +9571,37 @@ pub(crate) fn granter_reference_unreached(node: DefinitionNode<'_>) -> bool {
         DefinitionNode::Static(def) => serde_json::to_value(def),
         DefinitionNode::Replacement(def) => serde_json::to_value(def),
     };
-    let mut reached = 0;
-    each_granter_symbol(node, &mut |_| reached += 1);
+    let mut reached = latched_caster_count(&node);
+    each_granter_symbol(node, &mut |symbol| {
+        reached += usize::from(!matches!(symbol, granter_symbols::Symbol::Caster(_)));
+    });
     !tree.is_ok_and(|tree| granter_reference_count(&tree) == reached)
+}
+
+/// CR 601.2i + CR 707.10: only a spell's own instructions carry its cast, so a caster reference
+/// lowers only in a `GenericEffect` grant on that chain.
+fn latched_caster_count(node: &DefinitionNode<'_>) -> usize {
+    let DefinitionNode::Ability(root) = node else {
+        return 0;
+    };
+    if root.kind != AbilityKind::Spell {
+        return 0;
+    }
+    let mut count = 0;
+    let mut chain = vec![*root];
+    while let Some(def) = chain.pop() {
+        if let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        {
+            for m in static_abilities.iter().flat_map(|s| &s.modifications) {
+                granter_symbols::each_caster_in(m, &mut |_| count += 1);
+            }
+        }
+        chain.extend(def.sub_ability.as_deref());
+        chain.extend(def.else_ability.as_deref());
+    }
+    count
 }
 
 fn granter_reference_count(tree: &serde_json::Value) -> usize {

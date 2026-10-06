@@ -1142,8 +1142,6 @@ use std::ops::ControlFlow;
 pub(crate) enum Symbol<'a> {
     Filter(&'a $($mut_)? Option<ObjectIncarnationRef>),
     Scope(&'a $($mut_)? ObjectScope),
-    // The shared walk only counts this variant; it never reads the filter.
-    #[allow(dead_code)]
     Caster(&'a $($mut_)? TargetFilter),
 }
 
@@ -1162,6 +1160,15 @@ pub(crate) fn each_node(root: $Node<'_>, v: &mut impl FnMut($Node<'_>)) {
 /// [`each_node`] over the definitions a modification grants.
 pub(crate) fn each_node_in(m: &$($mut_)? ContinuousModification, v: &mut impl FnMut($Node<'_>)) {
     let _ = $nodes::visit_continuous_mod(m, &mut |node| on_node(node, &mut *v));
+}
+
+/// The "player who cast <granter>" filters in the definitions `m` grants.
+pub(crate) fn each_caster_in(m: &$($mut_)? ContinuousModification, v: &mut impl FnMut(&$($mut_)? TargetFilter)) {
+    each_node_in(m, &mut |node| node_fields(node, &mut |symbol| {
+        if let Symbol::Caster(f) = symbol {
+            v(f);
+        }
+    }));
 }
 
 // `BecomeCopy` is a leaf of the node walk, but its extra modifications carry grants.
