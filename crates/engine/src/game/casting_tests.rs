@@ -44757,6 +44757,373 @@ fn necromancy_etb_grant_line_lowers_to_the_granter_residual() {
     );
 }
 
+/// Necromancy's printed text with a granted enchant restriction that does not name the card.
+const REANIMATOR_AURA_GRANT_ORACLE: &str = "You may cast this spell as though it had flash. If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step.\nWhen this enchantment enters, if it's on the battlefield, it becomes an Aura with \"enchant creature put onto the battlefield with this enchantment.\" Put target creature card from a graveyard onto the battlefield under your control and attach this enchantment to it. When this enchantment leaves the battlefield, that creature's controller sacrifices it.";
+
+/// Cast a plain Enchantment carrying the reanimator-Aura GRANT-shape ETB and fire that
+/// trigger onto the stack (auto-targeting the single graveyard creature), unresolved.
+///
+/// Only the parsed reanimator ETB trigger is installed; the flash-cast sacrifice ability
+/// would add an unrelated intervening-if trigger-ordering path.
+///
+/// Returns `(state, enchantment_id, creature_id)`.
+fn cast_reanimator_aura_grant_and_fire_etb() -> (GameState, ObjectId, ObjectId) {
+    use crate::parser::oracle::parse_oracle_text;
+
+    let mut state = setup_game_at_main_phase();
+
+    let enchantment_id = create_object(
+        &mut state,
+        CardId(701),
+        PlayerId(0),
+        "Necro Probe".to_string(),
+        Zone::Hand,
+    );
+    let parsed = parse_oracle_text(
+        REANIMATOR_AURA_GRANT_ORACLE,
+        "Necro Probe",
+        &[],
+        &["Enchantment".to_string()],
+        &[],
+    );
+    // Reach-guard: the live parser must produce the reanimator ETB trigger (a root
+    // `Effect::ChangeZone`), so no downstream assertion can pass vacuously.
+    let reanimator_triggers: Vec<_> = parsed
+        .triggers
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.execute.as_deref().map(|d| d.effect.as_ref()),
+                Some(Effect::ChangeZone { .. })
+            )
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        reanimator_triggers.len(),
+        1,
+        "parser must produce exactly one reanimator ETB trigger (root ChangeZone); got {}",
+        reanimator_triggers.len()
+    );
+    {
+        let obj = state.objects.get_mut(&enchantment_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Enchantment);
+        // NO "Aura" subtype and NO Enchant keyword until its own ETB grants both.
+        obj.base_card_types = obj.card_types.clone();
+        obj.base_trigger_definitions = Arc::new(reanimator_triggers.clone());
+        obj.trigger_definitions = reanimator_triggers.into();
+        obj.mana_cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::Black],
+            generic: 2,
+        };
+        obj.base_mana_cost = obj.mana_cost.clone();
+    }
+    add_mana(&mut state, PlayerId(0), ManaType::Black, 3);
+
+    // Grizzly Bears (2/2) in the OPPONENT's graveyard, so reanimation genuinely
+    // moves control to the caster.
+    let creature_id = create_object(
+        &mut state,
+        CardId(702),
+        PlayerId(1),
+        "Grizzly Bears".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = state.objects.get_mut(&creature_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.base_card_types = obj.card_types.clone();
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.base_power = Some(2);
+        obj.base_toughness = Some(2);
+    }
+
+    let mut events = Vec::new();
+    let result = handle_cast_spell(
+        &mut state,
+        PlayerId(0),
+        enchantment_id,
+        CardId(701),
+        &mut events,
+    )
+    .unwrap();
+    assert!(
+        matches!(result, WaitingFor::Priority { .. }),
+        "expected the plain enchantment to go straight to the stack; got {result:?}"
+    );
+    assert_eq!(
+        state.stack.len(),
+        1,
+        "the enchantment spell must be on the stack"
+    );
+
+    stack::resolve_top(&mut state, &mut events);
+    assert!(
+        state.battlefield.contains(&enchantment_id),
+        "the enchantment must resolve onto the battlefield"
+    );
+    // Pre-ETB reach guard: not yet an Aura and no Enchant keyword, so the post-ETB
+    // AddSubtype/AddKeyword assertions are not vacuous.
+    assert!(
+        !state.objects[&enchantment_id]
+            .card_types
+            .subtypes
+            .contains(&"Aura".to_string()),
+        "the enchantment must NOT be an Aura before its ETB resolves (reach guard)"
+    );
+    assert!(
+        !state.objects[&enchantment_id]
+            .keywords
+            .iter()
+            .any(|k| matches!(k, Keyword::Enchant(_))),
+        "the enchantment must NOT have an Enchant keyword before its ETB resolves (reach guard)"
+    );
+
+    // CR 603.3d: exactly one creature card in any graveyard, so the targeted trigger
+    // auto-selects it and goes on the stack.
+    crate::game::triggers::process_triggers(&mut state, &events);
+    assert_eq!(
+        state.stack.len(),
+        1,
+        "the reanimator ETB trigger must auto-target and be on the stack after process_triggers"
+    );
+
+    (state, enchantment_id, creature_id)
+}
+
+/// Resolve the reanimator-Aura GRANT-shape ETB chain
+/// (ChangeZone -> GenericEffect grant -> Attach -> CreateDelayedTrigger).
+fn reanimate_grizzly_via_reanimator_aura_grant() -> (GameState, ObjectId, ObjectId) {
+    let (mut state, enchantment_id, creature_id) = cast_reanimator_aura_grant_and_fire_etb();
+
+    let mut etb_events = Vec::new();
+    stack::resolve_top(&mut state, &mut etb_events);
+    crate::game::layers::evaluate_layers(&mut state);
+
+    (state, enchantment_id, creature_id)
+}
+
+/// CR 603.3d + CR 608.2c + CR 613.1d + CR 613.1f + CR 701.3a: the GRANT-shape ETB moves the
+/// targeted creature card onto the battlefield under the caster's control, grants the
+/// enchantment the Aura subtype and Enchant keyword for the first time, attaches it, and the
+/// Aura survives SBAs.
+#[test]
+fn reanimator_aura_grant_full_pipeline_reanimates_and_becomes_aura() {
+    use crate::game::game_object::AttachTarget;
+
+    let (mut state, enchantment_id, creature_id) = reanimate_grizzly_via_reanimator_aura_grant();
+
+    assert_eq!(
+        state.objects[&creature_id].zone,
+        Zone::Battlefield,
+        "reanimated creature must be on the battlefield, not the graveyard"
+    );
+    assert!(
+        !state.players[1].graveyard.contains(&creature_id),
+        "reanimated creature must no longer be in its owner's graveyard"
+    );
+    assert!(
+        state.objects[&enchantment_id]
+            .card_types
+            .subtypes
+            .contains(&"Aura".to_string()),
+        "the enchantment must become an Aura (AddSubtype grant) after its ETB resolves"
+    );
+    assert_eq!(
+        state.objects[&enchantment_id].attached_to,
+        Some(AttachTarget::Object(creature_id)),
+        "the enchantment must be attached to the reanimated creature"
+    );
+    assert!(
+        state.objects[&enchantment_id]
+            .keywords
+            .iter()
+            .any(|k| matches!(k, Keyword::Enchant(_))),
+        "the enchantment must gain an Enchant keyword (AddKeyword grant)"
+    );
+
+    // CR 704.5m: an Aura attached to a legal creature survives SBAs.
+    let mut sba_events = Vec::new();
+    crate::game::sba::check_state_based_actions(&mut state, &mut sba_events);
+    assert!(
+        state.battlefield.contains(&enchantment_id),
+        "the Aura must survive SBAs (attached to a legal creature, CR 704.5m)"
+    );
+    assert_eq!(
+        state.objects[&enchantment_id].attached_to,
+        Some(AttachTarget::Object(creature_id)),
+        "the Aura must stay attached to the reanimated creature after SBAs"
+    );
+}
+
+/// CR 608.2c + CR 400.7: a target from the OPPONENT's graveyard is reanimated under the
+/// CASTER's control, not its owner's.
+#[test]
+fn reanimator_aura_grant_cross_controller_target_reanimates_under_caster_control() {
+    let (state, _enchantment_id, creature_id) = reanimate_grizzly_via_reanimator_aura_grant();
+
+    assert_eq!(
+        state.objects[&creature_id].owner,
+        PlayerId(1),
+        "precondition: the reanimated creature is owned by the opponent"
+    );
+    assert_eq!(
+        state.objects[&creature_id].controller,
+        PlayerId(0),
+        "reanimated creature must be controlled by the CASTER (under your control), not the owner"
+    );
+}
+
+/// CR 701.21a + CR 603.7c: "When this enchantment leaves the battlefield, that creature's
+/// controller sacrifices it" sacrifices the reanimated creature.
+#[test]
+fn reanimator_aura_grant_delayed_sacrifice_when_leaves() {
+    let (mut state, enchantment_id, creature_id) = reanimate_grizzly_via_reanimator_aura_grant();
+    assert_eq!(state.objects[&creature_id].zone, Zone::Battlefield);
+
+    let mut events = Vec::new();
+    zones::move_to_zone(&mut state, enchantment_id, Zone::Graveyard, &mut events);
+    crate::game::triggers::check_delayed_triggers(&mut state, &events);
+    assert_eq!(
+        state.stack.len(),
+        1,
+        "the delayed leaves-battlefield sacrifice must be on the stack"
+    );
+
+    let mut sac_events = Vec::new();
+    stack::resolve_top(&mut state, &mut sac_events);
+    assert!(
+        !state.battlefield.contains(&creature_id),
+        "reanimated creature must be sacrificed when the enchantment leaves the battlefield"
+    );
+    assert_eq!(
+        state.objects[&creature_id].zone,
+        Zone::Graveyard,
+        "sacrificed creature must go to its owner's graveyard"
+    );
+}
+
+/// CR 611.2a: the GRANT shape's subtype and keyword grant survives a real cleanup step.
+#[test]
+fn reanimator_aura_grant_shape_survives_cleanup_step() {
+    use crate::game::game_object::AttachTarget;
+
+    let (mut state, enchantment_id, creature_id) = reanimate_grizzly_via_reanimator_aura_grant();
+
+    assert!(
+        state.battlefield.contains(&enchantment_id),
+        "precondition: the enchantment is on the battlefield before cleanup"
+    );
+    assert_eq!(
+        state.objects[&creature_id].zone,
+        Zone::Battlefield,
+        "precondition: creature on battlefield before cleanup"
+    );
+
+    let mut cleanup_events = Vec::new();
+    let waiting = crate::game::turns::execute_cleanup(&mut state, &mut cleanup_events);
+    assert!(
+        waiting.is_none(),
+        "reach-guard: cleanup must run the end-of-turn pruning path; got {waiting:?}"
+    );
+
+    let mut sba_events = Vec::new();
+    crate::game::sba::check_state_based_actions(&mut state, &mut sba_events);
+    assert!(
+        state.battlefield.contains(&enchantment_id),
+        "the Aura must survive a real cleanup step (CR 611.2a)"
+    );
+    assert!(
+        state.objects[&enchantment_id]
+            .card_types
+            .subtypes
+            .contains(&"Aura".to_string()),
+        "the enchantment must remain an Aura after cleanup (AddSubtype grant not pruned)"
+    );
+    assert!(
+        state.objects[&enchantment_id]
+            .keywords
+            .iter()
+            .any(|k| matches!(k, Keyword::Enchant(_))),
+        "the enchantment must retain its Enchant keyword after cleanup"
+    );
+    assert_eq!(
+        state.objects[&enchantment_id].attached_to,
+        Some(AttachTarget::Object(creature_id)),
+        "the Aura must remain attached to the reanimated creature after cleanup"
+    );
+    assert_eq!(
+        state.objects[&creature_id].zone,
+        Zone::Battlefield,
+        "reanimated creature must remain on the battlefield after cleanup"
+    );
+}
+
+/// CR 608.2b: if the ETB's target leaves the graveyard before resolution, the trigger does
+/// nothing — no Aura subtype, no Enchant keyword, no attachment, no delayed trigger.
+#[test]
+fn reanimator_aura_grant_etb_trigger_fizzles_when_target_creature_leaves_graveyard() {
+    let (mut state, enchantment_id, creature_id) = cast_reanimator_aura_grant_and_fire_etb();
+    assert_eq!(state.stack.len(), 1, "ETB trigger must be on the stack");
+
+    let mut events = Vec::new();
+    zones::move_to_zone(&mut state, creature_id, Zone::Exile, &mut events);
+
+    let mut etb_events = Vec::new();
+    stack::resolve_top(&mut state, &mut etb_events);
+    crate::game::layers::evaluate_layers(&mut state);
+    assert_eq!(
+        state.stack.len(),
+        0,
+        "the ETB trigger must be removed from the stack when its only target became illegal"
+    );
+    assert!(
+        !state.battlefield.contains(&creature_id),
+        "creature must not be reanimated when the trigger fizzled"
+    );
+    assert_eq!(
+        state.objects[&creature_id].zone,
+        Zone::Exile,
+        "the target stays where it was moved (exile), not reanimated"
+    );
+    assert!(
+        !state.objects[&enchantment_id]
+            .card_types
+            .subtypes
+            .contains(&"Aura".to_string()),
+        "the enchantment must remain a non-Aura Enchantment when the ETB fizzles"
+    );
+    assert!(
+        !state.objects[&enchantment_id]
+            .keywords
+            .iter()
+            .any(|k| matches!(k, Keyword::Enchant(_))),
+        "the enchantment must gain no Enchant keyword when the ETB fizzles"
+    );
+    assert!(
+        state.objects[&enchantment_id].attached_to.is_none(),
+        "the enchantment must not be attached to anything when the ETB fizzles"
+    );
+
+    let mut leave_events = Vec::new();
+    zones::move_to_zone(
+        &mut state,
+        enchantment_id,
+        Zone::Graveyard,
+        &mut leave_events,
+    );
+    crate::game::triggers::check_delayed_triggers(&mut state, &leave_events);
+    assert_eq!(
+        state.stack.len(),
+        0,
+        "no delayed sacrifice trigger must exist after a fizzled ETB"
+    );
+
+    let mut sba_events = Vec::new();
+    crate::game::sba::check_state_based_actions(&mut state, &mut sba_events);
+}
+
 /// CR 611.2a regression (this fix): the reanimator-Aura's re-targeted Enchant
 /// grant has no stated duration and must last until the Aura leaves the
 /// battlefield (CR 611.2a: "no duration stated" = "until end of game"), not

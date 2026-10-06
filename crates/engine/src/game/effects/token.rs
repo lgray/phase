@@ -9460,6 +9460,24 @@ mod tests {
         );
     }
 
+    /// CR 201.5a: a self-grant whose body names the token where the masker refuses the name
+    /// is unparsed too, since an object that later acquires the ability would read itself.
+    #[test]
+    fn catalog_rules_text_refuses_a_self_granted_granter_name() {
+        let (static_definitions, modifications, unparsed_lines) = catalog_rules_text_abilities(
+            "Rock has \"{T}: Rock deals 1 damage to any target.\"\nEquip {1}",
+            "Rock",
+        );
+        assert!(
+            !static_definitions.is_empty() || !modifications.is_empty(),
+            "reach-guard: the Equip line still parses"
+        );
+        assert_eq!(
+            unparsed_lines,
+            vec!["~ has \"{T}: ~ deals 1 damage to any target.\""]
+        );
+    }
+
     /// CR 201.5a — the MEASURED BOUNDARY for this entry point's one un-rendered
     /// output. `catalog_rules_text_abilities` renders the marker out of the
     /// parsed statics' and modifications' display descriptions, but the third

@@ -7525,9 +7525,9 @@ mod tests {
     /// any other target". Attaching that ability to a 4-power Iron Fist and
     /// activating it at an opponent creature must deal exactly 4 damage.
     /// Reverting the gendered-pronoun quantity fix makes "his power" fall to
-    /// `Effect::Unimplemented`, so the
-    /// granted ability deals no damage and `ActivateAbility` never reaches a
-    /// damage resolution — this assertion flips.
+    /// `Effect::Unimplemented`, so the granted ability deals no damage and
+    /// `ActivateAbility` never reaches a damage resolution — this assertion
+    /// flips.
     #[test]
     fn iron_fist_granted_ability_deals_damage_equal_to_power() {
         use crate::game::scenario::GameScenario;

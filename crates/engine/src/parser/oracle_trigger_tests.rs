@@ -32769,7 +32769,7 @@ fn dance_of_the_dead_etb_lowers_to_reanimator_chain_tapped_4767() {
 
 // --- issue #640: reanimator-Aura GRANT-shape ETB whole-body recognizer (Necromancy) ---
 
-/// Verbatim Necromancy Oracle text (Scryfall, 2026-07).
+/// Verbatim Necromancy Oracle text.
 const NECROMANCY_ORACLE: &str = "You may cast this spell as though it had flash. If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step.\nWhen this enchantment enters, if it's on the battlefield, it becomes an Aura with \"enchant creature put onto the battlefield with Necromancy.\" Put target creature card from a graveyard onto the battlefield under your control and attach this enchantment to it. When this enchantment leaves the battlefield, that creature's controller sacrifices it.";
 
 /// CR 201.5a: the granted enchant restriction names Necromancy where the masker refuses the
@@ -32796,6 +32796,160 @@ fn necromancy_etb_lowers_to_the_granter_residual() {
             Effect::Unimplemented { name, .. } if name == "granter_reference_unreached"
         )),
         "{parsed:#?}"
+    );
+}
+
+/// Necromancy's printed text with a granted enchant restriction that does not name the card.
+const REANIMATOR_AURA_GRANT_ORACLE: &str = "You may cast this spell as though it had flash. If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step.\nWhen this enchantment enters, if it's on the battlefield, it becomes an Aura with \"enchant creature put onto the battlefield with this enchantment.\" Put target creature card from a graveyard onto the battlefield under your control and attach this enchantment to it. When this enchantment leaves the battlefield, that creature's controller sacrifices it.";
+
+/// SHAPE test — the GRANT-shape ETB lowers to the 4-node reanimator-Aura chain: the root
+/// `ChangeZone` targets the graveyard creature card itself (not `AttachedTo`), and the
+/// `GenericEffect` grants the Aura subtype and Enchant keyword with no `RemoveKeyword`.
+#[test]
+fn reanimator_aura_grant_etb_lowers_to_grant_chain() {
+    use crate::types::zones::Zone;
+
+    let parsed = parse_oracle_text(
+        REANIMATOR_AURA_GRANT_ORACLE,
+        "Necro Probe",
+        &[],
+        &["Enchantment".to_string()],
+        &[],
+    );
+    // The first ability's cleanup-step sacrifice is also an enters trigger; select the
+    // reanimator one by its root `Effect::ChangeZone` body.
+    let root = parsed
+        .triggers
+        .iter()
+        .filter(|t| t.mode == TriggerMode::ChangesZone && t.destination == Some(Zone::Battlefield))
+        .filter_map(|t| t.execute.as_deref())
+        .find(|def| matches!(def.effect.as_ref(), Effect::ChangeZone { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a reanimator ETB trigger with a root ChangeZone, got {:?}",
+                parsed.triggers
+            )
+        });
+
+    // Node 1: ChangeZone at the root, forward_result set, targeting a real
+    // graveyard-creature-card filter (NOT AttachedTo).
+    assert!(
+        root.forward_result,
+        "root ChangeZone must set forward_result"
+    );
+    let Effect::ChangeZone {
+        origin,
+        destination,
+        target,
+        enters_under,
+        enter_tapped,
+        ..
+    } = root.effect.as_ref()
+    else {
+        panic!("expected root Effect::ChangeZone, got {:?}", root.effect);
+    };
+    assert_eq!(*origin, Some(Zone::Graveyard), "origin");
+    assert_eq!(*destination, Zone::Battlefield, "destination");
+    assert_eq!(*enters_under, Some(ControllerRef::You), "enters_under");
+    assert!(
+        !enter_tapped.is_tapped(),
+        "creature enters untapped ({enter_tapped:?})"
+    );
+    assert_ne!(
+        *target,
+        TargetFilter::AttachedTo,
+        "ETB must target the graveyard creature itself, not AttachedTo"
+    );
+    assert_eq!(
+        *target,
+        TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::InZone {
+            zone: Zone::Graveyard
+        }])),
+        "ETB ChangeZone target"
+    );
+
+    // Node 2: GenericEffect grants (not swaps) — AddSubtype{Aura} + AddKeyword,
+    // referencing OriginalSource, stamped to Duration::Permanent (CR 611.2a).
+    let generic = root
+        .sub_ability
+        .as_deref()
+        .expect("ChangeZone has no GenericEffect sub");
+    let Effect::GenericEffect {
+        static_abilities,
+        duration,
+        ..
+    } = generic.effect.as_ref()
+    else {
+        panic!("expected GenericEffect, got {:?}", generic.effect);
+    };
+    assert_eq!(
+        *duration,
+        Some(Duration::Permanent),
+        "grant is stamped to Duration::Permanent (CR 611.2a)"
+    );
+    assert_eq!(static_abilities.len(), 1, "one grant static");
+    let sd = &static_abilities[0];
+    assert_eq!(
+        sd.affected,
+        Some(TargetFilter::OriginalSource),
+        "grant must target OriginalSource (the enchantment), not SelfRef"
+    );
+    assert_eq!(
+        sd.modifications,
+        vec![
+            ContinuousModification::AddSubtype {
+                subtype: "Aura".to_string(),
+            },
+            ContinuousModification::AddKeyword {
+                keyword: Keyword::Enchant(TargetFilter::ParentTarget),
+            },
+        ],
+        "grant modifications (AddSubtype + AddKeyword, no RemoveKeyword)"
+    );
+
+    // Node 3: Attach — SelfRef (the enchantment) onto ParentTarget (the creature).
+    let attach = generic
+        .sub_ability
+        .as_deref()
+        .expect("GenericEffect has no Attach sub");
+    let Effect::Attach {
+        attachment, target, ..
+    } = attach.effect.as_ref()
+    else {
+        panic!("expected Attach, got {:?}", attach.effect);
+    };
+    assert_eq!(*attachment, TargetFilter::SelfRef, "attach attachment");
+    assert_eq!(*target, TargetFilter::ParentTarget, "attach host");
+
+    // Node 4: CreateDelayedTrigger — WhenLeavesPlayFiltered{SelfRef} -> Sacrifice{ParentTarget}.
+    let delayed = attach
+        .sub_ability
+        .as_deref()
+        .expect("Attach has no CreateDelayedTrigger sub");
+    let Effect::CreateDelayedTrigger {
+        condition, effect, ..
+    } = delayed.effect.as_ref()
+    else {
+        panic!("expected CreateDelayedTrigger, got {:?}", delayed.effect);
+    };
+    assert_eq!(
+        *condition,
+        DelayedTriggerCondition::WhenLeavesPlayFiltered {
+            filter: TargetFilter::SelfRef,
+        },
+        "delayed leaves-battlefield condition on the enchantment (SelfRef)"
+    );
+    let Effect::Sacrifice { target, .. } = effect.effect.as_ref() else {
+        panic!("expected Sacrifice, got {:?}", effect.effect);
+    };
+    assert_eq!(
+        *target,
+        TargetFilter::ParentTarget,
+        "sacrifice targets the reanimated creature"
+    );
+    assert!(
+        delayed.sub_ability.is_none(),
+        "chain ends at the delayed trigger"
     );
 }
 
