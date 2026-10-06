@@ -3819,71 +3819,26 @@ fn a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis() {
 }
 
 /// ITEM 2 (CR 732.2a) — the DECLARE seam: **on an offer that published no declaration of its
-/// own**, a `template: None` declaration is admitted only when `loop_period_driver()` names the
-/// offer's own proposer. The qualifier is item-4 C2's and is load-bearing — see the arm
-/// table below.
+/// own**, a `template: None` declaration is admitted only when the offer carries the confirmed
+/// period its take replays.
 ///
-/// **WHY THIS FIXTURE AND NOT `loop_shortcut.rs`.** Site F sits under
-/// `if !offer.schema.points.is_empty()`. The dina bounded offer publishes an EMPTY point set
-/// (asserted green by that module's acceptance row), so this row would be structurally VACUOUS
-/// there. The F4 offer publishes all three of this cycle's per-iteration choices, so the arm is
-/// live here and only here. That fixture choice is load-bearing, not incidental.
+/// **WHY THIS FIXTURE.** Site F sits under `if !offer.schema.points.is_empty()`. The F4 offer
+/// publishes all three of this cycle's per-iteration choices, so the arm is live here.
 ///
-/// **WHY IT IS A DIFFERENT ROW FROM THE MINT ARMS.** The mint-seam instrument
-/// (`try_offer_bounded_cycle_shortcut`) cannot observe `handle_declare_shortcut` at all —
-/// different seam, different instrument. Any future change to this routing discriminant needs
-/// BOTH a mint-seam row and a declare-seam row; neither covers the other.
+/// **THE HAZARD.** A `template: None` declaration against a non-empty schema skips pin
+/// validation entirely, so it is admitted only where the take replays a confirmed period instead
+/// of the declaration's pins.
 ///
-/// **THE HAZARD, and it is the one direction in which relaxing step (1b) makes the engine LESS
-/// safe than before.** A `template: None` declaration against a non-empty schema skips pin
-/// validation entirely — legitimate for exactly one drive shape, the object-growth route, which
-/// re-derives its template from `last_loop_action_sequence`. Once (1b) went seat-relative, a
-/// bounded offer can be minted with a FOREIGN period in state; under a merely-non-empty test that
-/// foreign period would take the unvalidated sibling arm and open the CR 732.2b APNAP window on a
-/// client-supplied declaration. The arm therefore asks whether the object-growth route it would
-/// re-derive from is live for this proposer, which is whose period it is AND that every step of
-/// it is one they take at priority.
-///
-/// **ALL THREE ARMS RUN ON AN OFFER WHOSE OWN `declaration` IS CLEARED (item-4 C2).** That is
-/// the offer shape site F still decides — `handle_declare_shortcut` resolves a `template: None`
-/// declaration against `offer.declaration` above the pin block, so an offer that published one
-/// bypasses site F entirely. The clearing keeps this row on its own subject instead of silently
-/// converting it into a `declaration_conforms` row; the fourth arm below is the paired positive
-/// that proves the clearing is the operative axis. See the closure's own comment for why a
-/// declaration-free offer is a reachable production shape rather than a contrivance.
-///
-/// | arm | offer `declaration` | sequence | expected `waiting_for` |
+/// | arm | offer `declaration` | offer `period` | expected `waiting_for` |
 /// |---|---|---|---|
-/// | EMPTY-seq | cleared | empty | `Priority` (fail-closed) — must-not-flip |
-/// | OWN-seq | cleared | proposer's | `RespondToShortcut` (the legitimate object-growth route) — must-not-flip |
-/// | FOREIGN-seq | cleared | an opponent's | `Priority` — **the remedy** |
-/// | RETAINED | **retained** | empty | `RespondToShortcut` — **the C2 paired positive**: one field apart from EMPTY-seq, and it flips |
+/// | NO-period | cleared | empty | `Priority` (fail-closed) |
+/// | PERIOD | cleared | confirmed | `RespondToShortcut` |
+/// | RETAINED | **retained** | empty | `RespondToShortcut` — one field apart from NO-period |
 ///
-/// **TWO-SIDED CONTROL, PER ASSERTION** — no constant implementation passes:
-/// * **DROP** the proposer test (restore `state.last_loop_action_sequence.is_empty()`) ⇒
-///   FOREIGN-seq returns `RespondToShortcut` ⇒ THAT assertion fails, while EMPTY/OWN still pass.
-/// * **TRIVIALIZE** to always-reject ⇒ OWN-seq returns `Priority` ⇒ **that** assertion fails
-///   instead (the shipped object-growth declarations break — the tree's own doc above this arm
-///   says keying on `template.is_none()` alone does exactly this). TRIVIALIZE to never-reject ⇒
-///   EMPTY-seq returns `RespondToShortcut` ⇒ that assertion fails.
-/// * **REVERT item-4 C2** (drop `let template = template.or_else(|| offer.declaration.cloned())`
-///   from `handle_declare_shortcut`) ⇒ the RETAINED arm returns `Priority` ⇒ **that** assertion
-///   fails, while the three cleared-offer arms are untouched (they have no declaration to
-///   resolve against, so the `or_else` was already a no-op for them).
-///
-/// ⚠ **WHAT THIS ROW DELIBERATELY DOES NOT ASSERT — a realized negative, recorded rather than
-/// re-keyed.** Continuing each ACCEPTED arm through `accept_all_opponents` was measured, and both
-/// the legitimate OWN-seq route and the illegitimate FOREIGN-seq one commit `dlife = 0`: a
-/// `template: None` declaration carries no pins, so the drive fail-closes on the first uncovered
-/// per-iteration choice either way. (The conformant `template: Some(..)` declarations DO commit —
-/// that is `r2a`'s subject — but they never reach this arm.) The board's own zero therefore
-/// DOMINATES any life-axis discriminator here, so the downstream harm is structurally
-/// unobservable on this fixture and is NOT claimed. This row asserts the GATE VERDICT, which is
-/// the property that actually fails closed.
+/// Drop the period conjunct ⇒ PERIOD reads `Priority`; delete the arm ⇒ NO-period reads
+/// `RespondToShortcut`; revert item-4 C2's `or_else` ⇒ RETAINED reads `Priority`.
 #[test]
 fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
-    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
-
     let mut state = load_f4();
     let beat = drive_f4_to_offer(&mut state, 400)
         .expect("REACH-GUARD: every arm below is vacuous without the engine's own bounded offer");
@@ -3908,38 +3863,19 @@ fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
          `declaration retained` positive at the end of this row"
     );
 
-    let opp = state
-        .players
-        .iter()
-        .map(|p| p.id)
-        .find(|p| *p != proposer)
-        .expect("REACH-GUARD: the FOREIGN arm needs a second seat to attribute a period to");
-    let card_id = state
-        .objects
-        .values()
-        .next()
-        .map(|o| o.card_id)
-        .expect("the dump has objects");
-
-    // One offer state, one field reassigned per arm, one action applied — nothing else differs.
-    //
-    // ⚠ THE OFFER'S OWN `declaration` IS CLEARED, and that is what keeps this row LIVE rather
-    // than what weakens it (item-4 C2). `handle_declare_shortcut` now resolves a `template:
-    // None` declaration against `offer.declaration` ABOVE the pin block, so on an offer that
-    // published one, `&template` takes the `Some(t)` arm and site F is never reached — all
-    // three arms below would read `RespondToShortcut` and the row would be measuring
-    // `declaration_conforms` instead of the period test it is named for. Clearing the
-    // declaration puts the row back on the offer shape site F still decides, which is a
-    // REACHABLE production shape and not a contrivance: `build_bounded_declaration` returns
-    // `None` on a journal miss or a kind/value mismatch even with a non-empty schema, both
-    // non-bounded mints hard-code `declaration: None`, and a restored save may carry `None`.
-    // Measured across the tracked suite at this tip: 34 distinct tests still reach site F on a
-    // point-carrying offer that published no declaration.
-    let declare_with = |seq: Vec<LoopActionContext>| {
+    let declare_with = |period: engine::game::period_confirm::ConfirmedPeriod, keep: bool| {
         let mut probe = state.clone();
-        probe.last_loop_action_sequence = seq;
         match &mut probe.waiting_for {
-            WaitingFor::LoopShortcut { declaration, .. } => *declaration = None,
+            WaitingFor::LoopShortcut {
+                declaration,
+                period: offered,
+                ..
+            } => {
+                if !keep {
+                    *declaration = None;
+                }
+                *offered = period;
+            }
             other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
         }
         apply(
@@ -3953,69 +3889,24 @@ fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
         .expect("dispatched — a refusal is a HANDBACK, not an error");
         probe.waiting_for.variant_name()
     };
-    // The SAME EMPTY-seq call with the declaration RETAINED — one field apart from the first
-    // assertion below, and the axis is the offer's own `declaration`.
-    let declare_empty_seq_with_declaration_retained = || {
-        let mut probe = state.clone();
-        probe.last_loop_action_sequence = Vec::new();
-        apply(
-            &mut probe,
-            proposer,
-            GameAction::DeclareShortcut {
-                count: IterationCount::Fixed(1),
-                template: None,
-            },
-        )
-        .expect("dispatched — a refusal is a HANDBACK, not an error");
-        probe.waiting_for.variant_name()
-    };
-    let step = |controller: PlayerId| LoopActionContext {
-        card_id,
-        controller,
-        action: LoopAction::Recast {
-            from_zone: engine::types::zones::Zone::Hand,
-            uses_buyback: BuybackUsage::NotUsed,
-        },
-        convoke: None,
-        pins: Vec::new(),
-    };
 
     assert_eq!(
-        declare_with(Vec::new()),
+        declare_with(Default::default(), false),
         "Priority",
-        "EMPTY-seq must-not-flip — CR 732.2a: with no period at all there is nothing to \
-         re-derive a template from, so a pin-consuming drive would run with no pins. Fail closed \
-         into the manual-play handback"
+        "NO-period — CR 732.2a: with no confirmed period a pin-consuming drive would run with no \
+         pins, so it fails closed into the manual-play handback"
     );
     assert_eq!(
-        declare_with(vec![step(proposer)]),
+        declare_with(crate::loop_shortcut::one_item_period(), false),
         "RespondToShortcut",
-        "OWN-seq must-not-flip: the proposer's own recorded period IS the object-growth route's \
-         re-derivation source, so this is the shipped legitimate acceptance. An always-reject \
-         remedy breaks it"
+        "PERIOD: the offer's confirmed period is what the take replays, so the declaration opens \
+         the CR 732.2b window"
     );
     assert_eq!(
-        declare_with(vec![step(opp)]),
-        "Priority",
-        "FOREIGN-seq — THE REMEDY. CR 732.2a: an opponent's independent activation is not a \
-         template this proposer's drive can re-derive from, so admitting it would open the \
-         CR 732.2b window on a client-supplied declaration that received ZERO pin validation. \
-         NOTE the paired assertion below: this seat-relative refusal is what site F decides on a \
-         declaration-free offer, NOT a blanket refusal of `template: None` \
-         against a schema with published points"
-    );
-    // ── PAIRED POSITIVE, and it is what makes the two refusals above ATTRIBUTABLE ──
-    assert_eq!(
-        declare_empty_seq_with_declaration_retained(),
+        declare_with(Default::default(), true),
         "RespondToShortcut",
-        "item-4 C2: byte-identical to the EMPTY-seq arm above except that the offer's own \
-         `declaration` is RETAINED, and it flips. Two things follow, and neither is provable \
-         from the refusals alone. (1) Those refusals are site F's seat-relative period verdict, \
-         not this fixture refusing every `template: None` declaration for some unrelated reason \
-         — an always-reject engine fails HERE. (2) Site F is REACHED at all on the cleared \
-         offer, because the only difference between reaching it and bypassing it is the field \
-         this assertion restores. Revert C2's `or_else` ⇒ this arm reads `Priority` and the \
-         whole row degenerates into three copies of one verdict"
+        "RETAINED: one field apart from NO-period, the offer's own declaration resolves the \
+         `template: None` above site F"
     );
 }
 

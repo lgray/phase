@@ -4370,11 +4370,10 @@ pub enum PersistentAxisMaterialization {
     },
     /// CR 732.2a: an OBSERVED-growth loop cannot be single-batched (a per-cycle
     /// trigger/replacement reads or reacts to the growing axis, e.g. Heliod on life gain
-    /// or Corpsejack on counter placement). Replay this captured action `sequence` N
+    /// or Corpsejack on counter placement). Replay the offer's confirmed `period` N
     /// times through real `apply()` at the boundary so each observer fires each cycle.
-    /// The `sequence` is CLONED into the stash (it serializes; round-trip verified) so the
-    /// boundary read survives save/reload and does NOT rely on the serde-skipped live
-    /// `last_loop_action_sequence` (sidesteps the Kilo FIX-3 drop-on-load scar).
+    /// The `period` is CLONED into the stash (it serializes) so the boundary read survives
+    /// save/reload.
     /// `collapsed_axes` is the subset of the loop's ∞-mark set that THIS materialization is
     /// accountable for ending — the `DeferredAccrual` axes, per
     /// `analysis::resource::ResourceAxis::unbounded_mark_kind`, captured at accept for a scoped
@@ -4382,7 +4381,7 @@ pub enum PersistentAxisMaterialization {
     /// `Mana(_)`) is already materialized in the pool and its `∞` ends under CR 500.5 + CR 106.4,
     /// not with this collapse.
     DriveSequence {
-        sequence: Vec<LoopActionContext>,
+        period: crate::game::period_confirm::ConfirmedPeriod,
         collapsed_axes: Vec<ResourceAxis>,
     },
 }
@@ -13815,39 +13814,6 @@ pub(crate) fn loop_period_is_priority_driven_of(seq: &[LoopActionContext]) -> bo
 /// player CR 602.2 admits only when the object says otherwise.
 pub(crate) fn loop_period_driver_of(seq: &[LoopActionContext]) -> Option<PlayerId> {
     loop_period_controller_of(seq).filter(|_| loop_period_is_priority_driven_of(seq))
-}
-
-/// What kind of step drives a recorded period.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LoopPeriodKind {
-    /// CR 117.1b: every step is one its controller takes at priority.
-    PriorityDriven,
-    /// CR 603.3: every step is the resolution of a triggered ability.
-    TriggerDriven,
-}
-
-impl GameState {
-    /// CR 732.2a: the seat whose record this is, with the kind of step that drives it —
-    /// [`loop_period_kind_of`] asked of the state's own record.
-    pub(crate) fn loop_period_kind(&self) -> Option<(PlayerId, LoopPeriodKind)> {
-        loop_period_kind_of(&self.last_loop_action_sequence)
-    }
-}
-
-/// CR 732.2a: whose record this sequence is and which kind of step drives it. `None` for an
-/// empty or heterogeneous record, and for one that mixes kinds.
-pub(crate) fn loop_period_kind_of(seq: &[LoopActionContext]) -> Option<(PlayerId, LoopPeriodKind)> {
-    let controller = loop_period_controller_of(seq)?;
-    if loop_period_is_priority_driven_of(seq) {
-        Some((controller, LoopPeriodKind::PriorityDriven))
-    } else if seq
-        .iter()
-        .all(|step| matches!(step.action, LoopAction::ResolveTrigger { .. }))
-    {
-        Some((controller, LoopPeriodKind::TriggerDriven))
-    } else {
-        None
-    }
 }
 
 /// The classification accessors above, reachable from the integration suite, which is a separate
@@ -39246,9 +39212,8 @@ mod tests {
     }
 
     /// PR-7 v4 (CR 732.2a): the deferred-materialization stash round-trips through serde
-    /// byte-for-byte — LOAD-BEARING for the observed-growth `DriveSequence` (its `sequence`
-    /// lives IN the serialized stash, not the serde-skipped live `last_loop_action_sequence`,
-    /// sidestepping the FIX-3 drop-on-load scar). A mixed `Vec` (Counters + Life +
+    /// byte-for-byte — LOAD-BEARING for the observed-growth `DriveSequence`, whose `period`
+    /// lives IN the serialized stash. A mixed `Vec` (Counters + Life +
     /// DriveSequence) survives serialize → deserialize equal, so a save captured
     /// mid-materialization drives correctly on reload.
     ///
@@ -39259,16 +39224,18 @@ mod tests {
     #[test]
     fn persistent_axis_materialization_stash_round_trips_through_serde() {
         let mut state = GameState::new_two_player(7);
-        let seq = vec![LoopActionContext {
-            card_id: CardId(42),
-            controller: PlayerId(0),
-            action: LoopAction::Recast {
-                from_zone: Zone::Hand,
-                uses_buyback: BuybackUsage::NotUsed,
-            },
-            convoke: None,
-            pins: vec![],
-        }];
+        let period: crate::game::period_confirm::ConfirmedPeriod =
+            serde_json::from_value(serde_json::json!([{
+                "seat": 0,
+                "action": { "type": "PassPriority" },
+                "play": null,
+                "mandatory_answer": false,
+                "next_object_id": 5,
+                "minted_since": 5,
+                "cost_move": null,
+            }]))
+            .expect("a one-item period deserializes");
+        assert!(!period.is_empty(), "reach-guard: the payload is populated");
         let items = vec![
             PersistentAxisMaterialization::Counters(vec![CounterGrowth {
                 object: ObjectId(7),
@@ -39280,7 +39247,7 @@ mod tests {
                 per_cycle_delta: 3,
             },
             PersistentAxisMaterialization::DriveSequence {
-                sequence: seq,
+                period,
                 collapsed_axes: vec![ResourceAxis::Life(PlayerId(0)), ResourceAxis::TokensCreated],
             },
         ];
@@ -39518,7 +39485,7 @@ mod tests {
         driven_axis: ResourceAxis,
     ) -> Vec<PersistentAxisMaterialization> {
         vec![PersistentAxisMaterialization::DriveSequence {
-            sequence: vec![],
+            period: Default::default(),
             collapsed_axes: vec![driven_axis],
         }]
     }

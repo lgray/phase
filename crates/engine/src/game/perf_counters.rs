@@ -955,6 +955,16 @@ pub fn record_drive_snapshot() {
     with_take_cost(|c| c.drive_snapshots += 1);
 }
 
+/// Runs a debug-build check without charging its work to the take-cost counters.
+#[cfg(debug_assertions)]
+pub(crate) fn outside_take_cost(check: impl FnOnce()) {
+    #[cfg(feature = "test-support")]
+    let counted = TAKE_COST_COUNTERS.with(Cell::get);
+    check();
+    #[cfg(feature = "test-support")]
+    TAKE_COST_COUNTERS.with(|cell| cell.set(counted));
+}
+
 #[cfg(feature = "test-support")]
 pub fn record_pool_entries_walked(entries: u64) {
     with_take_cost(|c| c.pool_entries_walked += entries);

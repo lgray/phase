@@ -1,6 +1,8 @@
 //! CR 732.2a: the confirmer's replay of a trace candidate, and the cover it certifies on.
 
-use engine::analysis::resource::{FodderCoverRefusal, ObjectGrowthVerdict};
+use engine::analysis::decision_template::IterationCount;
+use engine::analysis::loop_check::ShortcutResponse;
+use engine::analysis::resource::{FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis};
 use engine::game::engine::certify_object_growth_frames_for_tests;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
@@ -548,4 +550,90 @@ fn a_period_paying_a_random_discard_cost_is_refused_as_random() {
         "{verdicts:?}"
     );
     assert!(!is_offer(state), "no offer");
+}
+
+/// Declares the standing offer at `count`, and every seat asked accepts it.
+fn take(runner: &mut GameRunner, count: u32) {
+    act(
+        runner,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(count),
+            template: None,
+        },
+    );
+    while matches!(
+        runner.state().waiting_for,
+        WaitingFor::RespondToShortcut { .. }
+    ) {
+        act(
+            runner,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+        );
+    }
+}
+
+fn marks_mana(state: &GameState) -> bool {
+    state.unbounded_resources.get(&P0).is_some_and(|axes| {
+        axes.iter()
+            .any(|axis| matches!(axis, ResourceAxis::Mana(_)))
+    })
+}
+
+/// CR 106.6 + CR 732.2c: Food Chain's mana may be spent only to cast creature spells, so a take of
+/// the Food Chain + Eternal Scourge period performs its cycles and leaves that restricted mana,
+/// while Basalt Monolith's unrestricted period takes the ∞ mark.
+#[test]
+fn a_take_whose_period_adds_restricted_mana_performs_it() {
+    let member = BoardCMember::C1EternalScourge;
+    let Some(mut board) = food_chain_board::build(member) else {
+        return;
+    };
+    board.runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    for _ in 0..3 {
+        if is_offer(board.runner.state()) {
+            break;
+        }
+        food_chain_board::exile_with_food_chain(
+            &mut board.runner,
+            board.food_chain,
+            board.creature,
+            member.mana(),
+        );
+        food_chain_board::cast_spell(&mut board.runner, board.creature).expect("cast from exile");
+        settle(&mut board.runner, &|_| 0);
+    }
+    assert!(
+        is_offer(board.runner.state()),
+        "reach: the Food Chain period is offered"
+    );
+    let pool = |state: &GameState, restricted: bool| {
+        state.players[0]
+            .mana_pool
+            .units()
+            .filter(|unit| unit.restrictions.is_empty() != restricted)
+            .count()
+    };
+    let before = pool(board.runner.state(), true);
+    take(&mut board.runner, 3);
+    let state = board.runner.state();
+    assert!(
+        pool(state, true) >= before + 3,
+        "each performed cycle nets one restricted mana: {before} -> {}",
+        pool(state, true)
+    );
+    assert_eq!(pool(state, false), 0, "no unrestricted mana is added");
+    assert!(!marks_mana(state), "the restricted period takes no ∞ mark");
+
+    let mut basalt = basalt_cycles(false, 2).expect("the fixture holds Basalt Monolith");
+    assert!(
+        is_offer(basalt.state()),
+        "reach: the Basalt Monolith period is offered"
+    );
+    take(&mut basalt, 3);
+    assert!(
+        marks_mana(basalt.state()),
+        "the unrestricted period takes the ∞ mark"
+    );
 }

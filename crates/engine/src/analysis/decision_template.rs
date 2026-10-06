@@ -785,178 +785,26 @@ pub fn resolve(
         .collect()
 }
 
-/// CR 732.2a: which of a template's recorded answers the prompts already met in THIS drive
-/// have taken. Indexes `DecisionTemplate::decisions` itself — [`take_answer`] selects over that
-/// vector, so the cursor is sized against the vector it indexes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StepAnswers {
-    taken: Vec<bool>,
-}
-
-impl StepAnswers {
-    /// One cursor per drive of one step, sized to the template that drive was handed.
-    pub(crate) fn for_template(template: &DecisionTemplate) -> Self {
-        Self {
-            taken: vec![false; template.decisions.len()],
-        }
-    }
-
-    /// Out-of-range reads as UNTAKEN and out-of-range marks GROW, so a cursor sized against a
-    /// template that no longer matches degrades to the declared identity rather than panicking
-    /// mid-drive or silently re-answering.
-    fn is_taken(&self, index: usize) -> bool {
-        self.taken.get(index).copied().unwrap_or(false)
-    }
-
-    fn mark(&mut self, index: usize) {
-        if self.taken.len() <= index {
-            self.taken.resize(index + 1, false);
-        }
-        self.taken[index] = true;
-    }
-
-    /// CR 732.2a: every entry this drive was handed has been taken by a prompt occurrence.
-    pub(crate) fn every_entry_taken(&self) -> bool {
-        self.taken.iter().all(|t| *t)
-    }
-}
-
-/// CR 400.7 + CR 732.2a: which conjuncts identify ONE recorded answer. Decided by the STEP KIND
-/// at `game::engine::drive_loop_action_iteration`'s opener dispatch, never by a seam and never by
-/// a flag: a declaration is a proposal about a frozen board, a priority-side step's interval is
-/// opened by an action its own source offers, and a trigger-driven step's interval is one CR 400.7
-/// replaces every zone-changing object inside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecordedAnswerKey {
-    /// CR 601.2a / CR 602.2 / CR 605.3a: the prompts of this interval are the ones the step's own
-    /// source offers, so the source is part of the key.
-    PointAndSource,
-    /// CR 603.3 + CR 400.7: the asking object is gone by the next repetition, so the key is the
-    /// place in the sequence.
-    Point,
-}
-
-/// CR 732.2a: how a template's recorded answers are matched to the prompts they answer.
-pub(crate) enum AnswerIdentity<'a> {
-    /// A player's `DeclareShortcut`. `game::engine::bounded_cycle_pin_slots` publishes ONE
-    /// decision point per slot — a second stack entry from one source is the same open
-    /// choice — so a declaration holds one answer per point, and CR 732.2a's "sequence of
-    /// game choices … and the predictable results of the sequence" applies that one answer
-    /// at every occurrence of the point's prompt.
-    PerDeclaredPoint,
-    /// A recorded step's replay. `game::engine::record_loop_pin` appends ONE entry per
-    /// answered prompt occurrence, so a class names a SEQUENCE and each occurrence of its
-    /// prompt takes the next entry not already taken in this drive. WHICH conjuncts make up
-    /// that class is `key`'s question, and it is the step kind's answer.
-    PerOccurrence {
-        answers: &'a mut StepAnswers,
-        key: RecordedAnswerKey,
-    },
-}
-
-impl AnswerIdentity<'_> {
-    /// CR 732.2a: every entry this drive was handed has been taken by a prompt occurrence.
-    pub(crate) fn every_entry_taken(&self) -> bool {
-        match self {
-            // A declaration holds ONE answer per point and re-applies it at every occurrence, so
-            // it marks nothing and claims no bijection.
-            AnswerIdentity::PerDeclaredPoint => true,
-            AnswerIdentity::PerOccurrence { answers, .. } => answers.every_entry_taken(),
-        }
-    }
-
-    /// CR 732.2a: every entry of `template` is taken or spent. Read by the settle, so the drive
-    /// never re-borrows the cursor mid-loop.
-    ///
-    /// CR 603.3b: under the trigger-driven key an untaken `Order` entry is spent, because ordering
-    /// is a choice only when several abilities are put on the stack at once, and an interval that
-    /// asked no ordering question — a later occurrence the controller's saved template ordered —
-    /// made no ordering choice for the entry to answer. Every other key is exactly
-    /// [`AnswerIdentity::every_entry_taken`].
-    pub(crate) fn every_entry_settled(&self, template: &DecisionTemplate) -> bool {
-        match self {
-            AnswerIdentity::PerDeclaredPoint => self.every_entry_taken(),
-            AnswerIdentity::PerOccurrence { answers, key } => match key {
-                RecordedAnswerKey::PointAndSource => answers.every_entry_taken(),
-                RecordedAnswerKey::Point => {
-                    template.decisions.iter().enumerate().all(|(index, pin)| {
-                        answers.is_taken(index) || matches!(pin, PinnedDecision::Order { .. })
-                    })
-                }
-            },
-        }
-    }
-}
-
-/// CR 732.2a + CR 608.2b: the recorded answer THIS prompt occurrence owns, RESOLVED against this
-/// iteration's board. The two refusals are different questions and both become `Err(RecastAbort)`
-/// at every seam, never a default: `None` is "the record does not answer this prompt", `Err` is
-/// "the pin that answers it is illegal this iteration". Selecting and resolving in ONE call is
-/// what keeps a pin's CR 608.2b re-check on the beat that answers it — no seam can select without
-/// resolving, or resolve a pin it did not select.
+/// CR 732.2a + CR 608.2b: the declared answer THIS prompt occurrence takes, RESOLVED against this
+/// iteration's board. A declaration holds one answer per point and CR 732.2a applies it at every
+/// occurrence of the point's prompt. The two refusals are different questions and both become
+/// `Err(RecastAbort)` at every seam, never a default: `None` is "the template does not answer this
+/// prompt", `Err` is "the pin that answers it is illegal this iteration". Selecting and resolving
+/// in ONE call keeps a pin's CR 608.2b re-check on the beat that answers it.
 ///
-/// The CHOICE POINT is supplied by the BEAT, never hard-coded by the seam: one seam can serve
-/// two beats (the mana-ability tap cost and the CR 701.34a proliferate choice both reach
-/// `pinned_targets_for_source`), and a seam hard-coding one point for both would be the same
-/// lossiness the typed point removes, one level down.
-///
-/// Under `PerOccurrence` it returns the first entry of (point, source) not already taken and
-/// marks it taken; under `PerDeclaredPoint` it returns the first entry of that class and marks
-/// nothing, which is the declared identity in full.
+/// The CHOICE POINT is supplied by the beat, never hard-coded by the seam.
 pub(crate) fn take_answer(
     template: &DecisionTemplate,
     iteration: IterationIndex,
     state: &GameState,
     point: ChoicePoint,
     source_is_the_prompts: impl Fn(&DecisionSource) -> bool,
-    identity: &mut AnswerIdentity<'_>,
 ) -> Option<Result<ConcreteDecision, ReplayFailure>> {
-    let pins = &template.decisions;
-    let selected = match identity {
-        AnswerIdentity::PerDeclaredPoint => pins.iter().find(|pin| {
-            let slot = pin.slot();
-            slot.point == point && source_is_the_prompts(&slot.source)
-        })?,
-        AnswerIdentity::PerOccurrence { answers, key } => {
-            let of_this_class = |pin: &PinnedDecision| {
-                let slot = pin.slot();
-                slot.point == point
-                    && match key {
-                        RecordedAnswerKey::PointAndSource => source_is_the_prompts(&slot.source),
-                        // CR 400.7: no object identity can be the key here — every object the
-                        // interval asks about is replaced before the next repetition, so the
-                        // place in the sequence is the whole of the class.
-                        RecordedAnswerKey::Point => true,
-                    }
-            };
-            let index = pins
-                .iter()
-                .enumerate()
-                .find(|(i, pin)| !answers.is_taken(*i) && of_this_class(pin))
-                .map(|(i, _)| i)?;
-            answers.mark(index);
-            &pins[index]
-        }
-    };
-    match identity {
-        AnswerIdentity::PerOccurrence {
-            key: RecordedAnswerKey::Point,
-            ..
-        } => {
-            let mut live = selected.clone();
-            if let PinnedDecision::Targets { targets, .. } = &mut live {
-                for target in targets.iter_mut() {
-                    *target = target.at_live_incarnation();
-                }
-            }
-            Some(resolve_pin(&live, iteration, state))
-        }
-        AnswerIdentity::PerOccurrence {
-            key: RecordedAnswerKey::PointAndSource,
-            ..
-        }
-        | AnswerIdentity::PerDeclaredPoint => Some(resolve_pin(selected, iteration, state)),
-    }
+    let selected = template.decisions.iter().find(|pin| {
+        let slot = pin.slot();
+        slot.point == point && source_is_the_prompts(&slot.source)
+    })?;
+    Some(resolve_pin(selected, iteration, state))
 }
 
 /// Resolve one pin. The failure kind is selected HERE by the pin kind (G2): an absent target
@@ -1022,9 +870,8 @@ fn resolve_pin(
         // CR 601.2h + CR 702.51a/b: re-bind the convoke tap-set LIVE against this
         // iteration's board. The caster + locked remaining cost come from the live
         // `ManaPayment` prompt (CR 601.2f cost-lock); the single-authority selector
-        // `select_convoke_taps` picks the minimal deterministic set. A `ConvokeTaps` pin is
-        // minted ONLY by the loop-replay template (`build_recast_template`), so this replay
-        // artifact uses `DetectionFodderFirst`: CR 702.51a makes convoke optional, so the
+        // `select_convoke_taps` picks the minimal deterministic set. A `ConvokeTaps` pin is a
+        // loop-replay artifact, so it uses `DetectionFodderFirst`: CR 702.51a makes convoke optional, so the
         // replay MAY tap the reproduced fodder it recreates each period rather than a
         // stable-partition engine permanent (which would drift the CR 732.2a object-growth
         // cover check and suppress a valid loop). No legal set ⇒ `UnpayableConvoke` (CR 702.51b).
@@ -1118,10 +965,7 @@ fn resolve_target(
         // the spelling, not the writer's intent, so the split cannot adjudicate that case —
         // it can only make the honest spelling available and make the in-process producers
         // use it. `GameState::migrate_transient_loop_sequence` keeps a loaded sequence ONLY
-        // for a save captured in a `LoopShortcut` / `RespondToShortcut` window, and on that
-        // route the pins are replayed by the accept→materialize drive through
-        // `build_recast_template` → `decision_template::resolve`, i.e. through THIS call —
-        // so a wire pin's EXISTENCE half is authority-enforced here too. Same class as the
+        // for a save captured in a `LoopShortcut` / `RespondToShortcut` window. Same class as the
         // wire-sourced `deliverable_capacity` defect `reject_zero_bound_shortcut_offer` closes: a
         // load-seam value the in-process producer census cannot see.
         //
@@ -3582,8 +3426,7 @@ mod tests {
     ///
     /// CR 732.2a: `bounded_cycle_pin_slots` publishes ONE point per slot, so a declaration
     /// holds one answer per point and that answer applies at EVERY occurrence of the point's
-    /// prompt. This is the leg that goes red under a `PerOccurrence` cursor wrongly applied to
-    /// the declared path — the single most likely wrong implementation of the identity split.
+    /// prompt.
     #[test]
     fn r9_a_declared_point_answers_every_occurrence_of_its_prompt() {
         let source = all_copies(7);
@@ -3602,7 +3445,6 @@ mod tests {
                 DecisionKind::LoopChoice,
             ),
         };
-        let mut declared = AnswerIdentity::PerDeclaredPoint;
         for occurrence in 0..3 {
             let taken = take_answer(
                 &template,
@@ -3610,7 +3452,6 @@ mod tests {
                 &state,
                 ChoicePoint::AnnouncedTarget,
                 |candidate| candidate == &source,
-                &mut declared,
             );
             assert!(
                 matches!(
@@ -3630,58 +3471,9 @@ mod tests {
                 &state,
                 ChoicePoint::MayGate,
                 |candidate| candidate == &source,
-                &mut declared,
             )
             .is_none(),
             "a point the declaration never pinned is still unanswered"
-        );
-    }
-
-    /// CR 400.7 + CR 603.3b: **which conjuncts `RecordedAnswerKey` puts in the class, at the one
-    /// seam that reads it.** An ordering pin whose slot source names a SPENT incarnation is the
-    /// case CR 400.7 describes — the object that asked was replaced — and the two keys answer it
-    /// oppositely: `Point` takes the entry at its place in the sequence, `PointAndSource` finds no
-    /// entry of the class at all.
-    ///
-    /// The same template, board and predicate on both legs, so the key is the only difference.
-    #[test]
-    fn a_stale_ordering_source_is_refused_only_when_the_source_is_part_of_the_key() {
-        let state = GameState::new_two_player(1);
-        // The recorded slot names incarnation 9; the prompt in hand carries incarnation 1.
-        let recorded = this_obj(30, Some(9));
-        let prompts = this_obj(30, Some(1));
-        let template = DecisionTemplate {
-            owner: PlayerId(0),
-            decisions: vec![PinnedDecision::Order {
-                slot: DecisionSlot::first(recorded, ChoicePoint::TriggerOrder),
-                pos: 0,
-            }],
-            replay: ReplayMode::Static,
-            key: tri_key(),
-        };
-        let ask = |key, answers: &mut StepAnswers| {
-            take_answer(
-                &template,
-                0,
-                &state,
-                ChoicePoint::TriggerOrder,
-                |candidate| candidate == &prompts,
-                &mut AnswerIdentity::PerOccurrence { answers, key },
-            )
-        };
-        let mut under_point = StepAnswers::for_template(&template);
-        assert!(
-            matches!(
-                ask(RecordedAnswerKey::Point, &mut under_point),
-                Some(Ok(ConcreteDecision::Order { pos: 0, .. }))
-            ),
-            "a trigger-driven step's key is the place in the sequence, so the spent incarnation \
-             still answers"
-        );
-        let mut under_both = StepAnswers::for_template(&template);
-        assert!(
-            ask(RecordedAnswerKey::PointAndSource, &mut under_both).is_none(),
-            "the other key puts the source in the class, and then this same entry answers nothing"
         );
     }
 }

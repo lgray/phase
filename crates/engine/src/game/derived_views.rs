@@ -7241,7 +7241,7 @@ mod tests {
         state.register_pending_materialization(
             p0,
             PersistentAxisMaterialization::DriveSequence {
-                sequence: vec![],
+                period: Default::default(),
                 collapsed_axes: vec![
                     ResourceAxis::Mana(ManaType::Green),
                     ResourceAxis::Mana(ManaType::White),

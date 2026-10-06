@@ -50,7 +50,7 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
   it("emits populated ∞ channels and omits the empty ones", () => {
     // (1) reach-guard: the engine emitted a populated pile, so the group assertions below are
     // not run against an empty set.
-    expect(tokenWire.unbounded_pile).toEqual([402, 403, 404, 407]);
+    expect(tokenWire.unbounded_pile).toEqual([402, 403, 404, 406, 407]);
     // (2) reach-guard + the two counter seam facts: the map key is a JSON STRING, and
     // `CounterType` serializes FLAT ("charge", not {"Generic":"charge"}). A regressed Serialize
     // would silently blank every ∞ pill.
@@ -151,8 +151,8 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
   it("drives the real groupByName pile predicate off engine ids", () => {
     const unboundedPileIds: ReadonlySet<ObjectId> = new Set(tokenWire.unbounded_pile);
     const objects: GameObject[] = [
-      ...[402, 403, 404, 407].map((id) => saproling(id, true)),
-      ...[406, 408, 409, 410].map((id) => saproling(id, false)),
+      ...[402, 403, 404, 406, 407].map((id) => saproling(id, true)),
+      ...[408, 409, 410].map((id) => saproling(id, false)),
       buildGameObject({
         id: 401,
         name: "Witherbloom, the Balancer",
@@ -176,12 +176,12 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     // control in that same run instead of being skipped by the positive's throw.
     //
     // (5) paired NEGATIVE from the SAME groupByName call: same name, differs only on `tapped`.
-    expect(groupOf(406).ids).toEqual([406, 408, 409, 410]);
-    expect(groupOf(406).isUnboundedPile).toBe(false);
+    expect(groupOf(408).ids).toEqual([408, 409, 410]);
+    expect(groupOf(408).isUnboundedPile).toBe(false);
     // (6) free third negative: tapped, but not a pile member — so it is not "everything tapped".
     expect(groupOf(401).isUnboundedPile).toBe(false);
     // (4) paired POSITIVE: the tapped Saprolings the engine named.
-    expect(groupOf(402).ids).toEqual([402, 403, 404, 407]);
+    expect(groupOf(402).ids).toEqual([402, 403, 404, 406, 407]);
     expect(groupOf(402).isUnboundedPile).toBe(true);
   });
 

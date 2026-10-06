@@ -97,6 +97,47 @@ static OFFER_STATE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     ))
 });
 
+/// The dump's offer, re-reached live: the captured offer carries no confirmed period, so it is
+/// declined and one more real Sprout Swarm cycle (buyback, convoking an untapped Saproling) brings
+/// the offer back with its period.
+fn offer_state() -> GameState {
+    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+        .expect("the real 4p offer dump must deserialize into the current GameState");
+    apply(&mut state, P0, GameAction::DeclineShortcut).expect("P0 declines the captured offer");
+    let fodder = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            state
+                .objects
+                .get(id)
+                .is_some_and(|o| o.name == "Saproling" && o.controller == P0 && !o.tapped)
+        })
+        .min_by_key(|id| id.0)
+        .expect("an untapped Saproling to convoke");
+    let sprout = state
+        .objects
+        .values()
+        .find(|o| o.name == "Sprout Swarm" && o.zone == Zone::Hand)
+        .map(|o| o.id)
+        .expect("Sprout Swarm is in P0's hand");
+    let outcome = GameRunner::from_state(state)
+        .cast(sprout)
+        .accept_optional()
+        .convoke_with(&[fodder])
+        .commit()
+        .resolve();
+    let state = outcome.state().clone();
+    assert!(
+        matches!(&state.waiting_for, WaitingFor::LoopShortcut { proposer, period, .. }
+            if *proposer == P0 && !period.is_empty()),
+        "the live cycle re-reaches P0's offer with its period, got {:?}",
+        state.waiting_for
+    );
+    state
+}
+
 /// The real live game state, captured at ordinary priority with Witherbloom UNTAPPED — the
 /// failing-playtest configuration where the object-growth offer did NOT surface (the untapped,
 /// lower-ObjectId B/G cost-reducer suppressed the CR 732.2a detection replay).
@@ -171,8 +212,7 @@ fn drive_all_accept_n(state: &mut GameState, n: u32) {
 
 #[test]
 fn real_4p_object_growth_accept_writes_infinite_pile() {
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
 
     // Precondition: the loaded state IS the real object-growth offer, recast context intact.
     assert!(
@@ -180,18 +220,19 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
         "fixture precondition: at the CR 732.2a LoopShortcut offer for P0, got {:?}",
         state.waiting_for
     );
-    assert!(
-        !state.last_loop_action_sequence.is_empty(),
-        "the offer must carry the intact recast context the pile re-derive drives"
-    );
 
-    // The non-circular oracle: exactly the 4 tapped vanilla Saprolings P0 controls in the
-    // real game (MEASURED — the render path is collapsed/staggered ∞, not single-member).
+    // The non-circular oracle: exactly the 5 tapped vanilla Saprolings P0 controls once the
+    // live cycle convoked one more (the render path is collapsed/staggered ∞, not single-member).
     let oracle = p0_tapped_vanilla_saprolings(&state);
     assert_eq!(
         oracle.len(),
-        4,
-        "measured: P0 controls 4 tapped Saprolings in the real game state"
+        5,
+        "P0 controls 5 tapped Saprolings at the live offer"
+    );
+    let untapped = p0_untapped_saprolings(&state);
+    assert!(
+        !untapped.is_empty(),
+        "reach: P0 controls untapped Saprolings"
     );
 
     drive_all_accept(&mut state);
@@ -219,7 +260,7 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     );
 
     // (i) untapped P0 Saprolings excluded.
-    for id in [406u64, 408, 409, 410].map(ObjectId) {
+    for id in untapped {
         assert!(
             !pile.contains(&id),
             "untapped P0 Saproling {id:?} must not be in the ∞ pile"
@@ -830,12 +871,13 @@ fn real_4p_basalt_power_artifact_refills_colorless_only() {
 /// mint ⇒ assertion (1) FLIPS (base + 0 ≠ base + 3). MEASURED: N=3 ⇒ +3 Saprolings.
 #[test]
 fn real_4p_observed_drive_sequence_replays_captured_period_n_times() {
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
-    let seq = state.last_loop_action_sequence.clone();
+    let mut state = offer_state();
+    let WaitingFor::LoopShortcut { period, .. } = state.waiting_for.clone() else {
+        panic!("fixture precondition: at the LoopShortcut offer");
+    };
     assert!(
-        !seq.is_empty(),
-        "the offer carries the real recast period the DriveSequence replays"
+        !period.is_empty(),
+        "the offer carries the confirmed recast period the DriveSequence replays"
     );
     drive_all_accept_n(&mut state, 3);
 
@@ -857,7 +899,7 @@ fn real_4p_observed_drive_sequence_replays_captured_period_n_times() {
     state.register_pending_materialization(
         P0,
         PersistentAxisMaterialization::DriveSequence {
-            sequence: seq,
+            period,
             collapsed_axes: collapsed_axes.clone(),
         },
     );
@@ -970,8 +1012,7 @@ fn drive_priority_to_next_boundary(state: &mut GameState) {
 fn real_4p_object_growth_boundary_collapse_mints_finite_tokens() {
     use engine::analysis::resource::ResourceAxis;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     assert!(
         matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
         "fixture precondition: at the CR 732.2a LoopShortcut offer for P0, got {:?}",
@@ -998,8 +1039,8 @@ fn real_4p_object_growth_boundary_collapse_mints_finite_tokens() {
     let before = p0_saproling_ids(&state);
     assert_eq!(
         before.len(),
-        8,
-        "MEASURED: P0 controls 8 Saprolings pre-collapse (4 tapped ∞-pile + 4 untapped)"
+        9,
+        "P0 controls 9 Saprolings pre-collapse (5 tapped ∞-pile + 4 untapped)"
     );
 
     drive_priority_to_next_boundary(&mut state);
@@ -1090,8 +1131,7 @@ fn real_4p_object_growth_boundary_collapse_mints_finite_tokens() {
 /// LoopCollapse-prompt precondition + `minted == 1000`) prove it isn't vacuous.
 #[test]
 fn loop_collapse_large_mint_does_not_overflow_small_stack() {
-    let mut state: GameState =
-        serde_json::from_str(&OFFER_STATE).expect("the real 4p offer dump must deserialize");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, 1000);
     let before = p0_saproling_ids(&state).len();
     drive_priority_to_next_boundary(&mut state);
@@ -2033,8 +2073,7 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
     use engine::types::counter::CounterType;
     use engine::types::game_state::CounterGrowth;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, 5);
 
     // Graft a beneficial +1/+1 counter axis (UNOBSERVED on this board) and a life axis (OBSERVED)
@@ -2173,8 +2212,7 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
     use engine::types::game_state::CounterGrowth;
     use engine::types::triggers::TriggerMode;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, 5);
 
     // Graft a +1/+1 counter axis (UNOBSERVED at accept — MEASURED counter_growth_is_observed=false).
@@ -2369,8 +2407,7 @@ fn collapse_axis_at_boundary(state: &mut GameState) -> LoopCollapseAxis {
 /// behavior leaves T2 green — T1/T3/T4 are the discriminators that catch that revert.)
 #[test]
 fn loop_collapse_prompt_labels_token_axis_tokens() {
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept(&mut state);
     // Reach-guard: the accept stashed the token materialization (non-vacuity anchor).
     assert!(
@@ -2395,8 +2432,7 @@ fn loop_collapse_prompt_labels_counter_axis_counters() {
     use engine::types::counter::CounterType;
     use engine::types::game_state::CounterGrowth;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept(&mut state);
     let creature = *p0_saproling_ids(&state)
         .iter()
@@ -2425,8 +2461,7 @@ fn loop_collapse_prompt_labels_counter_axis_counters() {
 /// REVERT-PROBE: `from_materializations` → `return LoopCollapseAxis::Tokens;` ⇒ FLIPS.
 #[test]
 fn loop_collapse_prompt_labels_life_axis_life() {
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept(&mut state);
     state.pending_unbounded_materialization.clear();
     state.register_pending_materialization(
@@ -2453,8 +2488,7 @@ fn loop_collapse_prompt_labels_multi_axis_mixed() {
     use engine::types::counter::CounterType;
     use engine::types::game_state::CounterGrowth;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept(&mut state);
     let creature = *p0_saproling_ids(&state)
         .iter()
@@ -2495,8 +2529,7 @@ fn census_boundary(axis: LoopCollapseAxis, bound: u32) -> (GameState, ObjectId) 
     use engine::types::counter::CounterType;
     use engine::types::game_state::CounterGrowth;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, bound);
     let creature = *p0_saproling_ids(&state)
         .iter()
@@ -2704,8 +2737,7 @@ fn an_applier_written_beat_still_stacks_the_entered_phases_triggers() {
     const N: u32 = 3;
     const GAIN: i32 = 7;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, N);
     assert_eq!(
         collapse_axis_at_boundary(&mut state),
@@ -2797,8 +2829,7 @@ fn an_applier_prompt_at_the_collapse_exit_is_not_overwritten() {
 
     // (grafted, expects_aura_prompt)
     for grafted in [true, false] {
-        let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-            .expect("the real 4p offer dump must deserialize into the current GameState");
+        let mut state = offer_state();
         drive_all_accept_n(&mut state, 2);
         let fodder = *p0_saproling_ids(&state)
             .iter()
@@ -3015,7 +3046,7 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
     // LOAD-BEARING: the observed-growth DriveSequence carrying the Kilo counter axis maps
     // to Counters (not Mixed) — the single-DriveSequence shape the flagship combo pushes.
     let drive_counter = [PersistentAxisMaterialization::DriveSequence {
-        sequence: vec![],
+        period: Default::default(),
         collapsed_axes: vec![ResourceAxis::Counter(
             CounterClass::Other,
             ObjectClass::Other,
@@ -3029,7 +3060,7 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
 
     // The Tokens mapping via the DriveSequence path (a TokensCreated observed loop).
     let drive_tokens = [PersistentAxisMaterialization::DriveSequence {
-        sequence: vec![],
+        period: Default::default(),
         collapsed_axes: vec![ResourceAxis::TokensCreated],
     }];
     assert_eq!(
@@ -3065,7 +3096,7 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
     // `Mana(_)` out of `collapsed_axes`. The case is retained because `from_materializations` reads
     // whatever is STORED, including a reloaded pre-fix save or a future stash producer.
     let drive_mana = [PersistentAxisMaterialization::DriveSequence {
-        sequence: vec![],
+        period: Default::default(),
         collapsed_axes: vec![ResourceAxis::Mana(ManaType::Colorless)],
     }];
     assert_eq!(
@@ -3107,8 +3138,7 @@ fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
     use engine::types::replacements::ReplacementEvent;
     use std::sync::Arc;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, 3);
 
     // Install an OPTIONAL token-count-doubling replacement ("you may create twice that many tokens
@@ -3292,8 +3322,7 @@ fn med_mixed_counter_tokens_pause_commits_finite_counter_and_keeps_only_tokens_u
     use engine::types::replacements::ReplacementEvent;
     use std::sync::Arc;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     drive_all_accept_n(&mut state, 4);
 
     // Graft an UNOBSERVED +1/+1 counter axis onto a P0 Saproling — the same single-authority
@@ -3898,7 +3927,7 @@ fn low3_mixed_axis_replay_collapses_only_the_deferred_life_axis() {
          accept), got {stash:?}"
     );
     let PersistentAxisMaterialization::DriveSequence {
-        sequence,
+        period,
         collapsed_axes,
     } = &stash[0]
     else {
@@ -3906,10 +3935,9 @@ fn low3_mixed_axis_replay_collapses_only_the_deferred_life_axis() {
             "reach-guard: the cast-trigger board must route to the concrete replay, got {stash:?}"
         )
     };
-    assert_eq!(
-        sequence.len(),
-        3,
-        "reach-guard: the DriveSequence carries the real 3-step [mana, gain-life, untap] period"
+    assert!(
+        !period.is_empty(),
+        "reach-guard: the DriveSequence carries the confirmed [mana, gain-life, untap] period"
     );
 
     // ── DISCRIMINATOR: the accountable set is the DEFERRED axis only ──
@@ -4200,14 +4228,14 @@ fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
         .get(&P0)
         .expect("the accept registers a materialization")
         .clone();
-    let [PersistentAxisMaterialization::DriveSequence { sequence, .. }] = live.as_slice() else {
+    let [PersistentAxisMaterialization::DriveSequence { period, .. }] = live.as_slice() else {
         panic!("reach-guard: the seam under test is the DriveSequence route, got {live:?}");
     };
 
     // Rebuild it as a PRE-FIX build wrote it (`proposal.unbounded.clone()`, both axes) and take it
     // through a real save/load — the only reachable producer of such a stash under this build.
     let prefix_written = vec![PersistentAxisMaterialization::DriveSequence {
-        sequence: sequence.clone(),
+        period: period.clone(),
         collapsed_axes: vec![
             ResourceAxis::Mana(ManaType::Colorless),
             ResourceAxis::Life(P0),
@@ -4231,9 +4259,9 @@ fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
     );
     // (b) PREMISE PIN / ANTI-VACUITY: the LOADED stash equals what was written, FIELD FOR FIELD.
     // Whole-value equality rather than a `collapsed_axes.contains` check, so this also discharges
-    // the `sequence` half of the two "round-trip verified" doc claims this type carries
+    // the `period` half of the two "round-trip verified" doc claims this type carries
     // (`types::game_state` on `DriveSequence` and on `pending_unbounded_materialization`), neither
-    // of which had a backing test before this row — a lossy field inside `LoopActionContext` would
+    // of which had a backing test before this row — a lossy field inside the period would
     // otherwise round-trip badly and go unnoticed. A future `#[serde(skip)]` on `collapsed_axes`
     // deserializes to an empty `Vec` and reds HERE, instead of letting the assertions below pass
     // for the wrong reason.
@@ -4446,8 +4474,7 @@ fn batched_and_replay_routes_converge_on_the_same_life_total() {
     const N: u32 = 5;
 
     // ── ARM 2 (must-NOT-flip): no life axis ⇒ the pure token loop still BATCHES. ──
-    let mut plain: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut plain = offer_state();
     strip_life_conditional_cost_static(&mut plain);
     drive_all_accept_n(&mut plain, N);
     assert_eq!(
@@ -4457,7 +4484,7 @@ fn batched_and_replay_routes_converge_on_the_same_life_total() {
     );
 
     // ── ARM 1 (primary): an ETB-sourced life axis ⇒ the concrete replay, paid exactly once. ──
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE).unwrap();
+    let mut state = offer_state();
     strip_life_conditional_cost_static(&mut state);
     let etb_life = innkeeper_etb_life_trigger(&state);
     let host = create_life_gainer(&mut state, P0, "Grafted Innkeeper");
@@ -4502,8 +4529,7 @@ fn batched_and_replay_routes_converge_on_the_same_life_total() {
 #[test]
 fn mixed_cause_life_axis_routes_to_replay() {
     const N: u32 = 5;
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     strip_life_conditional_cost_static(&mut state);
     let etb_life = innkeeper_etb_life_trigger(&state);
     let first = create_life_gainer(&mut state, P0, "Grafted Innkeeper A");
@@ -4548,8 +4574,7 @@ fn mixed_cause_life_axis_routes_to_replay() {
 #[test]
 fn opponents_etb_life_gainer_does_not_suppress_your_axis() {
     const N: u32 = 5;
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     strip_life_conditional_cost_static(&mut state);
     let etb_life = innkeeper_etb_life_trigger(&state);
 
@@ -4616,8 +4641,7 @@ fn opponents_etb_life_gainer_does_not_suppress_your_axis() {
 #[test]
 fn combined_batched_etb_gainer_fires_once_per_replayed_cycle() {
     const N: u32 = 5;
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     strip_life_conditional_cost_static(&mut state);
     let mut batched_gainer = innkeeper_etb_life_trigger(&state);
     batched_gainer.batched = true;
@@ -4665,8 +4689,7 @@ fn lifelink_etb_damage_life_axis_routes_to_replay() {
     // 3 opponents in this 4p pod × 1 damage each, all dealt by one lifelink source per entry.
     const LIFELINK_PER_CYCLE: i32 = 3;
 
-    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
-        .expect("the real 4p offer dump must deserialize into the current GameState");
+    let mut state = offer_state();
     strip_life_conditional_cost_static(&mut state);
 
     // The real parsed battlefield-entry trigger CONDITION from this dump's pool, with only its

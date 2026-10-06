@@ -238,16 +238,26 @@ fn top_of_stack(state: &GameState) -> Option<TopOfStack> {
 
 /// Where a cycle must end: priority back with `holder`, at the frame's step, with the frame's
 /// top of stack and at least its depth (accumulation beneath is admitted).
-struct FrameEnd<'a> {
-    frame: &'a GameState,
+struct FrameEnd {
+    window: play_trace::WindowKey,
+    depth: usize,
     holder: PlayerId,
     top: Option<TopOfStack>,
 }
 
-impl FrameEnd<'_> {
+impl FrameEnd {
+    fn of(frame: &GameState, holder: PlayerId) -> Self {
+        Self {
+            window: play_trace::WindowKey::of(frame),
+            depth: frame.stack.len(),
+            holder,
+            top: top_of_stack(frame),
+        }
+    }
+
     fn reached(&self, state: &GameState) -> bool {
         matches!(state.waiting_for, WaitingFor::Priority { player } if player == self.holder)
-            && state.stack.len() >= self.frame.stack.len()
+            && state.stack.len() >= self.depth
             && top_of_stack(state) == self.top
     }
 }
@@ -315,14 +325,14 @@ fn rebind_convoke(replay: &mut GameState) -> Result<bool, OfferRefusal> {
 fn replay_cycle(
     replay: &mut GameState,
     items: &[PeriodItem],
-    end: &FrameEnd<'_>,
+    end: &FrameEnd,
     choices: &mut Vec<PinnedDecision>,
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
     for beat in 0..CYCLE_BEATS {
         if matches!(replay.waiting_for, WaitingFor::GameOver { .. })
-            || !play_trace::same_window(replay, end.frame)
+            || play_trace::WindowKey::of(replay) != end.window
         {
             return Err(OfferRefusal::NoRecurrence);
         }
@@ -601,11 +611,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
     let _probe = SimulationProbeGuard::enter();
     let s_n = crate::game::visibility::proposer_hidden_view(frame, holder);
-    let end = FrameEnd {
-        frame: &s_n,
-        holder,
-        top: top_of_stack(&s_n),
-    };
+    let end = FrameEnd::of(&s_n, holder);
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
@@ -640,6 +646,17 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     })
 }
 
+/// CR 732.2c: performs one cycle of `period` from `state`, a frame where `holder` has priority,
+/// ending where the cycle comes round again.
+pub(crate) fn perform_cycle(
+    state: &mut GameState,
+    period: &ConfirmedPeriod,
+    holder: PlayerId,
+) -> Result<(), OfferRefusal> {
+    let end = FrameEnd::of(state, holder);
+    replay_cycle(state, &period.0, &end, &mut Vec::new()).map(drop)
+}
+
 /// Every span the current trace names, with the confirmer's verdict on each at `state`, which
 /// must be a priority frame: the triggered abilities its first cycle resolved, or the refusal.
 #[cfg(any(test, feature = "test-support"))]
@@ -667,11 +684,7 @@ pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, Offe
     frame.waiting_for = WaitingFor::Priority { player: holder };
     let _probe = SimulationProbeGuard::enter();
     let frame = crate::game::visibility::proposer_hidden_view(&frame, holder);
-    let end = FrameEnd {
-        frame: &frame,
-        holder,
-        top: top_of_stack(&frame),
-    };
+    let end = FrameEnd::of(&frame, holder);
     let mut replay = frame.clone();
     Some(replay_cycle(&mut replay, &items, &end, &mut Vec::new()))
 }

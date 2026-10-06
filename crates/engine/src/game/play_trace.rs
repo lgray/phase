@@ -78,14 +78,14 @@ pub(crate) fn recording(state: &GameState) -> bool {
 /// CR 500.2: the window is the step (a phase without steps is one window); an empty stack does
 /// not end it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WindowKey {
+pub(crate) struct WindowKey {
     turn: u32,
     phase: Phase,
     step_start: u32,
 }
 
 impl WindowKey {
-    fn of(state: &GameState) -> Self {
+    pub(crate) fn of(state: &GameState) -> Self {
         Self {
             turn: state.turn_number,
             phase: state.phase,
@@ -1405,11 +1405,6 @@ pub(crate) fn current_entries(state: &GameState) -> Option<&im::Vector<TraceEntr
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn current_named(state: &GameState) -> Vec<NamedSpan> {
     current(state).map_or_else(Vec::new, |trace| trace.named.iter().copied().collect())
-}
-
-/// Whether two states stand in the same step (CR 500.2).
-pub(crate) fn same_window(a: &GameState, b: &GameState) -> bool {
-    WindowKey::of(a) == WindowKey::of(b)
 }
 
 /// Runs a hook, metering the whole-state copies it makes outside its legality reads.

@@ -7551,30 +7551,33 @@ fn dump_c_still_crowns_at_one_living_opponent_after_pause_retention() {
     assert_eq!(schema.iteration_count, IterationCount::UntilLethal);
 }
 
+/// A one-item confirmed period, for offers built by hand.
+pub(crate) fn one_item_period() -> engine::game::period_confirm::ConfirmedPeriod {
+    serde_json::from_value(serde_json::json!([{
+        "seat": 0,
+        "action": { "type": "PassPriority" },
+        "play": null,
+        "mandatory_answer": false,
+        "next_object_id": 1,
+        "minted_since": 1,
+        "cost_move": null,
+    }]))
+    .expect("a one-item period deserializes")
+}
+
 /// Seam D (CR 732.2a): against a NON-EMPTY schema on an offer that published no declaration of
-/// its own, a `template: None` declaration BYPASSES the declare-time pin firewall entirely —
-/// `predictability_gate` and `validate_pins` are not run, because nothing resolves to a template
-/// to run them against. That bypass is legitimate for exactly
-/// one drive shape: the object-growth route, which re-derives its template from
-/// `state.last_loop_action_sequence` and never reads `proposal.template`. With an EMPTY sequence
-/// there is nothing to re-derive from, so a pin-consuming drive would run with no pins at all.
+/// its own, a `template: None` declaration validates no pins. That is legitimate only when the
+/// offer carries the confirmed period the take replays, so the guard's two halves differ only in
+/// the offer's period, on ONE fixture and ONE schema:
 ///
-/// This row is the two-conjunct guard's matched pair, on ONE fixture and ONE schema so nothing
-/// but the sequence differs between the halves:
-///
-/// * EMPTY sequence  ⇒ fail-closed manual-play handback (Priority), APNAP never opens.
-/// * NON-EMPTY sequence ⇒ APNAP opens unchanged — the reach-guard proving the guard is not a
-///   blanket "reject every `template: None`", which would break every shipped object-growth
-///   declaration.
+/// * EMPTY period ⇒ fail-closed manual-play handback (Priority), APNAP never opens.
+/// * NON-EMPTY period ⇒ APNAP opens — the reach-guard proving the guard is not a blanket
+///   "reject every `template: None`".
 ///
 /// REVERT-PROBE: delete the guarded `None` arm ⇒ the first half opens `RespondToShortcut` and
-/// FAILS. Drop its period conjunct instead (reject on `template.is_none()` against a published
-/// point set alone) ⇒ the second half FAILS.
+/// FAILS. Drop its period conjunct instead ⇒ the second half FAILS.
 #[test]
 fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
-    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
-    use engine::types::identifiers::CardId;
-
     let source = YieldTarget::ThisObject {
         source_id: ObjectId(1),
         incarnation: None,
@@ -7596,53 +7599,41 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
         convoke_tappable_count: 0,
     };
 
-    let declare_with_sequence = |sequence: Vec<LoopActionContext>| -> WaitingFor {
-        let (mut runner, _kickoff) = setup_3p_draw(LoopDetectionMode::Interactive);
-        runner.state_mut().last_loop_action_sequence = sequence;
-        runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
-            proposer: P0,
-            predicted_winner: Some(P0),
-            certificate: synthetic_lethal_cert(),
-            schema: schema.clone(),
-            declaration: None,
-            road: engine::analysis::loop_check::OfferRoad::Ring,
-            period: Default::default(),
+    let declare_with_period =
+        |period: engine::game::period_confirm::ConfirmedPeriod| -> WaitingFor {
+            let (mut runner, _kickoff) = setup_3p_draw(LoopDetectionMode::Interactive);
+            runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+                proposer: P0,
+                predicted_winner: Some(P0),
+                certificate: synthetic_lethal_cert(),
+                schema: schema.clone(),
+                declaration: None,
+                road: engine::analysis::loop_check::OfferRoad::Ring,
+                period,
+            };
+            runner
+                .act(GameAction::DeclareShortcut {
+                    count: IterationCount::UntilLethal,
+                    template: None,
+                })
+                .expect(
+                    "declare dispatch succeeds (a rejection is a manual fallback, not an error)",
+                );
+            runner.state().waiting_for.clone()
         };
-        runner
-            .act(GameAction::DeclareShortcut {
-                count: IterationCount::UntilLethal,
-                template: None,
-            })
-            .expect("declare dispatch succeeds (a rejection is a manual fallback, not an error)");
-        runner.state().waiting_for.clone()
-    };
 
-    // The object-growth route's routing signal: a captured recast context. Only its PRESENCE
-    // matters to the guard, which is exactly the discriminant `materialize` dispatches on.
-    let recast = LoopActionContext {
-        card_id: CardId(7),
-        controller: P0,
-        action: LoopAction::Recast {
-            from_zone: engine::types::zones::Zone::Hand,
-            uses_buyback: BuybackUsage::Used,
-        },
-        convoke: None,
-        pins: Vec::new(),
-    };
-
-    let empty_sequence = declare_with_sequence(Vec::new());
+    let without_period = declare_with_period(Default::default());
     assert!(
-        matches!(empty_sequence, WaitingFor::Priority { .. }),
-        "CR 732.2a: a pin-consuming schema declared with NO template and NO re-derivable \
-         sequence must fail closed to manual play, not open APNAP; got {empty_sequence:?}"
+        matches!(without_period, WaitingFor::Priority { .. }),
+        "CR 732.2a: a pin-consuming schema declared with NO template and NO confirmed period \
+         must fail closed to manual play, not open APNAP; got {without_period:?}"
     );
 
-    let with_sequence = declare_with_sequence(vec![recast]);
+    let with_period = declare_with_period(one_item_period());
     assert!(
-        matches!(with_sequence, WaitingFor::RespondToShortcut { .. }),
-        "reach-guard: the object-growth route re-derives its template from the sequence and \
-         must keep opening APNAP — the guard is two-conjunct, not a blanket template-None \
-         rejection; got {with_sequence:?}"
+        matches!(with_period, WaitingFor::RespondToShortcut { .. }),
+        "reach-guard: an offer carrying its confirmed period keeps opening APNAP — the guard is \
+         two-conjunct, not a blanket template-None rejection; got {with_period:?}"
     );
 }
 

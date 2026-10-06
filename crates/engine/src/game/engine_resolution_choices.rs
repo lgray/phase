@@ -3508,10 +3508,8 @@ pub(super) fn handle_resolution_choice(
                                     ObjectId(0),
                                     events,
                                 );
-                                // DEFENSE-IN-DEPTH AT ACCEPT ONLY. The offer firewall — the
-                                // exhaustive fail-closed `_ => Err(RecastAbort)` in
-                                // `drive_loop_action_iteration` (cited by symbol; it has no
-                                // replacement-/target-choice arm) — runs at CERTIFICATION. It
+                                // DEFENSE-IN-DEPTH AT ACCEPT ONLY. The offer firewall runs at
+                                // CERTIFICATION. It
                                 // cannot bind this mint, which happens later: a replacement
                                 // effect installed AFTER the accept reaches this pause, and
                                 // `med_tokens_boundary_mint_pause_preserves_replacement_choice`
@@ -3589,13 +3587,13 @@ pub(super) fn handle_resolution_choice(
                                 );
                             }
                             PersistentAxisMaterialization::DriveSequence {
-                                sequence,
+                                period,
                                 collapsed_axes: _,
                             } => {
                                 // CR 732.2a: replay N real cycles; observers fire each cycle;
                                 // no re-offer (the drive holds the simulation guard).
                                 crate::game::engine::drive_persistent_axis_collapse(
-                                    state, sequence, amount,
+                                    state, period, player, amount,
                                 );
                             }
                         }
@@ -14024,7 +14022,7 @@ mod tests {
                 per_cycle_delta: 2,
             },
             PersistentAxisMaterialization::DriveSequence {
-                sequence: vec![],
+                period: Default::default(),
                 collapsed_axes: vec![],
             },
         ];

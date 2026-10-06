@@ -1082,15 +1082,14 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
         ),
         "precondition: the mana-engine offer must fire before acceptance"
     );
-    // The real captured two-beat period, read AT THE OFFER — `materialize_fixed_shortcut`
-    // clears `last_loop_action_sequence` on its way out, and production reads it at the same
-    // pre-clear point (`game::engine`'s capture-before-clear).
-    let sequence = rig.runner.state().last_loop_action_sequence.clone();
+    // The confirmed Basalt+Power period, read AT THE OFFER.
+    let WaitingFor::LoopShortcut { period, .. } = rig.runner.state().waiting_for.clone() else {
+        unreachable!("precondition asserted above");
+    };
     assert!(
-        sequence.len() == 2,
-        "reach-guard: the offer carries the real two-beat Basalt+Power period the DriveSequence \
-         would replay, got {} beats",
-        sequence.len()
+        !period.is_empty(),
+        "reach-guard: the offer carries the confirmed Basalt+Power period the DriveSequence \
+         would replay"
     );
     rig.runner
         .act(GameAction::DeclareShortcut {
@@ -1151,7 +1150,7 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
     rig.runner.state_mut().register_pending_materialization(
         P0,
         PersistentAxisMaterialization::DriveSequence {
-            sequence,
+            period,
             collapsed_axes: collapsed_axes.clone(),
         },
     );
