@@ -1,0 +1,10 @@
+sha=2964d6818f8e0f18b4a652c21ed3fccedbedaf42
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [  17.765s] ( 3474/37562) phase-ai search::tests::prospective_fetch_choice_survives_to_the_real_search_prompt
+        FAIL [   2.222s] ( 3288/37562) phase-ai search::tests::self_destruct_target_selection_prefers_lethal_over_nonlethal_body
+     Summary [3102.734s] 37562 tests run: 37560 passed (168 slow), 2 failed, 51 skipped
+done rc=0
