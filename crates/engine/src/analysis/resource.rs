@@ -3129,12 +3129,11 @@ fn cover_projection(state: &GameState) -> GameState {
 /// draw only if the game truly repeats with nothing changing. For a *beneficial* loop
 /// (CR 732.2a, the shortcut) the question asked here is identity in **board, zones and
 /// tap-state on the PROJECTED feed**: `normalize_for_loop`, then [`project_out_resources`],
-/// then that same strict comparator — plus the two hand conjuncts at the end of
-/// [`loop_states_equal_modulo_resources_side`], where this gate compensates for axes the
+/// then that same strict comparator — plus the hand conjunct at the end of
+/// [`loop_states_equal_modulo_resources_side`], where this gate compensates for an axis the
 /// strict comparator leaves out: [`loyalty_activation_counts_match`] over the per-object
 /// CR 606.3 count (distinct from the per-player `extra_loyalty_activations_this_turn`, which
-/// `impl PartialEq for GameState` does compare) and `last_loop_action_sequence`. Each states
-/// its own fail-closed argument there.
+/// `impl PartialEq for GameState` does compare). It states its own fail-closed argument there.
 ///
 /// What the projection removes is named by its own authorities rather than listed, because a
 /// list presented as exact is wrong by omission the moment a zeroing site is added — see
@@ -3173,14 +3172,7 @@ pub(crate) fn loop_states_equal_modulo_resources_side<'a, C: CurrentSide<'a>>(
     // `loop_states_equal`. Compare it analysis-locally (do NOT widen the strict
     // comparator, do NOT zero the field) so a loop that re-activates a loyalty
     // ability (count k -> k+1) compares UNEQUAL and is not falsely certified.
-    // `last_loop_action_sequence` is EXCLUDED from `impl PartialEq for GameState` and NOT
-    // cleared by `project_out_resources`, so compare it explicitly here (fail-closed) — a
-    // heterogeneous or reordered period is caught (order-sensitive `Vec` `PartialEq`), a
-    // homogeneous period's invariant sequence compares equal. `[] == []` for every
-    // non-loop-action state.
-    loop_states_equal(&pa, &pb)
-        && loyalty_activation_counts_match(&pa, &pb)
-        && pa.last_loop_action_sequence == pb.last_loop_action_sequence
+    loop_states_equal(&pa, &pb) && loyalty_activation_counts_match(&pa, &pb)
 }
 
 /// CR 606.3: per-object `loyalty_activations_this_turn` equality across two
@@ -3923,45 +3915,27 @@ pub(crate) fn loop_states_cover_modulo_growth_pinned<'a>(
     loop_states_cover_modulo_growth_scoped(prior, current, scope, verdicts)
 }
 
-/// CR 601.2f + CR 601.2a: the set of card ids this loop window's recorded driving sequence
-/// touches — a SUPERSET of the true cast set (only `LoopAction::Recast` genuinely casts), which
-/// is the CONSERVATIVE direction: over-stating it makes `!ids.contains(..)` false more often ⇒
-/// fewer relieved defs ⇒ more vetoes.
-///
-/// FAIL-CLOSED ON EMPTY, and this is the whole reason the function exists: an empty
-/// `last_loop_action_sequence` means NO RECORDED PROOF, not "this window casts nothing".
-/// `Some(vec![])` would assert the latter and relieve EVERY conditioned self-cost static.
-/// `None` = scan everything.
-///
-/// FAIL-CLOSED ON A STEP NO PLAYER TAKES AT PRIORITY (CR 732.2a): the whole list is evidence
-/// about what a seat's own repeatable sequence casts, and a step nobody elects says nothing
-/// about what the window casts — `Some(vec![card])` for it would name a card that casts nothing
-/// and relieve every conditioned self-cost static whose card is not that one, which is one
-/// element from the shape the paragraph above forbids. Checked over the WHOLE period and ABOVE
-/// the proposer test, because the proposer axis is separate: the proposer-less entry must stay
-/// byte-identical for a period every step of which IS priority-driven.
-///
-/// FAIL-CLOSED ON A FOREIGN PERIOD (CR 732.2a): a recorded period is evidence about the seat
-/// that recorded it, so an opponent's choice of WHICH CARD TO ACTIVATE must not select which
-/// soundness relief applies to the proposer's certification. `is_some_and`, NOT `is_some`: the
-/// proposer-less 2-arg entry binds no proposer, and requiring one would strip that class.
+/// CR 601.2a + CR 602.2a: the cards of the plays the window's trace records — what the window
+/// casts or activates, a superset of what it casts, which over-states the set and so relieves
+/// less. `None` when there is no proof: no play recorded, a play whose object is gone, or, for a
+/// proposer, a play another seat made, since a play is evidence only about the seat making it.
 fn window_cast_card_ids(state: &GameState, proposer: Option<PlayerId>) -> Option<Vec<CardId>> {
-    if !state.loop_period_is_priority_driven() {
-        return None;
+    use crate::game::play_trace::{EntryKind, PlayLocus};
+    let mut ids = Vec::new();
+    for entry in crate::game::play_trace::current_entries(state)? {
+        let EntryKind::Play { locus, .. } = &entry.kind else {
+            continue;
+        };
+        if proposer.is_some_and(|proposer| entry.seat != proposer) {
+            return None;
+        }
+        let object = match locus {
+            PlayLocus::Cast(id) | PlayLocus::Activate(id, _) | PlayLocus::Mana(id, _) => id,
+            PlayLocus::Unread => return None,
+        };
+        ids.push(state.objects.get(object)?.card_id);
     }
-    if proposer.is_some_and(|p| state.loop_period_controller() != Some(p)) {
-        return None;
-    }
-    let ids: Vec<CardId> = state
-        .last_loop_action_sequence
-        .iter()
-        .map(|ctx| ctx.card_id)
-        .collect();
-    if ids.is_empty() {
-        None
-    } else {
-        Some(ids)
-    }
+    (!ids.is_empty()).then_some(ids)
 }
 
 /// Scoped sibling of [`loop_states_cover_modulo_growth`] — see [`LoopWindowScope`]. The
@@ -4409,10 +4383,8 @@ pub(crate) struct CertifiedInstructedDeparture {
 /// * A CHOSEN mill (CR 701.17b) and a library SEARCH — structurally, one layer up: a choice
 ///   window opened during a driven period reaches the drive's terminal abort arm and there is
 ///   no period to certify.
-/// * A COST mill (CR 701.17b) — structurally: `GameState::loop_period_controller` returns
-///   `Some` only when every step of the period shares one controller and the caller requires
-///   that controller to be the proposer, so no non-caster pays a cost inside a certified
-///   period. This is the one constraint of CR 701.17b that is deliberately not relieved.
+/// * A COST mill (CR 701.17b) — NOT excluded: nothing here tells it from an instructed one,
+///   and the confirmer does not require a period's plays to be the proposer's.
 ///
 /// RESIDUAL, stated rather than left to be discovered. The engine records the DRAW action per
 /// card. It records no ACTION for the mill anywhere in `GameState`: what a mill leaves behind
@@ -5159,12 +5131,6 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     // the only path that could leave it `Some` it is a DIRECT assignment of a CopyTokenOf
     // substitution's fixed count, so comparing it can never suppress a legitimate loop.
     // (`resolution_source_relatch` VARIES per iteration, so it MUST stay excluded.)
-    //
-    // Same one-sided safety for `last_loop_action_sequence`: excluding a decision context whose
-    // elements are loop-INVARIANT is fail-DANGEROUS, because a HETEROGENEOUS or reordered
-    // sequence whose board coincidentally covers would compare EQUAL and be falsely certified.
-    // COMPARING (order-sensitive `Vec` `PartialEq`) catches it, and it is `[]` at every
-    // non-loop-action sample beat, so it never suppresses a legitimate loop.
     for frame in [&mut a, &mut b] {
         frame
             .delayed_triggers
@@ -5178,7 +5144,6 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     a == b
         && a.post_replacement_token_substitution_count
             == b.post_replacement_token_substitution_count
-        && a.last_loop_action_sequence == b.last_loop_action_sequence
 }
 
 /// CR 603.7a + CR 603.7b: a one-shot delayed trigger for a step after the frame's, whose every
@@ -13670,219 +13635,120 @@ mod tests {
         );
     }
 
-    fn recast_ctx(uses_buyback: bool) -> crate::types::game_state::LoopActionContext {
-        use crate::types::game_state::BuybackUsage;
-        crate::types::game_state::LoopActionContext {
-            card_id: CardId(4242),
-            controller: PlayerId(0),
-            action: crate::types::game_state::LoopAction::Recast {
-                from_zone: Zone::Hand,
-                uses_buyback: if uses_buyback {
-                    BuybackUsage::Used
-                } else {
-                    BuybackUsage::NotUsed
-                },
-            },
-            convoke: Some(crate::types::game_state::ConvokeMode::Convoke),
-            pins: Vec::new(),
-        }
+    /// Plants `plays` as the window's play trace on both frames, `prior` and `current` differing.
+    fn trace_frames(
+        prior: &mut GameState,
+        current: &mut GameState,
+        prior_plays: &[crate::game::play_trace::PlayLocus],
+        current_plays: &[crate::game::play_trace::PlayLocus],
+    ) {
+        let seat = |plays: &[crate::game::play_trace::PlayLocus]| {
+            plays
+                .iter()
+                .map(|&locus| (PlayerId(0), locus))
+                .collect::<Vec<_>>()
+        };
+        crate::game::play_trace::install_plays_for_tests(prior, &seat(prior_plays));
+        crate::game::play_trace::install_plays_for_tests(current, &seat(current_plays));
     }
 
-    /// N7 (F1 two-sided `last_loop_action_sequence` classify — COVER path via `eq_except_growable`).
-    /// (a) two object-cover-equal frames with EQUAL contexts still CERTIFY (no false-negative);
-    /// (b) the same frames with a MUTATED context (`uses_buyback` flipped) REJECT (no
-    /// false-positive — a heterogeneous recast is caught). Revert-failing: removing the
-    /// `a.last_loop_action_sequence == b.last_loop_action_sequence` conjunct in `eq_except_growable` flips
-    /// (b) to COVER while (a) stays COVER ⇒ this test's (b) assertion fails. (a) is the paired
-    /// positive reach-guard for (b). Non-vacuous: the custom `impl PartialEq for GameState`
-    /// EXCLUDES the field, so this conjunct is the SOLE discriminator.
+    /// CR 732.2a: the cover judges the board, not the plays that made it — the period comes from
+    /// the confirmer — so two frames whose traces record different casts still cover.
     #[test]
     fn fodder_cover_last_loop_action_sequence_two_sided() {
-        // (a) equal contexts ⇒ still covers.
+        use crate::game::play_trace::PlayLocus::Cast;
         let (mut prior, mut current) = fodder_cover_base();
-        prior.last_loop_action_sequence = vec![recast_ctx(true)];
-        current.last_loop_action_sequence = vec![recast_ctx(true)];
         assert!(
             fodder_cover(&prior, &current),
-            "(a) equal last_loop_action_sequence ⇒ object-growth cover still CERTIFIES"
+            "reach guard: the base covers"
         );
-        // (b) mutated context (uses_buyback true→false) ⇒ rejects.
-        let (mut p2, mut c2) = fodder_cover_base();
-        p2.last_loop_action_sequence = vec![recast_ctx(true)];
-        c2.last_loop_action_sequence = vec![recast_ctx(false)];
+        trace_frames(
+            &mut prior,
+            &mut current,
+            &[Cast(ObjectId(800))],
+            &[Cast(ObjectId(705))],
+        );
         assert!(
-            !fodder_cover(&p2, &c2),
-            "(b) a heterogeneous recast (uses_buyback flipped) must REJECT (F1 COMPARED conjunct)"
+            fodder_cover(&prior, &current),
+            "frames whose traces record different casts must still cover"
         );
     }
 
-    /// N7 (equal path via `loop_states_equal_modulo_resources`). The same two-sided classify on
-    /// the constant-depth equality gate (the materializer-boundary first disjunct). In-test
-    /// invariance note: `ConvokeMode` is a unit-variant enum carrying zero per-iteration data
-    /// and `card_id` is a `CardId` (not an `ObjectId`), so a homogeneous loop's contexts are
-    /// byte-equal iteration-to-iteration ⇒ COMPARING is safe (no false-negative on a real loop).
+    /// CR 732.2a: the equality gate likewise ignores the recorded plays.
     #[test]
     fn loop_states_equal_last_loop_action_sequence_two_sided() {
+        use crate::game::play_trace::PlayLocus::Cast;
         let mut a = GameState::new_two_player(7);
         inert_token(&mut a, 900, 0, "Engine");
         let mut b = a.clone();
-        // (a) equal contexts ⇒ equal.
-        a.last_loop_action_sequence = vec![recast_ctx(true)];
-        b.last_loop_action_sequence = vec![recast_ctx(true)];
         assert!(
             loop_states_equal_modulo_resources(&a, &b),
-            "equal last_loop_action_sequence ⇒ loop_states_equal_modulo_resources holds"
+            "reach guard: equal boards"
         );
-        // (b) mutated context ⇒ unequal.
-        b.last_loop_action_sequence = vec![recast_ctx(false)];
+        trace_frames(&mut a, &mut b, &[Cast(ObjectId(900))], &[]);
         assert!(
-            !loop_states_equal_modulo_resources(&a, &b),
-            "a mutated last_loop_action_sequence (uses_buyback flipped) ⇒ NOT equal (F1 conjunct)"
+            loop_states_equal_modulo_resources(&a, &b),
+            "boards whose traces differ must still compare equal"
         );
     }
 
-    fn activate_ctx(ability_index: usize) -> crate::types::game_state::LoopActionContext {
-        crate::types::game_state::LoopActionContext {
-            card_id: CardId(4242),
-            controller: PlayerId(0),
-            action: crate::types::game_state::LoopAction::Activate {
-                source_id: crate::types::identifiers::ObjectId(77),
-                ability_index,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        }
-    }
-
-    /// An ACTIVATION loop whose captured action differs across cycles (a different
-    /// `ability_index` — a heterogeneous cycle) must NOT cover. Mirrors the recast two-sided
-    /// classify on the `Activate` shape: (a) equal contexts still certify (paired positive
-    /// reach-guard); (b) two contexts with different `ability_index` REJECT. Revert-failing:
-    /// removing the `a.last_loop_action_sequence == b.last_loop_action_sequence` conjunct in
-    /// `eq_except_growable` flips (b) to COVER. Non-vacuous: `impl PartialEq for GameState`
-    /// EXCLUDES the field, so this conjunct is the SOLE discriminator.
+    /// CR 732.2a: two frames whose traces record different abilities of one source still cover.
     #[test]
     fn fodder_cover_heterogeneous_activation_context_rejects() {
-        // (a) equal Activate contexts ⇒ still covers.
+        use crate::game::play_trace::PlayLocus::Activate;
         let (mut prior, mut current) = fodder_cover_base();
-        prior.last_loop_action_sequence = vec![activate_ctx(0)];
-        current.last_loop_action_sequence = vec![activate_ctx(0)];
         assert!(
             fodder_cover(&prior, &current),
-            "(a) equal Activate contexts ⇒ object-growth cover still CERTIFIES"
+            "reach guard: the base covers"
         );
-        // (b) different ability_index (heterogeneous activation) ⇒ rejects.
-        let (mut p2, mut c2) = fodder_cover_base();
-        p2.last_loop_action_sequence = vec![activate_ctx(0)];
-        c2.last_loop_action_sequence = vec![activate_ctx(1)];
+        trace_frames(
+            &mut prior,
+            &mut current,
+            &[Activate(ObjectId(800), 0)],
+            &[Activate(ObjectId(800), 1)],
+        );
         assert!(
-            !fodder_cover(&p2, &c2),
-            "(b) a heterogeneous activation (ability_index 0→1) must REJECT (F1 COMPARED conjunct)"
+            fodder_cover(&prior, &current),
+            "frames whose traces record different activations must still cover"
         );
     }
 
-    /// A trigger-driven step, pinned by its immutable occurrence rather than by a live-vector
-    /// position (CR 603.3).
-    fn resolve_trigger_ctx(
-        source_id: ObjectId,
-        printed_index: usize,
-    ) -> crate::types::game_state::LoopActionContext {
-        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
-        crate::types::game_state::LoopActionContext {
-            card_id: CardId(4242),
-            controller: PlayerId(0),
-            action: crate::types::game_state::LoopAction::ResolveTrigger {
-                source_id,
-                occurrence: TriggerDefinitionOccurrenceRef::Printed {
-                    base_set: TriggerBaseSetInstanceRef::INITIAL,
-                    printed_index,
-                },
-            },
-            convoke: None,
-            pins: Vec::new(),
-        }
-    }
-
-    /// The same two-sided classify on the trigger-driven shape, through `eq_except_growable`:
-    /// (a) two frames whose recorded step is the SAME `ResolveTrigger` still certify (the paired
-    /// positive reach-guard for (b) and (c)); (b) two frames differing ONLY in the step's
-    /// `occurrence` reject; (c) a two-step period naming two DIFFERENT sources rejects against one
-    /// naming the same source twice — the multi-authority fixture, which a source-only identity
-    /// would lose. Revert-failing: removing the
-    /// `a.last_loop_action_sequence == b.last_loop_action_sequence` conjunct in
-    /// `eq_except_growable` flips (b) and (c) to COVER while (a) stays COVER. Non-vacuous: the
-    /// custom `impl PartialEq for GameState` EXCLUDES the field, so this conjunct is the SOLE
-    /// discriminator.
+    /// CR 732.2a: a trace of two plays against one of a single play still covers.
     #[test]
     fn fodder_cover_trigger_driven_context_three_sided() {
-        const SOURCE: ObjectId = ObjectId(950);
-        const OTHER_SOURCE: ObjectId = ObjectId(951);
-
-        // (a) equal ResolveTrigger contexts ⇒ still covers.
+        use crate::game::play_trace::PlayLocus::{Activate, Mana};
         let (mut prior, mut current) = fodder_cover_base();
-        prior.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
-        current.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
         assert!(
             fodder_cover(&prior, &current),
-            "(a) equal ResolveTrigger contexts ⇒ object-growth cover still CERTIFIES"
+            "reach guard: the base covers"
         );
-
-        // (b) the SAME source, a different occurrence ⇒ rejects. Only `occurrence` differs.
-        let (mut p2, mut c2) = fodder_cover_base();
-        p2.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
-        c2.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 1)];
-        assert!(
-            !fodder_cover(&p2, &c2),
-            "(b) two frames differing only in the step's occurrence must REJECT"
+        trace_frames(
+            &mut prior,
+            &mut current,
+            &[Activate(ObjectId(800), 0), Mana(ObjectId(701), Some(0))],
+            &[Activate(ObjectId(800), 0)],
         );
-
-        // (c) two steps naming two DIFFERENT sources against two naming the same source twice.
-        let (mut p3, mut c3) = fodder_cover_base();
-        p3.last_loop_action_sequence = vec![
-            resolve_trigger_ctx(SOURCE, 0),
-            resolve_trigger_ctx(SOURCE, 0),
-        ];
-        c3.last_loop_action_sequence = vec![
-            resolve_trigger_ctx(SOURCE, 0),
-            resolve_trigger_ctx(OTHER_SOURCE, 0),
-        ];
         assert!(
-            !fodder_cover(&p3, &c3),
-            "(c) a period whose two steps name DIFFERENT minting triggers must REJECT against one \
-             naming the same trigger twice — what a per-trigger identity buys and a source-only \
-             one would lose"
+            fodder_cover(&prior, &current),
+            "frames whose traces differ in length must still cover"
         );
     }
 
-    /// The trigger-driven sibling of [`loop_states_equal_last_loop_action_sequence_two_sided`], on
-    /// the constant-depth equality gate rather than the cover: (a) equal steps ⇒ equal; (b) a
-    /// differing `occurrence` ⇒ unequal; (c) a differing source ⇒ unequal.
+    /// CR 732.2a: the equality gate ignores a trace on one side only.
     #[test]
     fn loop_states_equal_trigger_driven_context_three_sided() {
-        const SOURCE: ObjectId = ObjectId(950);
-        const OTHER_SOURCE: ObjectId = ObjectId(951);
-
+        use crate::game::play_trace::PlayLocus::Activate;
         let mut a = GameState::new_two_player(7);
         inert_token(&mut a, 900, 0, "Engine");
         let mut b = a.clone();
-
-        a.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
-        b.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
         assert!(
             loop_states_equal_modulo_resources(&a, &b),
-            "(a) equal ResolveTrigger steps ⇒ loop_states_equal_modulo_resources holds"
+            "reach guard: equal boards"
         );
-
-        b.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 1)];
+        trace_frames(&mut a, &mut b, &[], &[Activate(ObjectId(900), 1)]);
         assert!(
-            !loop_states_equal_modulo_resources(&a, &b),
-            "(b) a differing occurrence ⇒ NOT equal"
-        );
-
-        b.last_loop_action_sequence = vec![resolve_trigger_ctx(OTHER_SOURCE, 0)];
-        assert!(
-            !loop_states_equal_modulo_resources(&a, &b),
-            "(c) a differing source ⇒ NOT equal"
+            loop_states_equal_modulo_resources(&a, &b),
+            "a trace on one side only must not split equal boards"
         );
     }
 
@@ -16654,11 +16520,10 @@ mod tests {
     /// `loop_check.rs` calls with NO non-empty-sequence precondition — over a covering
     /// frame pair carrying a library-visible conditioned self-cost static.
     ///
-    /// MATCHED PAIR, one variable (the recorded driving sequence):
-    /// * half A — EMPTY sequence ⇒ no proof ⇒ the guard is fail-closed ⇒ conjunct (5)
+    /// MATCHED PAIR, one variable (the window's play trace):
+    /// * half A — no recorded play ⇒ no proof ⇒ the guard is fail-closed ⇒ conjunct (5)
     ///   rejects the cover.
-    /// * half B — a one-entry sequence naming a DIFFERENT card ⇒ proof ⇒ relieved ⇒ the
-    ///   cover holds.
+    /// * half B — one recorded cast of a DIFFERENT card ⇒ proof ⇒ relieved ⇒ the cover holds.
     ///
     /// REVERT-PROBES, both flipping half A:
     /// * bind `Some(cast_ids.as_deref().unwrap_or(&[]))` instead of `cast_ids.as_deref()`.
@@ -16669,7 +16534,6 @@ mod tests {
             Comparator, PlayerScope, QuantityExpr, QuantityRef, StaticCondition, StaticDefinition,
             TargetFilter,
         };
-        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
         use crate::types::mana::ManaCost;
         use crate::types::statics::{CostModifyMode, StaticMode};
 
@@ -16717,35 +16581,45 @@ mod tests {
             "reach-guard: the base frame pair must COVER, else conjuncts (1)-(4) dominate"
         );
 
-        // ── half A: empty driving sequence ⇒ NO PROOF ⇒ the veto survives ──
+        // A hand-resident driver, added identically to both frames, for half B's cast to name.
+        let add_driver = |state: &mut GameState| {
+            state.objects.insert(
+                ObjectId(701),
+                crate::game::game_object::GameObject::new(
+                    ObjectId(701),
+                    DRIVER_CARD,
+                    PlayerId(0),
+                    "Driver".to_string(),
+                    Zone::Hand,
+                ),
+            );
+        };
+
+        // ── half A: no recorded play ⇒ NO PROOF ⇒ the veto survives ──
         let (mut prior, mut current) = cover_base();
         add_static(&mut prior);
         add_static(&mut current);
+        add_driver(&mut prior);
+        add_driver(&mut current);
         assert!(
-            current.last_loop_action_sequence.is_empty(),
-            "half A precondition: no recorded driving sequence"
+            crate::game::play_trace::current_entries(&current).is_none(),
+            "half A precondition: no recorded play"
         );
         assert!(
             !loop_states_cover_modulo_growth(&prior, &current),
-            "half A: an EMPTY `last_loop_action_sequence` proves NOTHING about what the \
+            "half A: an EMPTY trace proves NOTHING about what the \
              window casts, so the conditioned self-cost static must keep its veto and \
              conjunct (5) must reject. `Some(&[])` here would assert `this window casts \
              nothing` and relieve every such static — the forbidden direction."
         );
 
-        // ── half B: a real one-entry sequence naming a DIFFERENT card ⇒ relieved ──
-        let ctx = LoopActionContext {
-            card_id: DRIVER_CARD,
-            controller: PlayerId(0),
-            action: LoopAction::Recast {
-                from_zone: Zone::Hand,
-                uses_buyback: BuybackUsage::Used,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        };
-        prior.last_loop_action_sequence = vec![ctx.clone()];
-        current.last_loop_action_sequence = vec![ctx];
+        // ── half B: one recorded cast naming a DIFFERENT card ⇒ relieved ──
+        let cast = [(
+            PlayerId(0),
+            crate::game::play_trace::PlayLocus::Cast(ObjectId(701)),
+        )];
+        crate::game::play_trace::install_plays_for_tests(&mut prior, &cast);
+        crate::game::play_trace::install_plays_for_tests(&mut current, &cast);
         assert_ne!(DRIVER_CARD, STATIC_CARD);
         assert!(
             loop_states_cover_modulo_growth(&prior, &current),
@@ -16755,186 +16629,112 @@ mod tests {
     }
 
     /// [`window_cast_card_ids`]'s emptiness contract, called DIRECTLY so no cover
-    /// conjunct can dominate it. An empty `last_loop_action_sequence` means NO RECORDED
-    /// PROOF, not "this window casts nothing": `Some(vec![])` would assert the latter
-    /// and relieve EVERY conditioned self-cost static.
-    ///
-    /// REVERT-PROBE: replace `if ids.is_empty() { None } else { Some(ids) }` with a bare
-    /// `Some(ids)` ⇒ assertion (1) FAILS while (2) still passes ⇒ the probe is isolated
-    /// to the emptiness test.
-    ///
-    /// ⛔ WHAT THIS ROW DOES NOT CLAIM: it does not assert "and the static still vetoes".
-    /// That half is carried by the UNSCOPED arm of
-    /// [`a_conditioned_cost_static_in_a_zone_the_window_never_casts_from_does_not_observe`]
-    /// (`LoopWindowScope::unproven()` has `cast_card_ids: None`). The end-to-end property
-    /// is the COMPOSITION of two directly-tested seams — `empty ⇒ None` here and
-    /// `None ⇒ veto` there — and is stated as a composition, not asserted as a third row.
+    /// conjunct can dominate it: no recorded play means NO PROOF, not "this window casts
+    /// nothing", which would relieve EVERY conditioned self-cost static.
     #[test]
     fn empty_loop_action_sequence_proves_nothing_about_casting() {
-        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+        use crate::game::play_trace::{install_plays_for_tests, PlayLocus};
 
         let mut state = GameState::new_two_player(7);
-        assert!(state.last_loop_action_sequence.is_empty());
+        let driver = inert_token(&mut state, 640, 0, "Driver");
+        let card = state.objects[&driver].card_id;
         assert_eq!(
             window_cast_card_ids(&state, None),
             None,
-            "(1) an empty driving sequence is NO PROOF — `Some(vec![])` would assert \
-             `this window casts nothing` and relieve every conditioned self-cost static"
+            "(1) no trace is no proof"
         );
-
-        // (2) PAIRED POSITIVE. `action` is not load-bearing here (the derivation reads
-        // only `card_id`); `Recast` is the cheapest to construct.
-        state.last_loop_action_sequence = vec![LoopActionContext {
-            card_id: CardId(64),
-            controller: PlayerId(0),
-            action: LoopAction::Recast {
-                from_zone: Zone::Hand,
-                uses_buyback: BuybackUsage::Used,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        }];
+        install_plays_for_tests(&mut state, &[]);
         assert_eq!(
             window_cast_card_ids(&state, None),
-            Some(vec![CardId(64)]),
-            "(2) a one-entry sequence yields exactly that card id"
+            None,
+            "(2) an empty trace is no proof"
+        );
+
+        install_plays_for_tests(&mut state, &[(PlayerId(0), PlayLocus::Cast(driver))]);
+        assert_eq!(
+            window_cast_card_ids(&state, None),
+            Some(vec![card]),
+            "(3) paired positive: one recorded cast yields exactly that card"
         );
     }
 
-    /// [`window_cast_card_ids`]'s PROPOSER SCOPING (CR 732.2a), the sibling contract to the
-    /// emptiness one, called DIRECTLY for the same anti-domination reason.
-    ///
-    /// A recorded period is evidence about the seat that recorded it. Once the bounded mint's
-    /// step (1b) went seat-relative, a certification could be taken with a FOREIGN period sitting
-    /// in state — and an unscoped read would then let an OPPONENT'S choice of which card to
-    /// activate decide which conditioned self-cost static gets relieved for THIS proposer.
-    ///
-    /// THREE-WAY AND EACH ARM IS LOAD-BEARING, so no constant implementation passes:
-    /// * `None` (the proposer-less 2-arg entry) ⇒ unscoped, byte-identical to pre-fix. Dropping
-    ///   the `Option` guard — the UNCONDITIONAL-MATCH form `if state.loop_period_controller() !=
-    ///   proposer { return None; }` — refuses the unbound container and FAILS (1); this is the arm
-    ///   that protects `loop_check`'s object-growth detection covers. An `is_some`-for-`is_some_and`
-    ///   swap instead fails (2), not (1): with `proposer == None` it never returns early.
-    /// * `Some(owner)` ⇒ proof. An always-`None` implementation FAILS (2), as does the `is_some`
-    ///   swap above.
-    /// * `Some(other)` ⇒ no proof. The pre-fix unscoped implementation FAILS (3).
-    ///
-    /// (4) pins the fail-closed homogeneity clause: a two-seat run is nobody's period, so it is
-    /// proof for NEITHER seat — an implementation testing only `seq[0].controller` FAILS it.
+    /// [`window_cast_card_ids`]'s PROPOSER SCOPING (CR 732.2a): a play is evidence only about the
+    /// seat making it, so an opponent's play must not decide which conditioned self-cost static is
+    /// relieved for this proposer.
     #[test]
     fn a_foreign_driving_period_proves_nothing_about_this_proposers_casting() {
-        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+        use crate::game::play_trace::{install_plays_for_tests, PlayLocus};
 
         let owner = PlayerId(0);
         let other = PlayerId(1);
-        let step = |controller: PlayerId, card_id: CardId| LoopActionContext {
-            card_id,
-            controller,
-            action: LoopAction::Recast {
-                from_zone: Zone::Hand,
-                uses_buyback: BuybackUsage::Used,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        };
-
         let mut state = GameState::new_two_player(7);
-        state.last_loop_action_sequence = vec![step(owner, CardId(64))];
+        let mine = inert_token(&mut state, 640, 0, "Mine");
+        let theirs = inert_token(&mut state, 641, 1, "Theirs");
+        let card = state.objects[&mine].card_id;
 
+        install_plays_for_tests(&mut state, &[(owner, PlayLocus::Activate(mine, 0))]);
         assert_eq!(
             window_cast_card_ids(&state, None),
-            Some(vec![CardId(64)]),
-            "(1) an UNBOUND container (the proposer-less 2-arg entry `loop_check` uses) reads \
-             the period unscoped — `is_some_and`, not `is_some`, or the object-growth detection \
-             covers lose their relief"
+            Some(vec![card]),
+            "(1) the proposer-less entry reads the trace unscoped"
         );
         assert_eq!(
             window_cast_card_ids(&state, Some(owner)),
-            Some(vec![CardId(64)]),
-            "(2) the seat that RECORDED the period is proved by it"
+            Some(vec![card]),
+            "(2) the seat that made the play is proved by it"
         );
         assert_eq!(
             window_cast_card_ids(&state, Some(other)),
             None,
-            "(3) CR 732.2a: another seat's independent activation describes no sequence THIS \
-             proposer takes, so it is no proof about this window's cast set — relieving on it \
-             would hand an opponent the choice of which soundness relief applies"
+            "(3) another seat's play is no proof about this proposer's casting"
         );
 
-        // (4) the fail-closed homogeneity clause: nobody's period.
-        state.last_loop_action_sequence = vec![step(owner, CardId(64)), step(other, CardId(90))];
+        install_plays_for_tests(
+            &mut state,
+            &[
+                (owner, PlayLocus::Activate(mine, 0)),
+                (other, PlayLocus::Activate(theirs, 0)),
+            ],
+        );
         assert_eq!(
             (
                 window_cast_card_ids(&state, Some(owner)),
                 window_cast_card_ids(&state, Some(other)),
             ),
             (None, None),
-            "(4) a heterogeneous run belongs to no seat, so it proves nothing for EITHER — \
-             reading only `seq[0].controller` would wrongly prove it for the first"
+            "(4) a window with both seats' plays proves nothing for either"
         );
     }
 
-    /// CR 732.2a: a period holding a step no player takes at priority is no proof about what the
-    /// window casts, so [`window_cast_card_ids`] answers for it exactly as it answers for NO
-    /// period. Called DIRECTLY for the same anti-domination reason as its two siblings above.
-    ///
-    /// The two legs must AGREE (both `None`). The PAIRED POSITIVE is the same read with a one-step
-    /// `Recast` period recorded, which must answer DIFFERENTLY from the empty leg — so the row
-    /// cannot be passed by an implementation that answers `None` always.
-    ///
-    /// REVERT-PROBE: drop the `loop_period_is_priority_driven` guard ⇒ the trigger-driven leg
-    /// returns `Some(vec![CardId(64)])`, disagreeing with the empty leg ⇒ the paired `assert_eq!`
-    /// FAILS. The named card casts nothing, and one element is exactly the shape the function's own
-    /// doc forbids: it would relieve every conditioned self-cost static whose card is not that one.
+    /// CR 400.7: a play whose object is gone, or a locus no play reads, is no proof — the card the
+    /// window casts cannot be named from it.
     #[test]
     fn a_trigger_driven_period_proves_nothing_about_this_windows_casting() {
-        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
-        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+        use crate::game::play_trace::{install_plays_for_tests, PlayLocus};
 
         let owner = PlayerId(0);
-        let step = |action: LoopAction| LoopActionContext {
-            card_id: CardId(64),
-            controller: owner,
-            action,
-            convoke: None,
-            pins: Vec::new(),
-        };
+        let mut state = GameState::new_two_player(7);
+        let driver = inert_token(&mut state, 640, 0, "Driver");
+        let card = state.objects[&driver].card_id;
 
-        let empty = GameState::new_two_player(7);
-        assert!(empty.last_loop_action_sequence.is_empty());
-
-        let mut trigger_driven = GameState::new_two_player(7);
-        trigger_driven.last_loop_action_sequence = vec![step(LoopAction::ResolveTrigger {
-            source_id: ObjectId(960),
-            occurrence: TriggerDefinitionOccurrenceRef::Printed {
-                base_set: TriggerBaseSetInstanceRef::INITIAL,
-                printed_index: 0,
-            },
-        })];
-
+        install_plays_for_tests(&mut state, &[(owner, PlayLocus::Unread)]);
         assert_eq!(
-            (
-                window_cast_card_ids(&empty, Some(owner)),
-                window_cast_card_ids(&trigger_driven, Some(owner)),
-            ),
-            (None, None),
-            "a period holding a step no player takes at priority answers exactly as no period \
-             does: it is NO PROOF about this window's cast set, and `Some(vec![card])` for it \
-             would name a card that casts nothing"
+            window_cast_card_ids(&state, Some(owner)),
+            None,
+            "an unread locus"
+        );
+        install_plays_for_tests(&mut state, &[(owner, PlayLocus::Cast(ObjectId(9999)))]);
+        assert_eq!(
+            window_cast_card_ids(&state, Some(owner)),
+            None,
+            "a vanished object"
         );
 
-        // PAIRED POSITIVE: the same read with a priority-side period recorded must answer
-        // DIFFERENTLY from the empty leg, so the agreement above is a result and not a constant.
-        let mut priority_driven = GameState::new_two_player(7);
-        priority_driven.last_loop_action_sequence = vec![step(LoopAction::Recast {
-            from_zone: Zone::Hand,
-            uses_buyback: BuybackUsage::Used,
-        })];
+        install_plays_for_tests(&mut state, &[(owner, PlayLocus::Mana(driver, Some(0)))]);
         assert_eq!(
-            window_cast_card_ids(&priority_driven, Some(owner)),
-            Some(vec![CardId(64)]),
-            "paired positive: a one-step priority-side period IS proof, so the guard above is \
-             narrowing rather than blanking the function"
+            window_cast_card_ids(&state, Some(owner)),
+            Some(vec![card]),
+            "paired positive: a live object's play is proof"
         );
     }
 
@@ -20213,9 +20013,8 @@ mod tests {
         );
         let at_priority = at_priority_of(&board);
         assert!(
-            at_priority.last_loop_action_sequence.is_empty()
-                && at_priority.loop_detect_ring.len() >= 2,
-            "REACH-GUARD beat {beat}: steps (1)/(1b)/(2)/(2b) must all pass, else the mint \
+            at_priority.loop_detect_ring.len() >= 2,
+            "REACH-GUARD beat {beat}: steps (1)/(2)/(2b) must all pass, else the mint \
              refuses above the classifier and spends nothing for a reason unrelated to cost"
         );
         assert!(
@@ -21517,7 +21316,6 @@ mod tests {
             player: PlayerId(0),
         };
         state.active_player = PlayerId(0);
-        state.last_loop_action_sequence.clear();
         setup(&mut state);
         for i in 0..FRAMES {
             let mut frame = state.clone();

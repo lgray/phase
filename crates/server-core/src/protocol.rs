@@ -3427,8 +3427,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_112_for_mana_ability_payment_window() {
-        assert_eq!(PROTOCOL_VERSION, 112);
+    fn protocol_version_is_113_for_retired_loop_record() {
+        assert_eq!(PROTOCOL_VERSION, 113);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3439,7 +3439,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_112_for_mana_ability_payment_window` stays
+    /// `protocol_version_is_113_for_retired_loop_record` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

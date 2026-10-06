@@ -471,13 +471,14 @@ fn mana_engine_with_cast_trigger_registers_nothing() {
         "reach-guard: the mana-engine offer must still fire WITH the cast trigger grafted, got {:?}",
         rig.runner.state().waiting_for
     );
-    // ── (2) reach-guard: the captured period is the two-activation Basalt+Power cycle, so the
-    // route seam's `!sequence.is_empty()` conjunct is satisfied ──
-    assert_eq!(
-        rig.runner.state().last_loop_action_sequence.len(),
-        2,
-        "reach-guard: the multi-action mana period is captured, so `!sequence.is_empty()` holds \
-         and the cast disjunct is the only conjunct left to decide the route"
+    // ── (2) reach-guard: the offer carries its confirmed period, so the take routes on it ──
+    assert!(
+        matches!(
+            &rig.runner.state().waiting_for,
+            WaitingFor::LoopShortcut { period, .. } if !period.is_empty()
+        ),
+        "reach-guard: the multi-action mana period is confirmed, so the cast disjunct is the \
+         only conjunct left to decide the route"
     );
 
     rig.runner

@@ -1,12 +1,12 @@
-//! CR 602.2a + CR 111.1: an on-stack activation opens a loop period of its own when an effect
-//! anywhere in its ability tree is one `resolution_token_mint` counts as putting a token onto the
-//! battlefield, and clears a foreign period otherwise. Driven on the committed
+//! CR 602.2a + CR 732.3: an on-stack activation is a play of its own seat, beside another seat's
+//! cast, whatever its ability tree mints. Driven on the committed
 //! `witherbloom_altar_sprout_swarm_4p` dump: seat 0's buyback Sprout Swarm cast (CR 702.27a) opens a
 //! period, then another seat activates with the spell still on the stack.
 
 use engine::game::scenario::GameRunner;
+use engine::game::{EntryKind, PlayLocus};
 use engine::types::actions::GameAction;
-use engine::types::game_state::{GameState, LoopAction, WaitingFor};
+use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
@@ -22,6 +22,19 @@ fn witherbloom_board() -> GameState {
     restore_dump(&gunzip_dump(include_bytes!(
         "../fixtures/witherbloom_altar_sprout_swarm_4p.json.gz"
     )))
+}
+
+/// The window's plays, each with the seat that made it.
+fn plays(state: &GameState) -> Vec<(PlayerId, PlayLocus)> {
+    engine::game::play_trace_view(state).map_or_else(Vec::new, |view| {
+        view.entries
+            .into_iter()
+            .filter_map(|entry| match entry.kind {
+                EntryKind::Play { locus, .. } => Some((entry.seat, locus)),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 fn object_named(state: &GameState, name: &str, controller: PlayerId, zone: Zone) -> ObjectId {
@@ -114,14 +127,10 @@ fn foreign_recast_period_with_priority_at(holder: PlayerId) -> GameRunner {
         state.stack.iter().any(|e| e.source_id == sprout),
         "Sprout Swarm is still on the stack"
     );
-    let period: Vec<_> = state
-        .last_loop_action_sequence
-        .iter()
-        .map(|step| (step.controller, step.action.clone()))
-        .collect();
-    assert!(
-        matches!(period.as_slice(), [(SEAT_0, LoopAction::Recast { .. })]),
-        "the buyback cast opened seat 0's period: {period:?}"
+    assert_eq!(
+        plays(state),
+        vec![(SEAT_0, PlayLocus::Cast(sprout))],
+        "the buyback cast is seat 0's play"
     );
     runner
 }
@@ -155,21 +164,10 @@ fn activation_reaching_investigate_below_its_root_opens_its_own_period() {
         Zone::Battlefield,
         "the source stays on the battlefield"
     );
-    let period: Vec<_> = state
-        .last_loop_action_sequence
-        .iter()
-        .map(|step| (step.controller, step.action.clone()))
-        .collect();
     assert_eq!(
-        period,
-        vec![(
-            SEAT_2,
-            LoopAction::Activate {
-                source_id: greyfax,
-                ability_index: 0,
-            }
-        )],
-        "the activation opened seat 2's period"
+        plays(state).last(),
+        Some(&(SEAT_2, PlayLocus::Activate(greyfax, 0))),
+        "the activation is seat 2's play"
     );
 
     for _ in 0..64 {
@@ -219,9 +217,9 @@ fn activation_reaching_no_token_clears_the_foreign_period() {
         Zone::Battlefield,
         "the source stays on the battlefield"
     );
-    assert!(
-        state.last_loop_action_sequence.is_empty(),
-        "no period survives: {:?}",
-        state.last_loop_action_sequence
+    assert_eq!(
+        plays(state).last(),
+        Some(&(SEAT_1, PlayLocus::Activate(bloodcaster, 0))),
+        "the activation is seat 1's play"
     );
 }

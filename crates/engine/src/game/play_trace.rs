@@ -16,8 +16,8 @@ use crate::types::ability::{
 use crate::types::actions::GameAction;
 use crate::types::card::PrintedCardRef;
 use crate::types::game_state::{
-    printed_trigger_origin, GameState, PayCostKind, ReplacementChoiceKind, RetargetScope,
-    StackEntry, StackEntryKind, WaitingFor,
+    printed_trigger_origin, ActionDisposition, GameState, PayCostKind, ReplacementChoiceKind,
+    RetargetScope, StackEntry, StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
@@ -1063,13 +1063,26 @@ pub(crate) fn begin_action(
 }
 
 /// Restores the trace when the action did not apply; applies the reversal when it did.
-pub(crate) fn end_action(state: &mut GameState, snapshot: Option<TraceSnapshot>, applied: bool) {
+pub(crate) fn end_action(
+    state: &mut GameState,
+    snapshot: Option<TraceSnapshot>,
+    disposition: Option<ActionDisposition>,
+) {
     let Some(snapshot) = snapshot else {
         return;
     };
-    if !applied {
-        state.play_trace = snapshot.before;
-        return;
+    match disposition {
+        None => {
+            state.play_trace = snapshot.before;
+            return;
+        }
+        // CR 733.1: an action that can't be legally completed is reversed entire, as a cancel is.
+        Some(ActionDisposition::Reversed) => {
+            state.play_trace = snapshot.before;
+            reverse(state, Reversal::Process);
+            return;
+        }
+        Some(ActionDisposition::Applied) => {}
     }
     if let Some(reversal) = snapshot.reverses {
         reverse(state, reversal);
@@ -1396,9 +1409,73 @@ fn current(state: &GameState) -> Option<&PlayTrace> {
         .filter(|trace| trace.window == WindowKey::of(state))
 }
 
+/// CR 732.2a: drops `holder`'s plays and resolutions from the window's trace, each with the answers
+/// made after it, since a period is evidence about the seat that made it and only the holder's own
+/// is theirs to discard.
+pub(crate) fn discard_seat(state: &mut GameState, holder: PlayerId) {
+    let Some(trace) = current(state) else {
+        state.play_trace = None;
+        return;
+    };
+    let mut kept = PlayTrace::new(trace.window);
+    let mut owner = None;
+    for (at, entry) in trace.entries.iter().enumerate() {
+        if matches!(
+            entry.kind,
+            EntryKind::Play { .. } | EntryKind::Resolution { .. }
+        ) {
+            owner = Some(entry.seat);
+        }
+        if owner.unwrap_or(entry.seat) != holder {
+            kept.rerecord(trace, at, entry.clone(), false);
+        }
+    }
+    state.play_trace = (!kept.entries.is_empty()).then(|| Box::new(kept));
+}
+
 /// The current window's entries.
 pub(crate) fn current_entries(state: &GameState) -> Option<&im::Vector<TraceEntry>> {
     current(state).map(|trace| &trace.entries)
+}
+
+/// Installs a trace of `plays` for the current window, each a priority play at depth 0.
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_plays_for_tests(state: &mut GameState, plays: &[(PlayerId, PlayLocus)]) {
+    let mut trace = PlayTrace::new(WindowKey::of(state));
+    for &(seat, locus) in plays {
+        let node = trace.intern(NodeKey::Unkeyed(trace.entries.len()));
+        let action = match locus {
+            PlayLocus::Activate(source_id, ability_index)
+            | PlayLocus::Mana(source_id, Some(ability_index)) => GameAction::ActivateAbility {
+                source_id,
+                ability_index,
+            },
+            PlayLocus::Cast(object_id) => GameAction::CastSpell {
+                object_id,
+                card_id: state
+                    .objects
+                    .get(&object_id)
+                    .map_or(crate::types::identifiers::CardId(0), |object| {
+                        object.card_id
+                    }),
+                targets: Vec::new(),
+                payment_mode: Default::default(),
+            },
+            PlayLocus::Mana(_, None) | PlayLocus::Unread => GameAction::PassPriority,
+        };
+        trace.entries.push_back(TraceEntry {
+            seat,
+            kind: EntryKind::Play {
+                action,
+                node,
+                locus,
+            },
+            depth: 0,
+            prompt: PromptClass::Priority,
+            next_object_id: state.next_object_id,
+        });
+    }
+    state.play_trace = Some(Box::new(trace));
 }
 
 /// Every span the current window's trace names, in the order it named them.

@@ -5,8 +5,7 @@
 //! combo. Basalt's `{T}: Add {C}{C}{C}` (an off-stack mana ability, CR 605.3b) then its separate
 //! `{3}: Untap this artifact` (on-stack, reduced to `{1}` by Power Artifact, CR 118.9) form ONE
 //! loop period of TWO activations whose net progress is `+2 {C}` per cycle while the board returns
-//! to equality. This is the class OPTION 2 (multi-action) enables — a single `LoopAction` cannot
-//! represent it.
+//! to equality. This is the multi-action class: no single play represents it.
 //!
 //! Honesty bar: every card is loaded from the real `shared_card_db()` through the real
 //! parser+reducer; Power Artifact's cost reduction materializes through the LAYER system
@@ -27,9 +26,7 @@ use engine::game::zones::{add_to_zone, remove_from_zone};
 use engine::types::ability::{AbilityKind, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopAction, LoopActionContext, LoopDetectionMode, WaitingFor,
-};
+use engine::types::game_state::{CastPaymentMode, GameState, LoopDetectionMode, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::ManaType;
 use engine::types::phase::Phase;
@@ -179,9 +176,9 @@ fn mana_engine_basalt_power_offers_mana_advantage_shortcut() {
 
     drive_one_period(&mut rig, mana_idx, untap_idx);
 
-    // Positive reach-guard: BOTH beats accumulated (armed, non-vacuous) before the offer.
+    // Positive reach-guard: BOTH beats were traced (non-vacuous) before the offer.
     assert_eq!(
-        rig.runner.state().last_loop_action_sequence.len(),
+        plays(rig.runner.state()).len(),
         2,
         "the period is a 2-activation sequence (mana beat + untap beat)"
     );
@@ -207,9 +204,8 @@ fn mana_engine_basalt_power_offers_mana_advantage_shortcut() {
     }
 }
 
-/// T2 — the sequence ACCUMULATES both beats in order. After the mana beat `len==1`; after the
-/// untap beat `len==2`, both `Activate`, same controller. Revert-failing: removing the else-arm
-/// APPEND branch makes the untap CLEAR (pre-P7 behavior) ⇒ `len` never reaches 2 ⇒ no offer.
+/// T2 — the trace holds both beats in order: one play after the mana beat, two after the untap
+/// beat, both P0's.
 #[test]
 fn mana_engine_accumulates_both_beats() {
     let Some(db) = shared_card_db() else { return };
@@ -219,21 +215,20 @@ fn mana_engine_accumulates_both_beats() {
 
     activate_and_settle(&mut rig.runner, rig.basalt, mana_idx);
     assert_eq!(
-        rig.runner.state().last_loop_action_sequence.len(),
+        plays(rig.runner.state()).len(),
         1,
-        "the off-stack mana beat SEEDS a 1-step period"
+        "the off-stack mana beat is one play"
     );
     activate_and_settle(&mut rig.runner, rig.basalt, untap_idx);
-    let seq = rig.runner.state().last_loop_action_sequence.clone();
-    assert_eq!(seq.len(), 2, "the untap beat APPENDS ⇒ a 2-step period");
+    let seq = plays(rig.runner.state());
+    assert_eq!(seq.len(), 2, "the untap beat is the second play");
     assert!(
-        seq.iter()
-            .all(|c| matches!(c.action, LoopAction::Activate { .. }) && c.controller == P0),
-        "both steps are P0 Activate steps (homogeneous controller)"
+        seq.iter().all(|(seat, _)| *seat == P0),
+        "both plays are P0's"
     );
 }
 
-/// T3 — a PARTIAL period (only the mana beat) does NOT offer. The accumulator arms `[mana]`
+/// T3 — a PARTIAL period (only the mana beat) does NOT offer. The trace holds `[mana]`
 /// (non-vacuity), but driving `[mana]` twice re-taps the already-tapped Basalt on the 2nd
 /// iteration ⇒ `RecastAbort` ⇒ no offer. The drive+cover IS the period-boundary check. Paired
 /// positive = T1 (the full 2-beat period offers).
@@ -246,9 +241,9 @@ fn mana_engine_partial_period_does_not_offer() {
     activate_and_settle(&mut rig.runner, rig.basalt, mana_idx);
 
     assert_eq!(
-        rig.runner.state().last_loop_action_sequence.len(),
+        plays(rig.runner.state()).len(),
         1,
-        "reach-guard: the mana beat armed a 1-step accumulator (non-vacuous)"
+        "reach-guard: the mana beat is traced (non-vacuous)"
     );
     assert!(
         !matches!(
@@ -261,7 +256,7 @@ fn mana_engine_partial_period_does_not_offer() {
 
 /// T6 — Basalt WITHOUT Power Artifact does NOT offer. The untap costs the full `{3}`, exactly what
 /// the mana beat produced, so net mana per period is 0 ⇒ `net_progress_for` fails ⇒ no offer. The
-/// accumulator still arms both beats (non-vacuity), so rejection is the SIGN-CHECK, not a capture
+/// trace still holds both beats (non-vacuity), so rejection is the SIGN-CHECK, not a trace
 /// failure. Paired positive = T1 (with Power the untap is `{1}` ⇒ net `+2`).
 #[test]
 fn mana_engine_without_power_does_not_offer() {
@@ -273,9 +268,9 @@ fn mana_engine_without_power_does_not_offer() {
     drive_one_period(&mut rig, mana_idx, untap_idx);
 
     assert_eq!(
-        rig.runner.state().last_loop_action_sequence.len(),
+        plays(rig.runner.state()).len(),
         2,
-        "reach-guard: both beats armed even without Power (rejection is the sign-check, not capture)"
+        "reach-guard: both beats traced even without Power (rejection is the sign-check)"
     );
     assert!(
         !matches!(
@@ -286,13 +281,8 @@ fn mana_engine_without_power_does_not_offer() {
     );
 }
 
-/// T-HET — capture-level identity protection: a CONTROLLER CHANGE resets the accumulator to a
-/// fresh single-controller period, so a heterogeneous (multi-controller) sequence NEVER forms.
-/// P0 seeds `[mana(P0)]`; when P1 activates their OWN Basalt's mana beat the accumulator resets to
-/// `[mana(P1)]` (not `[mana(P0), mana(P1)]`). Revert-failing: dropping the controller-change reset
-/// in `accumulate_loop_action_step` grows a mixed `[P0, P1]` sequence. (The drive's per-step
-/// `src.controller != step.controller` re-find in `drive_loop_action_iteration` is the runtime
-/// backstop, byte-unchanged from the recast path and covered by the recast tests.)
+/// T-HET — CR 732.3: each play is traced under the seat that made it, so a window holding P0's and
+/// then P1's mana beat holds both, each under its own seat, and no offer stands for it.
 #[test]
 fn mana_engine_controller_change_resets_accumulator() {
     let Some(db) = shared_card_db() else { return };
@@ -303,23 +293,29 @@ fn mana_engine_controller_change_resets_accumulator() {
     let p1_mana = mana_ability_index(rig.runner.state(), p1_basalt).unwrap();
 
     activate_and_settle(&mut rig.runner, rig.basalt, p0_mana);
-    let seq = rig.runner.state().last_loop_action_sequence.clone();
-    assert_eq!(seq.len(), 1, "P0 seeds a 1-step period");
-    assert_eq!(seq[0].controller, P0);
+    let seq = plays(rig.runner.state());
+    assert_eq!(seq.len(), 1, "P0's beat is one play");
+    assert_eq!(seq[0].0, P0);
 
     // Hand priority to P1 and let P1 activate their own mana beat.
     rig.runner.act(GameAction::PassPriority).expect("P0 passes");
     activate_and_settle(&mut rig.runner, p1_basalt, p1_mana);
 
-    let seq = rig.runner.state().last_loop_action_sequence.clone();
+    let seats: Vec<PlayerId> = plays(rig.runner.state())
+        .into_iter()
+        .map(|(seat, _)| seat)
+        .collect();
     assert_eq!(
-        seq.len(),
-        1,
-        "the controller change RESET the accumulator (no [P0, P1] heterogeneous sequence)"
+        seats,
+        vec![P0, P1],
+        "each beat is traced under its own seat"
     );
-    assert_eq!(
-        seq[0].controller, P1,
-        "the reset re-seeded with P1's beat only"
+    assert!(
+        !matches!(
+            rig.runner.state().waiting_for,
+            WaitingFor::LoopShortcut { .. }
+        ),
+        "no offer stands for a two-seat window"
     );
 }
 
@@ -566,10 +562,9 @@ fn mana_engine_accept_writes_no_pile_but_marks_mana() {
     );
 }
 
-/// T5-analog — `Off` byte-identity (#4603). Under `LoopDetectionMode::Off` the mana engine NEVER
-/// arms the sequence (the `samples()` gate) and NEVER offers, while the game plays normally (Basalt
-/// untaps, mana is in the pool). Revert-failing: dropping the `samples()` gate on the mana-arm /
-/// else-arm capture writes the sequence under `Off`.
+/// T5-analog — `Off` byte-identity (#4603). Under `LoopDetectionMode::Off` the mana engine is
+/// NEVER traced (the `samples()` gate) and NEVER offers, while the game plays normally (Basalt
+/// untaps, mana is in the pool).
 #[test]
 fn mana_engine_off_mode_is_byte_identical() {
     let Some(db) = shared_card_db() else { return };
@@ -580,8 +575,8 @@ fn mana_engine_off_mode_is_byte_identical() {
     drive_one_period(&mut rig, mana_idx, untap_idx);
 
     assert!(
-        rig.runner.state().last_loop_action_sequence.is_empty(),
-        "Off (#4603): the mana engine must NOT arm the sequence"
+        engine::game::play_trace_view(rig.runner.state()).is_none(),
+        "Off (#4603): the mana engine must NOT be traced"
     );
     assert!(
         !matches!(
@@ -600,125 +595,67 @@ fn mana_engine_off_mode_is_byte_identical() {
     );
 }
 
-/// FIX-3 (CR 732.2a, CONDITIONAL load migration): `last_loop_action_sequence` deserializes NORMALLY
-/// (its `pins` round-trip — B2 restored), but the PRODUCTION restore hook
-/// `PersistedGameState::into_game_state` → `GameState::migrate_transient_loop_sequence` DROPS it on
-/// load UNLESS the save sits in an object-growth shortcut proposal/response window
-/// (`WaitingFor::LoopShortcut` / `RespondToShortcut`), whose pending accept→materialize resolution
-/// re-derives the ∞ pile from the sequence. This REPLACES the Design-A blanket `#[serde(skip)]`
-/// (always-drop) contract, which regressed the predecessor `combo_infinite_pile` offer-saves by
-/// starving accept→materialize of the pile.
+/// CR 732.2a: what a save carries of a loop. The window's trace is transient and never crosses a
+/// save, while a standing offer's confirmed period does, since its take replays it.
 ///
-/// DISCRIMINATING — the ONLY guard on the load migration + the B2 pins round-trip (the field is
-/// EXCLUDED from `impl PartialEq for GameState`). Parts (a) and (b) round-trip the SAME populated,
-/// PINNED sequence through the real production hook and differ ONLY in `waiting_for`, so the
-/// outcome FLIPS: a hook that ignored `waiting_for` (Design A, always-drop) fails (b); a hook that
-/// never dropped fails (a). Part (b) additionally asserts the pin survived (Design A dropped pins).
+/// (a) a save at priority with a traced beat restores with no trace; (b) a save at the offer
+/// restores with the same non-empty period; (c) an offer with no period writes no period key.
 #[test]
 fn loop_action_sequence_conditional_load_migration() {
-    use engine::analysis::decision_template::{
-        ChoicePoint, DecisionSlot, PinnedDecision, ShortcutDecisionSchema,
-    };
-    use engine::analysis::loop_check::LoopCertificate;
-    use engine::analysis::resource::BoardDelta;
-    use engine::types::game_state::{PersistedGameState, YieldTarget};
-    use engine::types::mana::ManaColor;
+    use engine::types::game_state::PersistedGameState;
 
-    let mana_color_pin = || PinnedDecision::ManaColor {
-        slot: DecisionSlot {
-            source: YieldTarget::ThisObject {
-                source_id: ObjectId(7),
-                incarnation: None,
-                trigger_description: None,
-            },
-            point: ChoicePoint::ManaColor,
-            index: 1,
-        },
-        color: ManaColor::Blue,
+    let Some(db) = shared_card_db() else { return };
+    let restore = |state: &GameState| -> GameState {
+        let json = serde_json::to_string(state).expect("serialize");
+        let reloaded: GameState = serde_json::from_str(&json).expect("deserialize");
+        PersistedGameState::Raw(Box::new(reloaded))
+            .into_game_state()
+            .expect("persisted test snapshot satisfies the checked restore contract")
     };
-    let pinned_step = || LoopActionContext {
-        card_id: CardId(4242),
-        controller: P0,
-        action: LoopAction::Activate {
-            source_id: ObjectId(7),
-            ability_index: 1,
-        },
-        convoke: None,
-        pins: vec![mana_color_pin()],
+    let period = |state: &GameState| match &state.waiting_for {
+        WaitingFor::LoopShortcut { period, .. } => period.clone(),
+        other => panic!("expected an offer, got {other:?}"),
     };
 
-    // (a) captured at empty-stack `Priority` (NOT a shortcut window) → the production hook DROPS the
-    //     sequence. It deserializes NON-EMPTY first, proving the drop is the migration hook, not the
-    //     `#[serde(skip)]` derive (which Design A used and which regressed the predecessor tests).
-    let mut at_priority = GameState::new_two_player(1);
-    at_priority.waiting_for = WaitingFor::Priority { player: P0 };
-    at_priority.last_loop_action_sequence = vec![pinned_step(), pinned_step()];
-    let raw = serde_json::to_string(&at_priority).expect("serialize");
-    assert!(
-        raw.contains("last_loop_action_sequence"),
-        "a populated sequence IS serialized (skip_serializing_if only skips the EMPTY case)"
-    );
-    let deserialized: GameState = serde_json::from_str(&raw).expect("deserialize");
+    // (a) a priority save drops the transient trace.
+    let mut rig = setup(true, LoopDetectionMode::Interactive, db);
+    let mana_idx = mana_ability_index(rig.runner.state(), rig.basalt).unwrap();
+    let untap_idx = untap_ability_index(rig.runner.state(), rig.basalt).unwrap();
+    activate_and_settle(&mut rig.runner, rig.basalt, mana_idx);
     assert_eq!(
-        deserialized.last_loop_action_sequence.len(),
-        2,
-        "the sequence deserializes NORMALLY (len 2) — the drop is the load hook, not the derive"
-    );
-    let restored = PersistedGameState::Raw(Box::new(at_priority))
-        .into_game_state()
-        .expect("persisted test snapshot satisfies the checked restore contract");
-    assert!(
-        restored.last_loop_action_sequence.is_empty(),
-        "FIX-3: a Priority-captured save DROPS the transient sequence on load"
-    );
-
-    // (b) captured at a `LoopShortcut` offer window → the production hook KEEPS the sequence, and the
-    //     recorded pin round-trips (B2). SAME sequence as (a); ONLY `waiting_for` differs ⇒ the
-    //     keep/drop outcome flips, isolating the discriminator to `waiting_for`.
-    let mut at_offer = GameState::new_two_player(1);
-    at_offer.waiting_for = WaitingFor::LoopShortcut {
-        proposer: P0,
-        predicted_winner: None,
-        certificate: LoopCertificate {
-            unbounded: vec![ResourceAxis::TokensCreated],
-            win_kind: WinKind::Advantage,
-            mandatory: false,
-            residual_board_delta: BoardDelta::default(),
-            per_cycle: None,
-        },
-        schema: ShortcutDecisionSchema::default(),
-        declaration: None,
-        road: engine::analysis::loop_check::OfferRoad::RecordedPeriod,
-        period: Default::default(),
-    };
-    at_offer.last_loop_action_sequence = vec![pinned_step()];
-    let json = serde_json::to_string(&at_offer).expect("serialize offer save");
-    let reloaded: GameState = serde_json::from_str(&json).expect("deserialize offer save");
-    let restored_offer = PersistedGameState::Raw(Box::new(reloaded))
-        .into_game_state()
-        .expect("persisted test snapshot satisfies the checked restore contract");
-    assert_eq!(
-        restored_offer.last_loop_action_sequence.len(),
+        plays(rig.runner.state()).len(),
         1,
-        "FIX-3: a LoopShortcut-captured offer-save KEEPS the sequence on load (accept→materialize needs it)"
+        "reach: the beat is traced"
     );
-    assert_eq!(
-        restored_offer.last_loop_action_sequence[0].pins,
-        vec![mana_color_pin()],
-        "B2: the recorded pins round-trip for a kept offer-save (Design A's #[serde(skip)] dropped them)"
+    assert!(
+        engine::game::play_trace_view(&restore(rig.runner.state())).is_none(),
+        "a save at priority restores with no trace"
     );
 
-    // (c) an empty sequence is skipped on the wire and a missing field defaults to empty (UNCHANGED).
-    let empty = GameState::new_two_player(1);
-    let json = serde_json::to_string(&empty).expect("serialize empty");
+    // (b) an offer save keeps the period its take replays.
+    activate_and_settle(&mut rig.runner, rig.basalt, untap_idx);
+    let at_offer = rig.runner.state().clone();
+    let offered = period(&at_offer);
     assert!(
-        !json.contains("last_loop_action_sequence"),
-        "an empty sequence is skipped on the wire (skip_serializing_if)"
+        !offered.is_empty(),
+        "reach: the offer carries its confirmed period"
     );
-    let back: GameState = serde_json::from_str(&json).expect("deserialize missing field");
+    assert_eq!(
+        period(&restore(&at_offer)),
+        offered,
+        "an offer save restores with the same period"
+    );
+
+    // (c) an offer with no period writes no period key.
+    let mut bare = at_offer;
+    if let WaitingFor::LoopShortcut { period, .. } = &mut bare.waiting_for {
+        *period = Default::default();
+    }
+    let json = serde_json::to_value(&bare).expect("serialize");
     assert!(
-        back.last_loop_action_sequence.is_empty(),
-        "a missing field defaults to an empty Vec"
+        json["waiting_for"]["data"].get("period").is_none(),
+        "an empty period is skipped on the wire: {}",
+        json["waiting_for"]
     );
 }
 
@@ -1511,4 +1448,17 @@ fn an_ineligible_shape_ahead_costs_a_payment_no_walk_per_unit() {
         (small_unpinned, small_pinned),
         "(unpinned, pinned) payment walks grow with the colorless ahead of the {{G}}"
     );
+}
+
+/// The window's plays, each with the seat that made it.
+fn plays(state: &GameState) -> Vec<(PlayerId, engine::game::PlayLocus)> {
+    engine::game::play_trace_view(state).map_or_else(Vec::new, |view| {
+        view.entries
+            .into_iter()
+            .filter_map(|entry| match entry.kind {
+                engine::game::EntryKind::Play { locus, .. } => Some((entry.seat, locus)),
+                _ => None,
+            })
+            .collect()
+    })
 }

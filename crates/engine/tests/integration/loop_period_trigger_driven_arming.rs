@@ -1,5 +1,5 @@
-//! CR 603.3 + CR 608.2 + CR 111.1: a token-minting triggered ability's resolution opens a
-//! CR 732.2a loop period for its controller.
+//! CR 603.3 + CR 608.2 + CR 111.1: a token-minting triggered ability's resolution is traced for
+//! its controller, and the CR 732.2a loop period it repeats is offered.
 //!
 //! Two boards, because the two cycles carry their choice and their mint at different beats.
 //! Board A (built by `abdel_adrian_animate_dead_altar_board`, driven here and not rebuilt) makes
@@ -25,13 +25,11 @@
 //! of that kind with an empty selection.
 
 use engine::analysis::loop_check::OfferRoad;
-use engine::game::functioning_abilities::active_trigger_definitions;
 use engine::game::scenario::{GameRunner, GameScenario, P0};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopAction, LoopActionContext, LoopDetectionMode, StackEntryKind,
-    WaitingFor,
+    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
@@ -101,24 +99,31 @@ pub(super) fn build_board_b() -> Option<PrestonBoard> {
     })
 }
 
-/// The step this board's minting trigger must record, with its occurrence re-derived ON THE SPOT
-/// through the same authority the beat locates it through — never copied out of the record it is
-/// being compared against.
-fn expected_step(state: &GameState, source: ObjectId) -> LoopAction {
-    let object = state.objects.get(&source).expect("the minting source");
-    let mut occurrences = active_trigger_definitions(state, object)
-        .map(|active| active.definition_ref.occurrence)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        occurrences.len(),
-        1,
-        "this board's minting source carries exactly one functioning trigger entry, so the row's \
-         expectation names it without ambiguity"
-    );
-    LoopAction::ResolveTrigger {
-        source_id: source,
-        occurrence: occurrences.remove(0),
-    }
+/// The window's trace entries.
+fn entries(state: &GameState) -> Vec<engine::game::TraceEntry> {
+    engine::game::play_trace_view(state).map_or_else(Vec::new, |view| view.entries)
+}
+
+/// The window's choices: its plays and its optional answers (CR 732.3).
+fn choices(state: &GameState) -> Vec<engine::game::TraceEntry> {
+    use engine::game::{AnswerOptionality, EntryKind};
+    entries(state)
+        .into_iter()
+        .filter(|entry| match &entry.kind {
+            EntryKind::Play { .. } => true,
+            EntryKind::Answer { optional, .. } => *optional == AnswerOptionality::Optional,
+            EntryKind::Resolution { .. } => false,
+        })
+        .collect()
+}
+
+/// The seat of the newest triggered-ability resolution in `entries`.
+fn last_resolution_seat(entries: &[engine::game::TraceEntry]) -> Option<PlayerId> {
+    entries
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.kind, engine::game::EntryKind::Resolution { .. }))
+        .map(|entry| entry.seat)
 }
 
 fn token_count(state: &GameState) -> usize {
@@ -158,11 +163,11 @@ fn cast_animate_dead(runner: &mut GameRunner, animate_dead: ObjectId, onto: Obje
 /// What one drive observed, so a row asserts over it rather than over a running commentary.
 #[derive(Default)]
 struct DriveReading {
-    /// Every sequence value read at a beat where a token had just appeared.
-    at_mint: Vec<Vec<LoopActionContext>>,
-    /// `(sequence before, sequence after)` taken across each resolution of a triggered ability the
-    /// arming places outside the class.
-    across_out_of_class: Vec<(Vec<LoopActionContext>, Vec<LoopActionContext>)>,
+    /// The trace read at each beat where a token had just appeared.
+    at_mint: Vec<Vec<engine::game::TraceEntry>>,
+    /// `(choices before, choices after)` taken across each resolution of a triggered ability that
+    /// mints no token.
+    across_out_of_class: Vec<(Vec<engine::game::TraceEntry>, Vec<engine::game::TraceEntry>)>,
     /// The first loop-shortcut offer the drive met, as its road and the stack's top triggered
     /// ability's source at that beat. The drive declines every offer and continues.
     offered: Option<(OfferRoad, Option<ObjectId>)>,
@@ -182,9 +187,9 @@ fn drive(
 ) -> DriveReading {
     let mut reading = DriveReading::default();
     let mut tokens = token_count(runner.state());
-    // The out-of-class entry whose resolution is being watched, with the sequence as it stood
-    // before that resolution began.
-    let mut watching: Option<(ObjectId, Vec<LoopActionContext>)> = None;
+    // The out-of-class entry whose resolution is being watched, with the window's choices as they
+    // stood before that resolution began.
+    let mut watching: Option<(ObjectId, Vec<engine::game::TraceEntry>)> = None;
 
     for _ in 0..BEAT_CAP {
         let state = runner.state();
@@ -192,19 +197,19 @@ fn drive(
             reading
                 .offered
                 .get_or_insert((road, top_trigger(state).map(|(_, source)| source)));
-            // Declining clears the record, so a resolution watched across it is not compared.
+            // Declining clears the trace, so a resolution watched across it is not compared.
             watching = None;
             if runner.act(GameAction::DeclineShortcut).is_err() {
                 break;
             }
             continue;
         }
-        let seq = state.last_loop_action_sequence.clone();
+        let seq = choices(state);
 
-        // A token has appeared since the previous beat: read the record at that beat.
+        // A token has appeared since the previous beat: read the trace at that beat.
         let now = token_count(state);
         if now > tokens {
-            reading.at_mint.push(seq.clone());
+            reading.at_mint.push(entries(state));
         }
         tokens = now;
 
@@ -289,8 +294,8 @@ fn drive(
 
 /// CR 603.3 + CR 608.2 + CR 111.1 + CR 732.2a: Board A — the cycle's choice and its mint sit in ONE
 /// triggered ability's resolution (Abdel Adrian's enters trigger exiles any number of other nonland
-/// permanents, then mints a Soldier for each permanent exiled this way). That resolution opens a
-/// period recording that trigger, which is offered where that trigger next stands on top.
+/// permanents, then mints a Soldier for each permanent exiled this way). That resolution is traced
+/// for its controller, and the period it repeats is offered.
 #[test]
 fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
     let Some(mut board) = crate::abdel_adrian_animate_dead_altar_board::build() else {
@@ -298,12 +303,11 @@ fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
     };
     board.runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
     assert!(
-        board.runner.state().last_loop_action_sequence.is_empty(),
-        "no period is recorded before anything is driven"
+        entries(board.runner.state()).is_empty(),
+        "nothing is traced before anything is driven"
     );
 
     cast_animate_dead(&mut board.runner, board.animate_dead, board.abdel);
-    let expected = expected_step(board.runner.state(), board.abdel);
     let reading = drive(
         &mut board.runner,
         &[board.altar, board.animate_dead],
@@ -327,21 +331,10 @@ fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
         .at_mint
         .first()
         .expect("a Soldier token appeared, so the minting trigger resolved");
-    let step = at_mint
-        .last()
-        .expect("the record is non-empty at the beat the mint is observed");
     assert_eq!(
-        step.action, expected,
-        "the recorded step names Abdel Adrian's own trigger occurrence, re-derived through \
-         `active_trigger_definitions`"
-    );
-    assert_eq!(
-        step.controller, P0,
-        "the period belongs to the trigger's controller"
-    );
-    assert!(
-        at_mint.iter().all(|s| s.action == expected),
-        "every step of the period is that same value"
+        last_resolution_seat(at_mint),
+        Some(P0),
+        "the minting resolution is traced for the trigger's controller"
     );
 
     let (before, after) = reading
@@ -354,27 +347,26 @@ fn board_a_minting_trigger_resolution_opens_a_period_naming_that_trigger() {
         );
     assert_eq!(
         before, after,
-        "a triggered ability the arming places outside the class leaves the record exactly as it \
-         found it — asserted across that member's own resolution, at a beat where the record is \
-         non-empty for reasons that member did not cause"
+        "a triggered ability that mints nothing adds no choice to the window — asserted across \
+         that member's own resolution, at a beat where the window holds choices that member did \
+         not cause"
     );
 }
 
 /// CR 603.3 + CR 608.2 + CR 111.1 + CR 704.5m: Board B — the cycle's choice sits on the copy's
-/// enters trigger and its mint on Preston's. Preston's resolution opens a period recording
-/// Preston's trigger.
+/// enters trigger and its mint on Preston's. Each of Preston's resolutions is traced for its
+/// controller.
 #[test]
 fn board_b_minting_trigger_opens_a_period_with_choice_and_mint_on_different_triggers() {
     let Some(mut board) = build_board_b() else {
         return;
     };
     assert!(
-        board.runner.state().last_loop_action_sequence.is_empty(),
-        "no period is recorded before anything is driven"
+        entries(board.runner.state()).is_empty(),
+        "nothing is traced before anything is driven"
     );
 
     cast_animate_dead(&mut board.runner, board.animate_dead, board.felidar);
-    let expected = expected_step(board.runner.state(), board.preston);
     let reading = drive(
         &mut board.runner,
         &[board.altar, board.animate_dead],
@@ -389,21 +381,10 @@ fn board_b_minting_trigger_opens_a_period_with_choice_and_mint_on_different_trig
          rather than firing once"
     );
     for at_mint in &reading.at_mint {
-        let step = at_mint
-            .last()
-            .expect("the record is non-empty at the beat each mint is observed");
         assert_eq!(
-            step.action, expected,
-            "each recorded step names Preston's own trigger occurrence, re-derived through \
-             `active_trigger_definitions`"
-        );
-        assert_eq!(
-            step.controller, P0,
-            "the period belongs to the trigger's controller"
-        );
-        assert!(
-            at_mint.iter().all(|s| s.action == expected),
-            "every step of the period is that same value across the cycles"
+            last_resolution_seat(at_mint),
+            Some(P0),
+            "each minting resolution is traced for the trigger's controller"
         );
     }
 
@@ -417,8 +398,7 @@ fn board_b_minting_trigger_opens_a_period_with_choice_and_mint_on_different_trig
         );
     assert_eq!(
         before, after,
-        "a triggered ability the arming places outside the class leaves the record exactly as it \
-         found it"
+        "a triggered ability that mints nothing adds no choice to the window"
     );
 
     // CR 704.5m: an Aura that is not attached to an object is put into its owner's graveyard.
@@ -445,9 +425,8 @@ fn board_b_minting_trigger_opens_a_period_with_choice_and_mint_on_different_trig
     );
 }
 
-/// CR 605.3a: the live control the two rows' absence-shaped legs rest on — an action the arming
-/// model records at a beat a player DOES take, moving the same field through the same `apply()`
-/// boundary. Board B's legal-action list offers no land tap, so the control is BUILT from the
+/// CR 605.3a: the live control the two rows' absence-shaped legs rest on — a choice a player DOES
+/// make, moving the same trace through the same `apply()` boundary. Board B's legal-action list offers no land tap, so the control is BUILT from the
 /// engine's own option surface rather than picked out of that list.
 #[test]
 fn a_built_land_tap_moves_the_same_record_through_the_same_boundary() {
@@ -482,20 +461,26 @@ fn a_built_land_tap_moves_the_same_record_through_the_same_boundary() {
         "the legal-action list offers no land tap on this board, which is why the control is built"
     );
 
-    assert!(board.runner.state().last_loop_action_sequence.is_empty());
+    assert!(choices(board.runner.state()).is_empty());
     board
         .runner
         .act(GameAction::TapLandForMana { selection })
         .expect("the engine's own semantic selection is accepted");
-    let seq = &board.runner.state().last_loop_action_sequence;
+    let seq = choices(board.runner.state());
     assert_eq!(
         seq.len(),
         1,
-        "the land tap records one driving step, so an empty reading at a beat where no minting \
-         trigger resolved is a result and not a dead instrument"
+        "the land tap is one choice, so an unchanged reading across a resolution is a result and \
+         not a dead instrument"
     );
     assert!(
-        matches!(seq[0].action, LoopAction::TapLandForMana { .. }),
-        "the step the control records is the land-mana one"
+        matches!(
+            seq[0].kind,
+            engine::game::EntryKind::Play {
+                action: GameAction::TapLandForMana { .. },
+                ..
+            }
+        ),
+        "the choice the control traces is the land-mana one"
     );
 }

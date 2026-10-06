@@ -575,7 +575,7 @@ fn answered_choice(replay: &GameState, action: &GameAction) -> Option<PinnedDeci
 
 /// The frame with every object the period cast removed, since a cast card returns where it
 /// came from (CR 400.7), and its churning bookkeeping cleared.
-fn normalize_cast_frame(state: &GameState, casts: &[ObjectId]) -> GameState {
+pub(crate) fn normalize_cast_frame(state: &GameState, casts: &[ObjectId]) -> GameState {
     let mut normalized = state.clone();
     for id in casts {
         if let Some(object) = normalized.objects.get(id).cloned() {

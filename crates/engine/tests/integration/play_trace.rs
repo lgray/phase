@@ -18,8 +18,7 @@ use engine::game::{
 use engine::types::ability::{AbilityKind, TargetRef};
 use engine::types::actions::{CastChoice, GameAction};
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopAction, LoopDetectionMode, ManaChoice, StackEntryKind,
-    WaitingFor,
+    CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::ManaType;
@@ -239,28 +238,9 @@ fn rotation_of(a: &[PeriodStep], b: &[PeriodStep]) -> bool {
     a.len() == b.len() && (a.is_empty() || (0..a.len()).any(|k| a[k..].iter().chain(&a[..k]).eq(b)))
 }
 
-/// Row 6's read: some named span's plays are the base record's period up to rotation, and a
-/// record that resolves a trigger has one resolving in that span.
-fn names_the_base_record(state: &GameState) -> bool {
-    let record = &state.last_loop_action_sequence;
-    let wanted: Vec<PeriodStep> = record
-        .iter()
-        .filter_map(|ctx| match &ctx.action {
-            LoopAction::Recast { .. } => Some(PeriodStep::Cast(ctx.card_id)),
-            LoopAction::Activate {
-                source_id,
-                ability_index,
-            } => Some(PeriodStep::Activate(*source_id, Some(*ability_index))),
-            LoopAction::TapLandForMana { selection } => Some(PeriodStep::Activate(
-                selection.source.object_id,
-                selection.ability_index,
-            )),
-            LoopAction::ResolveTrigger { .. } => None,
-        })
-        .collect();
-    let resolves = record
-        .iter()
-        .any(|ctx| matches!(ctx.action, LoopAction::ResolveTrigger { .. }));
+/// Row 6's read: some named span's plays are the base's period `wanted` up to rotation, and a
+/// period that `resolves` a trigger has one resolving in that span.
+fn names_the_period(state: &GameState, wanted: &[PeriodStep], resolves: bool) -> bool {
     let Some(view) = play_trace_view(state) else {
         return false;
     };
@@ -283,7 +263,7 @@ fn names_the_base_record(state: &GameState) -> bool {
                 _ => None,
             })
             .collect();
-        rotation_of(&wanted, &got) && (!resolves || resolutions(&view, span) > 0)
+        rotation_of(wanted, &got) && (!resolves || resolutions(&view, span) > 0)
     })
 }
 
@@ -771,8 +751,8 @@ fn play_trace_names_each_members_period_trigger_boards() {
             "{board:?}: the span holds the optional answer"
         );
         assert!(
-            names_the_base_record(state),
-            "{board:?}: row 6 — the base record's period is named"
+            names_the_period(state, &[], true),
+            "{board:?}: row 6 — the base's trigger-driven period is named"
         );
     }
 }
@@ -1411,8 +1391,15 @@ fn play_trace_names_the_base_window_population_basalt() {
     drive_one_period(&mut rig, mana, untap);
     assert!(is_offer(rig.runner.state()), "reach: the base offers");
     assert!(
-        names_the_base_record(rig.runner.state()),
-        "the base record's period is named at its offer"
+        names_the_period(
+            rig.runner.state(),
+            &[
+                PeriodStep::Activate(rig.basalt, Some(mana)),
+                PeriodStep::Activate(rig.basalt, Some(untap)),
+            ],
+            false,
+        ),
+        "the base's period is named at its offer"
     );
 }
 
@@ -1426,8 +1413,21 @@ fn play_trace_names_the_base_window_population_relic_kilo_freed() {
     );
     assert!(is_offer(&state), "reach: the base offers");
     assert!(
-        names_the_base_record(&state),
-        "the base record's period is named at its offer"
+        names_the_period(
+            &state,
+            &[
+                PeriodStep::Activate(
+                    crate::kilo_live_offer_from_real_dump::RELIC,
+                    Some(crate::kilo_live_offer_from_real_dump::RELIC_TAP_MANA),
+                ),
+                PeriodStep::Activate(
+                    crate::kilo_live_offer_from_real_dump::FREED,
+                    Some(crate::kilo_live_offer_from_real_dump::FREED_UNTAP),
+                ),
+            ],
+            false,
+        ),
+        "the base's period is named at its offer"
     );
     // Relic of Legends: "Tap an untapped legendary creature you control: Add one mana of any
     // color." Freed from the Real: "{U}: Untap enchanted creature."
@@ -1455,8 +1455,12 @@ fn play_trace_names_the_base_window_population_presence_of_gond() {
     settle(&mut runner, &|_| 0);
     assert!(is_offer(runner.state()), "reach: the base offers");
     assert!(
-        names_the_base_record(runner.state()),
-        "the base record's period is named at its offer"
+        names_the_period(
+            runner.state(),
+            &[PeriodStep::Activate(bears, Some(index))],
+            false
+        ),
+        "the base's period is named at its offer"
     );
 }
 
@@ -1516,8 +1520,12 @@ fn play_trace_names_the_base_window_population_sprout_swarm_lumaret() {
     );
     assert!(is_offer(state), "reach: the base offers");
     assert!(
-        names_the_base_record(state),
-        "the base record's period is named at its offer"
+        names_the_period(
+            state,
+            &[PeriodStep::Cast(state.objects[&SPROUT].card_id)],
+            false
+        ),
+        "the base's period is named at its offer"
     );
 }
 

@@ -12,9 +12,8 @@
 //! USER DIRECTIVE (memory: real-game fixtures, not synthetic): this fixture LOADS a real
 //! 4-player complete-deck saved game-state dump and drives from it — NOT a synthetic
 //! `GameScenario` (synthetic tests went green while the live 4p game failed). The dump is the
-//! real game: 4 seats at 40 life, full ~91-92-card libraries, 10 permanents, the intact
-//! `last_loop_action_sequence` recast context (`Recast{from_zone: Hand, uses_buyback: Used}`,
-//! `convoke: Convoke`), and `loop_detection: Interactive`. The dump was captured AT the offer,
+//! real game: 4 seats at 40 life, full ~91-92-card libraries, 10 permanents, and
+//! `loop_detection: Interactive`. The dump was captured AT the offer,
 //! which is strictly more faithful than a build-fresh reconstruction (it IS the failing moment).
 //! `deck_pools` (registration metadata the accept→materialize drive never reads) is trimmed from
 //! the committed fixture; the real decks remain fully present as in-play library objects.
@@ -100,7 +99,7 @@ static OFFER_STATE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 /// The dump's offer, re-reached live: the captured offer carries no confirmed period, so it is
 /// declined and one more real Sprout Swarm cycle (buyback, convoking an untapped Saproling) brings
 /// the offer back with its period.
-fn offer_state() -> GameState {
+pub(crate) fn offer_state() -> GameState {
     let mut state: GameState = serde_json::from_str(&OFFER_STATE)
         .expect("the real 4p offer dump must deserialize into the current GameState");
     apply(&mut state, P0, GameAction::DeclineShortcut).expect("P0 declines the captured offer");
@@ -401,8 +400,8 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
 // USER DIRECTIVE (memory: combo-detector-must-fire-in-real-games / real-game-fixtures-not-
 // synthetic): the acceptance bar for this fix is that a REAL 4-player game with an UNTAPPED
 // green cost-reducer actually surfaces the CR 732.2a object-growth offer in live play. This
-// LOADS the user's ACTUAL failed-playtest dump (turn-2, ordinary priority, Witherbloom UNTAPPED,
-// `last_loop_action_sequence` armed for Sprout Swarm 402) and drives the REAL cast through the
+// LOADS the user's ACTUAL failed-playtest dump (turn-2, ordinary priority, Witherbloom UNTAPPED)
+// and drives the REAL cast through the
 // harness `apply()` path. Pre-fix (lowest-ObjectId Canonical detection replay) the offer was
 // SUPPRESSED — the replay tapped the lower-id Witherbloom (a stable-partition permanent) instead
 // of a fodder Saproling, drifting `loop_states_cover_modulo_fodder_growth`'s `tapped` compare.
@@ -3771,13 +3770,18 @@ fn low3_life_engine_accepted_n(etb: Low3BoardEtbTrigger, n: u32) -> GameRunner {
     low3_activate_and_settle(&mut runner, engine_id, life_idx);
     low3_activate_and_settle(&mut runner, engine_id, untap_idx);
 
-    // Reach-guard: the 3-step period recorded (non-vacuous — a shorter seq would be a different
-    // loop / a drive artifact).
+    // Reach-guard: the window traced the 3-play period (a shorter one is a different loop).
+    let plays = engine::game::play_trace_view(runner.state())
+        .map(|view| {
+            view.entries
+                .into_iter()
+                .filter(|entry| matches!(entry.kind, engine::game::EntryKind::Play { .. }))
+                .count()
+        })
+        .unwrap_or(0);
     assert_eq!(
-        runner.state().last_loop_action_sequence.len(),
-        3,
-        "the certified period is the 3-step [mana, gain-life, untap] sequence, got {:?}",
-        runner.state().last_loop_action_sequence
+        plays, 3,
+        "the window traced the 3-play [mana, gain-life, untap] period"
     );
     // Reach-guard: the CR 732.2a offer surfaced for P0.
     assert!(

@@ -378,15 +378,6 @@ enum PinCarrier {
 ///    `ShortcutProposal.template` one state transition later, where every responder and spectator
 ///    reads it. `ShortcutProposal.published_declaration.decisions` rides the same proposal to the
 ///    same readers, carrying the declaration carrier 1 publishes.
-/// 3. `GameState::last_loop_action_sequence[].pins` — the recorded loop period. It is serialized
-///    whenever non-empty (`skip_serializing_if = "Vec::is_empty"`, not `skip`) and has no other
-///    redaction seam. Its writers are `game::engine::record_loop_pin`'s call sites, regenerated
-///    by `grep -rnP '(?<![a-z_])record_loop_pin\s*\(' crates/engine/src/`. What is load-bearing
-///    is not what they happen to name: it is that every one of them reaches the viewer through
-///    THIS authority, so a writer that names a card in a hidden zone drops the whole vector
-///    rather than exposing it. One does — the CR 608.2d resolution-set writer is keyed on
-///    `WaitingFor::EffectZoneChoice`, whose `zone` is the source zone of the eligible objects and
-///    is not restricted to the battlefield.
 ///
 /// `GameState::decision_templates` is one more carrier and deliberately does NOT route here: it
 /// is redacted wholesale by the private-access retain
@@ -1888,9 +1879,9 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
     // A target object is hidden from this viewer iff it sits in a private zone whose
     // owner the viewer can't privately view AND it isn't otherwise revealed/peeked.
     // Hoisted above the CR 732.2a/b blocks below because every pin carrier
-    // (`LoopShortcut.declaration`, `RespondToShortcut.proposal.{template, published_declaration}`,
-    // `last_loop_action_sequence[].pins`) must answer "may this viewer see that object?" the
-    // same way; a per-arm copy is what let the first two drift apart.
+    // (`LoopShortcut.declaration`, `RespondToShortcut.proposal.{template, published_declaration}`)
+    // must answer "may this viewer see that object?" the same way; a per-arm copy is what let them
+    // drift apart.
     let target_hidden = |id: ObjectId| -> bool {
         state.objects.get(&id).is_some_and(|obj| {
             matches!(obj.zone, Zone::Hand | Zone::Library)
@@ -2054,16 +2045,6 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
             if names_hidden(proposal.published_declaration.as_ref()) {
                 proposal.published_declaration = None;
             }
-        }
-    }
-
-    // CR 732.2a: the THIRD carrier of the same pin vector — the recorded loop period, which
-    // serializes whenever non-empty and has no other redaction seam. All-or-nothing per recorded
-    // step, for the reason spelled on `pins_name_hidden_source`: a half-shown period states a
-    // sequence that was never played.
-    for step in &mut filtered.last_loop_action_sequence {
-        if pins_name_hidden_source(&step.pins, &target_hidden, PinCarrier::PinsOnly) {
-            step.pins.clear();
         }
     }
 
@@ -9791,17 +9772,6 @@ mod tests {
     /// that survives because only *some* of its pins name hidden objects states a proposal that
     /// was never made.
     ///
-    /// # The multi-pin shape is the ORDINARY production shape, not an exotic one
-    ///
-    /// `game::engine::record_loop_pin` appends ONE pin per answered prompt onto ONE
-    /// `LoopActionContext.pins` in the temporal order the step's own beats ask them, so a step
-    /// asking more than one prompt mints a multi-pin vector (regenerate the writer set with
-    /// `grep -rnP '(?<![a-z_])record_(loop|trigger_step)_pin\s*\(' crates/engine/src/`), and
-    /// `game::engine::build_recast_template` clones that very vector
-    /// (`decisions = ctx.pins.clone()`) into the offer's declaration before pushing a
-    /// `ConvokeTaps` pin. A public pin sitting ahead of a hidden one is therefore exactly what
-    /// those producers mint; this row builds `[ManaColor, Targets{hidden}]`, that ordering.
-    ///
     /// # Non-vacuity / discrimination
     ///
     /// The PUBLIC pin is FIRST, so an implementation that stops at the first pin — `all(..)`, or a
@@ -10309,211 +10279,6 @@ mod tests {
             d5h_projected_declaration(&value_state, D5H_VIEWER).is_none(),
             "carrier 1's VALUE leg is untouched by this repair: a pin naming the hidden card \
              still drops the whole declaration"
-        );
-    }
-
-    /// **The recorded loop period is the third carrier, and it publishes no schema either.**
-    ///
-    /// `last_loop_action_sequence` serializes whenever non-empty and has no other redaction
-    /// seam, so a recorded step whose pin's slot names a hidden-zone source leaks that identity
-    /// to every viewer. Same carrier value, same all-or-nothing per recorded step.
-    ///
-    /// # Non-vacuity / discrimination
-    ///
-    /// The recorded pin is a `ManaColor`, whose value leg answers `false` unconditionally, so
-    /// the clear can come from the slot leg alone. The paired positive is the same step one slot
-    /// source apart, asserted to keep its pin — a clearer that emptied every step would satisfy
-    /// the negative and fail it. Both arms assert the step still EXISTS, so "the sequence
-    /// vanished" cannot pass for "the pins were cleared".
-    #[test]
-    fn a_recorded_loop_step_whose_pin_slot_names_a_hidden_source_is_cleared() {
-        use crate::analysis::decision_template::{ChoicePoint, DecisionSlot, PinnedDecision};
-        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext, YieldTarget};
-        use crate::types::mana::ManaColor;
-
-        let recorded = |source: fn(ObjectId, ObjectId) -> YieldTarget| {
-            let mut state = GameState::new_two_player(42);
-            let hidden = create_object(
-                &mut state,
-                CardId(4242),
-                D5H_PROPOSER,
-                "Secret Card".to_string(),
-                Zone::Hand,
-            );
-            let permanent = create_object(
-                &mut state,
-                CardId(4243),
-                D5H_PROPOSER,
-                "Open Permanent".to_string(),
-                Zone::Battlefield,
-            );
-            state.last_loop_action_sequence = vec![LoopActionContext {
-                card_id: CardId(4242),
-                controller: D5H_PROPOSER,
-                action: LoopAction::Recast {
-                    from_zone: Zone::Hand,
-                    uses_buyback: BuybackUsage::Used,
-                },
-                convoke: None,
-                pins: vec![PinnedDecision::ManaColor {
-                    slot: DecisionSlot::first(source(hidden, permanent), ChoicePoint::ManaColor),
-                    color: ManaColor::Blue,
-                }],
-            }];
-            state
-        };
-        let projected_pins = |state: &GameState| -> Vec<PinnedDecision> {
-            let filtered = filter_state_for_viewer(state, D5H_VIEWER);
-            let [step] = filtered.last_loop_action_sequence.as_slice() else {
-                panic!("the recorded sequence keeps its single step through the projection");
-            };
-            step.pins.clone()
-        };
-
-        let hidden_state = recorded(|hidden, _permanent| YieldTarget::ThisObject {
-            source_id: hidden,
-            incarnation: Some(1),
-            trigger_description: None,
-        });
-        assert!(
-            matches!(
-                hidden_state.last_loop_action_sequence[0].pins.as_slice(),
-                [PinnedDecision::ManaColor { .. }]
-            ),
-            "reach-guard: the UNPROJECTED step really carries one pin, and it is the variant \
-             whose VALUE leg answers `false` unconditionally"
-        );
-        assert!(
-            projected_pins(&hidden_state).is_empty(),
-            "CR 732.2a: a recorded step whose pin's slot names an object this viewer may not \
-             see is cleared — the recorded period has no other redaction seam"
-        );
-
-        let visible_state = recorded(|_hidden, permanent| YieldTarget::ThisObject {
-            source_id: permanent,
-            incarnation: Some(1),
-            trigger_description: None,
-        });
-        assert_eq!(
-            projected_pins(&visible_state),
-            visible_state.last_loop_action_sequence[0].pins,
-            "the same step on a public permanent keeps its pin — without this arm a clearer \
-             that emptied every step would pass the negative above"
-        );
-        assert!(
-            !projected_pins(&visible_state).is_empty(),
-            "and it is genuinely kept, not two matching empties"
-        );
-    }
-
-    /// **R7 — the record's redaction FIRES on a writer that can name a hidden card.**
-    ///
-    /// The row above is built on a `ManaColor` pin, whose writer names a battlefield mana
-    /// source. This phase adds the CR 608.2d resolution-set writer, keyed on
-    /// `WaitingFor::EffectZoneChoice`, whose `zone` is the source zone of the eligible objects
-    /// and is NOT restricted to the battlefield — so the pin it records can name a card in a
-    /// hidden zone. That makes the wiring the carrier's doc describes something this row can
-    /// SHOW firing rather than assert.
-    ///
-    /// The identity is named in the pin's VALUE (`TargetPin::ByIdentity`), not in its slot
-    /// source, which is the other half: this pin's slot names the public trigger source, so a
-    /// redactor that only inspected slots would pass the hidden card straight through.
-    ///
-    /// # Non-vacuity / discrimination
-    ///
-    /// CR 732.2b is all-or-nothing, so the assertion is on the WHOLE vector. The paired
-    /// positive is the same period projected for the pin's own controller, which keeps it; the
-    /// omitted member is the same period whose pin names a BATTLEFIELD permanent, which
-    /// survives the opponent's projection. Both arms assert the step still EXISTS, so "the
-    /// sequence vanished" cannot pass for "the pins were cleared".
-    #[test]
-    fn a_recorded_resolution_set_pin_naming_a_hidden_card_drops_the_whole_vector() {
-        use crate::analysis::decision_template::{
-            ChoicePoint, DecisionSlot, PinnedDecision, TargetPin,
-        };
-        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
-        use crate::types::game_state::{LoopAction, LoopActionContext, YieldTarget};
-
-        let recorded = |chosen_is_hidden: bool| {
-            let mut state = GameState::new_two_player(42);
-            let trigger_source = create_object(
-                &mut state,
-                CardId(4241),
-                D5H_PROPOSER,
-                "Public Trigger Source".to_string(),
-                Zone::Battlefield,
-            );
-            let hidden = create_object(
-                &mut state,
-                CardId(4242),
-                D5H_PROPOSER,
-                "Secret Card".to_string(),
-                Zone::Hand,
-            );
-            let permanent = create_object(
-                &mut state,
-                CardId(4243),
-                D5H_PROPOSER,
-                "Open Permanent".to_string(),
-                Zone::Battlefield,
-            );
-            let chosen = if chosen_is_hidden { hidden } else { permanent };
-            let named = |id: ObjectId| YieldTarget::ThisObject {
-                source_id: id,
-                incarnation: Some(1),
-                trigger_description: None,
-            };
-            state.last_loop_action_sequence = vec![LoopActionContext {
-                card_id: CardId(4241),
-                controller: D5H_PROPOSER,
-                action: LoopAction::ResolveTrigger {
-                    source_id: trigger_source,
-                    occurrence: TriggerDefinitionOccurrenceRef::Printed {
-                        base_set: TriggerBaseSetInstanceRef::INITIAL,
-                        printed_index: 0,
-                    },
-                },
-                convoke: None,
-                pins: vec![PinnedDecision::Targets {
-                    // The SLOT names the public trigger source; only the VALUE names the card.
-                    slot: DecisionSlot::first(named(trigger_source), ChoicePoint::ResolutionSet),
-                    targets: vec![TargetPin::ByIdentity(named(chosen))],
-                }],
-            }];
-            state
-        };
-        let projected_pins = |state: &GameState, viewer: PlayerId| -> Vec<PinnedDecision> {
-            let filtered = filter_state_for_viewer(state, viewer);
-            let [step] = filtered.last_loop_action_sequence.as_slice() else {
-                panic!("the recorded sequence keeps its single step through the projection");
-            };
-            step.pins.clone()
-        };
-
-        let hidden_state = recorded(true);
-        assert!(
-            matches!(
-                hidden_state.last_loop_action_sequence[0].pins.as_slice(),
-                [PinnedDecision::Targets { .. }]
-            ),
-            "reach-guard: the UNPROJECTED step really carries the resolution-set pin"
-        );
-        assert!(
-            projected_pins(&hidden_state, D5H_VIEWER).is_empty(),
-            "CR 732.2b: a recorded resolution-set pin naming a card this viewer may not see \
-             drops the WHOLE vector — the record has no other redaction seam"
-        );
-        assert!(
-            !projected_pins(&hidden_state, D5H_PROPOSER).is_empty(),
-            "paired positive: the pin's own controller still receives it"
-        );
-
-        let visible_state = recorded(false);
-        assert_eq!(
-            projected_pins(&visible_state, D5H_VIEWER),
-            visible_state.last_loop_action_sequence[0].pins,
-            "omitted member: the same pin naming a BATTLEFIELD permanent survives the \
-             opponent's projection — without it a clearer that emptied every step would pass"
         );
     }
 

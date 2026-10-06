@@ -2675,8 +2675,7 @@ fn c1_row7b_the_may_journal_follows_the_ring_on_the_same_receiver() {
 
 /// **Row 7c.** The journal never crosses save/load as stale data.
 ///
-/// `last_loop_action_sequence` fell into exactly this trap once; `#[serde(skip, default)]`
-/// is the bar, and this row asserts BOTH halves of it — the field is absent from the encoded
+/// `#[serde(skip, default)]` is the bar, and this row asserts BOTH halves of it — the field is absent from the encoded
 /// payload, and a decode of a populated board restores an empty journal.
 ///
 /// Discrimination: drop `skip` from the field's serde attribute ⇒ the key appears in the
@@ -2952,7 +2951,7 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// that commit's partition. Item-4 C2 IS that change: `handle_declare_shortcut` now resolves a
 /// `None` template against `offer.declaration` before the `template.owner` firewall, so on this
 /// board — which publishes a declaration — that arm is ACCEPTED and the `None if
-/// …loop_period_driver() != Some(proposer)` arm is bypassed rather than reached. The arm is
+/// … offer.period.is_empty()` arm is bypassed rather than reached. The arm is
 /// kept, flipped, because it is the one row here that measures the manual ingress agreeing with
 /// the AI ingress on one and the same offer. Its fail-closed sibling did not disappear — it
 /// moved to the offer shape that still reaches it, which is
@@ -2991,7 +2990,7 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// * disable `IterationCount::UntilLethal if offer.schema.is_bounded()` in
 ///   `handle_declare_shortcut` ⇒ the *`UntilLethal` + conformant template* arm flips
 ///   (`Priority` → `RespondToShortcut`), while the AI's own `template: None` candidate stays
-///   refused by the `None if last_loop_action_sequence.is_empty()` arm;
+///   refused by the `None if … offer.period.is_empty()` arm;
 /// * disable BOTH ⇒ the AI-candidate loop itself flips — `UntilLethal` + `None` builds a
 ///   proposal and opens APNAP for `PlayerId(1)`.
 ///
@@ -3022,20 +3021,8 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
     );
 
     assert!(
-        !state
-            .last_loop_action_sequence
-            .iter()
-            .all(|step| step.action.is_voluntarily_repeatable()),
-        "the measured precondition that makes the `Fixed` + `None` arm below ATTRIBUTABLE: this \
-         board's recorded period holds a step no player elects at priority (CR 603.3), so \
-         `loop_period_driver()` answers `None` and the `None if … != Some(proposer)` arm would \
-         refuse this declaration on the pre-C2 engine — that arm's acceptance is attributable to \
-         item-4 C2's `or_else` and to nothing else on this board. sequence={:?}",
-        state.last_loop_action_sequence
-    );
-    assert!(
         offer_declaration(&state).is_some(),
-        "and the other half of that attribution: the `or_else` can only accept because THIS \
+        "the `or_else` can only accept because THIS \
          offer published a declaration to fall back to. An offer publishing `None` still \
          fail-closes — `a_template_free_declaration_is_admitted_only_by_the_proposers_own_period`"
     );
@@ -5457,19 +5444,13 @@ fn t3_the_published_token_rate_is_delivered_by_the_accepted_drive() {
 /// break (a bounded offer publishes nothing to the unbounded-resource channel), and (c) is the
 /// reducer property that containment argument quantifies over.
 ///
-/// `GameState::loop_period_driver` — the predicate guarding the only mark route this phase's
-/// new axis could reach — is `pub(crate)` and unnameable here, so (b) asserts the property it
-/// reads: every step this board records is one no player elects at priority
-/// (`LoopAction::is_voluntarily_repeatable` answers `false`), which is what makes that accessor
-/// answer `None`. The board records a period here rather than none, because the resolutions
-/// carrying this loop are triggered abilities (CR 603.3).
+/// The take routes on the offer's confirmed period, so (b) asserts the bounded offer carries
+/// none: its accepted cycles drain the ring rather than reach the mark route.
 ///
 /// # Discrimination
 ///
-/// (a) reds if the token term is dropped from `ResourceVector::period`. (b) reds if a step a
-/// player DOES elect at priority enters this board's recorded period, if the voluntariness
-/// predicate starts answering `true` for a triggered-ability resolution, or if the period stops
-/// being recorded at all — an empty sequence fails the assertion as written.
+/// (a) reds if the token term is dropped from `ResourceVector::period`. (b) reds if the bounded
+/// offer carries a confirmed period.
 #[test]
 fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_closed() {
     use engine::analysis::resource::ResourceAxis;
@@ -5502,7 +5483,7 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
         "the refused action needs a LIVE battlefield source, else the refusal could be about \
          the source rather than about the wait"
     );
-    let sequence_at_offer = state.last_loop_action_sequence.clone();
+    let trace_at_offer = engine::game::play_trace_view(&state).map(|view| view.entries);
     let mut firewall = state.clone();
     let refusal = apply(
         &mut firewall,
@@ -5521,9 +5502,9 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
          got {refusal:?}"
     );
     assert_eq!(
-        firewall.last_loop_action_sequence, sequence_at_offer,
-        "the refused action must not mint a loop-action step — that sequence is the input to \
-         the very predicate guarding the mark route (b) asserts closed"
+        engine::game::play_trace_view(&firewall).map(|view| view.entries),
+        trace_at_offer,
+        "the refused action must not enter the window's trace"
     );
     assert!(
         matches!(firewall.waiting_for, WaitingFor::LoopShortcut { .. }),
@@ -5531,14 +5512,11 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
         firewall.waiting_for
     );
 
-    // ── (b) the guard's input is unset at the offer beat, with its own positive control.
+    // ── (b) the bounded offer carries no confirmed period, with its own positive control.
     assert!(
-        !sequence_at_offer
-            .iter()
-            .all(|step| step.action.is_voluntarily_repeatable()),
-        "no seat owns a DRIVING period at the offer beat, so the object-growth mark route is \
-         not live for anyone: this board's recorded steps are triggered-ability resolutions \
-         (CR 603.3), which no player elects at priority. sequence={sequence_at_offer:?}"
+        matches!(&state.waiting_for, WaitingFor::LoopShortcut { period, .. } if period.is_empty()),
+        "the bounded offer carries no confirmed period, so its take is the ring drain and the \
+         mark route is not live"
     );
     assert!(
         state.unbounded_resources.is_empty(),
@@ -5598,16 +5576,9 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
          about a drive that actually ran: life {life_before:?} -> {life_after:?}"
     );
     assert!(
-        !state
-            .last_loop_action_sequence
-            .iter()
-            .all(|step| step.action.is_voluntarily_repeatable())
-            && state.unbounded_resources.is_empty(),
-        "after the bounded drive the object-growth route is STILL not live — every step the \
-         committed drive recorded is a triggered-ability resolution no player elects at \
-         priority (CR 603.3) — and nothing was published to the unbounded-resource channel. \
-         sequence={:?} marks={:?}",
-        state.last_loop_action_sequence,
+        state.unbounded_resources.is_empty(),
+        "after the bounded drive nothing was published to the unbounded-resource channel. \
+         marks={:?}",
         state.unbounded_resources
     );
 }

@@ -161,11 +161,16 @@ fn top_trigger_source(state: &GameState) -> Option<ObjectId> {
     }
 }
 
-/// A `Priority{P0}` frame whose top entry is the minting trigger, with a period recorded.
+/// A `Priority{P0}` frame whose top entry is the minting trigger, with a span its return to the
+/// top named.
 fn recurrence_window(state: &GameState, minting: ObjectId) -> bool {
     matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
         && top_trigger_source(state) == Some(minting)
-        && !state.last_loop_action_sequence.is_empty()
+        && engine::game::play_trace_view(state).is_some_and(|view| {
+            view.named
+                .iter()
+                .any(|span| span.cause == NamingCause::TriggerTop)
+        })
 }
 
 fn is_offer(state: &GameState) -> bool {
@@ -476,7 +481,10 @@ fn an_accumulating_stack_beneath_the_recurrence_is_offered_and_taken() {
         after.len() > beneath.len() && all_altar_triggers(&after),
         "the take left more Altar of the Brood triggers beneath the recurrence; {after:?}"
     );
-    assert!(state.last_loop_action_sequence.is_empty());
+    assert!(
+        engine::game::play_trace_view(state).is_none_or(|view| view.offered.is_none()),
+        "the take leaves no offer standing in the trace"
+    );
 }
 
 /// CR 117.3b/c + CR 608.1: Board A is offered before its recurrence window, for the period its base
@@ -537,7 +545,7 @@ fn board_b_is_offered_at_its_base_window_with_its_target_answers() {
 }
 
 /// CR 732.2a + CR 732.2c: an until-lethal proposal on a trigger-driven offer, whose mint names no
-/// winner, ends at priority with the board untouched and the record cleared.
+/// winner, ends at priority with the board untouched and the proposer's trace discarded.
 #[test]
 fn an_until_lethal_take_of_a_trigger_driven_offer_changes_nothing() {
     let Some((mut drive, _)) = offered(Board::A) else {
@@ -561,8 +569,12 @@ fn an_until_lethal_take_of_a_trigger_driven_offer_changes_nothing() {
     );
     assert_eq!(board_fingerprint(state), offer, "the board is the offer's");
     assert!(
-        state.last_loop_action_sequence.is_empty(),
-        "the fallback clears the record"
+        engine::game::play_trace_view(state).is_none_or(|view| view
+            .entries
+            .iter()
+            .all(|entry| entry.seat != P0
+                || matches!(entry.kind, engine::game::EntryKind::Answer { .. }))),
+        "the fallback discards the proposer's plays and resolutions"
     );
 }
 

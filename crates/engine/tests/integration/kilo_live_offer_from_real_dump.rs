@@ -8,15 +8,9 @@
 //! tap Kilo (402) for BLUE → Kilo's "becomes tapped" trigger proliferates (CR 701.34a), +1 charge
 //! on Pentad (405) → activate Freed #1 ("{U}: Untap enchanted creature"), the {U} paid by the Blue.
 //!
-//! This exercises all three fixes end-to-end through the PUBLIC `apply()` boundary (the
-//! "combo FIRES in a real game" criterion): FIX-3 (the conditional load migration
-//! `GameState::migrate_transient_loop_sequence` drops the loaded save's 6 stale pinless steps
-//! because the dump is at `Priority`, not a shortcut window), FIX-1 (record + replay the
-//! tap-target / mana-color / proliferate-target pins), FIX-2 (the counter-growth cover disjunct
-//! accepts the +1-charge/cycle growth).
-//!
-//! DISCLOSED (FIX-3): a loaded PRE-fix save carries 6 pinless steps that the migration drops on
-//! load; one live cycle rebuilds a clean, fully-pinned 2-step period the detection drive can replay.
+//! This exercises the offer end-to-end through the PUBLIC `apply()` boundary (the "combo FIRES in
+//! a real game" criterion): the tap-target / mana-color / proliferate-target answers are replayed,
+//! and the counter-growth cover disjunct accepts the +1-charge/cycle growth.
 
 use engine::analysis::decision_template::IterationCount;
 use engine::game::derived_views::{CollapseCertainty, FamilyCollapseState, UnboundedFamily};
@@ -28,8 +22,8 @@ use engine::game::visibility::filter_state_for_viewer;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    GameState, LoopAction, LoopCollapseAxis, ManaChoice, PayCostKind, PayableResource,
-    PersistedGameState, PersistentAxisMaterialization, WaitingFor,
+    GameState, LoopCollapseAxis, ManaChoice, PayCostKind, PayableResource, PersistedGameState,
+    PersistentAxisMaterialization, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::interaction::{
@@ -43,13 +37,13 @@ use engine::types::zones::Zone;
 
 const P0: PlayerId = PlayerId(0);
 const KILO: ObjectId = ObjectId(402);
-const FREED: ObjectId = ObjectId(403);
+pub(crate) const FREED: ObjectId = ObjectId(403);
 pub(crate) const RELIC: ObjectId = ObjectId(404);
 const PENTAD: ObjectId = ObjectId(405);
 /// Relic of Legends ability index 1 = "Tap an untapped legendary creature you control: Add one
 /// mana of any color"; Freed from the Real ability index 1 = "{U}: Untap enchanted creature".
-const RELIC_TAP_MANA: usize = 1;
-const FREED_UNTAP: usize = 1;
+pub(crate) const RELIC_TAP_MANA: usize = 1;
+pub(crate) const FREED_UNTAP: usize = 1;
 
 /// The four loop permanents, per dump. Both real captures hold the same Kilo/Freed/Relic/Pentad
 /// board under P0; only the `ObjectId`s differ, so ONE drive authority serves both and the
@@ -92,11 +86,6 @@ fn gunzip(gz: &[u8]) -> String {
 /// saved `rng_word_pos` of 293. WASM's own call is now an idempotent repeat. Callers may still
 /// diverge afterwards: `GameSession::from_persisted` re-seeds and zeroes `rng_word_pos` with it,
 /// discarding the saved position rather than resuming it as this load does.
-/// The sequence deserializes NORMALLY (len 6),
-/// then `GameState::migrate_transient_loop_sequence` DROPS it because the dump was captured at
-/// empty-stack `Priority` (NOT a shortcut window) — exactly the production load behavior. Reverting
-/// the migration (or its `Priority`-drops-it branch) leaves the 6 stale pinless steps intact ⇒ the
-/// `is_empty()` assertion below flips and `try_offer` aborts on the pinless `seq[0]`.
 pub(crate) fn load_migrated_dump() -> GameState {
     let json = gunzip(include_bytes!(
         "../fixtures/kilo_freed_relic_pentad_4p.json.gz"
@@ -252,12 +241,6 @@ pub(crate) fn drive_one_live_cycle(state: &mut GameState, ids: &LoopIds) {
 fn kilo_migrated_dump_fires_object_growth_offer() {
     let mut state = load_migrated_dump();
 
-    // FIX-3 migration (observable effect): the loaded save's 6 pinless steps are dropped on load.
-    // Pre-FIX-3 this is len 6 — the matched-pair discriminator for FIX-3 itself.
-    assert!(
-        state.last_loop_action_sequence.is_empty(),
-        "FIX-3: the loaded save's stale pinless loop history is dropped on load (was 6 steps)"
-    );
     // Board is the untouched real 4p dump.
     assert_eq!(state.objects.len(), 411, "the real 4p board loads intact");
     assert!(
@@ -278,23 +261,22 @@ fn kilo_migrated_dump_fires_object_growth_offer() {
 
     drive_one_live_cycle(&mut state, &FIXTURE_IDS);
 
-    // Non-vacuous reach-guard: the live drive rebuilt a clean, fully-recorded 2-step period.
+    // Reach-guard: the live cycle's first play is the Relic mana activation.
+    let first_play = engine::game::play_trace_view(&state).and_then(|view| {
+        view.entries.into_iter().find_map(|entry| match entry.kind {
+            engine::game::EntryKind::Play { action, .. } => Some(action),
+            engine::game::EntryKind::Answer { .. } | engine::game::EntryKind::Resolution { .. } => {
+                None
+            }
+        })
+    });
     assert_eq!(
-        state.last_loop_action_sequence.len(),
-        2,
-        "one live cycle rebuilds the clean 2-step period [Relic#1, Freed#1]"
-    );
-    assert_eq!(
-        state.last_loop_action_sequence[0].action,
-        LoopAction::Activate {
+        first_play,
+        Some(GameAction::ActivateAbility {
             source_id: RELIC,
             ability_index: RELIC_TAP_MANA,
-        },
-        "the first step is the Relic mana activation (which carries the recorded pins)"
-    );
-    assert!(
-        !state.last_loop_action_sequence[0].pins.is_empty(),
-        "FIX-1: the Relic step carries the recorded fixed choices (tap/color/proliferate pins)"
+        }),
+        "the window's first play is the Relic mana activation"
     );
 
     // THE OFFER: the ∞-charge CR 732.2a shortcut surfaces for P0, carrying the reified schema.
@@ -303,6 +285,39 @@ fn kilo_migrated_dump_fires_object_growth_offer() {
             proposer, schema, ..
         } => {
             assert_eq!(*proposer, P0, "the loop's controller proposes the shortcut");
+            let wire = serde_json::to_value(&state.waiting_for).expect("the offer serializes");
+            let plays: Vec<(u64, GameAction)> = wire["data"]["period"]
+                .as_array()
+                .expect("the offer carries its period")
+                .iter()
+                .filter(|item| !item["play"].is_null())
+                .map(|item| {
+                    (
+                        item["seat"].as_u64().expect("a seat"),
+                        serde_json::from_value(item["action"].clone()).expect("an action"),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                plays,
+                vec![
+                    (
+                        0,
+                        GameAction::ActivateAbility {
+                            source_id: RELIC,
+                            ability_index: RELIC_TAP_MANA,
+                        }
+                    ),
+                    (
+                        0,
+                        GameAction::ActivateAbility {
+                            source_id: FREED,
+                            ability_index: FREED_UNTAP,
+                        }
+                    ),
+                ],
+                "the offered period is P0's Relic and Freed activations"
+            );
             // B1: the schema reifies the recorded pins as read-side decision points (the two
             // ByIdentity target pins + the latched mana-color pin).
             use engine::analysis::decision_template::DecisionPointKind;
@@ -333,8 +348,7 @@ fn drive_all_accept(state: &mut GameState) {
 
 /// Drive the APNAP accept at `n`: P0 (the proposer) declares `Fixed(n)`, then every prompted
 /// opponent accepts in turn order until the protocol closes at its CR 732.2a ending point — a
-/// place where a player has priority. `template: None` skips declare-time pin validation; the
-/// materialize re-derives from the intact `last_loop_action_sequence`. CR 732.2c: `n` bounds
+/// place where a player has priority. `template: None` skips declare-time pin validation. CR 732.2c: `n` bounds
 /// the CR 500.5 collapse prompt.
 fn drive_all_accept_n(state: &mut GameState, n: u32) {
     use engine::analysis::decision_template::IterationCount;
@@ -400,8 +414,7 @@ fn drive_all_accept_as_offered(state: &mut GameState) -> u32 {
 }
 
 /// Pass priority (for whichever seat holds it) until the next CR 500.5 phase/step boundary raises
-/// the deferred-collapse prompt. No player re-drives the loop — the accept cleared the recorded
-/// `last_loop_action_sequence` — so the phase simply ends and the boundary drain surfaces the
+/// the deferred-collapse prompt. No player re-drives the loop, so the phase simply ends and the boundary drain surfaces the
 /// `PayAmountChoice { LoopCollapse }` prompt for the stash-holder.
 fn drive_to_collapse_boundary(state: &mut GameState) {
     for _ in 0..200 {

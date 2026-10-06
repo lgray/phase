@@ -586,8 +586,7 @@ fn project_mana_production(p: &ManaProduction) -> (Vec<(usize, i64)>, AxisMagnit
 /// effects the resource projection models as minting; `None` for every other effect, including a
 /// mint the projection leaves unmodeled. A site asking whether an effect's resolution puts a token
 /// onto the battlefield consults this rather than listing members, so a member added here reaches
-/// the projection and both loop-period arming beats (`activation_creates_token`,
-/// `recast_creates_token`). CR 701.36b: populate is not a member, because whether it mints depends
+/// the projection. CR 701.36b: populate is not a member, because whether it mints depends
 /// on the creature tokens its controller holds at resolution, which the effect does not carry.
 pub(crate) fn resolution_token_mint(effect: &Effect) -> Option<&QuantityExpr> {
     static ONE: QuantityExpr = QuantityExpr::Fixed { value: 1 };
@@ -2887,8 +2886,8 @@ mod tests {
         assert!(np.produces.contains(&AxisKey::Etb));
     }
 
-    /// `[authority, projection seeds tokens, activation predicate, recast predicate]` for `effect`.
-    fn token_family_readers(effect: &Effect) -> [bool; 4] {
+    /// `[authority, projection seeds tokens]` for `effect`.
+    fn token_family_readers(effect: &Effect) -> [bool; 2] {
         let projection_seeds_tokens = matches!(
             effect_projection(effect),
             Projection::Modeled { ref vector, .. } if vector.tokens_created > 0
@@ -2896,8 +2895,6 @@ mod tests {
         [
             resolution_token_mint(effect).is_some(),
             projection_seeds_tokens,
-            crate::game::engine::activation_creates_token(&activated(effect.clone())),
-            crate::game::casting_costs::recast_creates_token(effect),
         ]
     }
 
@@ -2951,14 +2948,14 @@ mod tests {
                 (Some(&magnitude), Some(&magnitude)),
                 "{name}"
             );
-            assert_eq!(token_family_readers(effect), [true; 4], "{name}");
+            assert_eq!(token_family_readers(effect), [true; 2], "{name}");
         }
         // CR 701.16a: investigate creates one Clue token.
         assert_eq!(resolution_token_mint(&Effect::Investigate), Some(&fixed(1)));
 
         // CR 701.36b: whether populate mints depends on a creature token its controller holds at
         // resolution, which the effect does not carry.
-        assert_eq!(token_family_readers(&Effect::Populate), [false; 4]);
+        assert_eq!(token_family_readers(&Effect::Populate), [false; 2]);
     }
 
     #[test]

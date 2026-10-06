@@ -613,7 +613,7 @@ pub enum TargetPin {
     /// `game::engine`'s `a_shrouded_player_pin_is_still_published_by_the_offer_builder` and
     /// `a_shrouded_seat_is_untargetable_yet_still_choosable_at_the_pin_recheck` (this
     /// module) exist to keep out. Its live in-process producer is the CR 701.34a proliferate
-    /// arm (`game::engine::apply_action` → `record_loop_pin`).
+    /// choice (`game::engine::proliferate_pins`).
     ///
     /// A CR 601.2c **TARGET**-class seat is a different question and takes the other
     /// spelling: [`AnnouncementSubject::Seat`] inside a [`Ranking`] inside
@@ -934,10 +934,7 @@ fn resolve_target(
         // variant alone. `TargetPin::Player` is the CHOICE class (this arm, existence only);
         // a CR 601.2c TARGET-class seat is `AnnouncementSubject::Seat` inside a `Ranking`
         // inside `TargetPin::Scheduled`, resolved by the arm below through
-        // `targeting::player_is_legal_target`. THE PREVIOUS TEXT WAS SCOPED TOO NARROWLY and
-        // is corrected rather than deleted: it named only `record_loop_pin` (three sites,
-        // one of which — the CR 701.34a proliferate-target arm — is a genuine CHOICE) and
-        // was SILENT about the `record_loop_answer` route, along which
+        // `targeting::player_is_legal_target`. Along the `record_loop_answer` route,
         // `game::engine::record_trigger_target_answer` did produce a TARGET-class
         // `TargetPin::Player` from a `WaitingFor::TriggerTargetSelection` announcement. That
         // producer, and the human ingress of the same point kind
@@ -958,16 +955,14 @@ fn resolve_target(
         // this residual's producer surface without closing it.
         //
         // WHAT REMAINS OPEN, PRECISELY — PINS ARRIVE WIRE-SOURCED, and no in-process
-        // invariant covers that. `LoopActionContext` is
-        // `#[serde(from = "LoopActionContextRepr")]`, and that shim's `From` impl installs
-        // the deserialized vector verbatim (`pins: r.pins`), so a restored save can still
-        // carry a `TargetPin::Player` a foreign writer MEANT as a target. The wire carries
-        // the spelling, not the writer's intent, so the split cannot adjudicate that case —
-        // it can only make the honest spelling available and make the in-process producers
-        // use it. `GameState::migrate_transient_loop_sequence` keeps a loaded sequence ONLY
-        // for a save captured in a `LoopShortcut` / `RespondToShortcut` window. Same class as the
-        // wire-sourced `deliverable_capacity` defect `reject_zero_bound_shortcut_offer` closes: a
-        // load-seam value the in-process producer census cannot see.
+        // invariant covers that. A restored offer's `declaration` or a restored proposal's
+        // `template` deserializes its decisions verbatim, so a save can still carry a
+        // `TargetPin::Player` a foreign writer MEANT as a target. The wire carries the
+        // spelling, not the writer's intent, so the split cannot adjudicate that case — it can
+        // only make the honest spelling available and make the in-process producers use it.
+        // Same class as the wire-sourced `deliverable_capacity` defect
+        // `reject_zero_bound_shortcut_offer` closes: a load-seam value the in-process producer
+        // census cannot see.
         //
         // DAMAGE MODE if a wire producer does that: `CycleOutcome::Abort` rolls back only
         // the crossing cycle, so cycles `0..k` stay committed under a pin no authority ever

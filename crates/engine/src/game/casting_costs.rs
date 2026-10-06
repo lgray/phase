@@ -11788,13 +11788,6 @@ enum ReturnedCreatureCostMove {
     Delivered,
 }
 
-/// CR 601.2a + CR 111.1: whether the effect handed in puts a token onto the battlefield when the
-/// spell resolves, asked as the spell is cast. The buyback recast capture (CR 702.27a) hands in the
-/// spell's root effect only. Membership is `resolution_token_mint`'s.
-pub(crate) fn recast_creates_token(effect: &crate::types::ability::Effect) -> bool {
-    crate::analysis::ability_graph::resolution_token_mint(effect).is_some()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn finalize_cast_with_phyrexian_choices_inner(
     state: &mut GameState,
@@ -12062,64 +12055,6 @@ fn finalize_cast_with_phyrexian_choices_inner(
         .map(|pending| pending.convoked_creatures.clone())
         .unwrap_or_default();
     let convoked_creature_count = convoked_creatures.len();
-
-    // CR 601.2a + CR 702.27a + CR 702.51a: capture the object-growth recast as a 1-element
-    // loop-action sequence the PR-7 Phase 4d-ii / P7 v3 loop-shortcut hook replays. Gated to a
-    // buyback-paid, permanent-creating (token) spell so the hook's cheap precondition
-    // (`!last_loop_action_sequence.is_empty()`) is set ~never. Fail-safe note: a spurious capture
-    // from buyback + some OTHER optional cost only makes the clone-drive run — its cover/abort
-    // rejects any non-covering recast, so this can never false-certify. Cleared (set `[]`) on any
-    // non-matching cast, so a stale sequence never lingers. Additionally gated on
-    // `!in_simulation_probe()` so the detection/materialize drive (which re-runs this same cast
-    // under a `SimulationProbeGuard`) does NOT re-write the field — the sequence must stay
-    // byte-stable across the cover's s_n/s_n1/s_n2 frames (it is COMPARED, resource.rs). Overwrite
-    // is idempotent for a recast, but the shared invariant keeps the multi-activation path (which
-    // APPENDS, engine.rs) honest. `ability.effect` is read here before `ability` is moved into
-    // `stack_ability` below.
-    {
-        let is_token_creating = recast_creates_token(&ability.effect);
-        let (has_buyback, convoke) = state.objects.get(&object_id).map_or((false, None), |obj| {
-            let has_buyback = obj
-                .keywords
-                .iter()
-                .any(|k| matches!(k, crate::types::keywords::Keyword::Buyback(_)));
-            let convoke = obj
-                .keywords
-                .iter()
-                .any(|k| matches!(k, crate::types::keywords::Keyword::Convoke))
-                .then_some(crate::types::game_state::ConvokeMode::Convoke);
-            (has_buyback, convoke)
-        });
-        // #4603 opt-in gate: OFF (`!samples()`) must be byte-identical to pre-PR-7 on the
-        // SERIALIZED surface too — `last_loop_action_sequence` is `skip_serializing_if=is_empty`, so
-        // a spurious element in OFF mode would appear in a save/replay/scenario. Gate on the SAME
-        // accessor the consuming hook uses so the mode gate has one source. The whole
-        // set-or-clear is skipped inside a `SimulationProbeGuard` (the detection/materialize drive
-        // re-casts on a clone): the sequence must stay byte-STABLE across the cover's s_n/s_n1/s_n2
-        // frames (it is COMPARED, resource.rs), so the probe must LEAVE it untouched rather than
-        // clear it. Overwrite-with-`vec![ctx]`-or-`[]` is the real-cast behavior (idempotent for a
-        // homogeneous recast; a non-matching real cast clears a stale sequence).
-        if !crate::game::engine::in_simulation_probe() {
-            state.last_loop_action_sequence = (state.loop_detection.samples()
-                && additional_cost_paid
-                && has_buyback
-                && is_token_creating)
-                .then_some(crate::types::game_state::LoopActionContext {
-                    card_id,
-                    controller: player,
-                    action: crate::types::game_state::LoopAction::Recast {
-                        from_zone: source_zone,
-                        uses_buyback: crate::types::game_state::BuybackUsage::Used,
-                    },
-                    convoke,
-                    // FIX-1: a buyback recast pins its loop choices via `convoke`, not the
-                    // FIX-1 tap-cost/color/proliferate choices — recorded pinless.
-                    pins: Vec::new(),
-                })
-                .map(|ctx| vec![ctx])
-                .unwrap_or_default();
-        }
-    }
 
     let announced_targets = declared_targets_in_chain(&ability);
 

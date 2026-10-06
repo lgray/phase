@@ -1399,202 +1399,6 @@ impl Default for SpellCastRecord {
     }
 }
 
-/// CR 601.2a / CR 602.2a: the repeated ACTION that drives a captured CR 732.2a loop —
-/// either recasting a self-returning spell or re-activating a token-creating activated
-/// ability. Parameterizes the former `RecastContext.{from_zone, uses_buyback}` so an
-/// activation loop reuses the SAME capture/drive/cover pipeline. Deliberately ONE enum, not
-/// a sibling `last_activation_context` field: a second field would be excluded from
-/// `impl PartialEq for GameState` and dropped from the two cover conjuncts, reopening the
-/// fail-closed hole the object-growth cover closes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LoopAction {
-    /// CR 601.2a + CR 702.27a: recast a self-returning spell from `from_zone`, re-paying
-    /// buyback each iteration. The card is re-found LIVE per CR 400.7 (a fresh incarnation
-    /// on every hand-return), keyed by the top-level `card_id`.
-    Recast {
-        /// CR 601.2a: the zone the recast is cast from (Hand — buyback returns the spell here).
-        from_zone: Zone,
-        /// CR 702.27a: the recast must re-pay buyback each iteration to sustain the loop.
-        uses_buyback: BuybackUsage,
-    },
-    /// CR 602.2a: re-activate the `ability_index`-th activated ability of `source_id`. The
-    /// source is pinned by `ObjectId` (G3 — a plain token is `CardId(0)`, so a card-identity
-    /// re-find would match the fodder the loop manufactures); the positional `ability_index`
-    /// into the layer-derived `abilities` vec is re-validated by `Eq` each iteration (G4).
-    Activate {
-        source_id: ObjectId,
-        ability_index: usize,
-    },
-    /// CR 605.3a: re-activate the exact engine-authored land-mana option selected by
-    /// `TapLandForMana`. The semantic selection preserves either the printed ability index or
-    /// the typed subtype-derived fallback identity and is revalidated live on every iteration.
-    TapLandForMana {
-        selection: crate::types::mana::ManaSourceSelection,
-    },
-    /// CR 603.3 + CR 608.2: re-resolve the triggered ability of `source_id` that `occurrence`
-    /// names — the driving action of a loop whose cycle is a chain of triggers resolving on the
-    /// stack. The source is pinned by `ObjectId` (G3, as `Activate` is: a plain token is
-    /// `CardId(0)`, so a card-identity re-find would match the fodder the loop manufactures);
-    /// the trigger is pinned by its immutable occurrence, never by a live-vector position,
-    /// because `active_trigger_definitions` exposes that position as presentation metadata only.
-    /// Re-found live on every read.
-    ResolveTrigger {
-        source_id: ObjectId,
-        occurrence: TriggerDefinitionOccurrenceRef,
-    },
-}
-
-impl LoopAction {
-    /// CR 601.2a / CR 602.2 / CR 605.3a: whether repeating this action is a VOLUNTARY choice the
-    /// controller makes at priority — the precondition for OFFERING a CR 732.2a loop shortcut
-    /// (CR 104.4b: an optional loop). The PROPERTY, not a count of variants: every member a
-    /// player TAKES at priority answers `true` — casting a spell (CR 601.2a "a player first moves
-    /// that card") and activating an activated ability (CR 602.2 / CR 605.3a "a player MAY
-    /// activate") are player-initiated. Exhaustive (NO wildcard) so a MANDATORY driving variant
-    /// is forced to declare its optionality at compile time rather than silently defaulting to
-    /// offerable.
-    pub fn is_voluntarily_repeatable(&self) -> bool {
-        match self {
-            LoopAction::Recast { .. }
-            | LoopAction::Activate { .. }
-            | LoopAction::TapLandForMana { .. } => true,
-            // CR 603.3: a triggered ability goes on the stack with no player electing it, so
-            // repeating it is not a choice anyone makes at priority. Such a cycle DOES carry a
-            // voluntary action in its cards' own words ("you may exile"; "exile any number",
-            // where zero is a number) and CR 104.4b's closing sentence therefore keeps it off
-            // the CR 732.4 draw path — and such a step now DOES record the choices its
-            // resolution asks (`game::engine::record_trigger_step_pin`). What still holds, and
-            // is the whole of this `false`, is that it cannot DECLARE on their behalf: a
-            // declaration is a CR 732.2a proposal a player makes at priority, and nobody elects
-            // a trigger. Fail-closed: `false` withholds an offer such a shape might be owed, and
-            // can never grant one.
-            //
-            // Read by [`GameState::loop_period_is_priority_driven`] and by its slice-level peer
-            // [`loop_period_is_priority_driven_of`], which the drive's collapse ingress asks of
-            // a sequence that never passed through this state's own field.
-            LoopAction::ResolveTrigger { .. } => false,
-        }
-    }
-}
-
-/// CR 601.2a / CR 602.2a: the loop-action snapshot the PR-7 Phase 4d-ii object-growth
-/// detection hook replays. Captured at the driving beat (cast finalization for `Recast`, the
-/// `ActivateAbility` reducer for `Activate`), carried on the loop-detection clone, replayed
-/// by the injector. Every field is loop-INVARIANT across a homogeneous cycle (unit-variant
-/// `ConvokeMode` carries zero per-iteration data; `CardId` is cross-incarnation-stable per
-/// CR 400.7; the pinned `ObjectId` is a stable battlefield permanent), so the whole struct is
-/// COMPARED (never excluded) in the object-growth cover gates — a heterogeneous loop (one
-/// whose iterations alternate `action`) is caught and rejected (fail-closed).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "LoopActionContextRepr")]
-pub struct LoopActionContext {
-    /// CR 400.7 card identity of the loop's driver — re-found live for `Recast`, a guard for
-    /// `Activate`. Never an `ObjectId` for the `Recast` case (that churns per hand-return).
-    pub card_id: CardId,
-    pub controller: PlayerId,
-    /// CR 601.2a / CR 602.2a: which repeated action drives this loop.
-    pub action: LoopAction,
-    /// CR 702.51a: the convoke mode the recast injector's pin re-binds live each iteration
-    /// (`None` when the recast pays no convoke cost, and always `None` for an `Activate`).
-    pub convoke: Option<ConvokeMode>,
-    /// CR 732.2a (FIX-1): the fixed in-cycle player choices recorded during the demonstrated
-    /// iteration — every choice a beat inside this step asks of its controller, whichever kind of
-    /// step it is; regenerate the writer set with
-    /// `grep -rnP '(?<![a-z_])record_(loop|trigger_step)_pin\s*\(' crates/engine/src/`. Round-trips via
-    /// serde for an offer-save KEPT by the conditional load migration (FIX-3); a save captured
-    /// outside an object-growth shortcut window drops the whole sequence on load and re-records the
-    /// pins from live play. Compared cross-cycle (element-wise `Vec` `PartialEq`) in the
-    /// object-growth cover gates; frozen byte-identical across the drive frames (accumulate is gated
-    /// `!in_simulation_probe()`), so a genuine loop's pins match.
-    #[serde(default)]
-    pub pins: Vec<crate::analysis::decision_template::PinnedDecision>,
-}
-
-/// Serde deserialize shim for `LoopActionContext`. Accepts BOTH the current nested shape
-/// (`action: LoopAction`) AND the pre-rename flat `RecastContext` shape shipped in v0.24–v0.27
-/// (`from_zone` + `uses_buyback` at top level, no `action`). Only affects deserialize; the
-/// serialized surface is unchanged. CR 601.2a: a pre-rename flat value was always a buyback recast.
-#[derive(Deserialize)]
-struct LoopActionContextRepr {
-    card_id: CardId,
-    controller: PlayerId,
-    #[serde(default)]
-    convoke: Option<ConvokeMode>,
-    #[serde(default)]
-    action: Option<LoopAction>, // current nested shape
-    #[serde(default)]
-    from_zone: Option<Zone>, // pre-rename flat RecastContext shape
-    #[serde(default)]
-    uses_buyback: Option<BuybackUsage>,
-    /// CR 732.2a (FIX-1 + FIX-3): recorded fixed in-cycle choices. Round-trips for an offer-save
-    /// kept by the conditional load migration; `default` empty for pre-FIX-1 / pre-rename shapes.
-    #[serde(default)]
-    pins: Vec<crate::analysis::decision_template::PinnedDecision>,
-}
-
-impl From<LoopActionContextRepr> for LoopActionContext {
-    fn from(r: LoopActionContextRepr) -> Self {
-        // Reconstruct the Recast action from the old flat fields when `action` is absent.
-        let action = r.action.unwrap_or_else(|| LoopAction::Recast {
-            from_zone: r.from_zone.unwrap_or(Zone::Hand),
-            uses_buyback: r.uses_buyback.unwrap_or(BuybackUsage::NotUsed),
-        });
-        LoopActionContext {
-            card_id: r.card_id,
-            controller: r.controller,
-            action,
-            convoke: r.convoke,
-            // FIX-1 + FIX-3 (CONDITIONAL migration): the sequence deserializes normally, so an
-            // offer-save's recorded choices round-trip; pre-FIX-1 / pre-rename shapes default empty.
-            pins: r.pins,
-        }
-    }
-}
-
-/// Serde deserialize shim for `GameState::last_loop_action_sequence`. Accepts BOTH the current
-/// array shape (`[LoopActionContext, ..]`) AND the pre-P7 single-object shape (a mid-loop save
-/// taken when the field was `Option<LoopActionContext>`, serialized as one object) — the latter
-/// maps to a 1-element vec. `null` / absent (the `#[serde(default)]` path) maps to an empty vec.
-/// Only affects deserialize; the serialized surface is always an array
-/// (`skip_serializing_if = "Vec::is_empty"`). Each element still flows through
-/// `LoopActionContextRepr`, so the even-older flat `RecastContext` element shape (and FIX-1 `pins`)
-/// migrates too.
-fn deserialize_loop_action_sequence<'de, D>(
-    deserializer: D,
-) -> Result<Vec<LoopActionContext>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum SeqOrOne {
-        Seq(Vec<LoopActionContext>),
-        One(Box<LoopActionContext>),
-    }
-    Ok(match Option::<SeqOrOne>::deserialize(deserializer)? {
-        None => Vec::new(),
-        Some(SeqOrOne::Seq(v)) => v,
-        Some(SeqOrOne::One(c)) => vec![*c],
-    })
-}
-
-/// CR 702.27a: whether a homogeneous recast re-pays the buyback additional cost each iteration.
-/// Typed (not `bool`) so the recast frame's cost shape is self-documenting where it is compared
-/// (the object-growth cover gates) and consumed (the replay's `DecideOptionalCost` beat).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BuybackUsage {
-    Used,
-    NotUsed,
-}
-
-impl BuybackUsage {
-    /// CR 601.2f/702.27a: true when the recast re-pays buyback (drives the `DecideOptionalCost`
-    /// beat during object-growth replay).
-    pub const fn pays(self) -> bool {
-        matches!(self, BuybackUsage::Used)
-    }
-}
-
 /// Backwards-compatible deserializer for `SpellCastRecord.from_zone`. Accepts
 /// the modern non-Option encoding (`"Hand"`, `"Battlefield"`, …), the legacy
 /// `Option<Zone>` encoding (`null` → `Zone::Hand`), and absent fields (handled
@@ -13253,7 +13057,7 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
     if let WaitingFor::LoopShortcut {
         schema,
         certificate,
-        proposer,
+        period,
         ..
     } = &state.waiting_for
     {
@@ -13264,55 +13068,12 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
                     .to_string(),
             );
         }
-        // THE PAIR NO PRODUCER MINTS. `is_bounded()` says the offer's producer MEASURED a
-        // CR 704 repetition threshold; `loop_period_driver()` says a driving period belonging
-        // to THIS proposer is recorded AND is one they can take again at priority. The engine's
-        // three `LoopShortcut` mints
-        // partition that cross-product and none of them lands in this cell:
-        //
-        //   * the object-growth mint (`reconcile_terminal_result`, schema from
-        //     `try_offer_object_growth_shortcut`) and the Path A drain mint
-        //     (`interactive_loop_bridge`) both hand `build_shortcut_schema` the ABSENCE, so
-        //     neither is EVER `is_bounded()` — the growth mint is the one that REQUIRES its
-        //     proposer's own period, and it is unbounded by construction;
-        //   * the bounded mint (`certified_bounded_cycle_offer`) is `is_bounded()` by construction
-        //     — it refuses `NoNarrowedLegalCount` unless the reduction measured a threshold at
-        //     all and measured one of at least 1 — but its caller's gate (1b) (`bounded_cycle_offer`) returns
-        //     `BoundedOfferRefusal::ProposerHasDrivingPeriod` on exactly the read this guard
-        //     makes, so it can never mint INTO this cell;
-        //   * `visibility.rs`'s per-viewer re-wrap copies the published pair verbatim off an
-        //     offer one of the three already minted.
-        //
-        // No live beat can join the two afterwards either. Nothing assigns `schema` or either of
-        // its published answers in place anywhere in the engine, so an unbounded offer cannot
-        // ACQUIRE a measured threshold; and the guard below reads `loop_period_driver()`, which
-        // is `Some` only for a period every one of whose steps its controller takes at priority.
-        // The writers that can grow such a period are the `TapLandForMana` / `ActivateManaSource`
-        // / `ActivateAbility` `WaitingFor::Priority` arms (`accumulate_loop_action_step` and the
-        // token-creating `vec![step]` beside it) and the cast finalize. A pending offer reaches
-        // none of them: its only reducer arms are `DeclareShortcut` and `DeclineShortcut`. A beat
-        // at which no player acts — the trigger-resolution arming beat in `game::stack` — also
-        // grows the field, and the narrowed read is what keeps this conclusion standing: the
-        // period it grows answers `None` here, exactly as no period does.
-        //
-        // WHAT IT COSTS TO ACCEPT IT: `materialize_fixed_shortcut` (SITE C) dispatches on
-        // `loop_period_driver() == Some(proposal.proposer)` — the read this guard makes too — and
-        // early-returns the accepted proposal into `materialize_object_growth_shortcut`,
-        // committing ZERO of the agreed cycles — the silent misroute gate (1b)'s own doc block
-        // exists to prevent, entering through the restore door instead of the producer door.
-        //
-        // ⚠ DELIBERATELY CARRIES NO `CR` ANNOTATION, and the measurement for that absence travels
-        // with it so a later reader does not "fix" the omission. CR 732.2a's own Example is a
-        // proposer repeating THEIR OWN activation a SPECIFIED 999,999 more times — bounded, own
-        // period — so this state class is LEGAL AT THE TABLE and the rules license nothing here to
-        // enforce. What is violated is a producer-reachability fact about this engine, not a rule.
-        // Same call, same reason, same file family as `handle_declare_shortcut`'s IMPLEMENTATION
-        // BUDGET BOUND note: "a maintainer applying the CR 732.2a iff to a branch that wears a CR
-        // number will either trust it wrongly or delete it wrongly."
-        //
-        // BOTH conjuncts are required. Own period ALONE is the object-growth route's own admission
-        // condition, so rejecting it would refuse every legitimate growth capture; a narrowed bound
-        // ALONE is the ordinary bounded offer.
+        // THE PAIR NO PRODUCER MINTS. Only the bounded mint is `is_bounded()`, and it carries no
+        // confirmed period, so its take is the ring drain; a persisted bounded offer carrying a
+        // period would route the agreed cycles to the mark or the replay instead. No CR
+        // annotation: CR 732.2a's own Example is a bounded repetition of the proposer's own
+        // activation, so the pair is legal at the table and what this refuses is a pair this
+        // engine never mints.
         //
         // ⚠ AFTER THE ZERO-CAPACITY CHECK, DELIBERATELY: a wire carrying a MEASURED threshold of
         // zero is `is_bounded()` and re-encodes to a zero capacity — a pre-split save spelling the
@@ -13321,23 +13082,15 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
         // not assumed — see the zero-plus-own-period arm of
         // `a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load`.
         //
-        // ⚠ THIS BLOCK COVERS ONE OF THE HARM'S TWO WIRE HOSTS, and unlike the zero-bound sibling
-        // above the residual is NOT empty. A persisted `WaitingFor::RespondToShortcut { proposal }`
-        // whose `proposal.proposer` is the recorded period's `loop_period_driver()` reaches the
-        // SAME SITE C misroute via `apply_confirmed_shortcut`. No schema-keyed conjunct can see
-        // it — `ShortcutProposal` carries no `schema` at all (the scoping note on the
-        // zero-capacity guard above). The candidate discriminator on that host is
-        // `proposal.per_cycle.is_some()`; it is filed rather than shipped because
-        // "`per_cycle: Some` ⟺ the bounded mint" is not yet measured per branch, and a guard on
-        // an inherited marker is what this seam must not carry.
-        // Narrowed (CR 732.2a): reading the unnarrowed authority here would refuse a save whose
-        // route SITE C's dispatch no longer takes. Fails closed on `None` — the load is accepted,
-        // as it is for no period at all.
-        if schema.is_bounded() && state.loop_period_driver() == Some(*proposer) {
+        // ⚠ THIS BLOCK COVERS ONE OF THE HARM'S TWO WIRE HOSTS. A persisted
+        // `WaitingFor::RespondToShortcut { proposal }` carrying a period and a bounded
+        // `per_cycle` reaches the same misroute through `apply_confirmed_shortcut`, and
+        // `ShortcutProposal` carries no `schema` for this conjunct to read.
+        if schema.is_bounded() && !period.is_empty() {
             return Err(
-                "persisted LoopShortcut offer narrows its repetition bound while recording the \
-                 proposer's own driving period; no producer mints that pair, and accepting it \
-                 routes the agreed cycles to the object-growth materializer, committing none"
+                "persisted LoopShortcut offer narrows its repetition bound while carrying a \
+                 confirmed period; no producer mints that pair, and accepting it routes the \
+                 agreed cycles away from the ring drain"
                     .to_string(),
             );
         }
@@ -13532,36 +13285,6 @@ impl GameState {
         }
     }
 
-    /// CR 732.2a (FIX-3) load migration: `last_loop_action_sequence` is transient loop-detection
-    /// bookkeeping that re-accumulates from live play. On restore, DROP it UNLESS the save was
-    /// captured inside an object-growth shortcut proposal/response window
-    /// (`WaitingFor::LoopShortcut` / `RespondToShortcut`), where the pending accept→materialize
-    /// resolution still re-derives the ∞ pile from it (`current_period_fodder`). In every
-    /// other loaded state the field is a ROUTING SIGNAL. Dropping is still safe: every reader of
-    /// the record fails CLOSED, or routes to the Ring/drain path, on an empty record, so a cleared
-    /// field grants no soundness relief and never reaches a pin-consuming drive with nothing to
-    /// re-derive from. (It is also true that a stale loaded prefix only HARMS the re-drive, which
-    /// re-drives from a pinless `seq[0]` and aborts — the Kilo bug.)
-    ///
-    /// That property quantifies over the field's read set, regenerated by
-    /// `grep -rn 'last_loop_action_sequence' crates/engine/src`, and this doc names no member of
-    /// it. The writers that command also returns are not consumers of the routing signal at all:
-    /// a WRITER scoping its own clear reads the record to decide whose it is to discard, and a
-    /// field already cleared at the load boundary leaves it nothing to scope.
-    ///
-    /// Called from `PersistedGameState::into_game_state`, the single production restore chokepoint
-    /// for both the server (`GameSession::from_persisted`) and WASM (`decode_restored_game_state`)
-    /// paths. Applies only at the load boundary, never during live play (where a populated sequence
-    /// at `Priority` is the legitimate detection signal).
-    pub fn migrate_transient_loop_sequence(&mut self) {
-        if !matches!(
-            self.waiting_for,
-            WaitingFor::LoopShortcut { .. } | WaitingFor::RespondToShortcut { .. }
-        ) {
-            self.last_loop_action_sequence.clear();
-        }
-    }
-
     /// CR 109.5 + CR 611.2a: drop any restored restriction whose affected player
     /// is still the raw `RestrictionPlayerScope::SourceController` placeholder
     /// (Conduit of Worlds' "you can't cast additional spells this turn").
@@ -13706,146 +13429,6 @@ impl GameState {
         crate::game::public_state::sync_waiting_for(self, &waiting_for);
         crate::game::sba::check_state_based_actions(self, &mut Vec::new());
     }
-
-    /// CR 732.2a: the seat whose driving period `last_loop_action_sequence` currently records.
-    ///
-    /// CR 732.2a lets "the player with priority … suggest a shortcut by describing a sequence of
-    /// game choices, for all players, that may be legally taken based on the current game state
-    /// and the predictable results of the sequence of choices" — so a recorded period is evidence
-    /// about ONE seat's predictable continuation and describes nothing another seat can take.
-    /// `None` when no period is accumulating, or when the recorded steps do not all belong to one
-    /// seat (fail-closed: a heterogeneous run is nobody's loop).
-    ///
-    /// It answers WHOSE RECORD THIS IS. Whether the OBJECT-GROWTH ROUTE IS LIVE
-    /// for a seat is the different question [`GameState::loop_period_driver`] below answers, this
-    /// answer narrowed by the per-step premise those routes rest on; the two differ exactly when
-    /// this one names a seat and that period holds a step no player takes at priority — a
-    /// heterogeneous period is `None` here, so it is `None` there too. Each fails closed on `None`.
-    ///
-    /// WHICH CALLERS KEEP THE UNNARROWED READ IS A PROPERTY OF THE QUESTION THEY ASK, never a
-    /// list here: `grep -rn 'loop_period_controller()\|loop_period_driver()' crates/engine/src`
-    /// names every reader, and each classifies by what it asks. The questions that keep this one:
-    ///
-    /// * ADMITTING a record — or a precondition fenced to an admission, mirroring its test so the
-    ///   two cannot drift — where a separate premise gate decides offerability immediately after,
-    ///   so the road still reaches the producer and stops at the gate that applies the per-step
-    ///   premise.
-    /// * A WRITER scoping its own clear to the record's owner. Ownership is its whole question: a
-    ///   record is evidence about the seat that recorded it, and liveness says nothing about whose
-    ///   it is to discard.
-    /// * Needing BOTH answers at DIFFERENT CONDITIONALITY. The narrowed accessor fuses the two
-    ///   conjuncts under one guard, so a caller applying the premise unconditionally while
-    ///   applying ownership only when a proposer is bound cannot express itself through it and
-    ///   reads this authority and [`GameState::loop_period_is_priority_driven`] separately. Such a
-    ///   caller is ALREADY narrowed, in its own conjunct order — a narrowing decision that
-    ///   searches for the narrowed accessor's name alone will mistake it for one that never was.
-    ///
-    /// The homogeneity clause is a backstop, not a live case: `accumulate_loop_action_step` clears
-    /// the sequence on a controller change, so a heterogeneous run should be unreachable in play.
-    pub(crate) fn loop_period_controller(&self) -> Option<PlayerId> {
-        loop_period_controller_of(&self.last_loop_action_sequence)
-    }
-
-    /// CR 732.2a: whether every step of the recorded period is an action its controller takes at
-    /// priority — [`LoopAction::is_voluntarily_repeatable`] quantified over the whole period.
-    ///
-    /// This is the premise the record's consumers rest on. Each of the beats that writes a
-    /// priority-side step preserves it: the cast capture sets-or-clears on every cast, the
-    /// on-stack activation arm continues-seeds-or-clears, and the mana beat clears on an invalid
-    /// source — so a period built only from those beats is a sequence its controller can take
-    /// again. A beat at which no player acts breaks it, which is what this predicate exists to
-    /// detect. Vacuously true for an empty period, which every consumer already fails closed on
-    /// through its own emptiness test.
-    pub(crate) fn loop_period_is_priority_driven(&self) -> bool {
-        loop_period_is_priority_driven_of(&self.last_loop_action_sequence)
-    }
-
-    /// CR 732.2a: the seat the object-growth route is live for — [`GameState::loop_period_controller`]
-    /// narrowed by the premise above. Read wherever the question is route liveness or
-    /// re-derivability — can this seat be routed onto, or driven down, the object-growth path —
-    /// and NOT where it is whose record this is to admit or discard, which keeps the unnarrowed
-    /// authority for the reasons given there. The two answers differ exactly when the unnarrowed
-    /// one names a seat and that period holds a step no player takes at priority; a heterogeneous
-    /// period is `None` on both. Which sites read which is the call set's own answer, regenerated
-    /// by the command on [`GameState::loop_period_controller`]; this doc states no list of them.
-    pub(crate) fn loop_period_driver(&self) -> Option<PlayerId> {
-        loop_period_driver_of(&self.last_loop_action_sequence)
-    }
-}
-
-/// CR 732.2a: whose record this SEQUENCE is — the whole-period ownership test of
-/// [`GameState::loop_period_controller`], asked of a slice rather than of the state's own field.
-///
-/// Its question is OWNERSHIP and nothing else: a record is evidence about the seat that recorded
-/// it, and it says nothing about whether that seat could take those steps again — which is
-/// [`loop_period_is_priority_driven_of`]'s question, not this one's. `None` for an empty slice
-/// through its own `first()?`, and `None` for a heterogeneous one.
-///
-/// The slice form exists because a consumer can hold a sequence that is NOT
-/// `GameState::last_loop_action_sequence` — a stash-carried period serializes, and shipped
-/// fixtures graft such payloads by hand — and for such a slice the homogeneity clause is LIVE
-/// rather than the backstop it is for the state's field, since a grafted payload never passed
-/// through `accumulate_loop_action_step`'s clear-on-controller-change.
-pub(crate) fn loop_period_controller_of(seq: &[LoopActionContext]) -> Option<PlayerId> {
-    let owner = seq.first()?.controller;
-    seq.iter()
-        .all(|step| step.controller == owner)
-        .then_some(owner)
-}
-
-/// CR 732.2a: whether every step of THIS SEQUENCE is one its controller takes at priority —
-/// [`LoopAction::is_voluntarily_repeatable`] quantified over the slice.
-///
-/// Its question is the PER-STEP PREMISE and nothing else: it says nothing about whose record the
-/// slice is, which is [`loop_period_controller_of`]'s question. Vacuously true for an empty
-/// slice, exactly as the state-level form is — every consumer fails closed on emptiness through
-/// its own test, or through [`loop_period_driver_of`]'s ownership half.
-pub(crate) fn loop_period_is_priority_driven_of(seq: &[LoopActionContext]) -> bool {
-    seq.iter()
-        .all(|step| step.action.is_voluntarily_repeatable())
-}
-
-/// CR 732.2a + CR 104.4b: the seat a SEQUENCE may be driven for — the two questions above
-/// together, and the answer a consumer holding a sequence rather than the state's field must ask.
-///
-/// It is not either neighbour: ownership alone admits a slice holding a step no player takes at
-/// priority, and the premise alone admits a slice whose steps name DIFFERENT controllers — which
-/// a driver would then run whole for its first step's seat, activating a later step's object as a
-/// player CR 602.2 admits only when the object says otherwise.
-pub(crate) fn loop_period_driver_of(seq: &[LoopActionContext]) -> Option<PlayerId> {
-    loop_period_controller_of(seq).filter(|_| loop_period_is_priority_driven_of(seq))
-}
-
-/// The classification accessors above, reachable from the integration suite, which is a separate
-/// crate and names only `pub` items. Each delegates and adds no logic.
-#[cfg(any(test, feature = "test-support"))]
-impl GameState {
-    pub fn loop_period_controller_for_tests(&self) -> Option<PlayerId> {
-        self.loop_period_controller()
-    }
-
-    pub fn loop_period_is_priority_driven_for_tests(&self) -> bool {
-        self.loop_period_is_priority_driven()
-    }
-
-    pub fn loop_period_driver_for_tests(&self) -> Option<PlayerId> {
-        self.loop_period_driver()
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn loop_period_controller_of_for_tests(seq: &[LoopActionContext]) -> Option<PlayerId> {
-    loop_period_controller_of(seq)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn loop_period_is_priority_driven_of_for_tests(seq: &[LoopActionContext]) -> bool {
-    loop_period_is_priority_driven_of(seq)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn loop_period_driver_of_for_tests(seq: &[LoopActionContext]) -> Option<PlayerId> {
-    loop_period_driver_of(seq)
 }
 
 /// Decodes both current trusted snapshots and historical raw `GameState`
@@ -14039,9 +13622,6 @@ impl PersistedGameState {
             }
             Self::Trusted(envelope) => (*envelope).into_game_state(),
         };
-        // CR 732.2a (FIX-3): drop stale transient loop-detection bookkeeping on load unless the save
-        // sits in an object-growth shortcut window whose pending resolution still consumes it.
-        state.migrate_transient_loop_sequence();
         // CR 616.1: re-derive a parked replacement prompt's `kind` (see
         // `migrate_restored_replacement_choice_kind`). Placed at this shared
         // chokepoint so BOTH the untrusted `Raw` and trusted envelope paths get
@@ -21396,9 +20976,8 @@ declare_game_state! {
     /// `unbounded_loop_enablers` / `unbounded_loop_pile`): deferred-materialization
     /// annotation, not rules state for equality — a populated live state must still
     /// compare equal to the empty ring snapshots, or CR 104.4b loop detection
-    /// yields false negatives. NOTE: the `DriveSequence.sequence` payload IS
-    /// load-bearing across save/reload (unlike the serde-skipped live
-    /// `last_loop_action_sequence`) — it lives IN this serialized stash and drives the
+    /// yields false negatives. NOTE: the `DriveSequence.period` payload IS
+    /// load-bearing across save/reload — it lives IN this serialized stash and drives the
     /// boundary replay; round-trip is verified in the integration suite.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending_unbounded_materialization: BTreeMap<PlayerId, Vec<PersistentAxisMaterialization>>,
@@ -22658,40 +22237,6 @@ declare_game_state! {
     /// it would recreate the identity-field loop leak Condition 2 fixes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_source_relatch: Option<ResolutionSourceRelatch>,
-    /// CR 732.2a (FIX-3, CONDITIONAL migration): TRANSIENT shortcut-OFFER bookkeeping — the ordered
-    /// SEQUENCE of loop-driving ACTIONS in the current loop period (a buyback-paid permanent-creating
-    /// recast, CR 601.2a, is a 1-element sequence; a multi-activation engine, CR 602.2a, accumulates
-    /// one element per driving activation), each carrying the fixed in-cycle player choices recorded
-    /// during the demonstrated iteration (FIX-1 `LoopActionContext.pins`). EMPTY = unarmed. Set at
-    /// each driving beat.
-    ///
-    /// Deserializes NORMALLY (so an offer-save's `pins` round-trip), but the PRODUCTION restore hook
-    /// `GameState::migrate_transient_loop_sequence` (called from `PersistedGameState::into_game_state`)
-    /// DROPS it on load UNLESS the save was captured inside an object-growth shortcut
-    /// proposal/response window (`WaitingFor::LoopShortcut` / `RespondToShortcut`), where the pending
-    /// accept→materialize resolution re-derives the ∞ pile from it (`current_period_fodder` →
-    /// `materialize_object_growth_shortcut`). Everywhere else dropping is safe for the reason
-    /// `migrate_transient_loop_sequence` states, and the sequence re-accumulates from live play.
-    /// This REPLACES Design A's blanket
-    /// `#[serde(skip)]`, which regressed the predecessor object-growth offer-saves by starving
-    /// accept→materialize of the pile. Pre-FIX-3 back-compat (`deserialize_loop_action_sequence`
-    /// single-object shape + the two key aliases) is preserved. Rules-neutral (no permanent, counter,
-    /// life, zone, priority, or stack state depends on it).
-    ///
-    /// Deliberately EXCLUDED from `impl PartialEq for GameState` (a decision context, not durable
-    /// board state) and COMPARED explicitly only in the object-growth cover gates
-    /// (`analysis::resource::loop_states_equal_modulo_resources` + `eq_except_growable`,
-    /// fail-closed — `Vec` `PartialEq` is order-sensitive, so a heterogeneous/reordered sequence
-    /// is caught). The `pins` participate element-wise; frozen byte-identical across the drive
-    /// frames (accumulate is gated `!in_simulation_probe()`).
-    #[serde(
-        default,
-        alias = "last_recast_context",
-        alias = "last_loop_action_context",
-        deserialize_with = "deserialize_loop_action_sequence",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub last_loop_action_sequence: Vec<LoopActionContext>,
     /// Transient plural form of `current_trigger_event` for batched triggers.
     /// Event-context filters that can legally compare against a group read this.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -28377,7 +27922,6 @@ impl GameState {
             resolving_trigger_firing: None,
             pending_resolution_completion: None,
             resolution_source_relatch: None,
-            last_loop_action_sequence: Vec::new(),
             current_trigger_events: Vec::new(),
             last_discover_value: None,
             stack_trigger_event_batches: HashMap::new(),
@@ -30008,8 +29552,7 @@ impl GameState {
     /// the latch above answers `Conflicted` rather than storing an ordered pair. Both routes
     /// are fail-closed; only the second one is a conflict rather than an order comparison.
     ///
-    /// Gated exactly like `game::engine::record_loop_pin`
-    /// (`samples() && !in_simulation_probe()`), so the #4603-Off build never records and
+    /// Gated on `samples() && !in_simulation_probe()`, so the #4603-Off build never records and
     /// the detection/materialize drive replays without re-recording.
     pub(crate) fn record_loop_answer(
         &mut self,
@@ -30258,13 +29801,10 @@ impl GameState {
     /// and only when their own observer appeared.
     ///
     /// Supporting lemmas, each checkable at a symbol rather than by argument:
-    /// * **L1 OPTIONALITY** — the offer gate admits only periods every step of which is
-    ///   voluntarily repeatable (`GameState::loop_period_is_priority_driven`), and
-    ///   `LoopAction::is_voluntarily_repeatable` answers `true` on exactly the members a player
-    ///   TAKES at priority — the property its own exhaustive match declares, variant by variant.
-    ///   A driving action nobody elects answers `false` and never reaches an offer; a mandatory
-    ///   loop never produces this shape and stays on the CR 104.4b draw / lethal paths. So in
-    ///   manual play the controller may stop after any prefix.
+    /// * **L1 OPTIONALITY** — the trace names a candidate period only around an optional play or
+    ///   answer (`game::play_trace::NamingCause`); a mandatory loop never produces this shape and
+    ///   stays on the CR 104.4b draw / lethal paths. So in manual play the controller may stop
+    ///   after any prefix.
     /// * **L2 UNCONDITIONALITY BY CONSTRUCTION** — pins plus the static randomness scan plus the
     ///   runtime rng-position backstop satisfy CR 732.2a's "predictable results" and
     ///   no-conditional-actions clauses before an offer exists
@@ -30654,8 +30194,8 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
 ///
 /// Where the cover gate needs such an axis it compensates BY HAND at its own seam, which is
 /// the second site a reader has to know about: `analysis::resource::eq_except_growable`
-/// compares `post_replacement_token_substitution_count` and `last_loop_action_sequence` on top
-/// of its `PartialEq` reuse, each with its own one-sided-safety argument stated there.
+/// compares `post_replacement_token_substitution_count` on top of its `PartialEq` reuse, with
+/// its own one-sided-safety argument stated there.
 /// `analysis::resource::loyalty_activation_counts_match` is a sibling predicate over a
 /// per-object count, consulted at its own call sites, and not part of that pair.
 #[cfg(test)]
@@ -31048,13 +30588,6 @@ fn _gamestate_partition_is_total(s: &GameState) {
         pending_search_found_batch: _,
         pending_die_roll_instruction: _,
         post_replacement_token_substitution_count: _,
-        //   - `last_loop_action_sequence` (PR-7 Phase 4d-ii / P7 v3 object-growth loop-action
-        //     sequence): EXCLUDED from `impl PartialEq for GameState` (a transient decision
-        //     context, not durable board state), but COMPARED explicitly in `eq_except_growable` /
-        //     `loop_states_equal_modulo_resources` (fail-closed one-sided-safety — each element is
-        //     loop-INVARIANT across a homogeneous period, so COMPARING never suppresses a
-        //     legitimate loop; a heterogeneous/reordered period is correctly caught and rejected).
-        last_loop_action_sequence: _,
         //   - `resolution_source_relatch` (CR 400.7j self-move re-latch): EXCLUDED-REQUIRED (measured
         //     by ordering trace, not doc-trust). The `stack.rs` clears (`resolution_source_relatch =
         //     None`, one at each resolution-start site) fire at the START of the
@@ -37804,35 +37337,6 @@ mod tests {
             serde_json::from_value::<PendingScopedLibrarySearch>(json).unwrap(),
             pending
         );
-    }
-
-    #[test]
-    fn loop_action_context_migrates_pre_rename_flat_recast_shape() {
-        // Build the v0.24–v0.27 flat RecastContext JSON from the components' real serde reprs
-        // (robust to their serialization format): from_zone/uses_buyback at top level, no `action`.
-        let want = LoopActionContext {
-            card_id: CardId(7),
-            controller: PlayerId(1),
-            action: LoopAction::Recast {
-                from_zone: Zone::Hand,
-                uses_buyback: BuybackUsage::Used,
-            },
-            convoke: None,
-            pins: Vec::new(),
-        };
-        let old = serde_json::json!({
-            "card_id": serde_json::to_value(want.card_id).unwrap(),
-            "controller": serde_json::to_value(want.controller).unwrap(),
-            "from_zone": serde_json::to_value(Zone::Hand).unwrap(),
-            "uses_buyback": serde_json::to_value(BuybackUsage::Used).unwrap(),
-            "convoke": serde_json::Value::Null,
-        });
-        let got: LoopActionContext =
-            serde_json::from_value(old).expect("pre-rename flat shape must deserialize (G2)");
-        assert_eq!(got, want);
-        // Non-vacuity / revert-probe (documented): deleting `#[serde(from = "LoopActionContextRepr")]`
-        // makes the absent `action` field a hard deserialize error — this test flips to a
-        // `from_value` panic (the `.expect` above) without the shim.
     }
 
     #[test]

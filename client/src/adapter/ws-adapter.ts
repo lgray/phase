@@ -210,6 +210,8 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 113 — GameState drops the recorded loop-action sequence; a v112 peer
+ *      still sends it.
  * 112 — WaitingFor.ManaAbilityManaPayment and its ManaAbilityResume root are
  *      new variants a v111 peer cannot parse; ResolvedAbility gains the
  *      optional delayed_origin.
@@ -723,7 +725,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 112;
+export const PROTOCOL_VERSION = 113;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

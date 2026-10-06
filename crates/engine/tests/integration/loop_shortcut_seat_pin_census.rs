@@ -357,17 +357,14 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
         vec![
             ("engine/src/analysis/decision_template.rs", 1),
             ("engine/src/analysis/resource.rs", 1),
-            ("engine/src/game/engine.rs", 2),
+            ("engine/src/game/engine.rs", 1),
             ("engine/src/game/interaction.rs", 3),
             ("engine/src/game/visibility.rs", 1),
             ("engine/src/types/actions.rs", 1),
         ],
         "the TARGET-class spelling must be CONSTRUCTED by BOTH producers — `game/engine.rs` \
          (`record_trigger_target_answer`, which journals an announced seat for the \
-         loop-detection window, and `record_trigger_announcement_pin`, which records the same \
-         announcement onto a resolving trigger's own loop step: two journals of one \
-         announcement, each a producer, and CR 732.2a's state-independence argument for the \
-         ranked spelling is the same at both) and `game/interaction.rs` \
+         loop-detection window) and `game/interaction.rs` \
          (`materialize_loop_shortcut_response`) — beside its READ sites: \
          `evaluate_schedule`'s CR 601.2c resolver arm in `analysis/decision_template.rs` and \
          the wildcard-free redaction arm in `game/visibility.rs`, and `GameAction`'s object-id \

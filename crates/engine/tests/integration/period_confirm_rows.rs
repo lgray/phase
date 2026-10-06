@@ -282,23 +282,12 @@ fn kiki_exarch_frames() -> Option<(ObjectId, [GameState; 3])> {
 #[test]
 fn a_delayed_trigger_is_stripped_only_while_it_acts_on_grown_objects_alone() {
     use engine::types::ability::{Effect, QuantityExpr, TargetFilter, TypedFilter};
-    use engine::types::game_state::{LoopAction, LoopActionContext};
 
     let Some((kiki, frames)) = kiki_exarch_frames() else {
         return;
     };
-    let record = vec![LoopActionContext {
-        card_id: frames[0].objects[&kiki].card_id,
-        controller: P0,
-        action: LoopAction::Activate {
-            source_id: kiki,
-            ability_index: ability(&frames[0], kiki, false),
-        },
-        convoke: None,
-        pins: Vec::new(),
-    }];
     let verdict = |frames: &[GameState; 3]| {
-        certify_object_growth_frames_for_tests([&frames[0], &frames[1], &frames[2]], &record, P0)
+        certify_object_growth_frames_for_tests([&frames[0], &frames[1], &frames[2]], &[], P0)
     };
     assert!(verdict(&frames).certifies(), "{:?}", verdict(&frames));
 

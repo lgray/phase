@@ -1,5 +1,5 @@
 //! CR 732.2a: the object-growth cover, asked through the producer's own certification on three
-//! frames each blink board reaches through `apply()`, certifies both boards' recorded
+//! frames each blink board reaches through `apply()`, certifies both boards'
 //! trigger-driven periods on every condition, beside a committed board whose offer it certifies.
 
 use engine::analysis::resource::ObjectGrowthVerdict;
@@ -15,17 +15,38 @@ fn certified_on_every_condition() -> ObjectGrowthVerdict {
     ObjectGrowthVerdict::FodderGrowth([Vec::new(), Vec::new()])
 }
 
+/// The objects cast by the plays of the span the window's trace offers, or else last named.
+fn span_casts(state: &engine::types::game_state::GameState) -> Vec<ObjectId> {
+    use engine::game::{EntryKind, PlayLocus};
+    let Some(view) = engine::game::play_trace_view(state) else {
+        return Vec::new();
+    };
+    let Some(span) = view.offered.or_else(|| view.named.last().copied()) else {
+        return Vec::new();
+    };
+    view.entries[span.start..span.end]
+        .iter()
+        .filter_map(|entry| match entry.kind {
+            EntryKind::Play {
+                locus: PlayLocus::Cast(id),
+                ..
+            } => Some(id),
+            _ => None,
+        })
+        .collect()
+}
+
 fn board_verdict(frames: &Frames) -> ObjectGrowthVerdict {
     let [first, second, third] = &frames.cover;
-    certify([first, second, third], &frames.record, P0)
+    certify([first, second, third], &span_casts(&frames.read[0]), P0)
 }
 
 /// The Sprout Swarm dump's offer, declined on each of four casts: the frames after each decline,
-/// with the record the first offer carried, since declining clears it.
+/// with the casts the first offer's span made, since declining clears the trace.
 fn sprout_control_verdicts() -> Vec<ObjectGrowthVerdict> {
     let mut state = crate::sprout_inalla_realistic_offer::load_realistic_dump();
     let mut frames = Vec::new();
-    let mut record = Vec::new();
+    let mut casts = Vec::new();
     for fodder in [406, 407, 408, 409] {
         let outcome = GameRunner::from_state(state)
             .cast(ObjectId(405))
@@ -38,8 +59,8 @@ fn sprout_control_verdicts() -> Vec<ObjectGrowthVerdict> {
             matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
             "reach guard: the control's cast with fodder {fodder} raises the object-growth offer"
         );
-        if record.is_empty() {
-            record = runner.state().last_loop_action_sequence.clone();
+        if casts.is_empty() {
+            casts = span_casts(runner.state());
         }
         runner
             .act(GameAction::DeclineShortcut)
@@ -49,7 +70,7 @@ fn sprout_control_verdicts() -> Vec<ObjectGrowthVerdict> {
     }
     frames
         .windows(3)
-        .map(|window| certify([&window[0], &window[1], &window[2]], &record, P0))
+        .map(|window| certify([&window[0], &window[1], &window[2]], &casts, P0))
         .collect()
 }
 
