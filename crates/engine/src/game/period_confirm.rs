@@ -11,7 +11,7 @@ use crate::analysis::decision_template::{
     ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
 };
 use crate::analysis::resource::{
-    CertifiedInstructedDeparture, ObjectGrowthVerdict, ResourceVector,
+    CertifiedInstructedDeparture, CoveredGrowth, ObjectGrowthVerdict, ResourceVector,
 };
 use crate::game::engine::{
     announced_target_pins, apply, certify_object_growth_frames, clear_frame_bookkeeping,
@@ -35,6 +35,9 @@ use crate::types::player::PlayerId;
 pub enum OfferRefusal {
     /// CR 732.3: optional plays or answers from more than one player.
     Fragmented { seats: Vec<PlayerId> },
+    /// CR 732.2a: the holder proposes, and the span's optional plays and answers are `seat`'s,
+    /// who is offered it at their own priority.
+    ForeignSeat { seat: PlayerId },
     /// CR 732.2a: a replayed action drew a random outcome.
     Randomness,
     /// A prompt the replay reached that no recorded answer answers.
@@ -55,26 +58,6 @@ pub enum OfferRefusal {
     DrivingResourcesDecrease,
 }
 
-impl OfferRefusal {
-    /// Whether the refusal was decided after the replay completed and came round again, so that
-    /// it read only the period's deltas and the frame as it compares modulo resources.
-    pub(crate) fn decided_after_end_check(&self) -> bool {
-        match self {
-            OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(_))
-            | OfferRefusal::NoAxis
-            | OfferRefusal::LossAxis
-            | OfferRefusal::DrivingResourcesDecrease => true,
-            OfferRefusal::Fragmented { .. }
-            | OfferRefusal::Randomness
-            | OfferRefusal::UnanswerablePrompt
-            | OfferRefusal::IllegalReplayedPlay
-            | OfferRefusal::ArrivalDiverged
-            | OfferRefusal::NoRecurrence
-            | OfferRefusal::Cover(ObjectGrowthVerdict::FodderGrowth(_)) => false,
-        }
-    }
-}
-
 /// One recorded play or answer of a period, as the replay makes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PeriodItem {
@@ -93,14 +76,23 @@ pub(crate) struct PeriodItem {
 
 /// CR 732.2a: the plays and answers of a confirmed period, as an offer carries them to its take.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConfirmedPeriod(Vec<PeriodItem>);
+pub struct ConfirmedPeriod {
+    items: Vec<PeriodItem>,
+    /// What the cover that confirmed the period admitted as its growth.
+    #[serde(default)]
+    growth: CoveredGrowth,
+}
 
 // `GameAction` derives no `Eq`, and no value an action carries is floating-point.
 impl Eq for ConfirmedPeriod {}
 
 impl ConfirmedPeriod {
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.items.is_empty()
+    }
+
+    pub(crate) fn growth(&self) -> CoveredGrowth {
+        self.growth
     }
 }
 
@@ -119,8 +111,9 @@ pub(crate) struct Confirmation {
     pub(crate) choices: Vec<PinnedDecision>,
 }
 
-/// CR 732.3: the seats making optional choices in the span, when there is more than one.
-fn fragmented(body: &[TraceEntry]) -> Option<OfferRefusal> {
+/// The refusal of a span whose optional choices are not `holder`'s alone: more than one seat's
+/// is a fragmented loop (CR 732.3), and one other seat's is that seat's period.
+fn seat_refusal(body: &[TraceEntry], holder: PlayerId) -> Option<OfferRefusal> {
     let mut seats: Vec<PlayerId> = body
         .iter()
         .filter(|entry| match &entry.kind {
@@ -133,7 +126,12 @@ fn fragmented(body: &[TraceEntry]) -> Option<OfferRefusal> {
         .collect();
     seats.sort_unstable();
     seats.dedup();
-    (seats.len() > 1).then_some(OfferRefusal::Fragmented { seats })
+    match seats[..] {
+        [] => None,
+        [seat] if seat == holder => None,
+        [seat] => Some(OfferRefusal::ForeignSeat { seat }),
+        _ => Some(OfferRefusal::Fragmented { seats }),
+    }
 }
 
 /// The span's plays and answers, rotated to begin at the trace's current position; priority
@@ -632,7 +630,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         .take(span.end - span.start)
         .cloned()
         .collect();
-    if let Some(refusal) = fragmented(&body) {
+    if let Some(refusal) = seat_refusal(&body, holder) {
         return Err(refusal);
     }
     let items = period_items(entries, span);
@@ -655,7 +653,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
             _ => None,
         })
         .collect();
-    let verdict = certify_object_growth_frames(
+    let (verdict, growth) = certify_object_growth_frames(
         [&s_n, &s_n1, &s_n2],
         |state| normalize_cast_frame(state, &casts),
         holder,
@@ -665,7 +663,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     }
     let (delta, departure) = period_sign_check(&s_n1, &s_n2, holder)?;
     Ok(Confirmation {
-        period: ConfirmedPeriod(items),
+        period: ConfirmedPeriod { items, growth },
         frames: Box::new([s_n1, s_n2]),
         delta,
         departure,
@@ -683,7 +681,7 @@ pub(crate) fn perform_cycle(
     holder: PlayerId,
 ) -> Result<(), OfferRefusal> {
     let end = FrameEnd::of(state, holder);
-    replay_cycle(state, &period.0, &end, &mut Vec::new()).map(drop)
+    replay_cycle(state, &period.items, &end, &mut Vec::new()).map(drop)
 }
 
 /// Every span the current trace names, with the confirmer's verdict on each at `state`, which

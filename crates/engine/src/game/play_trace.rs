@@ -7,9 +7,7 @@
 
 use std::cell::Cell;
 
-use crate::analysis::resource::loop_states_equal_modulo_resources;
 use crate::game::engine::in_simulation_probe;
-use crate::game::period_confirm::OfferRefusal;
 use crate::types::ability::{
     AbilityDefinition, DelayedAbilityOrigin, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
     TriggerPrintedOrigin,
@@ -290,15 +288,6 @@ struct PendingRead {
     locus: PlayLocus,
 }
 
-/// A span the confirmer refused, by the nodes it plays and resolves in order and the frame it was
-/// asked from.
-#[derive(Clone, Debug)]
-struct Refused {
-    nodes: Vec<usize>,
-    frame: std::sync::Arc<GameState>,
-    refusal: OfferRefusal,
-}
-
 /// An action that reverses a play the trace holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reversal {
@@ -333,8 +322,6 @@ pub(crate) struct PlayTrace {
     named: im::Vector<NamedSpan>,
     /// The first named span no window has read.
     unread: usize,
-    /// CR 732.2a: refusals that still stand, because every play since was of the span's nodes.
-    refused: im::Vector<Refused>,
     /// The span the latest offer was made for.
     offered: Option<NamedSpan>,
     undo: im::Vector<UndoPoint>,
@@ -357,7 +344,6 @@ impl PlayTrace {
             pending_reads: im::Vector::new(),
             named: im::Vector::new(),
             unread: 0,
-            refused: im::Vector::new(),
             offered: None,
             undo: im::Vector::new(),
             mana_ability_entries: im::HashSet::new(),
@@ -403,7 +389,6 @@ impl PlayTrace {
             // CR 117.1a + CR 117.1b: casting a spell or activating an ability is optional.
             self.last_optional = Some(at);
             self.last_play = Some(at);
-            self.refused.retain(|refused| refused.nodes.contains(&node));
             if locus != PlayLocus::Unread {
                 self.pending_reads.push_back(PendingRead {
                     node,
@@ -1333,56 +1318,6 @@ pub(crate) fn name_window(state: &mut GameState) -> Vec<NamedSpan> {
     trace.unread = trace.named.len();
     state.play_trace = Some(Box::new(trace));
     unread
-}
-
-/// The nodes `span` plays and resolves, in order.
-fn span_nodes(trace: &PlayTrace, span: NamedSpan) -> Vec<usize> {
-    trace
-        .entries
-        .iter()
-        .skip(span.start)
-        .take(span.end - span.start)
-        .filter_map(|entry| match entry.kind {
-            EntryKind::Play { node, .. } | EntryKind::Resolution { node } => Some(node),
-            EntryKind::Answer { .. } => None,
-        })
-        .collect()
-}
-
-/// CR 732.2a: the refusal a span with `span`'s node sequence was given from a frame equal to
-/// `state` modulo resources, which is all a refusal decided after the replay's end check reads.
-pub(crate) fn refused_before(state: &GameState, span: NamedSpan) -> Option<OfferRefusal> {
-    let trace = current(state)?;
-    let nodes = span_nodes(trace, span);
-    trace
-        .refused
-        .iter()
-        .find(|refused| {
-            refused.nodes == nodes && loop_states_equal_modulo_resources(&refused.frame, state)
-        })
-        .map(|refused| refused.refusal.clone())
-}
-
-/// Keeps a refusal of `span` the confirmer decided after the replay's end check, asked from
-/// `state`, for the spans named after it; a refusal the replay itself gave is asked again.
-pub(crate) fn note_refusal(state: &mut GameState, span: NamedSpan, refusal: OfferRefusal) {
-    if !refusal.decided_after_end_check() {
-        return;
-    }
-    let window = WindowKey::of(state);
-    let Some(mut trace) = state.play_trace.take() else {
-        return;
-    };
-    if trace.window == window {
-        let frame = std::sync::Arc::new(state.clone());
-        let nodes = span_nodes(&trace, span);
-        trace.refused.push_back(Refused {
-            nodes,
-            frame,
-            refusal,
-        });
-    }
-    state.play_trace = Some(trace);
 }
 
 /// Notes the span an offer was made for.

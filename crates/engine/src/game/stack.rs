@@ -4811,7 +4811,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         source_incarnation: _,
         trigger_source: _,
         trigger_definition_ref: _,
-        delayed_origin: a_delayed_origin,
+        delayed_origin: _,
         force_block_attacker: a_force_block_attacker,
         target_incarnations: a_target_incarnations,
         controller: a_controller,
@@ -4895,7 +4895,7 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         source_incarnation: _,
         trigger_source: _,
         trigger_definition_ref: _,
-        delayed_origin: b_delayed_origin,
+        delayed_origin: _,
         force_block_attacker: b_force_block_attacker,
         target_incarnations: b_target_incarnations,
         controller: b_controller,
@@ -4975,7 +4975,6 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         && a_declares_return_result == b_declares_return_result
         && a_reads_return_result == b_reads_return_result
         && a_force_block_attacker == b_force_block_attacker
-        && a_delayed_origin == b_delayed_origin
         // CR 400.7 + CR 603.7c: two otherwise-identical abilities pinned to
         // DIFFERENT incarnations are not the same ability. Participating here
         // keeps this manual comparison in agreement with the type's derived

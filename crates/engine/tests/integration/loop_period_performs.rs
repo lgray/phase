@@ -50,7 +50,7 @@ fn same_up_to_rotation_accepts_a_rotation_and_rejects_a_swap() {
 /// The printed name of each play's source in the offered period, in order.
 fn offered_plays(state: &GameState) -> Vec<String> {
     let wire = serde_json::to_value(&state.waiting_for).expect("the offer serializes");
-    wire["data"]["period"]
+    wire["data"]["period"]["items"]
         .as_array()
         .expect("the offer carries its period")
         .iter()

@@ -286,7 +286,7 @@ fn kilo_migrated_dump_fires_object_growth_offer() {
         } => {
             assert_eq!(*proposer, P0, "the loop's controller proposes the shortcut");
             let wire = serde_json::to_value(&state.waiting_for).expect("the offer serializes");
-            let plays: Vec<(u64, GameAction)> = wire["data"]["period"]
+            let plays: Vec<(u64, GameAction)> = wire["data"]["period"]["items"]
                 .as_array()
                 .expect("the offer carries its period")
                 .iter()

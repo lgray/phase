@@ -69,9 +69,9 @@ fn offer_answers(state: &GameState) -> Answers {
     let WaitingFor::LoopShortcut { period, .. } = &state.waiting_for else {
         panic!("expected an offer, got {:?}", state.waiting_for);
     };
-    let items = serde_json::to_value(period).expect("a period serializes");
+    let wire = serde_json::to_value(period).expect("a period serializes");
     Answers::of(
-        items
+        wire["items"]
             .as_array()
             .expect("a period is a list")
             .iter()

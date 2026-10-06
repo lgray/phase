@@ -6526,7 +6526,7 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
     };
     let donor_period = serde_json::to_value(period).expect("a period serializes");
     assert!(
-        donor_period
+        donor_period["items"]
             .as_array()
             .is_some_and(|items| !items.is_empty()),
         "REACH-GUARD: the donated period is non-empty, or every period arm is vacuous"
@@ -6600,11 +6600,14 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
 
     // ── A4 — ANY SEAT: the take routes on the period whoever made its plays.
     let foreign_period = {
-        let mut items = donor_period.clone();
-        for item in items.as_array_mut().expect("a period is a list") {
+        let mut period = donor_period.clone();
+        for item in period["items"]
+            .as_array_mut()
+            .expect("a period lists its items")
+        {
             item["seat"] = serde_json::json!(1);
         }
-        items
+        period
     };
     assert!(
         decode_persisted(spliced(base.clone(), Some(5), Some(&foreign_period))).is_err(),
@@ -7348,7 +7351,7 @@ fn dump_c_still_crowns_at_one_living_opponent_after_pause_retention() {
 
 /// A one-item confirmed period, for offers built by hand.
 pub(crate) fn one_item_period() -> engine::game::period_confirm::ConfirmedPeriod {
-    serde_json::from_value(serde_json::json!([{
+    serde_json::from_value(serde_json::json!({ "items": [{
         "seat": 0,
         "action": { "type": "PassPriority" },
         "play": null,
@@ -7356,7 +7359,7 @@ pub(crate) fn one_item_period() -> engine::game::period_confirm::ConfirmedPeriod
         "next_object_id": 1,
         "minted_since": 1,
         "cost_move": null,
-    }]))
+    }] }))
     .expect("a one-item period deserializes")
 }
 

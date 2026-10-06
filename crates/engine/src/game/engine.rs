@@ -5954,7 +5954,8 @@ enum TakeRoute {
 /// CR 732.2c: the one route decision for an accepted proposal. The mark stands only where it
 /// reaches what the replay would: a zero or shortened count is performed as agreed (CR 732.2b),
 /// a period standing on the stack cannot be replayed from the step-end collapse's empty stack,
-/// and the mark would refill restricted mana without its restriction (CR 106.6).
+/// the mark would refill restricted mana without its restriction (CR 106.6), and its mint makes
+/// bare tapped copies, without a keyword or delayed trigger the cover admitted as growth.
 fn take_route(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
@@ -5965,6 +5966,7 @@ fn take_route(
     } else if n == 0
         || proposal.shortened_by.is_some()
         || !state.stack.is_empty()
+        || proposal.period.growth() == crate::analysis::resource::CoveredGrowth::WithRiders
         || adds_restricted_mana(state, &proposal.period, proposal.proposer)
     {
         TakeRoute::Replay
@@ -6713,13 +6715,17 @@ pub(crate) fn clear_frame_bookkeeping(s: &mut GameState) {
 }
 
 /// CR 732.2a: the object-growth producer's certification of its three settle frames — their
-/// normalization, the minted class, and the recurrence cover.
+/// normalization, the minted class, and the recurrence cover — with what the cover admitted as
+/// growth.
 pub(crate) fn certify_object_growth_frames(
     frames: [&GameState; 3],
     normalize: impl Fn(&GameState) -> GameState,
     caster: PlayerId,
-) -> crate::analysis::resource::ObjectGrowthVerdict {
-    use crate::analysis::resource::ObjectGrowthVerdict;
+) -> (
+    crate::analysis::resource::ObjectGrowthVerdict,
+    crate::analysis::resource::CoveredGrowth,
+) {
+    use crate::analysis::resource::{CoveredGrowth, ObjectGrowthVerdict};
     let [s_n, s_n1, s_n2] = frames;
     // CR 400.7: normalize each frame BEFORE the cover fork so both arms share the normalized
     // frames.
@@ -6736,14 +6742,16 @@ pub(crate) fn certify_object_growth_frames(
     match derived_fodder_class(s_n, s_n1) {
         Some((mut fodder, _k)) => {
             crate::analysis::resource::project_object_for_loop(&mut fodder);
-            ObjectGrowthVerdict::FodderGrowth([
-                crate::analysis::resource::fodder_growth_cover_refusals(
-                    &cs_n, &cs_n1, &fodder, caster,
-                ),
-                crate::analysis::resource::fodder_growth_cover_refusals(
-                    &cs_n1, &cs_n2, &fodder, caster,
-                ),
-            ])
+            let (first, first_growth) = crate::analysis::resource::fodder_growth_cover_refusals(
+                &cs_n, &cs_n1, &fodder, caster,
+            );
+            let (second, second_growth) = crate::analysis::resource::fodder_growth_cover_refusals(
+                &cs_n1, &cs_n2, &fodder, caster,
+            );
+            (
+                ObjectGrowthVerdict::FodderGrowth([first, second]),
+                first_growth.max(second_growth),
+            )
         }
         None => {
             // FIX-2 (CR 732.2a / CR 104.4b): the multi-activation / pure-counter class returns
@@ -6757,7 +6765,12 @@ pub(crate) fn certify_object_growth_frames(
                 crate::analysis::resource::loop_states_equal_modulo_resources(a, b)
                     || crate::analysis::resource::loop_states_cover_modulo_counter_growth(a, b)
             };
-            ObjectGrowthVerdict::ResourceRecurrence(cover(&cs_n, &cs_n1) && cover(&cs_n1, &cs_n2))
+            (
+                ObjectGrowthVerdict::ResourceRecurrence(
+                    cover(&cs_n, &cs_n1) && cover(&cs_n1, &cs_n2),
+                ),
+                CoveredGrowth::Bare,
+            )
         }
     }
 }
@@ -6781,6 +6794,7 @@ pub fn certify_object_growth_frames_for_tests(
         |frame| super::period_confirm::normalize_cast_frame(frame, casts),
         caster,
     )
+    .0
 }
 
 /// CR 111.1: the battlefield objects one period MINTED — created with no prior existence in any
@@ -7022,22 +7036,13 @@ fn try_offer_object_growth_shortcut(
     let WaitingFor::Priority { player: caster } = state.waiting_for else {
         return None;
     };
-    // The retry: each span in the order the trace named it, until one confirms. A span refused
-    // before retries nothing, because the spans after it are the ones that refusal's window asked.
+    // The retry: each span in the order the trace named it, until one confirms.
     let (span, confirmation) = spans.iter().find_map(|&span| {
         #[cfg(feature = "test-support")]
         crate::game::perf_counters::record_play_trace(|counters| counters.confirm_asks += 1);
-        if super::play_trace::refused_before(state, span).is_some() {
-            return Some(None);
-        }
-        match super::period_confirm::confirm(state, span) {
-            Ok(confirmation) => Some(Some((span, confirmation))),
-            Err(refusal) => {
-                super::play_trace::note_refusal(state, span, refusal);
-                None
-            }
-        }
-    })??;
+        let confirmation = super::period_confirm::confirm(state, span).ok()?;
+        Some((span, confirmation))
+    })?;
     let [s_n1, s_n2] = *confirmation.frames;
     let certificate = build_cert(
         &s_n1,
@@ -25419,7 +25424,7 @@ mod bounded_offer_conjunct_tests {
         // CR 732.2a: SITE F admits a bare declaration (no client template) only on an offer that
         // carries the confirmed period its take replays, which a synthetic ring has no play
         // history to have confirmed.
-        *period = serde_json::from_value(serde_json::json!([{
+        *period = serde_json::from_value(serde_json::json!({ "items": [{
             "seat": 0,
             "action": { "type": "PassPriority" },
             "play": null,
@@ -25427,7 +25432,7 @@ mod bounded_offer_conjunct_tests {
             "next_object_id": 1,
             "minted_since": 1,
             "cost_move": null,
-        }]))
+        }] }))
         .expect("a one-item period deserializes");
         let published = schema.deliverable_capacity;
         assert!(

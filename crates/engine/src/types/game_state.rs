@@ -38729,7 +38729,7 @@ mod tests {
     fn persistent_axis_materialization_stash_round_trips_through_serde() {
         let mut state = GameState::new_two_player(7);
         let period: crate::game::period_confirm::ConfirmedPeriod =
-            serde_json::from_value(serde_json::json!([{
+            serde_json::from_value(serde_json::json!({ "items": [{
                 "seat": 0,
                 "action": { "type": "PassPriority" },
                 "play": null,
@@ -38737,7 +38737,7 @@ mod tests {
                 "next_object_id": 5,
                 "minted_since": 5,
                 "cost_move": null,
-            }]))
+            }] }))
             .expect("a one-item period deserializes");
         assert!(!period.is_empty(), "reach-guard: the payload is populated");
         let items = vec![

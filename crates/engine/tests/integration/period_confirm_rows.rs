@@ -10,12 +10,15 @@ use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, Offer
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::{play_trace_view, NamingCause};
-use engine::types::ability::{AbilityKind, ResolvedAbility, TargetRef};
+use engine::types::ability::{
+    AbilityKind, DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
+};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
     CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
+use engine::types::keywords::Keyword;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
@@ -149,11 +152,24 @@ fn latest_verdict(state: &GameState) -> Result<Vec<String>, OfferRefusal> {
 /// you control, except it has haste. Sacrifice it at the beginning of the next end step.") beside
 /// `copied`, whose copies' enters trigger untaps Kiki-Jiki.
 fn kiki_copy_board(copied: &str) -> Option<(GameRunner, ObjectId, ObjectId)> {
+    kiki_board(P0, copied, None)
+}
+
+/// [`kiki_copy_board`] on P0's turn with Kiki-Jiki and `copied` under `seat`'s control, and Soul
+/// Warden ("Whenever another creature enters, you gain 1 life.") under `warden`'s.
+fn kiki_board(
+    seat: PlayerId,
+    copied: &str,
+    warden: Option<PlayerId>,
+) -> Option<(GameRunner, ObjectId, ObjectId)> {
     let db = shared_card_db()?;
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-    let kiki = scenario.add_real_card(P0, "Kiki-Jiki, Mirror Breaker", Zone::Battlefield, db);
-    let copied = scenario.add_real_card(P0, copied, Zone::Battlefield, db);
+    let kiki = scenario.add_real_card(seat, "Kiki-Jiki, Mirror Breaker", Zone::Battlefield, db);
+    let copied = scenario.add_real_card(seat, copied, Zone::Battlefield, db);
+    if let Some(warden) = warden {
+        scenario.add_real_card(warden, "Soul Warden", Zone::Battlefield, db);
+    }
     for seat in [P0, P1] {
         for _ in 0..10 {
             scenario.add_real_card(seat, "Mountain", Zone::Library, db);
@@ -651,14 +667,6 @@ fn road(state: &GameState) -> Option<OfferRoad> {
     }
 }
 
-fn token_count(state: &GameState) -> usize {
-    state
-        .battlefield
-        .iter()
-        .filter(|id| state.objects[id].is_token)
-        .count()
-}
-
 fn incarnations(state: &GameState, ids: &[ObjectId]) -> u64 {
     ids.iter().map(|id| state.objects[id].incarnation).sum()
 }
@@ -724,9 +732,40 @@ fn board_c_take_work_is_flat_per_cycle() {
     assert_take_pool_walk_is_flat(32, metered);
 }
 
-/// CR 732.2a: Kiki-Jiki's first span refuses at its target prompt; the window after the second
-/// activation offers the period on the recorded road, and the take's collapse at the step's end
-/// mints the copies it counted (CR 732.1b).
+fn tokens(state: &GameState, controller: PlayerId) -> Vec<ObjectId> {
+    state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| state.objects[id].is_token && state.objects[id].controller == controller)
+        .collect()
+}
+
+/// Passes to the next turn, declaring no attackers and ordering triggers as they are listed.
+fn pass_to_next_turn(runner: &mut GameRunner) {
+    let turn = runner.state().turn_number;
+    for _ in 0..80 {
+        let action = match &runner.state().waiting_for {
+            _ if runner.state().turn_number != turn => return,
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+                attacks: vec![],
+                bands: vec![],
+            },
+            WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+                order: (0..triggers.len()).collect(),
+            },
+            other => panic!("unexpected prompt {}", other.variant_name()),
+        };
+        act(runner, action);
+    }
+    panic!("the turn did not end");
+}
+
+/// CR 732.2a + CR 732.2c: Kiki-Jiki's first span refuses at its target prompt; the window after the
+/// second activation offers the period on the recorded road, and the take makes what its cycles
+/// would: each copy untapped with haste under its own "Sacrifice it at the beginning of the next
+/// end step", its enters trigger already resolved, and none left after that step.
 #[test]
 fn kiki_jiki_is_refused_at_its_first_span_then_offered_and_taken() {
     let Some((mut runner, kiki, exarch)) = kiki_copy_board("Deceiver Exarch") else {
@@ -741,7 +780,7 @@ fn kiki_jiki_is_refused_at_its_first_span_then_offered_and_taken() {
     );
     kiki_activates(&mut runner, kiki, &score);
     assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
-    let tokens = token_count(runner.state());
+    let before = tokens(runner.state(), P0);
     take(&mut runner, 2);
     let phase = runner.state().phase;
     while matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
@@ -749,16 +788,117 @@ fn kiki_jiki_is_refused_at_its_first_span_then_offered_and_taken() {
     {
         act(&mut runner, GameAction::PassPriority);
     }
+    if matches!(
+        runner.state().waiting_for,
+        WaitingFor::PayAmountChoice { .. }
+    ) {
+        act(&mut runner, GameAction::SubmitPayAmount { amount: 2 });
+    }
+    let state = runner.state();
     assert!(
-        matches!(
-            runner.state().waiting_for,
-            WaitingFor::PayAmountChoice { max: 2, .. }
-        ),
-        "reach: the collapse asks for the taken count; got {:?}",
-        runner.state().waiting_for
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "no copy's enters trigger is owed once the step has ended: {}",
+        state.waiting_for.variant_name()
     );
-    act(&mut runner, GameAction::SubmitPayAmount { amount: 2 });
-    assert_eq!(token_count(runner.state()), tokens + 2);
+    let minted: Vec<ObjectId> = tokens(state, P0)
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(minted.len(), 2, "the take made the copies it counted");
+    for id in &minted {
+        let copy = &state.objects[id];
+        assert!(
+            !copy.tapped && copy.keywords.contains(&Keyword::Haste),
+            "{id:?}: tapped={} keywords={:?}",
+            copy.tapped,
+            copy.keywords
+        );
+        assert!(
+            state.delayed_triggers.iter().any(|trigger| {
+                trigger.condition == DelayedTriggerCondition::AtNextPhase { phase: Phase::End }
+                    && matches!(trigger.ability.effect, Effect::Sacrifice { .. })
+                    && trigger.ability.targets == [TargetRef::Object(*id)]
+            }),
+            "{id:?} has no delayed sacrifice: {:?}",
+            state.delayed_triggers
+        );
+    }
+    pass_to_next_turn(&mut runner);
+    assert_eq!(
+        tokens(runner.state(), P0),
+        Vec::<ObjectId>::new(),
+        "no copy outlives the end step"
+    );
+}
+
+/// CR 732.1b: Sprout Swarm's Saprolings carry no keyword and no delayed trigger, so the take of
+/// its period stands on the ∞ mark.
+#[test]
+fn a_take_of_a_period_growing_bare_tokens_stands_on_the_mark() {
+    let Some((mut runner, sprout, _, _)) = sprout_swarm_board() else {
+        return;
+    };
+    for _ in 0..3 {
+        runner.cast(sprout).accept_optional().commit();
+        settle(&mut runner, &|_| 0);
+    }
+    assert!(is_offer(runner.state()), "reach: the recast is offered");
+    take(&mut runner, 3);
+    let marked = runner.state().unbounded_resources.get(&P0);
+    assert!(
+        marked.is_some_and(|axes| axes.contains(&ResourceAxis::TokensCreated)),
+        "{marked:?}"
+    );
+}
+
+/// CR 732.2a: P1's Kiki-Jiki period on P0's turn is offered to P1, at P1's own priority, and never
+/// to P0, who makes none of its plays; P1's decline returns to priority, and P1's take makes P1's
+/// copies and marks nothing for P0. P0's Soul Warden triggering inside the period changes none of
+/// it.
+#[test]
+fn a_period_is_offered_only_to_the_seat_that_made_its_plays() {
+    for warden in [None, Some(P0)] {
+        let Some((mut runner, kiki, exarch)) = kiki_board(P1, "Deceiver Exarch", warden) else {
+            return;
+        };
+        let score = kiki_score(kiki, exarch);
+        for activation in 0.. {
+            if is_offer(runner.state()) {
+                break;
+            }
+            assert!(activation < 4, "{warden:?}: no offer in four activations");
+            assert!(
+                matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
+                "{warden:?}: {}",
+                runner.state().waiting_for.variant_name()
+            );
+            act(&mut runner, GameAction::PassPriority);
+            if is_offer(runner.state()) {
+                break;
+            }
+            kiki_activates(&mut runner, kiki, &score);
+        }
+        let WaitingFor::LoopShortcut { proposer, .. } = runner.state().waiting_for else {
+            unreachable!("the drive ends on an offer");
+        };
+        assert_eq!(proposer, P1, "{warden:?}");
+
+        let mut declined = runner.state().clone();
+        engine::game::engine::apply(&mut declined, P1, GameAction::DeclineShortcut)
+            .expect("the proposer declines");
+        assert!(
+            matches!(declined.waiting_for, WaitingFor::Priority { .. }),
+            "{warden:?}: {}",
+            declined.waiting_for.variant_name()
+        );
+
+        let before = tokens(runner.state(), P1).len();
+        take(&mut runner, 3);
+        let state = runner.state();
+        assert_eq!(tokens(state, P1).len(), before + 3, "{warden:?}");
+        assert_eq!(tokens(state, P0), Vec::<ObjectId>::new(), "{warden:?}");
+        assert_eq!(state.unbounded_resources.get(&P0), None, "{warden:?}");
+    }
 }
 
 /// Grand Architect ("{U}: Target artifact creature becomes blue until end of turn. Tap an untapped
@@ -925,7 +1065,7 @@ fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
 }
 
 /// CR 732.1b: once both rotations of the Altar + Gravecrawler period are named, each later cycle
-/// asks one new span and drives none, every span the retry meets having been refused before.
+/// asks and drives the same number of spans, every span a window names being confirmed afresh.
 #[test]
 fn an_altar_gravecrawler_meter_is_flat_once_both_rotations_are_named() {
     let Some(db) = shared_card_db() else { return };
@@ -952,13 +1092,118 @@ fn an_altar_gravecrawler_meter_is_flat_once_both_rotations_are_named() {
         .count();
     assert!(rotations >= 2, "reach: both rotations are named");
     assert!(per_cycle[0].1 > 0, "reach: the first span is driven");
-    assert_eq!(per_cycle[2..], [(1, 0); 4], "{per_cycle:?}");
+    assert_eq!(per_cycle[2..], [(1, 1); 4], "{per_cycle:?}");
+}
+
+/// CR 732.2a: Aetherflux Reservoir ("Whenever you cast a spell, you gain 1 life for each spell
+/// you've cast this turn.") against two Eidolon of the Great Revel ("Whenever a player casts a
+/// spell with mana value 3 or less, Eidolon of the Great Revel deals 2 damage to that player.")
+/// costs the Altar + Gravecrawler period life until the turn's fifth cast, so the period refused
+/// for want of an axis is offered by the third cycle.
+#[test]
+fn a_period_refused_for_no_axis_is_offered_once_it_nets_life() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let altar = scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Walking Corpse", Zone::Battlefield, db);
+    let gravecrawler = scenario.add_real_card(P0, "Gravecrawler", Zone::Graveyard, db);
+    for card in ["Swamp", "Aetherflux Reservoir"] {
+        scenario.add_real_card(P0, card, Zone::Battlefield, db);
+    }
+    for _ in 0..2 {
+        scenario.add_real_card(P1, "Eidolon of the Great Revel", Zone::Battlefield, db);
+    }
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Swamp", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+    };
+    let mut refused_for_no_axis = false;
+    for _ in 0..3 {
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        refused_for_no_axis |= latest_verdict(runner.state()) == Err(OfferRefusal::NoAxis);
+    }
+    assert!(
+        refused_for_no_axis,
+        "reach: the period was refused while it cost life"
+    );
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+}
+
+/// CR 732.2a + CR 614.1a: Burning-Tree Shaman ("Whenever a player activates an ability that isn't
+/// a mana ability, this creature deals 1 damage to that player.") costs the Basalt Monolith +
+/// Power Artifact period 1 life a cycle, until Angel's Grace ("... Until end of turn, damage that
+/// would reduce your life total to less than 1 reduces it to 1 instead.") holds the total at 1; the
+/// period refused while it costs life is offered from the first frame whose repeat costs none.
+#[test]
+fn a_period_costing_life_is_offered_once_a_floor_holds_the_life_total() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 5);
+    let basalt = scenario.add_real_card(P0, "Basalt Monolith", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Plains", Zone::Battlefield, db);
+    let grace = scenario.add_real_card(P0, "Angel's Grace", Zone::Hand, db);
+    scenario.add_real_card(P1, "Burning-Tree Shaman", Zone::Battlefield, db);
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Wastes", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let power = place(runner.state_mut(), P0, "Power Artifact", db);
+    attach_to(runner.state_mut(), power, basalt);
+    cast(&mut runner, grace, vec![], CastPaymentMode::Auto);
+    settle(&mut runner, &|_| 0);
+    let mana = ability(runner.state(), basalt, true);
+    let untap = ability(runner.state(), basalt, false);
+    let life = |state: &GameState| state.players[0].life;
+    let mut refused_at = Vec::new();
+    for _ in 0..6 {
+        activate(&mut runner, basalt, mana);
+        settle(&mut runner, &|_| 0);
+        if is_offer(runner.state()) {
+            break;
+        }
+        activate(&mut runner, basalt, untap);
+        settle(&mut runner, &|_| 0);
+        if is_offer(runner.state()) {
+            break;
+        }
+        if latest_verdict(runner.state()) == Err(OfferRefusal::NoAxis) {
+            refused_at.push(life(runner.state()));
+        }
+    }
+    assert_eq!(
+        refused_at,
+        [4, 3],
+        "reach: the period was refused while it cost life"
+    );
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    assert_eq!(life(runner.state()), 2);
 }
 
 /// CR 732.1b: while Altar of the Brood ("Whenever another permanent you control enters, each
 /// opponent mills a card.") has a library to mill, the Altar + Gravecrawler period does not come
 /// round; once the library is empty it does, and Soul Warden ("Whenever another creature enters,
-/// you gain 1 life.") makes it worth repeating, so the same plays are asked again and offered.
+/// you gain 1 life.") makes it worth repeating, so the same plays are then offered.
 #[test]
 fn an_altar_gravecrawler_period_is_offered_once_the_milled_library_is_empty() {
     let Some(db) = shared_card_db() else { return };
@@ -1247,7 +1492,7 @@ fn saprolings(state: &GameState) -> usize {
 
 /// CR 732.2a + CR 702.51a: three Sprout Swarm casts spend the Forests and leave three Saprolings,
 /// and the window after the third offers the recast: its replay pays by convoke what the recorded
-/// cast paid with Forests, and each earlier window's refusal was made from a different board.
+/// cast paid with Forests.
 #[test]
 fn a_sprout_swarm_ramp_up_is_offered_once_its_forests_are_spent() {
     let Some((mut runner, sprout, _, _)) = sprout_swarm_board() else {
@@ -1315,7 +1560,7 @@ fn an_opponents_response_fragments_the_sprout_swarm_span() {
 
 /// CR 732.2a: Food Chain ("Add X mana of any one color ... Spend this mana only to cast creature
 /// spells.") making green cannot recast Squee, the Immortal ({1}{R}{R}) once the red in the pool
-/// is spent, so the replay refuses; the same plays with red chosen are asked again and offered.
+/// is spent, so the replay refuses; the same plays with red chosen are offered.
 #[test]
 fn a_replay_refused_for_want_of_red_mana_is_asked_again_once_food_chain_makes_red() {
     let Some(db) = shared_card_db() else { return };
