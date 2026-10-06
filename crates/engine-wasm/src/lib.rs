@@ -2345,9 +2345,8 @@ pub fn get_legal_actions_js() -> JsValue {
                 engine::game::interaction::object_action_payloads(&legal_actions_by_object),
             ),
             // CR 117.1: the UNSCOPED sibling is correct here and only here —
-            // this entry point takes no viewer and serves a single-player local
-            // surface with exactly one recipient. Every multi-recipient
-            // transport must call `activation_block_reasons_for_viewer`.
+            // this entry point takes no viewer and has no client consumer. Every
+            // transport serving a seat must call `activation_block_reasons_for_viewer`.
             activation_block_reasons: object_id_record(
                 engine::ai_support::activation_block_reasons(state),
             ),

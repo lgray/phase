@@ -2687,8 +2687,8 @@ fn collect_activation_block_reasons_for_object(
 ///
 /// CR 117.1: this function is UNSCOPED. It returns the acting player's read-out
 /// regardless of who is asking. It is `pub` only for the viewer-less
-/// `engine-wasm` entry point (`get_legal_actions_js`), a single-player local
-/// surface with exactly one recipient. Publishing this map from a
+/// `engine-wasm` entry point (`get_legal_actions_js`), which no client surface
+/// reads. Publishing this map from a
 /// multi-recipient transport leaks a controller-relative payability read-out to
 /// opponents — the disclosure defect this design exists to avoid.
 ///
