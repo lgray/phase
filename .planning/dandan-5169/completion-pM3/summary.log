@@ -1,0 +1,9 @@
+sha=236a35f0b5189161a7513d38261751b0238f5069
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [   3.869s] ( 3490/37762) phase-ai::ai_quality midrange_still_ranks_creature_above_mana_rock_but_barely
+     Summary [1697.880s] 37762 tests run: 37761 passed (80 slow), 1 failed, 51 skipped
+done rc=0

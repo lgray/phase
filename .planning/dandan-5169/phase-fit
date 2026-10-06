@@ -229,3 +229,24 @@
 
 [2026-10-06T10:12:30Z] Phase 14 impl-review r2 (delta 99fff2ab44..630000f3c5): behavior 0/text 0/machinery 0, MED closed. Awaiting completion p14b on 630000f3c5.
 [2026-10-06T10:58:27Z] Phase 14 accepted 630000f3c5; chain 2964d6818f..630000f3c5 = 99fff2ab44, 630000f3c5.
+
+[2026-10-06T10:59:14Z] Merge #3 (upstream 17 ahead; boundary after Phase 14): 7 protocol-pin conflicts only (upstream moved to 107/89/+36/+35). Restack = upstream + delta 6: full 113, wire 95, lobby 16, MIN 112, script +42/+41. Resolution delegated to a fix executor (briefs/exec-merge3.md); merge uncommitted in wt-dandan until the executor returns; then regen card-data export + fixture, commit, completion pM3, push.
+
+[2026-10-06T11:56:59Z] Merge #3 committed 236a35f0b5 (restack full 113 / wire 95 / lobby 16 / MIN 112 / script +42,+41; fix-executor edits: ability_utils.rs SubstituteTextWord arm, phase-llm format_guidance.rs Dandan generic arm + test literal; fixture regenerated 5058 cards, --check ok). Completion pM3 launched. NOTE for lead: phase-llm gives Dandan the generic strategy text (content decision, separate).
+
+[2026-10-06T11:57:34Z] Phase 15 dispatch: executor r1 on PHASE_BASE 236a35f0b5 (merge #3), SPECULATIVE until pM3 passes. Two units (wheel split; owner==player scoped pile mass move per addenda/phase-15). scope.nul 6 paths. Plan CLEAN (r2 text applied).
+
+[2026-10-06T13:13:47Z] pM3 on 236a35f0b5 PASS (fmt/proto/clippy/bindings rc0; nextest 37761/37762, the failure phase-ai midrange_still_ranks_creature_above_mana_rock_but_barely timing, isolated rerun at the SHA passes). Merge #3 pushed; Phase 15 base no longer speculative.
+
+[2026-10-06T15:06:25Z] Phase 15 impl-review r1 (cand ad382d02f3): behavior 1 MED (wheel-split gate `plain` tests only optional/condition; has_no_resolution_riders exists at scoped_library_search.rs and covers repeat_for/else/optional_player/duration; reviewer built 5 accepted hostile chains), machinery 1 LOW (scope_player_for_member re-derives zone_axis_admits). p15a killed. Fix executor r2. Pre-existing (report once): cast_from_zone.rs::looked_at_controller_library_cards filters owner == controller (excludes opponent-owned cards in a shared library).
+
+[2026-10-06T15:25:27Z] USER routing: cast_from_zone.rs::looked_at_controller_library_cards (owner == controller skips opponent-owned cards in the shared library) -> RESUME.md open item for the resumer: fold into a remaining phase as an addendum line with a test red before the fix. NOT changed in Phase 15.
+
+[2026-10-06T15:36:03Z] Phase 15 fix r2 outcome: gate uses has_no_resolution_riders + local optional_player conjunct; shared predicate lacks optional_player (measured). Cause-level: move optional_player into the shared predicate (scoped_library_search.rs) and drop the local conjunct; zone_axis_admits reuse (filter.rs visibility). Scope +2 (8 paths), same executor continues.
+
+[2026-10-06T16:23:42Z] Phase 15 impl-review r2 dispatch (cand 6b8b2ace54) returned INCOMPLETE (no file; reading+census found 0 findings; probe legs not run). Counts as a design round of the loop (abandoned dispatch, limit 5th). Re-dispatching as r2b with the build started first.
+
+[2026-10-06T16:29:08Z] Phase 15 impl-review r2b (cand 6b8b2ace54; reviewer INCOMPLETE, no probes, read+census): suspected behavior MED measured by me (has_no_resolution_riders requires sub_link == ContinuationStep; `plain` clones the head with sub_ability cleared but leaves sub_link, so wheel heads with SequentialSibling — Time Spiral, Once More with Feeling — are no longer split in a shared-library format; latent: Dandan deck fixed). Fix r3: own.sub_link = ContinuationStep in plain + SequentialSibling-head row. p15b + scratch build killed; scratch deleted. Review probes next time in place in wt-dandan (clean, idle, warm target-dandan) instead of a cold scratch build.
+
+[2026-10-06T17:05:41Z] Phase 15 impl-review r3 (delta ad382d02f3..bbce5c6bda; reviewer dispatch ran detached probes, resumed to finalize): behavior 0/text 0/machinery 0. Probes: old gate red, sub_link normalization removed red, optional_player removed red (unit row + hostile row), control 5/5 before/after, integration 182/182, W clean at bbce5c6bda. Awaiting p15c.
+[2026-10-06T17:38:28Z] Phase 15 accepted bbce5c6bda; chain 236a35f0b5..bbce5c6bda = ad382d02f3, 6b8b2ace54, bbce5c6bda. Phase 16 NOT started (USER: finish current phase then hand off).
