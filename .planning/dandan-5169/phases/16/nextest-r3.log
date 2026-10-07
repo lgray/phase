@@ -1,0 +1,80 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 17s
+────────────
+ Nextest run ID 26d67d61-2a89-44bd-a26c-b9a93d8f2057 with nextest profile: default
+    Starting 72 tests across 8 binaries (32985 tests skipped)
+        PASS [   0.029s] ( 1/72) phase-engine game::ability_scan::tests::suspect_unsuspect_census_is_scope_sensitive
+        PASS [   0.030s] ( 2/72) phase-engine game::ability_rw::tests::ne_iv_census_overlap
+        PASS [   0.030s] ( 3/72) phase-engine game::ability_scan::tests::census_partition_agrees_with_effect_target_ctx
+        PASS [   0.030s] ( 4/72) phase-engine game::ability_rw::tests::l1_zone_card_count_census_and_zone_extraction
+        PASS [   0.030s] ( 5/72) phase-engine game::ability_scan::tests::b4_execute_census_scanned_while_matchers_stay_read_free
+        PASS [   0.036s] ( 6/72) phase-engine game::ability_rw::tests::zone_census_battlefield_write_vs_graveyard_read_discriminates
+        PASS [   0.037s] ( 7/72) phase-engine analysis::resource::tests::a_foreign_mana_ability_reading_a_creature_census_still_vetoes
+        PASS [   0.038s] ( 8/72) phase-engine game::ability_scan::tests::round2_mass_battlefield_resolvers_census_in_both_oracles
+        PASS [   0.038s] ( 9/72) phase-engine game::ability_scan::tests::census_tag_set_is_exactly_enumerated
+        PASS [   0.040s] (10/72) phase-engine game::ability_scan::tests::obligation_ii_census_exception_is_exactly_settapstate
+        PASS [   0.032s] (11/72) phase-engine game::ability_scan::tests::census_hole_arms_are_load_bearing
+        PASS [   0.044s] (12/72) phase-engine game::ability_scan::tests::unless_controls_subtype_reports_the_census_it_runs
+        PASS [   0.038s] (13/72) phase-engine game::derived_views::tests::shared_piles_holder_is_the_lowest_seat_not_the_first_in_turn_order
+        PASS [   0.039s] (14/72) phase-engine game::derived_views::tests::debug_library_projection_reads_the_shared_pile_for_the_non_holder_seat
+        PASS [   0.041s] (15/72) phase-engine game::derived_views::tests::shared_piles_names_the_holder_for_a_shared_zone_format
+        PASS [   0.037s] (16/72) phase-engine game::engine::priority_reducer_census_tests::priority_reducer_has_the_frozen_action_family_census
+        PASS [   0.050s] (17/72) phase-engine game::derived_views::tests::debug_library_projection_is_separate_from_filtered_library_visibility
+        PASS [   0.043s] (18/72) phase-engine game::engine_resolution_choices::tests::boundary_hold_census_matches_the_apply_loop
+        PASS [   0.047s] (19/72) phase-engine game::derived_views::tests::shared_piles_survives_every_viewer_projection
+        PASS [   0.059s] (20/72) phase-engine game::derived_views::tests::shared_piles_is_absent_for_per_player_formats
+        PASS [   0.050s] (21/72) phase-engine game::layers::tests::incremental_flush_skips_the_census_of_a_dynamic_count_reaching_no_recipient
+        PASS [   0.047s] (22/72) phase-engine game::mana_sources::tests::leaf_component_census_counts_the_flattened_tree
+        PASS [   0.055s] (23/72) phase-engine game::layers::tests::incremental_flush_still_runs_the_census_of_a_dynamic_count_reaching_a_recipient
+        PASS [   0.032s] (24/72) phase-engine game::turns::tests::production_phase_assignment_census_is_frozen
+        PASS [   0.035s] (25/72) phase-engine game::triggers::tests::construction_finisher_rejects_a_wait_outside_the_closed_census
+        PASS [   0.028s] (26/72) phase-engine types::game_state::shared_zone_storage_tests::library_stamp_names_the_storage_seat
+        PASS [   0.029s] (27/72) phase-engine source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.033s] (28/72) phase-engine types::game_state::shared_zone_storage_tests::storage_seat_resolves_only_the_shared_zones
+        PASS [   0.045s] (29/72) phase-engine::integration activation_cost_work_census::a_production_call_after_a_mid_file_test_module_is_counted
+        PASS [   0.140s] (30/72) phase-engine analysis::resource::tests::spent_self_entry_relieves_a_board_censusing_entry_condition
+        PASS [   0.042s] (31/72) phase-engine::integration battlefield_entry_authority_census::bare_trailing_fn_header_is_an_error_not_a_panic
+        PASS [   0.027s] (32/72) phase-engine::integration battlefield_entry_authority_census::the_anaphora_publish_resolver_keys_on_cfg_scope_and_on_the_call_tail
+        PASS [   0.021s] (33/72) phase-engine::integration battlefield_entry_authority_census::the_census_resolver_keys_on_cfg_scope_and_on_the_literal_from_field
+        PASS [   0.032s] (34/72) phase-engine::integration battlefield_entry_authority_census::the_token_created_resolver_keys_on_cfg_scope_and_on_field_completeness
+        PASS [   0.177s] (35/72) phase-engine analysis::resource::tests::s4_s5_player_axis_board_census_keeps_the_veto
+        PASS [   0.090s] (36/72) phase-engine parser::oracle_quantity::tests::masters_councillors_static_gets_dynamic_power_for_graveyard_census
+        PASS [   0.097s] (37/72) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+        PASS [   0.021s] (38/72) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        PASS [   0.224s] (39/72) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census
+        PASS [   0.030s] (40/72) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+        PASS [   0.025s] (41/72) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS [   0.077s] (42/72) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS [   0.039s] (43/72) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS [   0.091s] (44/72) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS [   0.278s] (45/72) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census
+        PASS [   0.029s] (46/72) phase-engine::integration loop_shortcut_offer_writer_census::the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses
+        PASS [   0.108s] (47/72) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS [   0.136s] (48/72) phase-engine::integration defending_player_controls_combat_anchor::hazy_homunculus_controls_census_is_battlefield_scoped
+        PASS [   0.033s] (49/72) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_counts_occurrences_and_not_lines
+        PASS [   0.026s] (50/72) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_ignores_a_trailing_comment_mention
+        PASS [   0.029s] (51/72) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_instrument_reports_both_answers_on_planted_input
+        PASS [   0.028s] (52/72) phase-engine::integration source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.080s] (53/72) phase-engine::integration masters_councillors::masters_councillors_pt_scales_with_graveyard_census_across_players
+        PASS [   0.051s] (54/72) phase-engine::integration waiting_for_actor_authority_census::mulligan_adapters_preserve_the_single_pending_actor_rule
+        PASS [   1.096s] (55/72) phase-engine::integration waiting_for_actor_authority_census::every_waiting_for_arm_declares_its_acting_authority
+        PASS [   0.018s] (56/72) phase-engine::bin/resolution-face-census tests::export_identity_census_excludes_mixed_audited_layout_pairs
+        PASS [   0.018s] (57/72) phase-engine::bin/resolution-face-census tests::export_identity_census_reports_non_candidates_without_widening_candidates
+        PASS [   2.809s] (58/72) phase-engine game::engine::stage2_injector_tests::the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event
+        PASS [   2.830s] (59/72) phase-engine::integration battlefield_entry_authority_census::every_token_created_construction_lives_in_the_single_emitter
+        PASS [   3.055s] (60/72) phase-engine::integration battlefield_entry_authority_census::every_from_none_battlefield_entry_construction_lives_in_the_authority
+        PASS [   3.226s] (61/72) phase-engine::integration deterministic_game_state_serde::serde_hash_owner_census_is_exhaustive_and_every_canonical_owner_names_its_adapter
+        PASS [   3.622s] (62/72) phase-engine::integration source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [   3.835s] (63/72) phase-engine source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [   4.214s] (64/72) phase-engine::integration activation_cost_work_census::every_activation_cost_payment_entry_is_classified
+        PASS [   4.383s] (65/72) phase-engine::integration activation_cost_work_census::every_activation_mana_resume_entry_is_classified
+        PASS [   4.512s] (66/72) phase-engine::integration loop_shortcut_seat_pin_census::no_target_class_producer_constructs_a_choice_class_player_pin
+        PASS [   4.500s] (67/72) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [   6.015s] (68/72) phase-engine::integration battlefield_entry_authority_census::every_single_id_anaphora_publish_lives_in_an_authority
+        PASS [   9.507s] (69/72) phase-engine::integration loop_shortcut_offer_writer_census::the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_validates_pins
+        PASS [  20.875s] (70/72) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+        PASS [  21.702s] (71/72) phase-engine::integration wba_loop_firewall_interposition::unactivated_ability_relief_offers_on_three_real_census_lands
+        PASS [  21.784s] (72/72) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+────────────
+     Summary [  22.160s] 72 tests run: 72 passed, 32985 skipped
+done rc=0
