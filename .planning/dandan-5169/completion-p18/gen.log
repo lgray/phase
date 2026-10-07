@@ -1,0 +1,123 @@
+=== Card Data Generation ===
+Ensuring MTGJSON token set files...
+Token sets: downloaded 0, skipped 336, failed 0
+Generating card data from MTGJSON via Oracle text parser...
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling version_check v0.9.5
+   Compiling zmij v1.0.21
+   Compiling typenum v1.20.0
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.8.0
+   Compiling libc v0.2.186
+   Compiling getrandom v0.3.4
+   Compiling once_cell v1.21.4
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling zerocopy v0.8.48
+   Compiling toml_write v0.1.2
+   Compiling tracing-core v0.1.36
+   Compiling serde_json v1.0.149
+   Compiling generic-array v0.14.7
+   Compiling winnow v0.7.15
+   Compiling itoa v1.0.18
+   Compiling log v0.4.29
+   Compiling regex-syntax v0.8.10
+   Compiling aho-corasick v1.1.4
+   Compiling indexmap v2.14.0
+   Compiling bitmaps v2.1.0
+   Compiling syn v2.0.117
+   Compiling im v15.1.0
+   Compiling heck v0.5.0
+   Compiling pin-project-lite v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling thiserror v2.0.18
+   Compiling lazy_static v1.5.0
+   Compiling sized-chunks v0.6.5
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling rand_core v0.9.5
+   Compiling digest v0.10.7
+   Compiling sharded-slab v0.1.7
+   Compiling rand_xoshiro v0.6.0
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling cpufeatures v0.2.17
+   Compiling fixedbitset v0.4.2
+   Compiling sha2 v0.10.9
+   Compiling nom v8.0.0
+   Compiling web-time v1.1.0
+   Compiling rustc-hash v2.1.2
+   Compiling regex-automata v0.4.14
+   Compiling serde_ignored v0.1.14
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling toml_edit v0.22.27
+   Compiling petgraph v0.6.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.4
+   Compiling serde_derive v1.0.228
+   Compiling tracing-attributes v0.1.31
+   Compiling thiserror-impl v2.0.18
+   Compiling strum_macros v0.27.2
+   Compiling toml v0.8.23
+   Compiling matchers v0.2.0
+   Compiling tracing v0.1.44
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/engine)
+   Compiling strum v0.27.2
+   Compiling tracing-serde v0.2.0
+   Compiling smallvec v1.15.1
+   Compiling tracing-subscriber v0.3.23
+    Finished `tool` profile [optimized + debuginfo] target(s) in 8m 15s
+Generating token preset catalog from MTGJSON set files...
+2917 generated presets; 0 overlay rows applied (0 shadowed), 0 superseded
+Generated 2917 token presets at crates/engine/data/known-tokens.toml.tmp.SjLS5n
+WARNING: refusing to promote crates/engine/data/known-tokens.toml: MTGJSON input date 2026-10-02 is older than committed vintage 2026-10-06. Refresh MTGJSON inputs (rerun without MTGJSON_SKIP_REFRESH=1 or set PHASE_REFRESH_MTGJSON=1) before retrying.
+WARNING: refusing to update crates/engine/data/oracle-subtypes.json: MTGJSON input date 2026-10-02 is older than committed vintage 2026-10-06. Refresh MTGJSON inputs (rerun without MTGJSON_SKIP_REFRESH=1 or set PHASE_REFRESH_MTGJSON=1) before retrying.
+[2m2026-10-07T20:00:42.070906Z[0m [32m INFO[0m [2moracle_gen[0m[2m:[0m Scanned 336 set files, 28371 cards with rarity data
+Localized sidecars written: 6 locales (de:30357 es:29549 fr:30348 it:29737 ja:30258 pt:24748)
+Card names written: 35825 names
+Total cards: 35074
+Faces indexed: 35879
+Cards with unimplemented effects: 3046
+Fully implemented: 32028/35074 (91.3%)
+Validating card-data against current engine schema...
+OK: 35879 cards parsed from client/public/card-data.json.tmp
+Promoted client/public/card-data.json and client/public/card-names.json
+Wrote content-addressed client/public/card-data-ca81b6c305f28a65.json
+Generating card coverage data...
+Wrote parser warning patterns to client/public/parser-warning-patterns.json.tmp
+Coverage: 31983/35879 cards supported (89.1%)
+  brawl legal: 15646/16709 fully supported (93.6%)
+  commander legal: 30559/32951 fully supported (92.7%)
+  duel legal: 30431/32755 fully supported (92.9%)
+  historic legal: 15598/16661 fully supported (93.6%)
+  legacy legal: 30466/32794 fully supported (92.9%)
+  modern legal: 22279/23473 fully supported (94.9%)
+  oathbreaker legal: 30499/32824 fully supported (92.9%)
+  pauper legal: 10718/11017 fully supported (97.3%)
+  paupercommander legal: 10698/11047 fully supported (96.8%)
+  pioneer legal: 15005/15747 fully supported (95.3%)
+  premodern legal: 4922/5383 fully supported (91.4%)
+  standard legal: 5291/5429 fully supported (97.5%)
+  standardbrawl legal: 5305/5444 fully supported (97.4%)
+  timeless legal: 15678/16742 fully supported (93.6%)
+  vintage legal: 30482/32812 fully supported (92.9%)
+
+Parse warnings: 715 warnings across 3 categories
+  ignored-remainder — 2 warnings (2 cards)
+  swallowed-clause — 656 warnings (598 cards)
+  target-fallback — 57 warnings (51 cards)
+Promoted client/public/coverage-data.json, client/public/coverage-summary.json, and client/public/parser-warning-patterns.json
+Generated client/public/card-data-meta.json
+Projected 871 sets to client/public/set-list.json.tmp (125444 bytes)
+Promoted client/public/set-list.json
+Wrote 1381 decks to client/public/decks.json.tmp (3762431 bytes; 684 fully playable, 697 partially playable, 1694 dropped as non-decks (<40 cards), 0 read errors)
+Promoted client/public/decks.json
+Generated client/public/card-data.json (95M, ~35825 cards)
+Generated client/public/card-names.json (672K)

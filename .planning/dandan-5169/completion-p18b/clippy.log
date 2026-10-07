@@ -1,0 +1,4 @@
+   Compiling server-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/server-core)
+    Checking phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/engine)
+    Checking phase-server v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/phase-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9m 42s

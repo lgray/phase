@@ -1,0 +1,1 @@
+Decision "Scope rule (2 paths)": plan scope also names crates/engine/tests/integration/dandan_analysis_ai_support_reads.rs (row v8 pins the live-pile read the phase replaces) and one doc sentence in crates/phase-ai/src/determinize.rs; every decision stands.
