@@ -20906,8 +20906,8 @@ declare_game_state! {
     /// weakened here — so this per-object channel is what lets the frontend render
     /// `∞` on the specific pumped counter pill instead of the literal count.
     /// Re-derived once at loop materialization by
-    /// `game::engine::current_period_counter_growth` (drive one period on a clone,
-    /// diff beneficial counters) — the SAME single derivation the batched-collapse δ
+    /// `game::engine::current_period_counter_growth` (diffs beneficial counters across the
+    /// one period `take_route` drives on a clone) — the SAME single derivation the batched-collapse δ
     /// stash carries, projected to `(object, counter)` — and projected again, as the ∞
     /// ANNOTATION half only, into `DerivedViews::counter_display`, whose rows also exist
     /// for objects this store never names. Written ONLY by
