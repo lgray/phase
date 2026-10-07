@@ -337,3 +337,154 @@ mod top_cast {
         assert!(!can_cast_object_now(runner.state(), P0, opponent_top));
     }
 }
+
+mod top_plot {
+    use super::*;
+    use engine::game::casting::activated_ability_definitions;
+    use engine::types::ability::CastingPermission;
+
+    fn other(seat: PlayerId) -> PlayerId {
+        if seat == P0 {
+            P1
+        } else {
+            P0
+        }
+    }
+
+    /// `holder` controls Fblthp and has priority, both seats can pay; the top card of the library `holder` reads is
+    /// Mental Note owned by `top_owner`, over a filler Island.
+    fn staged(
+        format: FormatConfig,
+        holder: PlayerId,
+        top_owner: PlayerId,
+    ) -> (GameRunner, ObjectId) {
+        let db = shared_card_db().expect("card db");
+        let mut scenario = GameScenario::new_with_format(format, 2, 11);
+        scenario.at_phase(Phase::PreCombatMain);
+        let top = scenario.add_real_card(top_owner, "Mental Note", Zone::Library, db);
+        scenario.add_real_card(top_owner, "Island", Zone::Library, db);
+        scenario.add_real_card(holder, "Fblthp, Lost on the Range", Zone::Battlefield, db);
+        for seat in [P0, P1] {
+            scenario.with_mana_pool(
+                seat,
+                (0..3)
+                    .map(|_| ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![]))
+                    .collect(),
+            );
+        }
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.active_player = holder;
+        state.priority_player = holder;
+        state.waiting_for = WaitingFor::Priority { player: holder };
+        (runner, top)
+    }
+
+    fn plot_index(runner: &GameRunner, top: ObjectId) -> Option<usize> {
+        activated_ability_definitions(runner.state(), top)
+            .into_iter()
+            .find(|(_, def)| def.activation_zone == Some(Zone::Library))
+            .map(|(i, _)| i)
+    }
+
+    fn offers_plot(runner: &GameRunner, top: ObjectId) -> bool {
+        engine::ai_support::legal_actions(runner.state())
+            .iter()
+            .any(
+                |a| matches!(a, GameAction::ActivateAbility { source_id, .. } if *source_id == top),
+            )
+    }
+
+    #[test]
+    fn dandan_fblthp_plots_the_pile_top_whoever_owns_it() {
+        if shared_card_db().is_none() {
+            return;
+        }
+        for holder in [P0, P1] {
+            let owner = other(holder);
+            let (mut runner, top) = staged(FormatConfig::dandan(), holder, owner);
+            let state = runner.state();
+            assert_eq!(
+                state.library_of(holder).front(),
+                Some(&top),
+                "reach: the top of the pile the holder reads"
+            );
+            assert_eq!(
+                state.objects[&top].owner, owner,
+                "reach: the opponent owns it"
+            );
+            let index = plot_index(&runner, top).expect("the pile top carries the plot ability");
+            assert!(offers_plot(&runner, top), "legal actions offer the plot");
+            runner
+                .act(GameAction::ActivateAbility {
+                    source_id: top,
+                    ability_index: index,
+                })
+                .expect("the holder plots the pile top");
+            let plotted = &runner.state().objects[&top];
+            assert_eq!(
+                plotted.zone,
+                Zone::Exile,
+                "{holder:?} exiled it from the pile"
+            );
+            assert!(plotted
+                .casting_permissions
+                .iter()
+                .any(|p| matches!(p, CastingPermission::Plotted { .. })));
+        }
+    }
+
+    #[test]
+    fn dandan_plot_is_not_granted_to_the_non_holder_owner() {
+        if shared_card_db().is_none() {
+            return;
+        }
+        let (mut runner, top) = staged(FormatConfig::dandan(), P0, P1);
+        assert!(
+            offers_plot(&runner, top),
+            "reach: the holder is offered the plot"
+        );
+        let state = runner.state_mut();
+        state.active_player = P1;
+        state.priority_player = P1;
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+        assert!(!offers_plot(&runner, top), "P1 controls no Fblthp");
+        let index = plot_index(&runner, top).unwrap_or(0);
+        assert!(
+            runner
+                .act(GameAction::ActivateAbility {
+                    source_id: top,
+                    ability_index: index,
+                })
+                .is_err(),
+            "the owner of the pile top cannot plot it without the permission"
+        );
+        assert_eq!(runner.state().objects[&top].zone, Zone::Library);
+    }
+
+    #[test]
+    fn standard_plots_only_the_holders_own_library_top() {
+        if shared_card_db().is_none() {
+            return;
+        }
+        let (mut runner, own_top) = staged(FormatConfig::standard(), P0, P0);
+        let index = plot_index(&runner, own_top).expect("own top carries the plot ability");
+        assert!(offers_plot(&runner, own_top));
+        runner
+            .act(GameAction::ActivateAbility {
+                source_id: own_top,
+                ability_index: index,
+            })
+            .expect("the holder plots its own top");
+        assert_eq!(runner.state().objects[&own_top].zone, Zone::Exile);
+
+        let (runner, opponent_top) = staged(FormatConfig::standard(), P0, P1);
+        assert_eq!(
+            runner.state().library_of(P1).front(),
+            Some(&opponent_top),
+            "reach: the card is the top of the opponent's own library"
+        );
+        assert!(plot_index(&runner, opponent_top).is_none());
+        assert!(!offers_plot(&runner, opponent_top));
+    }
+}

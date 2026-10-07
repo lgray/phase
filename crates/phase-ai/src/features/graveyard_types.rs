@@ -377,8 +377,8 @@ fn flip_comparator(comparator: Comparator) -> Comparator {
 /// OWN graveyard, at any nesting depth (Consuming Blob wraps it in `Offset`).
 ///
 /// Only own-graveyard scopes qualify. `CountScope::All` is deliberately
-/// excluded: the policy's `distinct_graveyard_types` counts only the AI's owned
-/// objects, so classifying an all-graveyards payoff (Tarmogoyf-class) as an
+/// excluded: the policy's `distinct_graveyard_types` counts only the AI's own
+/// graveyard (the shared pile, in a shared-zone format), so classifying an all-graveyards payoff (Tarmogoyf-class) as an
 /// own-graveyard plan would let an opponent satisfy it while the policy keeps
 /// rewarding self-mill against a different quantity. Opponent- and
 /// iterated-player scopes are likewise not this deck's own plan.
