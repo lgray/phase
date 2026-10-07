@@ -3897,29 +3897,29 @@ pub(crate) fn castable_from_current_zone(
                 || (((obj.zone == Zone::Graveyard
                     && has_effective_graveyard_cast_keyword(state, obj.id, obj))
                     || has_graveyard_timed_alt_cost_permission(state, obj, player))
-                    && normal_cost_route())
-                // CR 401.5 + CR 118.9 + CR 601.2a: Top-of-library cast via static
-                // permission (Realmwalker, Future Sight, Bolas's Citadel, etc.). The card
-                // must be the current top of `player`'s library AND match the static's
-                // `affected` filter.
-                //
-                // The `library.front()` test reproduces
-                // `top_of_library_permission_source`'s own first two steps, against the
-                // same `player` rather than the object's owner. It is verdict-identical:
-                // that callee binds its returned `top_id` from this same `front()`, so a
-                // non-top object could never satisfy the `top_id == obj.id` comparison
-                // below, and an absent player or an empty library makes callee and test
-                // answer no alike. It skips only a call whose answer that comparison
-                // discards.
-                || (obj.zone == Zone::Library
-                    && state
-                        .players
-                        .iter()
-                        .find(|p| p.id == player)
-                        .and_then(|p| state.library_of(p.id).front())
-                        == Some(&obj.id)
-                    && top_of_library_permission_source(state, player, Some(CardPlayMode::Cast))
-                        .is_some_and(|(top_id, _, _, _)| top_id == obj.id))))
+                    && normal_cost_route())))
+        // CR 401.5 + CR 118.9 + CR 601.2a: Top-of-library cast via static
+        // permission (Realmwalker, Future Sight, Bolas's Citadel, etc.). The card
+        // must be the current top of the library `player` reads — whoever owns
+        // it — AND match the static's `affected` filter, so it sits outside the
+        // owner block above.
+        //
+        // The `library.front()` test reproduces
+        // `top_of_library_permission_source`'s own first two steps. It is
+        // verdict-identical: that callee binds its returned `top_id` from this same
+        // `front()`, so a non-top object could never satisfy the `top_id == obj.id`
+        // comparison below, and an absent player or an empty library makes callee
+        // and test answer no alike. It skips only a call whose answer that
+        // comparison discards.
+        || (obj.zone == Zone::Library
+            && state
+                .players
+                .iter()
+                .find(|p| p.id == player)
+                .and_then(|p| state.library_of(p.id).front())
+                == Some(&obj.id)
+            && top_of_library_permission_source(state, player, Some(CardPlayMode::Cast))
+                .is_some_and(|(top_id, _, _, _)| top_id == obj.id))
         )
 }
 
@@ -6682,6 +6682,18 @@ pub fn top_of_library_land_playable_by_permission(
     Some((top_id, src_id))
 }
 
+/// CR 400.1 + CR 401.1: `obj` sits in the library `player` reads — its owner's own
+/// library, or the one shared pile when the format shares libraries.
+pub(crate) fn object_in_players_library(
+    state: &GameState,
+    obj: &GameObject,
+    player: PlayerId,
+) -> bool {
+    obj.zone == Zone::Library
+        && state.zone_storage_seat(Zone::Library, obj.owner)
+            == state.zone_storage_seat(Zone::Library, player)
+}
+
 /// CR 118.9 + CR 401.5: When `object_id` is the current top of `player`'s library
 /// and a `TopOfLibraryCastPermission` static grants an alt-cost rider (Bolas's
 /// Citadel: pay life equal to mana value), return that cost for castability
@@ -6692,7 +6704,7 @@ pub(crate) fn top_of_library_alt_ability_cost_for_object(
     object_id: ObjectId,
 ) -> Option<crate::types::ability::AbilityCost> {
     let obj = state.objects.get(&object_id)?;
-    if obj.zone != Zone::Library || obj.owner != player {
+    if !object_in_players_library(state, obj, player) {
         return None;
     }
     top_of_library_permission_source(state, player, Some(CardPlayMode::Cast)).and_then(
@@ -8932,7 +8944,7 @@ fn prepare_spell_cast_announced(
     // current top of `player`'s library AND match the static's `affected`
     // filter. The optional `alt_cost` flows through to `prepare_spell_cast`'s
     // alt-cost branch below, mirroring `ExileWithAltAbilityCost` semantics.
-    let top_of_library_permission_src = if obj.zone == Zone::Library && obj.owner == player {
+    let top_of_library_permission_src = if object_in_players_library(state, obj, player) {
         top_of_library_permission_source(state, player, Some(CardPlayMode::Cast))
             .filter(|(top_id, _, _, _)| *top_id == object_id)
     } else {

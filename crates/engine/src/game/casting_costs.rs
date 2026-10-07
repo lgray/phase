@@ -8351,7 +8351,7 @@ fn check_additional_cost_or_pay_with_kept_cost(
                         .map(|extra| extra.cost)
                     })
                 })
-        } else if obj.zone == Zone::Library && obj.owner == player {
+        } else if super::casting::object_in_players_library(state, obj, player) {
             // CR 401.5 + CR 118.9 + CR 601.2a: Top-of-library cast with an
             // alt-cost rider (Bolas's Citadel: "pay life equal to its mana
             // value rather than paying its mana cost").

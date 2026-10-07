@@ -183,3 +183,157 @@ fn standard_offers_the_controllers_own_spells_and_leaves_the_opponent_library_al
         "P1's own library is not part of P0's look"
     );
 }
+
+mod top_cast {
+    use super::*;
+    use engine::game::casting::{
+        can_cast_object_now, effective_spell_cost, spell_objects_available_to_cast,
+    };
+
+    fn other(seat: PlayerId) -> PlayerId {
+        if seat == P0 {
+            P1
+        } else {
+            P0
+        }
+    }
+
+    /// `holder` controls `permanent` ("Future Sight" or "Bolas's Citadel"); the top card of the
+    /// library `holder` reads is Mental Note owned by `top_owner`, over a filler Island.
+    fn staged(
+        format: FormatConfig,
+        holder: PlayerId,
+        permanent: &str,
+        top_owner: PlayerId,
+        mana: bool,
+    ) -> (GameRunner, ObjectId) {
+        let db = shared_card_db().expect("card db");
+        let mut scenario = GameScenario::new_with_format(format, 2, 11);
+        scenario.at_phase(Phase::PreCombatMain);
+        let top = scenario.add_real_card(top_owner, "Mental Note", Zone::Library, db);
+        scenario.add_real_card(top_owner, "Island", Zone::Library, db);
+        scenario.add_real_card(holder, permanent, Zone::Battlefield, db);
+        scenario.with_life(holder, 20);
+        if mana {
+            scenario.with_mana_pool(
+                holder,
+                (0..3)
+                    .map(|_| ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![]))
+                    .collect(),
+            );
+        }
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.active_player = holder;
+        state.priority_player = holder;
+        state.waiting_for = WaitingFor::Priority { player: holder };
+        (runner, top)
+    }
+
+    fn assert_top_is_offered_to(runner: &GameRunner, holder: PlayerId, top: ObjectId) {
+        let state = runner.state();
+        assert!(
+            spell_objects_available_to_cast(state, holder).contains(&top),
+            "the pile top is a candidate cast"
+        );
+        assert!(can_cast_object_now(state, holder, top));
+        assert!(
+            engine::ai_support::legal_actions(state)
+                .iter()
+                .any(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == top)),
+            "legal actions offer the cast"
+        );
+    }
+
+    #[test]
+    fn dandan_future_sight_casts_the_pile_top_whoever_owns_it() {
+        if shared_card_db().is_none() {
+            return;
+        }
+        for holder in [P0, P1] {
+            let owner = other(holder);
+            let (mut runner, top) =
+                staged(FormatConfig::dandan(), holder, "Future Sight", owner, true);
+            let state = runner.state();
+            assert_eq!(
+                state.library_of(holder).front(),
+                Some(&top),
+                "reach: the top of the pile the holder reads"
+            );
+            assert_eq!(
+                state.objects[&top].owner, owner,
+                "reach: the opponent owns it"
+            );
+            assert_top_is_offered_to(&runner, holder, top);
+            runner.cast(top).resolve();
+            assert_ne!(
+                runner.state().objects[&top].zone,
+                Zone::Library,
+                "{holder:?} cast it from the top"
+            );
+        }
+    }
+
+    #[test]
+    fn dandan_citadel_pays_life_for_a_pile_top_the_opponent_owns() {
+        if shared_card_db().is_none() {
+            return;
+        }
+        for holder in [P0, P1] {
+            let (mut runner, top) = staged(
+                FormatConfig::dandan(),
+                holder,
+                "Bolas's Citadel",
+                other(holder),
+                false,
+            );
+            let state = runner.state();
+            assert_eq!(
+                state.library_of(holder).front(),
+                Some(&top),
+                "reach: pile top"
+            );
+            assert!(
+                state.players[holder.0 as usize].mana_pool.mana.is_empty(),
+                "reach: no mana to pay with"
+            );
+            assert!(
+                effective_spell_cost(state, holder, top)
+                    .expect("effective cost")
+                    .is_without_paying_mana(),
+                "the life rider replaces the mana cost"
+            );
+            assert_top_is_offered_to(&runner, holder, top);
+            runner.cast(top).resolve();
+            let state = runner.state();
+            assert_ne!(state.objects[&top].zone, Zone::Library);
+            assert_eq!(
+                state.players[holder.0 as usize].life, 19,
+                "{holder:?} paid life equal to the mana value"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_casts_only_the_holders_own_library_top() {
+        if shared_card_db().is_none() {
+            return;
+        }
+        let (mut runner, own_top) = staged(FormatConfig::standard(), P0, "Future Sight", P0, true);
+        assert_top_is_offered_to(&runner, P0, own_top);
+        runner.cast(own_top).resolve();
+        assert_ne!(runner.state().objects[&own_top].zone, Zone::Library);
+
+        let (runner, opponent_top) = staged(FormatConfig::standard(), P0, "Future Sight", P1, true);
+        assert_eq!(
+            runner.state().library_of(P1).front(),
+            Some(&opponent_top),
+            "reach: the card is the top of the opponent's own library"
+        );
+        assert!(
+            !spell_objects_available_to_cast(runner.state(), P0).contains(&opponent_top),
+            "P0's permission does not reach P1's library"
+        );
+        assert!(!can_cast_object_now(runner.state(), P0, opponent_top));
+    }
+}
