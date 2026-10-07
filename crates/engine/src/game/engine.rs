@@ -5955,7 +5955,8 @@ enum TakeRoute {
 /// reaches what the replay would: a zero or shortened count is performed as agreed (CR 732.2b),
 /// a period standing on the stack cannot be replayed from the step-end collapse's empty stack,
 /// the mark would refill restricted mana without its restriction (CR 106.6), and its mint makes
-/// bare tapped copies, without a keyword or delayed trigger the cover admitted as growth.
+/// bare tapped copies under the proposer, without a keyword, delayed trigger or other controller
+/// the cover admitted as growth.
 fn take_route(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
@@ -5966,7 +5967,7 @@ fn take_route(
     } else if n == 0
         || proposal.shortened_by.is_some()
         || !state.stack.is_empty()
-        || proposal.period.growth() == crate::analysis::resource::CoveredGrowth::WithRiders
+        || proposal.period.growth() == crate::analysis::resource::CoveredGrowth::PerformedOnly
         || adds_restricted_mana(state, &proposal.period, proposal.proposer)
     {
         TakeRoute::Replay
@@ -6769,7 +6770,7 @@ pub(crate) fn certify_object_growth_frames(
                 ObjectGrowthVerdict::ResourceRecurrence(
                     cover(&cs_n, &cs_n1) && cover(&cs_n1, &cs_n2),
                 ),
-                CoveredGrowth::Bare,
+                CoveredGrowth::Mintable,
             )
         }
     }
@@ -6984,8 +6985,8 @@ fn current_period_life_growth(
 }
 
 /// CR 732.2a: the offer for the first of `spans` the confirmer confirms at this priority frame,
-/// for the CALLER to install (INV-2: OFFER, never auto-resolve). The only live writes are the
-/// trace's refusals; the confirmer replays on clones under its own `SimulationProbeGuard`.
+/// for the CALLER to install (INV-2: OFFER, never auto-resolve). There are no live writes; the
+/// confirmer replays on clones under its own `SimulationProbeGuard`.
 ///
 /// # CR 732.1b — THIS ENGINE REPRESENTS THE LOOP INSTEAD OF PERFORMING IT
 ///

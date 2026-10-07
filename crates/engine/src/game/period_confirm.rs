@@ -35,8 +35,8 @@ use crate::types::player::PlayerId;
 pub enum OfferRefusal {
     /// CR 732.3: optional plays or answers from more than one player.
     Fragmented { seats: Vec<PlayerId> },
-    /// CR 732.2a: the holder proposes, and the span's optional plays and answers are `seat`'s,
-    /// who is offered it at their own priority.
+    /// Engine policy under CR 732.2a: a span is offered to the player whose optional plays and
+    /// answers it is made of; the holder is not offered `seat`'s span.
     ForeignSeat { seat: PlayerId },
     /// CR 732.2a: a replayed action drew a random outcome.
     Randomness,

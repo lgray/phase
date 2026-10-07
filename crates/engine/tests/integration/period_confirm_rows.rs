@@ -591,6 +591,35 @@ fn take(runner: &mut GameRunner, count: u32) {
     }
 }
 
+/// [`take`], then the passes to the step end.
+fn take_to_step_end(runner: &mut GameRunner, count: u32) {
+    take(runner, count);
+    take_to_step_end_after_take(runner, count);
+}
+
+/// Every seat passes until the step ends, where a collapse prompt is answered `count`.
+fn take_to_step_end_after_take(runner: &mut GameRunner, count: u32) {
+    let phase = runner.state().phase;
+    while matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        && runner.state().phase == phase
+    {
+        act(runner, GameAction::PassPriority);
+    }
+    if matches!(
+        runner.state().waiting_for,
+        WaitingFor::PayAmountChoice { .. }
+    ) {
+        act(runner, GameAction::SubmitPayAmount { amount: count });
+    }
+}
+
+fn marks_tokens(state: &GameState, seat: PlayerId) -> bool {
+    state
+        .unbounded_resources
+        .get(&seat)
+        .is_some_and(|axes| axes.contains(&ResourceAxis::TokensCreated))
+}
+
 fn marks_mana(state: &GameState) -> bool {
     state.unbounded_resources.get(&P0).is_some_and(|axes| {
         axes.iter()
@@ -781,19 +810,7 @@ fn kiki_jiki_is_refused_at_its_first_span_then_offered_and_taken() {
     kiki_activates(&mut runner, kiki, &score);
     assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
     let before = tokens(runner.state(), P0);
-    take(&mut runner, 2);
-    let phase = runner.state().phase;
-    while matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
-        && runner.state().phase == phase
-    {
-        act(&mut runner, GameAction::PassPriority);
-    }
-    if matches!(
-        runner.state().waiting_for,
-        WaitingFor::PayAmountChoice { .. }
-    ) {
-        act(&mut runner, GameAction::SubmitPayAmount { amount: 2 });
-    }
+    take_to_step_end(&mut runner, 2);
     let state = runner.state();
     assert!(
         matches!(state.waiting_for, WaitingFor::Priority { .. }),
@@ -849,6 +866,104 @@ fn a_take_of_a_period_growing_bare_tokens_stands_on_the_mark() {
         marked.is_some_and(|axes| axes.contains(&ResourceAxis::TokensCreated)),
         "{marked:?}"
     );
+}
+
+/// CR 732.2c + CR 111.2: Forbidden Orchard ("Whenever you tap this land for mana, target opponent
+/// creates a 1/1 colorless Spirit creature token.") untapped by Voyaging Satyr ("{T}: Untap target
+/// land.") under Freed from the Real ("{U}: Untap enchanted creature.") grows Spirits its opponent
+/// controls, so the take performs the period: the opponent gets each Spirit, and nothing is marked
+/// or minted for the player who looped.
+#[test]
+fn a_take_of_a_period_growing_an_opponents_tokens_gives_them_to_that_opponent() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let orchard = scenario.add_real_card(P0, "Forbidden Orchard", Zone::Battlefield, db);
+    let satyr = scenario.add_real_card(P0, "Voyaging Satyr", Zone::Battlefield, db);
+    for seat in [P0, P1] {
+        for _ in 0..10 {
+            scenario.add_real_card(seat, "Swamp", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let freed = place(runner.state_mut(), P0, "Freed from the Real", db);
+    attach_to(runner.state_mut(), freed, satyr);
+    let untaps = runner.state().objects[&freed]
+        .abilities
+        .iter()
+        .rposition(|ability| ability.kind == AbilityKind::Activated)
+        .expect("Freed from the Real's untap ability");
+    let score = |action: &GameAction| match action {
+        GameAction::ChooseTarget {
+            target: Some(TargetRef::Object(id)),
+        } if *id == orchard => 3,
+        GameAction::ChooseTarget {
+            target: Some(TargetRef::Player(P1)),
+        } => 3,
+        other => chooses_color(ManaType::Blue)(other),
+    };
+    for cycle in 0.. {
+        assert!(cycle < 4, "no offer in four cycles");
+        let (taps, untaps_land) = (
+            ability(runner.state(), orchard, true),
+            ability(runner.state(), satyr, false),
+        );
+        for (source, index) in [(orchard, taps), (satyr, untaps_land), (freed, untaps)] {
+            if !is_offer(runner.state()) {
+                activate(&mut runner, source, index);
+                settle(&mut runner, &score);
+            }
+        }
+        if is_offer(runner.state()) {
+            break;
+        }
+    }
+    let spirits = tokens(runner.state(), P1).len();
+    assert!(spirits > 0, "reach: the period made the opponent a Spirit");
+    take(&mut runner, 3);
+    assert!(!marks_tokens(runner.state(), P0), "at the take");
+    take_to_step_end_after_take(&mut runner, 3);
+    let state = runner.state();
+    assert!(!marks_tokens(state, P0), "at the step end");
+    assert_eq!(tokens(state, P1).len(), spirits + 3);
+    assert_eq!(tokens(state, P0), Vec::<ObjectId>::new());
+}
+
+/// CR 732.2c + CR 111.2: Dragonlair Spider ("Whenever an opponent casts a spell, create a 1/1 green
+/// Insect creature token.") makes its controller an Insect each time the Altar + Gravecrawler
+/// period recasts, so the take performs the period and the Spider's controller gets each Insect.
+#[test]
+fn a_take_of_a_period_feeding_an_opponents_token_trigger_gives_them_its_tokens() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = altar_board(None, db);
+    place(runner.state_mut(), P1, "Dragonlair Spider", db);
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+    };
+    for cycle in 0.. {
+        assert!(cycle < 4, "no offer in four cycles");
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+    }
+    let insects = tokens(runner.state(), P1).len();
+    assert!(insects > 0, "reach: the period made the opponent an Insect");
+    take(&mut runner, 3);
+    assert!(!marks_tokens(runner.state(), P0), "at the take");
+    take_to_step_end_after_take(&mut runner, 3);
+    let state = runner.state();
+    assert!(!marks_tokens(state, P0), "at the step end");
+    assert_eq!(tokens(state, P1).len(), insects + 3);
+    assert_eq!(tokens(state, P0), Vec::<ObjectId>::new());
 }
 
 /// CR 732.2a: P1's Kiki-Jiki period on P0's turn is offered to P1, at P1's own priority, and never

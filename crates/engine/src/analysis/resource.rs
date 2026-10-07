@@ -4633,16 +4633,16 @@ impl ObjectGrowthVerdict {
     }
 }
 
-/// CR 732.1b: what a fodder cover admitted as a period's growth, which decides whether a mint of
-/// bare tapped copies makes it.
+/// CR 732.1b: whether a mint of bare tapped copies under the period's controller makes what a
+/// fodder cover admitted as the period's growth.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CoveredGrowth {
-    /// Objects of the grown class and nothing else.
+    /// Objects of the grown class and nothing else, each under the period's controller.
     #[default]
-    Bare,
-    /// CR 702.10b + CR 603.7a: a grown object carries a keyword, or a delayed trigger acts on it
-    /// alone.
-    WithRiders,
+    Mintable,
+    /// CR 702.10b + CR 603.7a + CR 111.2: a grown object carries a keyword, a delayed trigger acts
+    /// on it alone, or another player controls it, so only performing the period makes it.
+    PerformedOnly,
 }
 
 /// Every condition of [`loop_states_cover_modulo_fodder_growth`] that refuses this pair, empty
@@ -4731,10 +4731,15 @@ pub(crate) fn fodder_growth_cover_refusals(
         .into_iter()
         .flat_map(|frame| frame.delayed_triggers.iter())
         .any(|t| delayed_trigger_acts_only_on_grown(t, &growing, pa.phase));
-    let growth = if keyword || delayed_trigger {
-        CoveredGrowth::WithRiders
+    // CR 108.4: only a grown object on the battlefield has a controller.
+    let other_controller = growing
+        .iter()
+        .filter_map(|id| cf.objects.get(id))
+        .any(|o| o.zone == Zone::Battlefield && o.controller != caster);
+    let growth = if keyword || delayed_trigger || other_controller {
+        CoveredGrowth::PerformedOnly
     } else {
-        CoveredGrowth::Bare
+        CoveredGrowth::Mintable
     };
     (refusals, growth)
 }
@@ -13382,10 +13387,11 @@ mod tests {
         );
     }
 
-    /// CR 732.1b: a certifying cover reports riders when a grown object carries a keyword, or a
-    /// delayed trigger acts on a grown object alone, and bare growth otherwise.
+    /// CR 732.1b: a certifying cover reports growth only performing makes when a grown object
+    /// carries a keyword, a delayed trigger acts on a grown object alone, or another player
+    /// controls a grown object, and mintable growth otherwise.
     #[test]
-    fn the_fodder_cover_reports_what_rides_on_its_growth() {
+    fn the_fodder_cover_reports_whether_a_mint_makes_its_growth() {
         use crate::types::ability::{
             DelayedTriggerCondition, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
         };
@@ -13396,7 +13402,34 @@ mod tests {
         let (prior, current) = fodder_cover_base();
         assert_eq!(
             report(&prior, &current, &saproling_class()),
-            (vec![], CoveredGrowth::Bare)
+            (vec![], CoveredGrowth::Mintable)
+        );
+
+        let opponents_saproling = |id: ObjectId| {
+            GameObject::new(
+                id,
+                CardId(id.0),
+                PlayerId(1),
+                "Saproling".into(),
+                Zone::Battlefield,
+            )
+        };
+        let opponents = |state: &GameState| {
+            let mut state = state.clone();
+            for id in state.battlefield.clone() {
+                let object = state.objects.get_mut(&id).unwrap();
+                if object.name == "Saproling" {
+                    let tapped = object.tapped;
+                    *object = opponents_saproling(id);
+                    object.tapped = tapped;
+                }
+            }
+            state
+        };
+        let opponents_class = opponents_saproling(ObjectId(999));
+        assert_eq!(
+            report(&opponents(&prior), &opponents(&current), &opponents_class),
+            (vec![], CoveredGrowth::PerformedOnly)
         );
 
         let hasty = |state: &GameState| {
@@ -13413,7 +13446,7 @@ mod tests {
         hasty_class.keywords = vec![Keyword::Haste];
         assert_eq!(
             report(&hasty(&prior), &hasty(&current), &hasty_class),
-            (vec![], CoveredGrowth::WithRiders)
+            (vec![], CoveredGrowth::PerformedOnly)
         );
 
         let mut sacrificed = current.clone();
@@ -13437,7 +13470,7 @@ mod tests {
             ));
         assert_eq!(
             report(&prior, &sacrificed, &saproling_class()),
-            (vec![], CoveredGrowth::WithRiders)
+            (vec![], CoveredGrowth::PerformedOnly)
         );
     }
 
