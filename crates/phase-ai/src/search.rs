@@ -698,8 +698,9 @@ fn large_board_main_phase_has_no_development_sources(
         return false;
     }
 
+    // CR 404.1: the graveyard `graveyard_of` resolves, shared or the seat's own.
     let player = &state.players[ai_player.0 as usize];
-    if !player.hand.is_empty() || !player.graveyard.is_empty() {
+    if !player.hand.is_empty() || !state.graveyard_of(ai_player).is_empty() {
         return false;
     }
     if engine::game::planechase::can_roll_planar_die(state, ai_player) {
@@ -2814,7 +2815,7 @@ fn demand_saturating_mana_combination(
 
 fn deck_color_demand(state: &GameState, player: PlayerId) -> [u32; 5] {
     let mut demand = [0; 5];
-    let Some(pool) = state.deck_pools.iter().find(|pool| pool.player == player) else {
+    let Some(pool) = state.deck_pool_of(player) else {
         return demand;
     };
     for entry in pool.current_main.iter() {
@@ -8526,6 +8527,130 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn colored_list(
+        name: &str,
+        shard: ManaCostShard,
+    ) -> Vec<engine::game::deck_loading::DeckEntry> {
+        vec![engine::game::deck_loading::DeckEntry {
+            card: engine::types::card::CardFace {
+                name: name.to_string(),
+                mana_cost: ManaCost::Cost {
+                    shards: vec![shard],
+                    generic: 0,
+                },
+                ..Default::default()
+            },
+            count: 4,
+        }]
+    }
+
+    fn loaded_state(
+        format: engine::types::format::FormatConfig,
+        mine: Vec<engine::game::deck_loading::DeckEntry>,
+        theirs: Vec<engine::game::deck_loading::DeckEntry>,
+    ) -> GameState {
+        use engine::game::deck_loading::{load_deck_into_state, DeckPayload, PlayerDeckPayload};
+        let mut state = GameState::new(format, 2, 7);
+        load_deck_into_state(
+            &mut state,
+            &DeckPayload {
+                player: PlayerDeckPayload {
+                    main_deck: mine,
+                    ..Default::default()
+                },
+                opponent: PlayerDeckPayload {
+                    main_deck: theirs,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        state
+    }
+
+    #[test]
+    fn deck_color_demand_reads_the_shared_pool_for_both_seats() {
+        let state = loaded_state(
+            engine::types::format::FormatConfig::dandan(),
+            colored_list("Red Card", ManaCostShard::Red),
+            colored_list("Green Card", ManaCostShard::Green),
+        );
+        assert_eq!(state.deck_pools.len(), 1, "reach: one pool");
+        let red = mana_type_index(ManaType::Red).unwrap();
+        let holder = deck_color_demand(&state, PlayerId(0));
+        assert_eq!(holder[red], 4, "reach: the holder's pool is red");
+        assert_eq!(deck_color_demand(&state, PlayerId(1)), holder);
+    }
+
+    #[test]
+    fn deck_color_demand_keeps_each_seats_own_pool_in_standard() {
+        let state = loaded_state(
+            engine::types::format::FormatConfig::standard(),
+            colored_list("Red Card", ManaCostShard::Red),
+            colored_list("Green Card", ManaCostShard::Green),
+        );
+        let green = mana_type_index(ManaType::Green).unwrap();
+        assert_eq!(state.deck_pools.len(), 2, "reach: two pools");
+        assert_eq!(deck_color_demand(&state, PlayerId(1))[green], 4);
+        assert_eq!(deck_color_demand(&state, PlayerId(0))[green], 0);
+    }
+
+    fn large_board_state(format: engine::types::format::FormatConfig, ai: PlayerId) -> GameState {
+        let mut state = GameState::new(format, 2, 42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = ai;
+        state.priority_player = ai;
+        state.waiting_for = WaitingFor::Priority { player: ai };
+        for _ in 0..LARGE_BOARD_FAST_PRIORITY_BATTLEFIELD_OBJECTS {
+            add_creature(&mut state, PlayerId(0), 1, 1);
+        }
+        state
+    }
+
+    #[test]
+    fn large_board_shared_graveyard_is_a_development_source_for_either_seat() {
+        use engine::types::format::FormatConfig;
+        for ai in [PlayerId(0), PlayerId(1)] {
+            let mut state = large_board_state(FormatConfig::dandan(), ai);
+            assert!(
+                large_board_main_phase_has_no_development_sources(&state, ai),
+                "reach: only the graveyard conjunct can refuse"
+            );
+            create_object(
+                &mut state,
+                CardId(900),
+                PlayerId(0),
+                "Pile Card".to_string(),
+                Zone::Graveyard,
+            );
+            assert_eq!(state.graveyard_of(ai).len(), 1);
+            assert!(!large_board_main_phase_has_no_development_sources(
+                &state, ai
+            ));
+        }
+    }
+
+    #[test]
+    fn large_board_own_graveyard_is_a_development_source_in_standard() {
+        use engine::types::format::FormatConfig;
+        let ai = PlayerId(1);
+        let mut state = large_board_state(FormatConfig::standard(), ai);
+        assert!(large_board_main_phase_has_no_development_sources(
+            &state, ai
+        ));
+        create_object(
+            &mut state,
+            CardId(900),
+            ai,
+            "Own Card".to_string(),
+            Zone::Graveyard,
+        );
+        assert!(!large_board_main_phase_has_no_development_sources(
+            &state, ai
+        ));
     }
 
     fn spell_target_selection_state(
