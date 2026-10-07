@@ -67,3 +67,5 @@
 [2026-10-07T09:12:31Z] Phase 17 ACCEPTED at 2796efca82 (impl r1 behavior 1 MED -> r3 fix, delta r2 clean + comment-only correction; completion p17c rc0 nextest 37816/37816). Pushed. Next: upstream merge, run-level acceptance.
 [2026-10-07T15:19:06Z] PR OPENED phase-rs/phase#9669 (same-repo branch feat/dandan-format @ 10b758a281; fork receive-pack 500 -> USER chose upstream push). Final review: 3 slices + delta clean; ai-gate base==head (2 WARN at both); residuals in PR body.
 2026-10-07T20:23:15Z Phase 18 accepted 1c2bd62946 (see summaries.md)
+2026-10-07T20:30:11Z USER: PR #9669 scope = phases 18-20 + merge; 21-22 follow-up PR after merge
+2026-10-07T21:36:57Z USER reversal: 21-22 back in #9669

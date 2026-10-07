@@ -1,0 +1,9 @@
+sha=acf54229060658856963621043143ba76f081b1c
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [  11.945s] (15377/38138) phase-engine game::triggers::ordering_parity_tests::ordering_parity_sweep
+     Summary [2207.547s] 38138 tests run: 38137 passed (107 slow), 1 failed, 51 skipped
+done rc=0

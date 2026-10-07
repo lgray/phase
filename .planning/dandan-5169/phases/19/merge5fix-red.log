@@ -1,0 +1,34 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+────────────
+ Nextest run ID 9db1aa6b-af04-4df6-9d91-9f4af91e94a4 with nextest profile: default
+    Starting 1 test across 1 binary (23408 tests skipped)
+        FAIL [  12.637s] (1/1) phase-engine game::triggers::ordering_parity_tests::ordering_parity_sweep
+  stdout ───
+
+    running 1 test
+    test game::triggers::ordering_parity_tests::ordering_parity_sweep ... FAILED
+
+    failures:
+
+    failures:
+        game::triggers::ordering_parity_tests::ordering_parity_sweep
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23408 filtered out; finished in 12.55s
+
+  stderr ───
+    ordering_parity_sweep: full_db=false swept=2394 compared=1069 unexplained=1 cat1_hit={"complex automaton", "docent of perfection", "ouroboroid", "promise of tomorrow", "sidequest: hunt the mark", "spawn of mayhem"} over_prompt_hit=21 batch_genuine_hit=2 se_mb_genuine={"blood tyrant", "duplicity", "mimic vat", "mirror of life trapping", "moonring mirror", "world queller"} se_member_bound_class=37 se_event_object_genuine={} se_event_object_class=6
+    floors: batch_obs=77 hadcounters_batch_self=1 retained_prompt=57 t1_source_indep=540
+    se_member_bound_class members (37): {"angelic skirmisher", "call the spirit dragons", "cracked skull", "cryoshatter", "crystalline giant", "curse of disturbance", "curse of opulence", "curse of thirst", "curse of verbosity", "curse of vitality", "daru spiritualist", "death pits of rath", "descendants' fury", "fraying sanity", "gutter grime", "hot soup", "jeskai ascendancy", "magnetic mountain", "martial impetus", "no one will hear your cries", "omenpath journey", "party thrasher", "rickety gazebo", "ripples of undeath", "rite of passage", "river song's diary", "search the city", "sporogenic infection", "termination facilitator", "the toymaker's trap", "toxin sliver", "triarch stalker", "two streams facility", "valakut exploration", "valley floodcaller", "wall of mourning", "wild defiance"}
+    se_event_object_class members (6): {"amulet of vigor", "charismatic conqueror", "experiment twelve", "price of glory", "railway brawler", "tribute to the world tree"}
+    over_prompt_hit members (21/25): {"arashin sovereign", "biowaste blob", "cemetery desecrator", "chorale of the void", "death of a thousand stings", "deathbonnet sprout", "exile into darkness", "flamewake phoenix", "glimmer seeker", "graf rats", "mirror-sigil sergeant", "nether spirit", "osseous sticktwister", "paroxysm", "persistent marshstalker", "planar collapse", "reclusive wight", "reveille squad", "skyfisher spider", "stensia uprising", "the skullspore nexus"}
+
+    thread 'game::triggers::ordering_parity_tests::ordering_parity_sweep' (3602119) panicked at crates/engine/src/game/triggers_ordering_parity_tests.rs:883:5:
+    STRICT PROOF-GATE: 1 unexplained decision diff(s):
+    BATCH decision diff on 'gutter grime' (old=true, new=false, legacy_serde=false, legacy_prompt=false)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [  12.673s] 1 test run: 0 passed, 1 failed, 23408 skipped
+        FAIL [  12.637s] (1/1) phase-engine game::triggers::ordering_parity_tests::ordering_parity_sweep
+error: test run failed
+done rc=100

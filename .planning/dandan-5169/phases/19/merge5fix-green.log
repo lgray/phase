@@ -1,0 +1,850 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 21s
+────────────
+ Nextest run ID 94b3e5b3-6cf4-4ecf-9054-a5f9f93544f3 with nextest profile: default
+    Starting 842 tests across 8 binaries (32546 tests skipped)
+        PASS [   0.060s] (  1/842) phase-engine game::ability_rw::tests::attacked_you_last_turn_anchored_scope_reads_the_latched_attacker
+        PASS [   0.079s] (  2/842) phase-engine game::ability_rw::tests::b7_quantity_member_bound_split
+        PASS [   0.080s] (  3/842) phase-engine game::ability_rw::tests::b7_batch_t1_clause_conjuncts
+        PASS [   0.084s] (  4/842) phase-engine game::ability_rw::tests::base_chaotic_goo_flipcoin_self_counters_clean
+        PASS [   0.082s] (  5/842) phase-engine game::ability_rw::tests::any_turn_duration_scope_profiles_like_controller_no_panic
+        PASS [   0.097s] (  6/842) phase-engine game::ability_rw::tests::base_case_a_live_power_read_vs_board_counter_write_conflict
+        PASS [   0.103s] (  7/842) phase-engine game::ability_rw::tests::b4_writes_event_object_conjunct
+        PASS [   0.103s] (  8/842) phase-engine game::ability_rw::tests::b7_member_bound_target_filter_families
+        PASS [   0.108s] (  9/842) phase-engine game::ability_rw::tests::b7_choose_persist_member_bound
+        PASS [   0.110s] ( 10/842) phase-engine game::ability_rw::tests::b7_gs_default_is_mixed
+        PASS [   0.114s] ( 11/842) phase-engine analysis::resource::tests::a_foreign_mana_ability_reading_a_creature_census_still_vetoes
+        PASS [   0.115s] ( 12/842) phase-engine game::ability_rw::tests::adamant_rider_generic_shape_is_more_conservative_than_legacy
+        PASS [   0.076s] ( 13/842) phase-engine game::ability_rw::tests::base_copyspell_selfref_clean_vs_topofstack_conflict
+        PASS [   0.075s] ( 14/842) phase-engine game::ability_rw::tests::base_quirion_dryad_write_only_self_counter_clean
+        PASS [   0.102s] ( 15/842) phase-engine game::ability_rw::tests::base_fruit_src_pt_read_vs_life_write_clean
+        PASS [   0.101s] ( 16/842) phase-engine game::ability_rw::tests::base_graveyard_return_board_membership_conflict
+        PASS [   0.075s] ( 17/842) phase-engine game::ability_rw::tests::chose_ring_bearer_reads_the_event_live
+        PASS [   0.090s] ( 18/842) phase-engine game::ability_rw::tests::base_power_read_does_not_feed_from_counter_write
+        PASS [   0.083s] ( 19/842) phase-engine game::ability_rw::tests::d5_legacy_visitor_tag_x_position_matrix
+        PASS [   0.110s] ( 20/842) phase-engine game::ability_rw::tests::base_mana_crypt_flipcoin_player_damage_clean
+        PASS [   0.119s] ( 21/842) phase-engine game::ability_rw::tests::base_gutter_grime_live_src_counter_read_vs_token_membership_clean
+        PASS [   0.087s] ( 22/842) phase-engine game::ability_rw::tests::granting_object_reads_are_member_bound_board_reads
+        PASS [   0.115s] ( 23/842) phase-engine game::ability_rw::tests::characteristic_source_reads_are_exact_per_population
+        PASS [   0.129s] ( 24/842) phase-engine game::ability_rw::tests::base_power_read_does_not_depend_on_counter_write
+        PASS [   0.120s] ( 25/842) phase-engine game::ability_rw::tests::chose_other_ring_bearer_reads_the_event_live
+        PASS [   0.072s] ( 26/842) phase-engine game::ability_rw::tests::l13_remove_from_combat_and_skips_are_turn_structure
+        PASS [   0.072s] ( 27/842) phase-engine game::ability_rw::tests::l12_suspect_unsuspect_no_observable_write
+        PASS [   0.081s] ( 28/842) phase-engine game::ability_rw::tests::l1_zone_card_count_census_and_zone_extraction
+        PASS [   0.088s] ( 29/842) phase-engine game::ability_rw::tests::l2_counter_added_this_turn_is_frozen_lookback
+        PASS [   0.085s] ( 30/842) phase-engine game::ability_rw::tests::l2_zone_journal_reads_keyed_to_destination_zone
+        PASS [   0.092s] ( 31/842) phase-engine game::ability_rw::tests::l3_target_matches_filter_lki_is_frozen_read
+        PASS [   0.117s] ( 32/842) phase-engine game::ability_rw::tests::l14_extra_turn_and_phase_are_turn_structure_not_other
+        PASS [   0.077s] ( 33/842) phase-engine game::ability_rw::tests::l9_copy_spell_by_id_and_change_targets_stack_write
+        PASS [   0.121s] ( 34/842) phase-engine game::ability_rw::tests::l6_attached_to_excludes_source
+        PASS [   0.114s] ( 35/842) phase-engine game::ability_rw::tests::legacy_effect_verdict_unchanged_for_every_fixture_mana_role
+        PASS [   0.120s] ( 36/842) phase-engine game::ability_rw::tests::legacy_visitor_reads_pump_pt_values
+        PASS [   0.146s] ( 37/842) phase-engine game::ability_rw::tests::legacy_visitor_reads_planar_deck_counts
+        PASS [   0.153s] ( 38/842) phase-engine game::ability_rw::tests::l7_objects_share_quality_last_revealed_is_local
+        PASS [   0.126s] ( 39/842) phase-engine game::ability_rw::tests::major1_unfiltered_zone_membership_read_conflicts
+        PASS [   0.129s] ( 40/842) phase-engine game::ability_rw::tests::ne_i_mana_unless_pay_guard
+        PASS [   0.145s] ( 41/842) phase-engine game::ability_rw::tests::ne_ii_recipient_vs_source
+        PASS [   0.156s] ( 42/842) phase-engine game::ability_rw::tests::ne_iii_t1_source_independence
+        PASS [   0.104s] ( 43/842) phase-engine game::ability_rw::tests::property_aggregate_live_power_read_vs_board_counter_write_conflict
+        PASS [   0.189s] ( 44/842) phase-engine game::ability_rw::tests::ne_vi_event_object_disjointness
+        PASS [   0.196s] ( 45/842) phase-engine game::ability_rw::tests::ne_iv_census_overlap
+        PASS [   0.197s] ( 46/842) phase-engine game::ability_rw::tests::ne_v_chain_root
+        PASS [   0.499s] ( 47/842) phase-engine analysis::resource::tests::spent_self_entry_relieves_a_board_censusing_entry_condition
+        PASS [   0.123s] ( 48/842) phase-engine game::ability_rw::tests::s7_discard_fused_pattern_match_and_non_match
+        PASS [   0.161s] ( 49/842) phase-engine game::ability_rw::tests::other_revealed_card_scope_is_per_resolution_local
+        PASS [   0.198s] ( 50/842) phase-engine game::ability_rw::tests::ne_vii_parentless_root
+        PASS [   0.177s] ( 51/842) phase-engine game::ability_rw::tests::r4_same_event_event_object_feed_conjunct
+        PASS [   0.180s] ( 52/842) phase-engine game::ability_rw::tests::property_aggregate_source_rw_profiles_are_exhaustive
+        PASS [   0.125s] ( 53/842) phase-engine game::ability_rw::tests::s7_search_change_zone_chain_fact
+        PASS [   0.067s] ( 54/842) phase-engine game::ability_rw::tests::unassigned_distribution_unit_is_rw_inert
+        PASS [   0.066s] ( 55/842) phase-engine game::ability_rw::tests::voltstorm_mode_abilities_descend_as_union
+        PASS [   0.080s] ( 56/842) phase-engine game::ability_rw::tests::truncated_characteristic_source_walk_is_conservative_for_cast_journals
+        PASS [   0.147s] ( 57/842) phase-engine game::ability_rw::tests::s7_handsize_read_span_player_axis
+        PASS [   0.110s] ( 58/842) phase-engine game::ability_rw::tests::s7_self_bounce_hand_span
+        PASS [   0.194s] ( 59/842) phase-engine game::ability_rw::tests::s7_discard_write_span_scope_threading
+        PASS [   0.100s] ( 60/842) phase-engine game::ability_rw::tests::turn_structure_kind_isolated_self_conflict
+        PASS [   0.042s] ( 61/842) phase-engine game::ability_scan::tests::census_hole_arms_are_load_bearing
+        PASS [   0.115s] ( 62/842) phase-engine game::ability_rw::tests::triggering_scry_look_count_classifies_event_live
+        PASS [   0.103s] ( 63/842) phase-engine game::ability_rw::tests::zone_census_battlefield_write_vs_graveyard_read_discriminates
+        PASS [   0.091s] ( 64/842) phase-engine game::ability_rw::tests::zone_choice_provenance_and_reciprocal_reads_are_member_bound
+        PASS [   0.071s] ( 65/842) phase-engine game::ability_scan::tests::census_partition_agrees_with_effect_target_ctx
+        PASS [   0.067s] ( 66/842) phase-engine game::ability_scan::tests::obligation_ii_census_exception_is_exactly_settapstate
+        PASS [   0.653s] ( 67/842) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census
+        PASS [   0.121s] ( 68/842) phase-engine game::ability_scan::tests::b4_execute_census_scanned_while_matchers_stay_read_free
+        PASS [   0.066s] ( 69/842) phase-engine game::engine_resolution_choices::tests::boundary_hold_census_matches_the_apply_loop
+        PASS [   0.108s] ( 70/842) phase-engine game::ability_scan::tests::suspect_unsuspect_census_is_scope_sensitive
+        PASS [   0.084s] ( 71/842) phase-engine game::ability_scan::tests::unless_controls_subtype_reports_the_census_it_runs
+        PASS [   0.132s] ( 72/842) phase-engine game::ability_scan::tests::census_tag_set_is_exactly_enumerated
+        PASS [   0.067s] ( 73/842) phase-engine game::mana_sources::tests::leaf_component_census_counts_the_flattened_tree
+        PASS [   0.127s] ( 74/842) phase-engine game::ability_scan::tests::round2_mass_battlefield_resolvers_census_in_both_oracles
+        PASS [   0.093s] ( 75/842) phase-engine game::engine::priority_reducer_census_tests::priority_reducer_has_the_frozen_action_family_census
+        PASS [   0.071s] ( 76/842) phase-engine game::triggers::dedup_regression_tests::assassin_creature_combat_damage_seeds_freerunning_ledger
+        PASS [   0.115s] ( 77/842) phase-engine game::layers::tests::incremental_flush_skips_the_census_of_a_dynamic_count_reaching_no_recipient
+        PASS [   0.089s] ( 78/842) phase-engine game::triggers::dedup_regression_tests::archenemy_hero_team_orders_triggers_from_multiple_heroes_together
+        PASS [   0.113s] ( 79/842) phase-engine game::layers::tests::incremental_flush_still_runs_the_census_of_a_dynamic_count_reaching_a_recipient
+        PASS [   0.103s] ( 80/842) phase-engine game::triggers::dedup_regression_tests::attacks_observer_fires_once_per_event
+        PASS [   0.093s] ( 81/842) phase-engine game::triggers::dedup_regression_tests::auto_accepted_optional_context_ref_effect_reaches_stack
+        PASS [   0.100s] ( 82/842) phase-engine game::triggers::dedup_regression_tests::auto_accepted_optional_triggers_without_legal_targets_are_suppressed
+        PASS [   0.098s] ( 83/842) phase-engine game::triggers::dedup_regression_tests::damage_observer_fires_once_per_event
+        PASS [   0.127s] ( 84/842) phase-engine game::triggers::dedup_regression_tests::batched_zone_change_replay_guard_keeps_old_turn_markers_distinct_from_new_index_zero
+        PASS [   0.086s] ( 85/842) phase-engine game::triggers::dedup_regression_tests::defending_player_life_quantity_reads_attack_event_player_target
+        PASS [   0.818s] ( 86/842) phase-engine analysis::resource::tests::s4_s5_player_axis_board_census_keeps_the_veto
+        PASS [   0.103s] ( 87/842) phase-engine game::triggers::dedup_regression_tests::deferred_zone_change_witness_does_not_alias_the_next_turns_ledger_index
+        PASS [   0.122s] ( 88/842) phase-engine game::triggers::dedup_regression_tests::delney_parsed_static_does_not_double_high_power_creature_trigger
+        PASS [   0.076s] ( 89/842) phase-engine game::triggers::dedup_regression_tests::drivnod_doubles_dies_triggers
+        PASS [   0.176s] ( 90/842) phase-engine game::triggers::dedup_regression_tests::cloud_does_not_double_when_unequipped
+        PASS [   0.095s] ( 91/842) phase-engine game::triggers::dedup_regression_tests::empty_deferred_tail_is_inert_after_triggered_mode_choice_without_recipient
+        PASS [   0.097s] ( 92/842) phase-engine game::triggers::dedup_regression_tests::empty_deferred_tail_is_inert_after_trigger_target_selection_without_recipient
+        PASS [   0.089s] ( 93/842) phase-engine game::triggers::dedup_regression_tests::etb_observer_fires_once_per_event
+        PASS [   0.103s] ( 94/842) phase-engine game::triggers::dedup_regression_tests::empty_deferred_tail_is_inert_after_trigger_distribution_without_recipient
+        PASS [   0.256s] ( 95/842) phase-engine game::triggers::dedup_regression_tests::cloud_does_not_double_unrelated_controlled_trigger
+        PASS [   0.185s] ( 96/842) phase-engine game::triggers::dedup_regression_tests::delney_parsed_static_doubles_low_power_creature_trigger
+        PASS [   0.253s] ( 97/842) phase-engine game::triggers::dedup_regression_tests::cloud_doubles_its_own_trigger_when_equipped_self_inclusion
+        PASS [   0.059s] ( 98/842) phase-engine game::triggers::dedup_regression_tests::gandalf_does_not_double_ordinary_creature_etb_triggers
+        PASS [   0.267s] ( 99/842) phase-engine game::triggers::dedup_regression_tests::cloud_doubles_attached_equipment_trigger_when_equipped
+        PASS [   0.060s] (100/842) phase-engine game::triggers::dedup_regression_tests::gandalf_doubles_legendary_etb_triggers
+        PASS [   0.223s] (101/842) phase-engine game::triggers::dedup_regression_tests::delney_parsed_static_does_not_double_non_creature_source_trigger
+        PASS [   0.296s] (102/842) phase-engine game::triggers::dedup_regression_tests::breena_triggers_when_defending_opponent_has_more_life_than_another_opponent
+        PASS [   0.111s] (103/842) phase-engine game::triggers::dedup_regression_tests::gandalf_doubles_artifact_etb_triggers
+        PASS [   0.066s] (104/842) phase-engine game::triggers::dedup_regression_tests::intervening_if_opponent_discarded_this_turn_gates_trigger
+        PASS [   0.193s] (105/842) phase-engine game::triggers::dedup_regression_tests::ezio_combat_damage_trigger_does_not_fire_when_damaged_player_above_10
+        PASS [   0.079s] (106/842) phase-engine game::triggers::dedup_regression_tests::intervening_if_other_than_trigger_object_excludes_triggering_mountain
+        PASS [   0.090s] (107/842) phase-engine game::triggers::dedup_regression_tests::isshin_and_panharmonicon_only_isshin_matches_attack_event
+        PASS [   0.051s] (108/842) phase-engine game::triggers::dedup_regression_tests::mangara_trigger_does_not_fire_when_two_attackers
+        PASS [   0.055s] (109/842) phase-engine game::triggers::dedup_regression_tests::mangara_trigger_fires_when_exactly_one_attacker
+        PASS [   0.124s] (110/842) phase-engine game::triggers::dedup_regression_tests::harmonic_prodigy_parsed_static_doubles_wizard_source_trigger
+        PASS [   0.089s] (111/842) phase-engine game::triggers::dedup_regression_tests::landfall_fires_once_per_land_etb
+        PASS [   0.127s] (112/842) phase-engine game::triggers::dedup_regression_tests::isshin_does_not_double_etb_triggers
+        PASS [   0.083s] (113/842) phase-engine game::triggers::dedup_regression_tests::multiple_distinct_upkeep_triggers_still_prompt
+        PASS [   0.147s] (114/842) phase-engine game::triggers::dedup_regression_tests::isshin_doubles_attack_triggers
+        PASS [   0.089s] (115/842) phase-engine game::triggers::dedup_regression_tests::noncombat_damage_does_not_seed_prowl_ledger
+        PASS [   0.080s] (116/842) phase-engine game::triggers::dedup_regression_tests::occurrence_exact_witness_consumes_the_occurrence_its_witness_names
+        PASS [   0.063s] (117/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_event_context_ability_still_prompts_on_distinct_events
+        PASS [   0.248s] (118/842) phase-engine game::triggers::dedup_regression_tests::harmonic_prodigy_parsed_static_does_not_double_unrelated_source_trigger
+        PASS [   0.070s] (119/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_identical_no_input_triggers_auto_order
+        PASS [   0.092s] (120/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_distinct_event_context_still_prompt
+        PASS [   0.103s] (121/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_apnap_three_players
+        PASS [   1.172s] (122/842) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census
+        PASS [   0.107s] (123/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_apnap_two_nonactive_players_use_turn_order
+        PASS [   0.088s] (124/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_single_trigger_does_not_prompt
+        PASS [   0.056s] (125/842) phase-engine game::triggers::dedup_regression_tests::owner_collected_filter_consumes_one_witness_per_queued_context
+        PASS [   0.101s] (126/842) phase-engine game::triggers::dedup_regression_tests::ordered_delayed_tail_drains_after_trigger_target_selection_without_recipient
+        PASS [   0.076s] (127/842) phase-engine game::triggers::dedup_regression_tests::owner_collected_filter_honors_consumed_ledger_with_empty_queue
+        PASS [   0.081s] (128/842) phase-engine game::triggers::dedup_regression_tests::owner_collected_filter_counts_contexts_not_occurrences
+        PASS [   0.271s] (129/842) phase-engine game::triggers::dedup_regression_tests::issue_451_who_controls_sacrifice_trigger_gates_at_runtime
+        PASS [   0.141s] (130/842) phase-engine game::triggers::dedup_regression_tests::order_triggers_two_distinct_orders_produce_distinct_stacks
+        PASS [   0.085s] (131/842) phase-engine game::triggers::dedup_regression_tests::owner_collected_filter_never_drops_non_zone_change_events
+        PASS [   0.410s] (132/842) phase-engine game::triggers::dedup_regression_tests::ezio_verbatim_oracle_text_does_not_eliminate_damaged_player_above_10_life
+        PASS [   0.141s] (133/842) phase-engine game::triggers::dedup_regression_tests::ordered_delayed_tail_drains_after_trigger_distribution_without_recipient
+        PASS [   0.097s] (134/842) phase-engine game::triggers::dedup_regression_tests::panharmonicon_does_not_double_attack_triggers
+        PASS [   0.426s] (135/842) phase-engine game::triggers::dedup_regression_tests::ezio_combat_damage_trigger_fires_when_damaged_player_at_or_below_10
+        PASS [   0.069s] (136/842) phase-engine game::triggers::dedup_regression_tests::singleton_attack_events_retain_duplicate_declaration_records
+        PASS [   0.124s] (137/842) phase-engine game::triggers::dedup_regression_tests::panharmonicon_still_doubles_after_dedup
+        PASS [   0.116s] (138/842) phase-engine game::triggers::dedup_regression_tests::sacrifice_observer_fires_once_per_event
+        PASS [   0.080s] (139/842) phase-engine game::triggers::dedup_regression_tests::tinybones_end_step_trigger_fires_when_opponent_discards
+        PASS [   0.102s] (140/842) phase-engine game::triggers::dedup_regression_tests::spell_cast_observer_fires_once_per_event
+        PASS [   0.202s] (141/842) phase-engine game::triggers::dedup_regression_tests::ordered_delayed_tail_drains_after_triggered_mode_choice_without_recipient
+        PASS [   0.108s] (142/842) phase-engine game::triggers::dedup_regression_tests::splinter_doubles_ninja_source_trigger
+        PASS [   0.113s] (143/842) phase-engine game::triggers::dedup_regression_tests::splinter_does_not_double_non_ninja_source_trigger
+        PASS [   0.110s] (144/842) phase-engine game::triggers::dedup_regression_tests::vanilla_creature_combat_damage_does_not_seed_freerunning_ledger
+        PASS [   0.086s] (145/842) phase-engine game::triggers::dedup_regression_tests::wayta_doubles_damage_caused_triggers
+        PASS [   0.124s] (146/842) phase-engine game::triggers::dedup_regression_tests::typed_creature_combat_damage_seeds_prowl_creature_type_ledger
+        PASS [   0.116s] (147/842) phase-engine game::triggers::dedup_regression_tests::veyran_does_not_double_attack_triggers
+        PASS [   0.114s] (148/842) phase-engine game::triggers::dedup_regression_tests::veyran_does_not_double_opponent_cast_trigger
+        PASS [   0.119s] (149/842) phase-engine game::triggers::dedup_regression_tests::veyran_doubles_trigger_caused_by_controller_casting_instant
+        PASS [   0.151s] (150/842) phase-engine game::triggers::dedup_regression_tests::wayta_does_not_double_unrelated_triggers
+        PASS [   0.567s] (151/842) phase-engine game::triggers::dedup_regression_tests::ezio_verbatim_oracle_text_eliminates_damaged_player_when_optional_paid
+        PASS [   0.099s] (152/842) phase-engine game::triggers::devour_runtime_tests::devour_creature_default_excludes_lands
+        PASS [   0.150s] (153/842) phase-engine game::triggers::devour_runtime_tests::devour_1_full_sacrifice_places_one_counter_per_creature
+        PASS [   0.114s] (154/842) phase-engine game::triggers::devour_runtime_tests::devour_food_3_sacrifices_only_food_subtype
+        PASS [   0.172s] (155/842) phase-engine game::triggers::devour_runtime_tests::devour_1_empty_sacrifice_enters_with_zero_counters
+        PASS [   0.155s] (156/842) phase-engine game::triggers::devour_runtime_tests::devour_2_one_sacrifice_places_two_counters
+        PASS [   0.140s] (157/842) phase-engine game::triggers::devour_runtime_tests::devour_etb_raises_ranged_sacrifice_prompt
+        PASS [   0.069s] (158/842) phase-engine game::triggers::ordering_parity_tests::b1_mindslicer_uniformity_gate
+        PASS [   0.129s] (159/842) phase-engine game::triggers::devour_runtime_tests::devour_land_3_sacrifices_lands_not_creatures
+        PASS [   0.123s] (160/842) phase-engine game::triggers::devour_runtime_tests::devour_land_3_with_no_lands_enters_with_zero_counters
+        PASS [   0.164s] (161/842) phase-engine game::triggers::devour_runtime_tests::devour_artifact_1_sacrifices_artifacts_not_creatures
+        PASS [   0.057s] (162/842) phase-engine game::triggers::ordering_parity_tests::b3_source_independent_and_persist_false
+        PASS [   0.073s] (163/842) phase-engine game::triggers::ordering_parity_tests::b2_dotd_member_bound_pin
+        PASS [   0.048s] (164/842) phase-engine game::triggers::ordering_parity_tests::b5_event_live_read_freeze_placement
+        PASS [   0.169s] (165/842) phase-engine game::triggers::devour_runtime_tests::h1_devour_empty_sacrifice_retires_its_drain_and_frame
+        PASS [   0.052s] (166/842) phase-engine game::triggers::ordering_parity_tests::high1_same_event_member_bound_prompts
+        PASS [   0.173s] (167/842) phase-engine game::triggers::devour_runtime_tests::devour_uses_previous_effect_count_not_outer_event_amount
+        PASS [   0.107s] (168/842) phase-engine game::triggers::ordering_parity_tests::b6_multiplayer_uniform_vs_mixed
+        PASS [   0.110s] (169/842) phase-engine game::triggers::ordering_parity_tests::class_a_damage_done_exempts_self_source_not_observer
+        PASS [   0.107s] (170/842) phase-engine game::triggers::ordering_parity_tests::n_a_shambler_co_departure_auto_orders
+        PASS [   0.116s] (171/842) phase-engine game::triggers::ordering_parity_tests::condition1_dodecapod_mixed_controller_still_prompts
+        PASS [   0.106s] (172/842) phase-engine game::triggers::ordering_parity_tests::n_c_case_a_same_event_prompts
+        PASS [   0.111s] (173/842) phase-engine game::triggers::ordering_parity_tests::n_b_frozen_vs_live_discriminator
+        PASS [   0.063s] (174/842) phase-engine game::triggers::ordering_parity_tests::r4_same_event_event_object_prompts_at_caller
+        PASS [   0.066s] (175/842) phase-engine game::triggers::ordering_parity_tests::n_g_dropped_target_legacy_ref_retains_batch_prompt
+        PASS [   0.112s] (176/842) phase-engine game::triggers::ordering_parity_tests::n_d2_commander_intervening_if_is_fed_by_a_sibling_membership_write
+        PASS [   0.244s] (177/842) phase-engine game::triggers::devour_runtime_tests::h4_foreign_controller_dies_observer_still_reaches_the_stack
+        PASS [   0.139s] (178/842) phase-engine game::triggers::ordering_parity_tests::n_b2_freeze_invalidation_hostile
+        PASS [   0.131s] (179/842) phase-engine game::triggers::ordering_parity_tests::n_d_intervening_if_case_a_prompts
+        PASS [   0.117s] (180/842) phase-engine game::triggers::ordering_parity_tests::n_f_die_result_conjunct
+        PASS [   0.069s] (181/842) phase-engine game::triggers::pr7_order_template_tests::apply_ephemeral_template_is_coverage_only
+        PASS [   0.095s] (182/842) phase-engine game::triggers::ordering_parity_tests::s3_brink_fused_discard_span
+        PASS [   0.093s] (183/842) phase-engine game::triggers::pending_trigger_pin_reassignment_tests::pending_trigger_assignment_rebinds_triggering_spell_pin
+        PASS [   0.124s] (184/842) phase-engine game::triggers::ordering_parity_tests::s1_defense_membership_ctrl_span
+        PASS [   0.106s] (185/842) phase-engine game::triggers::ordering_parity_tests::s4_gate_is_load_bearing
+        PASS [   0.111s] (186/842) phase-engine game::triggers::ordering_parity_tests::s6_owner_alignment
+        PASS [   0.101s] (187/842) phase-engine game::triggers::pr7_order_template_tests::duplicate_or_legacy_persistent_templates_never_auto_order
+        PASS [   0.124s] (188/842) phase-engine game::triggers::ordering_parity_tests::s5_multiplayer_three_players
+        PASS [   0.141s] (189/842) phase-engine game::triggers::ordering_parity_tests::s2_rekindled_player_hand_span
+        PASS [   0.147s] (190/842) phase-engine game::triggers::pr7_order_template_tests::apply_ephemeral_duplicate_source_tail_stays_in_order
+        PASS [   0.084s] (191/842) phase-engine game::triggers::pr7_order_template_tests::submitted_persistent_template_reapplies_in_saved_order
+        PASS [   0.066s] (192/842) phase-engine game::triggers::push_first_contract_tests::push_first_no_legal_targets_drops_trigger_silently
+        PASS [   0.133s] (193/842) phase-engine game::triggers::pr7_order_template_tests::only_nonidentity_distinct_named_orders_persist
+        PASS [   0.140s] (194/842) phase-engine game::triggers::pr7_order_template_tests::persistent_order_template_rejects_unrepresentable_positions
+        PASS [   0.091s] (195/842) phase-engine game::triggers::push_first_contract_tests::push_first_no_legal_modes_modal_trigger_dropped_silently
+        PASS [   0.127s] (196/842) phase-engine game::triggers::push_first_contract_tests::ceased_in_construction_trigger_recovers_without_panic_on_completion
+        PASS [   0.105s] (197/842) phase-engine game::triggers::push_first_contract_tests::push_first_resolver_refuses_in_construction_entry
+        PASS [   0.095s] (198/842) phase-engine game::triggers::push_first_contract_tests::random_modal_trigger_resolves_without_prompting
+        PASS [   0.066s] (199/842) phase-engine game::triggers::tests::a_paused_triggered_mana_fixed_point_withholds_priority
+        PASS [   0.209s] (200/842) phase-engine game::triggers::pr7_order_template_tests::live_order_triggers_persists_only_nonidentity_named_order
+        PASS [   0.135s] (201/842) phase-engine game::triggers::push_first_contract_tests::push_first_reflexive_when_you_do_pushes_to_stack_during_prompt
+        PASS [   0.085s] (202/842) phase-engine game::triggers::tests::a_player_attacks_with_three_or_more_counts_triggering_attacking_player
+        PASS [   0.095s] (203/842) phase-engine game::triggers::tests::a_false_gated_delayed_watcher_consumed_by_a_mana_activation_binds_it
+        PASS [   0.566s] (204/842) phase-engine game::triggers::devour_runtime_tests::b2_devour_producer_path_leaves_no_dispatching_drain
+        PASS [   0.091s] (205/842) phase-engine game::triggers::tests::abandon_ceased_pending_trigger_recovers_when_its_stack_firing_was_pruned
+        PASS [   0.095s] (206/842) phase-engine game::triggers::tests::activated_ability_is_non_mana_accepts_ability_activated_event
+        PASS [   0.169s] (207/842) phase-engine game::triggers::push_first_contract_tests::push_first_target_trigger_appears_on_stack_during_prompt
+        PASS [   0.080s] (208/842) phase-engine game::triggers::tests::activated_ability_is_non_mana_rejects_missing_event
+        PASS [   0.080s] (209/842) phase-engine game::triggers::tests::additional_cost_paid_checks_bargained_entering_object
+        PASS [   0.102s] (210/842) phase-engine game::triggers::tests::activation_overlay_supplies_controller_before_stack_commit
+        PASS [   0.111s] (211/842) phase-engine game::triggers::tests::additional_cost_paid_min_count_checks_multikicker_count
+        PASS [   0.090s] (212/842) phase-engine game::triggers::tests::attack_triggers_disjoint_fanout_accepts_stonehoof_ten_raider_pattern
+        PASS [   0.120s] (213/842) phase-engine game::triggers::tests::afflict_fires_once_when_attacker_has_multiple_blockers
+        PASS [   0.122s] (214/842) phase-engine game::triggers::tests::additional_cost_paid_uses_entering_object_kicker_facts
+        PASS [   0.061s] (215/842) phase-engine game::triggers::tests::attackers_declared_min_typed_filter_no_over_fire
+        PASS [   0.079s] (216/842) phase-engine game::triggers::tests::attack_triggers_disjoint_fanout_rejects_event_object_in_group_sources
+        PASS [   0.102s] (217/842) phase-engine game::triggers::tests::arcane_adaptation_vampire_type_change_is_visible_to_etb_trigger_matching
+        PASS [   0.082s] (218/842) phase-engine game::triggers::tests::attackers_declared_min_counts_scope_you
+        PASS [   0.128s] (219/842) phase-engine game::triggers::tests::apnap_ordering
+        PASS [   0.088s] (220/842) phase-engine game::triggers::tests::attackers_declared_min_opponent_scope_ignores_your_attackers
+        PASS [   0.123s] (221/842) phase-engine game::triggers::tests::attach_any_number_multi_target_surfaces_optional_equipment_slots
+        PASS [   0.077s] (222/842) phase-engine game::triggers::tests::attackers_declared_to_controller_min_counts_player_and_planeswalker_targets
+        PASS [   0.053s] (223/842) phase-engine game::triggers::tests::attacks_you_typed_count_requires_matching_attackers_only
+        PASS [   0.299s] (224/842) phase-engine game::triggers::sba_choice_batch_isolation_tests::sba_choice_answer_does_not_absorb_an_ordinary_deferred_context
+        PASS [   0.275s] (225/842) phase-engine game::triggers::sba_choice_batch_isolation_tests::take_sba_choice_trigger_batch_partitions_by_origin
+        PASS [   0.118s] (226/842) phase-engine game::triggers::tests::attackers_declared_to_controller_min_rejects_single_matching_target
+        PASS [   0.107s] (227/842) phase-engine game::triggers::tests::banishing_light_trigger_skips_without_opponent_nonlands
+        PASS [   0.118s] (228/842) phase-engine game::triggers::tests::batched_attack_context_filters_attacked_target_type
+        PASS [   0.123s] (229/842) phase-engine game::triggers::tests::background_granted_commander_attack_trigger_uses_defending_player_life_condition
+        PASS [   0.125s] (230/842) phase-engine game::triggers::tests::batched_discard_trigger_context_matches_second_discarded_card_type
+        PASS [   0.055s] (231/842) phase-engine game::triggers::tests::build_triggered_ability_no_execute
+        PASS [   0.052s] (232/842) phase-engine game::triggers::tests::build_triggered_ability_non_phase_leaves_scoped_player_none
+        PASS [   0.098s] (233/842) phase-engine game::triggers::tests::build_triggered_ability_from_typed_execute
+        PASS [   0.143s] (234/842) phase-engine game::triggers::tests::becomes_plotted_trigger_fires_from_exile
+        PASS [   0.152s] (235/842) phase-engine game::triggers::tests::becomes_blocked_trigger_collects_once_per_non_flanking_blocker
+        PASS [   0.125s] (236/842) phase-engine game::triggers::tests::both_observer_helpers_are_no_ops_under_either_triggered_mana_authority
+        PASS [   0.064s] (237/842) phase-engine game::triggers::tests::build_triggered_ability_phase_binds_scoped_player_to_active_player
+        PASS [   0.081s] (238/842) phase-engine game::triggers::tests::build_triggered_ability_propagates_emerge_cost_paid_object_to_referencing_branch
+        PASS [   0.206s] (239/842) phase-engine game::triggers::tests::bargained_etb_does_not_accept_an_unrelated_additional_cost
+        PASS [   0.072s] (240/842) phase-engine game::triggers::tests::build_triggered_ability_propagates_emerge_object_to_counters_on_ref
+        PASS [   0.181s] (241/842) phase-engine game::triggers::tests::belligerent_yearling_decline_leaves_base_power_unchanged
+        PASS [   0.228s] (242/842) phase-engine game::triggers::tests::batch_delivery_removed_grant_retains_only_its_pre_event_observation_through_save
+        PASS [   0.076s] (243/842) phase-engine game::triggers::tests::card_matches_filter_self
+        PASS [   0.197s] (244/842) phase-engine game::triggers::tests::breathless_knight_counter_only_for_graveyard_entries
+        PASS [   0.114s] (245/842) phase-engine game::triggers::tests::build_triggered_ability_skips_emerge_object_for_unrelated_trigger
+        PASS [   0.111s] (246/842) phase-engine game::triggers::tests::card_matches_filter_creature
+        PASS [   0.120s] (247/842) phase-engine game::triggers::tests::build_triggered_ability_stamps_trigger_source_context_for_token_dies_trigger
+        PASS [   0.088s] (248/842) phase-engine game::triggers::tests::chose_other_ring_bearer_fails_closed_without_a_source_identity
+        PASS [   0.132s] (249/842) phase-engine game::triggers::tests::card_matches_filter_you_ctrl
+        PASS [   0.113s] (250/842) phase-engine game::triggers::tests::chose_ring_bearer_requires_the_controllers_own_choice
+        PASS [   0.050s] (251/842) phase-engine game::triggers::tests::construction_finisher_consumes_rather_than_leaks_an_undrainable_queue
+        PASS [   0.115s] (252/842) phase-engine game::triggers::tests::closing_boundary_still_fires_and_removes_a_matching_one_shot_once
+        PASS [   0.109s] (253/842) phase-engine game::triggers::tests::command_emblem_cast_with_storm_creates_copies_for_prior_spells
+        PASS [   0.096s] (254/842) phase-engine game::triggers::tests::command_zone_non_emblem_trigger_with_command_opt_in_fires
+        PASS [   0.103s] (255/842) phase-engine game::triggers::tests::command_zone_phase_trigger_does_not_fire_at_opponents_upkeep
+        PASS [   0.095s] (256/842) phase-engine game::triggers::tests::commander_in_command_zone_etb_trigger_does_not_fire
+        PASS [   0.093s] (257/842) phase-engine game::triggers::tests::construction_finisher_drains_the_tail_before_consuming_the_recipient
+        PASS [   0.121s] (258/842) phase-engine game::triggers::tests::command_zone_phase_trigger_fires_at_controllers_upkeep
+        PASS [   0.101s] (259/842) phase-engine game::triggers::tests::construction_finisher_is_a_no_op_without_a_construction_recipient
+        PASS [   0.068s] (260/842) phase-engine game::triggers::tests::control_count_condition_uses_trigger_controller_not_source_controller
+        PASS [   0.378s] (261/842) phase-engine game::triggers::tests::belligerent_yearling_accept_sets_base_power_to_entering_dinosaur_power
+        PASS [   0.087s] (262/842) phase-engine game::triggers::tests::consumed_trigger_event_occurrence_defaults_scope_for_historical_json
+        PASS [   0.093s] (263/842) phase-engine game::triggers::tests::construction_finisher_retains_the_recipient_across_every_approved_prompt
+        PASS [   0.117s] (264/842) phase-engine game::triggers::tests::construction_finisher_rejects_a_wait_outside_the_closed_census
+        PASS [   0.059s] (265/842) phase-engine game::triggers::tests::cost_paid_object_gate_recurses_into_quantity_ref_filters
+        PASS [   0.098s] (266/842) phase-engine game::triggers::tests::cost_paid_object_gate_covers_counters_on_object_scope
+        PASS [   0.080s] (267/842) phase-engine game::triggers::tests::cost_paid_object_gate_covers_every_characteristic_source_arm
+        PASS [   0.100s] (268/842) phase-engine game::triggers::tests::consumed_trigger_event_scope_partitions_collectors
+        PASS [   0.075s] (269/842) phase-engine game::triggers::tests::damage_done_once_by_controller_groups_combat_damage_by_player_after_source_filtering
+        PASS [   0.072s] (270/842) phase-engine game::triggers::tests::damage_done_once_by_controller_player_recipient_grouping_requires_exact_structure
+        PASS [   0.083s] (271/842) phase-engine game::triggers::tests::damage_done_once_by_controller_groups_noncombat_player_damage_and_excludes_objects
+        PASS [   0.116s] (272/842) phase-engine game::triggers::tests::current_zone_change_appliers_modify_events_and_do_not_supply_prevented_deliveries
+        PASS [   0.084s] (273/842) phase-engine game::triggers::tests::defending_player_controls_none_quantifies_all_defenders_cr_508_5a_gap
+        PASS [   0.084s] (274/842) phase-engine game::triggers::tests::delayed_body_with_a_reflexive_sub_is_never_gated_off_the_stack
+        PASS [   0.120s] (275/842) phase-engine game::triggers::tests::damage_history_death_conditions_ignore_prior_incarnation_after_reentry
+        PASS [   0.118s] (276/842) phase-engine game::triggers::tests::damage_trigger_dynamic_multi_target_uses_trigger_event_amount
+        PASS [   0.126s] (277/842) phase-engine game::triggers::tests::dealt_damage_this_turn_by_source_trigger_condition
+        PASS [   0.116s] (278/842) phase-engine game::triggers::tests::delayed_body_with_an_otherwise_branch_is_never_gated_off_the_stack
+        PASS [   0.123s] (279/842) phase-engine game::triggers::tests::deferred_trigger_drain_policy_separates_the_skip_and_spell_on_stack_axes
+        PASS [   0.108s] (280/842) phase-engine game::triggers::tests::delayed_body_with_an_unconditional_sequential_sub_is_gated_as_one_ability
+        PASS [   0.112s] (281/842) phase-engine game::triggers::tests::delayed_enter_trigger_filters_tracked_set_and_targets_triggering_object
+        PASS [   0.166s] (282/842) phase-engine game::triggers::tests::deep_cavern_bat_etb_trigger_fires
+        PASS [   0.132s] (283/842) phase-engine game::triggers::tests::delayed_intervening_if_gates_the_ability_off_the_stack_at_fire_time
+        PASS [   0.432s] (284/842) phase-engine game::triggers::tests::cast_while_attacking_trigger_gated_on_combat_state
+        PASS [   0.113s] (285/842) phase-engine game::triggers::tests::delayed_trigger_with_no_legal_required_target_is_dropped_not_fallback_pushed
+        PASS [   0.440s] (286/842) phase-engine game::triggers::tests::cecil_trigger_resolution_uses_archenemy_or_hero_starting_life
+        PASS [   0.084s] (287/842) phase-engine game::triggers::tests::dies_observer_killed_in_same_sba_batch_fires_for_each_simultaneous_death
+        PASS [   0.144s] (288/842) phase-engine game::triggers::tests::delayed_phase_trigger_batches_with_normal_phase_trigger_before_priority
+        PASS [   0.072s] (289/842) phase-engine game::triggers::tests::direct_delayed_check_closes_unmatched_reflexive_before_empty_return
+        PASS [   0.122s] (290/842) phase-engine game::triggers::tests::dies_trigger_fires_after_sacrifice_as_cost
+        PASS [   0.130s] (291/842) phase-engine game::triggers::tests::dies_trigger_does_not_fire_on_token_creation
+        PASS [   0.143s] (292/842) phase-engine game::triggers::tests::dies_observer_does_not_observe_sequential_departure
+        PASS [   0.071s] (293/842) phase-engine game::triggers::tests::divided_trigger_caps_target_slots_to_the_pool
+        PASS [   0.076s] (294/842) phase-engine game::triggers::tests::during_players_turn_triggering_player_tracks_event_player
+        PASS [   0.209s] (295/842) phase-engine game::triggers::tests::desert_etb_trigger_surfaces_opponent_target_slot
+        PASS [   0.153s] (296/842) phase-engine game::triggers::tests::divergent_gate_bindings_decline_the_fire_time_hoist
+        PASS [   0.116s] (297/842) phase-engine game::triggers::tests::during_players_turn_controller_tracks_active_vs_controller
+        PASS [   0.137s] (298/842) phase-engine game::triggers::tests::divided_trigger_all_decline_finalizes_with_empty_distribution
+        PASS [   0.146s] (299/842) phase-engine game::triggers::tests::divided_trigger_auto_selects_one_target_and_assigns_full_amount
+        PASS [   0.088s] (300/842) phase-engine game::triggers::tests::dynamically_granted_demonstrate_enqueues_copy_trigger
+        PASS [   0.136s] (301/842) phase-engine game::triggers::tests::divided_trigger_with_no_legal_targets_uses_empty_distribution
+        PASS [   0.141s] (302/842) phase-engine game::triggers::tests::during_players_turn_opponent_tracks_team_aware_active_relation
+        PASS [   0.209s] (303/842) phase-engine game::triggers::tests::dies_trigger_optional_composite_ability_cost_pays_and_draws_through_stack
+        PASS [   0.113s] (304/842) phase-engine game::triggers::tests::dynamically_granted_replicate_enqueues_copy_trigger
+        PASS [   0.061s] (305/842) phase-engine game::triggers::tests::exact_trigger_source_context_survives_same_id_reincarnation_across_condition_filter_quantity_and_ledger
+        PASS [   0.080s] (306/842) phase-engine game::triggers::tests::event_object_madness_intervening_if_gates_discard_trigger
+        PASS [   0.071s] (307/842) phase-engine game::triggers::tests::event_source_controlled_by_opponent_gates_discard_trigger
+        PASS [   0.318s] (308/842) phase-engine game::triggers::tests::desert_etb_auto_dispatch_commits_crime_and_triggers_outlaws
+        PASS [   0.105s] (309/842) phase-engine game::triggers::tests::empty_batch_still_surfaces_orphaned_pending_trigger
+        PASS [   0.064s] (310/842) phase-engine game::triggers::tests::exploit_trigger_receives_typed_may_trigger_origin
+        PASS [   0.117s] (311/842) phase-engine game::triggers::tests::enters_trigger_matches_lowercase_with_keyword_filter
+        PASS [   0.163s] (312/842) phase-engine game::triggers::tests::elvish_soultiller_choice_same_id_return_does_not_mutate_return
+        PASS [   0.092s] (313/842) phase-engine game::triggers::tests::except_first_draw_in_draw_step_suppresses_only_active_first_draw
+        PASS [   0.113s] (314/842) phase-engine game::triggers::tests::etb_changes_zone_trigger_fires_on_token_creation
+        PASS [   0.114s] (315/842) phase-engine game::triggers::tests::etb_trigger_places_ability_on_stack
+        PASS [   0.081s] (316/842) phase-engine game::triggers::tests::extract_target_keeps_cast_from_zone_from_graveyard
+        PASS [   0.105s] (317/842) phase-engine game::triggers::tests::excess_damage_intervening_if_binds_to_event_target_not_unrelated_creature
+        PASS [   0.207s] (318/842) phase-engine game::triggers::tests::each_source_deals_damage_shared_any_trigger_selects_and_resolves_recipient
+        PASS [   0.089s] (319/842) phase-engine game::triggers::tests::extract_target_keeps_generic_effect_with_typed_filter
+        PASS [   0.086s] (320/842) phase-engine game::triggers::tests::extract_target_keeps_targeted_phase_out_creature
+        PASS [   0.062s] (321/842) phase-engine game::triggers::tests::extract_target_skips_mass_phase_out_permanents_you_control
+        PASS [   0.095s] (322/842) phase-engine game::triggers::tests::extract_target_keeps_pump_with_typed_filter
+        PASS [   0.102s] (323/842) phase-engine game::triggers::tests::extract_target_keeps_change_zone_from_battlefield
+        PASS [   0.075s] (324/842) phase-engine game::triggers::tests::extract_target_skips_cast_from_zone_from_hand
+        PASS [   0.088s] (325/842) phase-engine game::triggers::tests::extract_target_keeps_targeted_phase_out_nonland_permanents_you_control
+        PASS [   0.069s] (326/842) phase-engine game::triggers::tests::extract_target_skips_copy_token_source_filter
+        PASS [   0.120s] (327/842) phase-engine game::triggers::tests::extract_target_keeps_targeting_bounce
+        PASS [   0.110s] (328/842) phase-engine game::triggers::tests::extract_target_skips_generic_effect_with_any_filter
+        PASS [   0.088s] (329/842) phase-engine game::triggers::tests::extract_target_skips_sacrifice
+        PASS [   0.068s] (330/842) phase-engine game::triggers::tests::fertile_ground_cross_controller_routes_mana_to_lands_controller
+        PASS [   0.130s] (331/842) phase-engine game::triggers::tests::extract_target_skips_change_zone_from_hand
+        PASS [   0.111s] (332/842) phase-engine game::triggers::tests::extract_target_skips_pump_with_any_filter
+        PASS [   0.070s] (333/842) phase-engine game::triggers::tests::filter_consumed_trigger_events_removes_only_exact_occurrence
+        PASS [   0.130s] (334/842) phase-engine game::triggers::tests::extract_target_skips_non_targeting_bounce
+        PASS [   0.074s] (335/842) phase-engine game::triggers::tests::first_combat_phase_condition_checks_turn_counter
+        PASS [   0.083s] (336/842) phase-engine game::triggers::tests::fertile_ground_triggered_mana_ability_skips_stack_and_adds_mana
+        PASS [   0.089s] (337/842) phase-engine game::triggers::tests::extract_target_skips_unattach_all
+        PASS [   0.107s] (338/842) phase-engine game::triggers::tests::filter_consumed_trigger_events_from_keeps_prefix_occurrence_identity
+        PASS [   0.083s] (339/842) phase-engine game::triggers::tests::food_leaves_battlefield_trigger_uses_zone_change_snapshot
+        PASS [   0.091s] (340/842) phase-engine game::triggers::tests::first_spell_with_x_constraint_fires_once_per_turn
+        PASS [   0.127s] (341/842) phase-engine game::triggers::tests::first_sliver_granted_cascade_triggers_for_sliver_spell
+        PASS [   0.130s] (342/842) phase-engine game::triggers::tests::firebending_trigger_resolves_dynamic_amount_at_mana_resolution
+        PASS [   0.059s] (343/842) phase-engine game::triggers::tests::graveyard_source_trigger_does_not_fire_when_source_arrived_simultaneously
+        PASS [   0.078s] (344/842) phase-engine game::triggers::tests::granted_casualty_triggers_copy_when_paid
+        PASS [   0.091s] (345/842) phase-engine game::triggers::tests::granting_object_counters_bind_at_fire_time_like_source
+        PASS [   0.100s] (346/842) phase-engine game::triggers::tests::granted_etb_destroy_other_same_name_skips_source_when_no_other_exists
+        PASS [   0.080s] (347/842) phase-engine game::triggers::tests::graveyard_trigger_fires_on_matching_event
+        PASS [   0.127s] (348/842) phase-engine game::triggers::tests::granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps
+        PASS [   0.136s] (349/842) phase-engine game::triggers::tests::granted_conspire_triggers_copy_when_paid
+        PASS [   0.077s] (350/842) phase-engine game::triggers::tests::had_counters_without_event_uses_latched_source_context
+        PASS [   0.137s] (351/842) phase-engine game::triggers::tests::graveyard_source_trigger_fires_when_source_was_already_in_graveyard
+        PASS [   0.101s] (352/842) phase-engine game::triggers::tests::harmonic_sliver_self_etb_trigger_via_own_static_grant
+        PASS [   0.117s] (353/842) phase-engine game::triggers::tests::graveyard_trigger_ignored_without_trigger_zone
+        PASS [   0.104s] (354/842) phase-engine game::triggers::tests::immediately_after_latch_coalesces_only_the_same_continuing_definition
+        PASS [   0.078s] (355/842) phase-engine game::triggers::tests::immediately_after_latch_is_required_for_post_event_etb_authority
+        PASS [   0.081s] (356/842) phase-engine game::triggers::tests::immediately_after_latch_keeps_byte_identical_simultaneous_grants_separate
+        PASS [   0.121s] (357/842) phase-engine game::triggers::tests::hamletback_etb_trigger_scales_counter_count_by_triggering_creature_power
+        PASS [   0.126s] (358/842) phase-engine game::triggers::tests::had_counters_non_zone_event_preserves_event_subject_cache_lookup
+        PASS [   0.067s] (359/842) phase-engine game::triggers::tests::increment_intervening_if_gates_on_mana_spent_vs_self_pt
+        PASS [   0.081s] (360/842) phase-engine game::triggers::tests::is_monarch_controller_subject_reads_the_ability_controller
+        PASS [   0.243s] (361/842) phase-engine game::triggers::tests::goblin_bushwhacker_kicked_etb_buffs_creatures_you_control
+        PASS [   0.106s] (362/842) phase-engine game::triggers::tests::immediately_after_latch_retains_removed_grant_and_new_regrant_separately
+        PASS [   0.111s] (363/842) phase-engine game::triggers::tests::immediately_before_latch_is_required_for_departed_ltb_authority
+        PASS [   0.082s] (364/842) phase-engine game::triggers::tests::is_renowned_source_reads_source_object_flag
+        PASS [   0.101s] (365/842) phase-engine game::triggers::tests::is_monarch_scoped_player_subject_needs_an_event_anchor_cr_603_4
+        PASS [   0.125s] (366/842) phase-engine game::triggers::tests::is_monarch_defending_player_subject_reads_the_attacked_player_cr_508_5
+        PASS [   0.102s] (367/842) phase-engine game::triggers::tests::is_renowned_event_subject_reads_event_object_flag
+        PASS [   0.110s] (368/842) phase-engine game::triggers::tests::issue_1793_deferred_drain_surfaces_order_triggers
+        PASS [   0.124s] (369/842) phase-engine game::triggers::tests::issue_1055_batched_attack_search_uses_matching_attacker_count
+        PASS [   0.323s] (370/842) phase-engine game::triggers::tests::goblin_bushwhacker_unkicked_etb_grants_no_buff
+        PASS [   0.142s] (371/842) phase-engine game::triggers::tests::issue_1793_pending_continuation_blocks_deferred_drain
+        PASS [   0.112s] (372/842) phase-engine game::triggers::tests::jackdaw_savior_trigger_fires_when_another_flying_creature_dies
+        PASS [   0.117s] (373/842) phase-engine game::triggers::tests::issue_610_you_attack_with_god_filter_fires_only_for_god
+        PASS [   0.172s] (374/842) phase-engine game::triggers::tests::issue_423_undying_does_not_return_when_sacrificed_with_counter
+        PASS [   0.122s] (375/842) phase-engine game::triggers::tests::jackdaw_savior_trigger_fires_when_jackdaw_savior_dies
+        PASS [   0.234s] (376/842) phase-engine game::triggers::tests::issue_423_choose_and_sacrifice_rest_fires_dies_trigger
+        PASS [   0.109s] (377/842) phase-engine game::triggers::tests::legacy_none_delayed_firing_is_not_doubled
+        PASS [   0.191s] (378/842) phase-engine game::triggers::tests::issue_610_subject_led_one_or_more_gods_attack_honors_filter
+        PASS [   0.267s] (379/842) phase-engine game::triggers::tests::issue_416_two_boggart_pranksters_both_attack_triggers_reach_stack
+        PASS [   0.075s] (380/842) phase-engine game::triggers::tests::life_total_ge_off_team_is_individual_life
+        PASS [   0.072s] (381/842) phase-engine game::triggers::tests::life_total_ge_reads_team_total_in_2hg
+        PASS [   0.069s] (382/842) phase-engine game::triggers::tests::light_paws_entering_aura_was_cast_fires
+        PASS [   0.259s] (383/842) phase-engine game::triggers::tests::issue_423_generic_dies_observer_fires_from_resolution_choice
+        PASS [   0.104s] (384/842) phase-engine game::triggers::tests::light_paws_source_was_cast_entering_aura_was_not
+        PASS [   0.075s] (385/842) phase-engine game::triggers::tests::lki_trigger_does_not_fire_for_non_battlefield_origin
+        PASS [   0.110s] (386/842) phase-engine game::triggers::tests::logical_zone_change_owner_latches_pre_delivery_batched_sources_and_suppressors
+        PASS [   0.102s] (387/842) phase-engine game::triggers::tests::logical_zone_completion_owns_exact_moved_prevented_and_remained_outcomes
+        PASS [   0.282s] (388/842) phase-engine game::triggers::tests::kotis_batched_graveyard_origin_condition_is_existential_over_batch
+        PASS [   0.383s] (389/842) phase-engine game::triggers::tests::issue_423_undying_returns_when_sacrificed_in_resolution_choice
+        PASS [   0.419s] (390/842) phase-engine game::triggers::tests::issue_423_co_triggered_targeted_observer_reaches_stack
+        PASS [   0.245s] (391/842) phase-engine game::triggers::tests::logical_zone_production_carriers_assign_a_fresh_generation_to_a_regrant
+        PASS [   0.262s] (392/842) phase-engine game::triggers::tests::logical_zone_production_carriers_admit_an_entering_suppressor_only_after_delivery
+        PASS [   0.296s] (393/842) phase-engine game::triggers::tests::logical_zone_production_carriers_consume_resumed_events_before_generic_priority
+        PASS [   0.234s] (394/842) phase-engine game::triggers::tests::logical_zone_production_carriers_keep_sequential_groups_isolated
+        PASS [   0.286s] (395/842) phase-engine game::triggers::tests::logical_zone_production_carriers_match_uninterrupted_resolution
+        PASS [   0.406s] (396/842) phase-engine game::triggers::tests::logical_zone_production_carriers_keep_distinct_grants_and_coalesce_each_ongoing_ref
+        PASS [   0.469s] (397/842) phase-engine game::triggers::tests::logical_zone_production_carriers_keep_a_remained_member_observing_early_and_later_events
+        PASS [   0.711s] (398/842) phase-engine game::triggers::tests::keeper_of_the_accord_creature_intervening_if_false_when_tied
+        PASS [   0.133s] (399/842) phase-engine game::triggers::tests::logical_zone_production_carriers_serialize_ongoing_grant_across_pre_and_post_observations
+        PASS [   0.061s] (400/842) phase-engine game::triggers::tests::logical_zone_segment_reserves_members_but_keeps_the_event_subject
+        PASS [   0.541s] (401/842) phase-engine game::triggers::tests::logical_zone_production_carriers_latch_co_departing_and_surviving_suppressors
+        PASS [   0.062s] (402/842) phase-engine game::triggers::tests::logical_zone_settlement_batches_all_retained_occurrences_once
+        PASS [   0.163s] (403/842) phase-engine game::triggers::tests::logical_zone_production_carriers_settle_a_nonbattlefield_only_owner_without_a_fake_pause
+        PASS [   0.099s] (404/842) phase-engine game::triggers::tests::logical_zone_settlement_rejects_a_same_id_post_event_rebind
+        PASS [   0.096s] (405/842) phase-engine game::triggers::tests::logical_zone_settlement_replays_member_only_as_observer_of_other_occurrences
+        PASS [   0.078s] (406/842) phase-engine game::triggers::tests::ltb_observer_fires_for_each_co_bounced_creature
+        PASS [   0.311s] (407/842) phase-engine game::triggers::tests::logical_zone_production_carriers_retain_redirected_zone_occurrences
+        PASS [   0.457s] (408/842) phase-engine game::triggers::tests::logical_zone_production_carriers_retain_departing_runtime_batched_grants_through_save
+        PASS [   0.508s] (409/842) phase-engine game::triggers::tests::logical_zone_production_carriers_preserve_repause_and_final_empty_tail_through_save
+        PASS [   0.087s] (410/842) phase-engine game::triggers::tests::ltb_observer_fires_for_each_co_exiled_creature
+        PASS [   0.094s] (411/842) phase-engine game::triggers::tests::ltb_observer_fires_per_co_sacrificed_in_effect_zone_choice
+        PASS [   0.098s] (412/842) phase-engine game::triggers::tests::ltb_observer_fires_for_each_co_sacrificed_creature
+        PASS [   0.997s] (413/842) phase-engine game::triggers::tests::keeper_of_the_accord_creature_intervening_if_true_when_opponent_ahead
+        PASS [   0.109s] (414/842) phase-engine game::triggers::tests::ltb_observer_fires_per_co_sacrificed_in_choose_and_sacrifice_rest
+        PASS [   0.682s] (415/842) phase-engine game::triggers::tests::logical_zone_production_carriers_preserve_an_early_battlefield_graveyard_observer
+        PASS [   0.064s] (416/842) phase-engine game::triggers::tests::mana_color_spent_survives_transient_clear_on_battlefield_only
+        PASS [   0.092s] (417/842) phase-engine game::triggers::tests::ltb_source_requires_a_coherent_record_owned_context
+        PASS [   0.210s] (418/842) phase-engine game::triggers::tests::ltb_observer_cross_pause_co_departed_deferred
+        PASS [   0.101s] (419/842) phase-engine game::triggers::tests::ltb_observer_skips_regenerated_creature_in_destroy_all
+        PASS [   0.071s] (420/842) phase-engine game::triggers::tests::mana_spent_less_than_mana_value_condition_uses_triggering_spell
+        PASS [   0.062s] (421/842) phase-engine game::triggers::tests::min_co_attackers_filter_uses_source_while_excluding_matched_attacker
+        PASS [   0.587s] (422/842) phase-engine game::triggers::tests::logical_zone_production_carriers_retain_nonbattlefield_and_mixed_origin_batches
+        PASS [   0.061s] (423/842) phase-engine game::triggers::tests::min_co_attackers_observer_excludes_matched_attacker_not_source
+        PASS [   0.088s] (424/842) phase-engine game::triggers::tests::modal_trigger_with_a_legal_target_is_not_dropped
+        PASS [   0.115s] (425/842) phase-engine game::triggers::tests::match_only_collection_leaves_an_unmatched_reflexive_installed
+        PASS [   0.099s] (426/842) phase-engine game::triggers::tests::modal_trigger_all_target_required_modes_no_targets_is_dropped
+        PASS [   0.098s] (427/842) phase-engine game::triggers::tests::monarch_vacancy_and_identity_remain_distinct_cr_725_1
+        PASS [   0.110s] (428/842) phase-engine game::triggers::tests::multi_fire_combat_damage_consumes_raw_aggregate_not_synthetic
+        PASS [   0.074s] (429/842) phase-engine game::triggers::tests::multiple_dynamic_demonstrate_grants_enqueue_multiple_triggers
+        PASS [   0.074s] (430/842) phase-engine game::triggers::tests::multiple_ward_instances_fire_independently
+        PASS [   0.101s] (431/842) phase-engine game::triggers::tests::multiple_triggers_from_same_event
+        PASS [   0.075s] (432/842) phase-engine game::triggers::tests::non_battlefield_presence_gate_declines_the_fire_time_hoist
+        PASS [   0.099s] (433/842) phase-engine game::triggers::tests::no_mana_spent_condition_uses_triggering_spell_not_trigger_source
+        PASS [   0.084s] (434/842) phase-engine game::triggers::tests::non_battlefield_zone_change_pin_rejects_later_same_id_incarnation
+        PASS [   0.076s] (435/842) phase-engine game::triggers::tests::non_phase_delayed_same_controller_batch_prompts_and_resolves_ordered
+        PASS [   0.110s] (436/842) phase-engine game::triggers::tests::negated_delayed_intervening_if_gates_at_fire_time_too
+        PASS [   0.258s] (437/842) phase-engine game::triggers::tests::midnight_reaper_self_sacrifice_fires_own_nontoken_creature_dies_trigger
+        PASS [   0.077s] (438/842) phase-engine game::triggers::tests::none_of_attackers_targeted_you_false_when_one_attacks_you
+        PASS [   0.110s] (439/842) phase-engine game::triggers::tests::non_sliver_etb_does_not_fire_lord_grant
+        PASS [   0.178s] (440/842) phase-engine game::triggers::tests::named_choice_source_modes_roundtrip_and_write_only_their_authority
+        PASS [   0.185s] (441/842) phase-engine game::triggers::tests::necroduality_runtime_copies_entering_zombie_not_enchantment_source
+        PASS [   0.068s] (442/842) phase-engine game::triggers::tests::not_was_cast_true_for_put_permanent_when_source_was_cast
+        PASS [   0.071s] (443/842) phase-engine game::triggers::tests::nth_draw_constraint_uses_draw_event_ordinal_not_final_turn_total
+        PASS [   0.081s] (444/842) phase-engine game::triggers::tests::not_was_cast_false_for_cast_permanent
+        PASS [   0.095s] (445/842) phase-engine game::triggers::tests::none_of_attackers_targeted_you_true_when_all_attack_elsewhere
+        PASS [   0.083s] (446/842) phase-engine game::triggers::tests::only_during_your_main_phase_blocks_on_opponents_turn
+        PASS [   0.095s] (447/842) phase-engine game::triggers::tests::off_zone_keyword_reconciliation_reuses_then_retires_grant_occurrence
+        PASS [   0.067s] (448/842) phase-engine game::triggers::tests::only_during_your_main_phase_fires_in_precombat_main
+        PASS [   0.085s] (449/842) phase-engine game::triggers::tests::only_during_your_main_phase_blocks_outside_main_phase
+        PASS [   0.080s] (450/842) phase-engine game::triggers::tests::only_during_your_main_phase_fires_in_postcombat_main
+        PASS [   0.319s] (451/842) phase-engine game::triggers::tests::multiple_suspended_cards_all_tick_on_upkeep
+        PASS [   0.101s] (452/842) phase-engine game::triggers::tests::ongoing_grant_coalesces_pre_and_post_all_origin_observations_once
+        PASS [   0.137s] (453/842) phase-engine game::triggers::tests::nth_spell_you_trigger_matches_source_controller_spell_only
+        PASS [   0.113s] (454/842) phase-engine game::triggers::tests::once_per_opponent_per_turn_requires_that_opponents_turn
+        PASS [   0.122s] (455/842) phase-engine game::triggers::tests::nurturing_pixie_etb_prompts_for_optional_non_faerie_nonland_target
+        PASS [   1.225s] (456/842) phase-engine game::triggers::tests::logical_zone_production_carriers_keep_expanded_provider_occurrences_distinct
+        PASS [   0.069s] (457/842) phase-engine game::triggers::tests::opponents_turn_trigger_constraint_excludes_teammate_in_two_headed_giant
+        PASS [   0.080s] (458/842) phase-engine game::triggers::tests::ordinary_observer_helpers_filter_one_preclaimed_occurrence_out_of_two_equal_events
+        PASS [   0.097s] (459/842) phase-engine game::triggers::tests::ordinary_only_claim_keeps_delayed_event_and_full_buffer_prefix
+        PASS [   0.113s] (460/842) phase-engine game::triggers::tests::other_sliver_etb_triggers_via_lord_grant
+        PASS [   0.121s] (461/842) phase-engine game::triggers::tests::pending_cost_move_and_deferred_life_owners_block_until_released
+        PASS [   0.155s] (462/842) phase-engine game::triggers::tests::opponent_guess_keeps_event_time_authority_private_and_returns_priority_to_controller
+        PASS [   0.160s] (463/842) phase-engine game::triggers::tests::opponent_caused_self_discard_trigger_fires_through_real_pipeline
+        PASS [   0.074s] (464/842) phase-engine game::triggers::tests::phase0_co_departing_suppressor_currently_over_triggers
+        PASS [   0.098s] (465/842) phase-engine game::triggers::tests::phase0_batched_sources_are_per_call_not_logical_group
+        PASS [   0.156s] (466/842) phase-engine game::triggers::tests::pending_activation_collection_commits_once_and_drop_discards_everything
+        PASS [   0.113s] (467/842) phase-engine game::triggers::tests::phase0_batched_off_zone_source_preserves_nonbattlefield_and_mixed_origins
+        PASS [   0.075s] (468/842) phase-engine game::triggers::tests::phase0_departing_runtime_grant_is_not_rediscovered_from_final_live_state
+        PASS [   0.064s] (469/842) phase-engine game::triggers::tests::phase_out_self_trigger_is_collected_after_status_flip
+        PASS [   0.103s] (470/842) phase-engine game::triggers::tests::phase0_off_zone_cache_observer_sees_later_segment
+        PASS [   0.097s] (471/842) phase-engine game::triggers::tests::phase0_segment_exclusion_prototype_would_double_register_early_observer
+        PASS [   0.074s] (472/842) phase-engine game::triggers::tests::pit_of_offerings_multi_target_surfaces_three_slots
+        PASS [   0.102s] (473/842) phase-engine game::triggers::tests::phase_scope_stays_narrow_for_matching_and_terminalization
+        PASS [   0.123s] (474/842) phase-engine game::triggers::tests::phase_named_one_shot_is_consumed_by_a_false_intervening_if
+        PASS [   0.069s] (475/842) phase-engine game::triggers::tests::pr625_c0_sibling_mutable_distinct_event_prompts_even_on
+        PASS [   0.116s] (476/842) phase-engine game::triggers::tests::poisonous_fires_only_for_combat_damage_to_player
+        PASS [   0.080s] (477/842) phase-engine game::triggers::tests::pr625_c1_same_event_groups_auto_order_pre_feature_preserved
+        PASS [   0.136s] (478/842) phase-engine game::triggers::tests::phased_out_torpor_orb_does_not_suppress_etb_triggers
+        PASS [   0.081s] (479/842) phase-engine game::triggers::tests::pr625_c2_distinct_event_auto_orders_even_when_loop_detection_off
+        PASS [   1.303s] (480/842) phase-engine game::triggers::tests::logical_zone_production_carriers_preserve_first_middle_and_last_pause_through_save
+        PASS [   0.086s] (481/842) phase-engine game::triggers::tests::prepared_activation_overlay_matches_source_filtered_stack_ability_before_commit
+        PASS [   0.078s] (482/842) phase-engine game::triggers::tests::preserving_the_same_construction_recipient_twice_is_idempotent
+        PASS [   0.071s] (483/842) phase-engine game::triggers::tests::printed_cascade_triggers_for_cast_spell
+        PASS [   0.102s] (484/842) phase-engine game::triggers::tests::preserving_a_different_construction_recipient_while_live_is_an_invariant_error
+        PASS [   0.070s] (485/842) phase-engine game::triggers::tests::printed_demonstrate_with_dynamic_grant_enqueues_delta_trigger
+        PASS [   0.075s] (486/842) phase-engine game::triggers::tests::production_trigger_surface_equivalence_across_full_incremental_and_off_zone_reconciliation
+        PASS [   0.238s] (487/842) phase-engine game::triggers::tests::pit_of_offerings_multi_target_full_flow_exiles_three_cards
+        PASS [   0.389s] (488/842) phase-engine game::triggers::tests::permanent_spell_entry_keeps_gilgamesh_and_sokka_etb_sources_visible
+        PASS [   0.101s] (489/842) phase-engine game::triggers::tests::production_ltb_stack_push_pins_recorded_destination_incarnation
+        PASS [   0.121s] (490/842) phase-engine game::triggers::tests::printed_demonstrate_does_not_double_enqueue_via_seam
+        PASS [   0.070s] (491/842) phase-engine game::triggers::tests::prowess_does_not_trigger_on_opponent_spell
+        PASS [   0.139s] (492/842) phase-engine game::triggers::tests::printed_casualty_no_copy_when_not_paid
+        PASS [   0.131s] (493/842) phase-engine game::triggers::tests::prowess_does_not_trigger_on_creature_spell
+        PASS [   0.099s] (494/842) phase-engine game::triggers::tests::ravenous_draw_triggers_when_paid_x_is_five_or_more
+        PASS [   0.062s] (495/842) phase-engine game::triggers::tests::resolution_completion_requires_an_empty_resolution_stack
+        PASS [   0.115s] (496/842) phase-engine game::triggers::tests::prowess_triggers_on_noncreature_spell_cast
+        PASS [   0.072s] (497/842) phase-engine game::triggers::tests::removed_grant_keeps_only_its_pre_event_all_origin_occurrence
+        PASS [   0.066s] (498/842) phase-engine game::triggers::tests::resolution_published_population_gate_declines_the_fire_time_hoist
+        PASS [   0.095s] (499/842) phase-engine game::triggers::tests::replicated_or_branch_carve_out_requires_a_sequential_sibling_link
+        PASS [   0.063s] (500/842) phase-engine game::triggers::tests::resolution_scoped_quantity_gate_declines_the_fire_time_hoist
+        PASS [   0.099s] (501/842) phase-engine game::triggers::tests::resolution_scoped_filter_property_declines_the_fire_time_hoist
+        PASS [   0.053s] (502/842) phase-engine game::triggers::tests::saga_entry_counter_is_inside_entry_boundary_but_prior_event_is_not
+        PASS [   0.148s] (503/842) phase-engine game::triggers::tests::resolution_frame_is_live_off_priority_requires_a_live_frame_and_a_non_priority_wait
+        PASS [   0.100s] (504/842) phase-engine game::triggers::tests::rot_wolf_infect_damage_death_trigger_end_to_end
+        PASS [   0.159s] (505/842) phase-engine game::triggers::tests::resolution_fallback_does_not_pin_reentered_zone_change_object
+        PASS [   0.052s] (506/842) phase-engine game::triggers::tests::seed_batched_attack_parent_targets_seeds_off_battlefield_parent_target_pump
+        PASS [   0.119s] (507/842) phase-engine game::triggers::tests::rot_wolf_infect_trade_death_trigger_end_to_end
+        PASS [   0.081s] (508/842) phase-engine game::triggers::tests::seed_event_context_parent_targets_binds_a_milled_card
+        PASS [   0.099s] (509/842) phase-engine game::triggers::tests::seed_event_context_parent_targets_binds_zone_changed_object
+        PASS [   0.141s] (510/842) phase-engine game::triggers::tests::satoru_intervening_if_blocks_mana_cast_after_transient_clear
+        PASS [   0.175s] (511/842) phase-engine game::triggers::tests::rocket_glider_was_cast_from_your_graveyard_is_owner_scoped_not_caster
+        PASS [   0.085s] (512/842) phase-engine game::triggers::tests::seed_event_context_parent_targets_overwrites_source_only_fallback
+        PASS [   0.071s] (513/842) phase-engine game::triggers::tests::settlement_predicate_takes_the_mana_sidecar_and_never_the_construction_recipient
+        PASS [   0.149s] (514/842) phase-engine game::triggers::tests::self_sacrifice_trigger_sacrifices_unblinked_source
+        PASS [   0.155s] (515/842) phase-engine game::triggers::tests::self_sacrifice_trigger_skips_blinked_source_via_incarnation
+        PASS [   0.172s] (516/842) phase-engine game::triggers::tests::self_sacrifice_return_before_collection_uses_departed_incarnation_once
+        PASS [   0.119s] (517/842) phase-engine game::triggers::tests::sneaky_snacker_returns_tapped_from_graveyard_on_third_draw_in_turn
+        PASS [   0.117s] (518/842) phase-engine game::triggers::tests::soulbond_lone_source_entering_does_not_prompt
+        PASS [   0.048s] (519/842) phase-engine game::triggers::tests::soulbond_pair_breaks_on_leave_control_change_and_stops_being_creature
+        PASS [   0.156s] (520/842) phase-engine game::triggers::tests::soulbond_other_creature_enters_pairs_with_source
+        PASS [   0.126s] (521/842) phase-engine game::triggers::tests::soulbond_other_enters_rechecks_triggering_creature_legality
+        PASS [   2.068s] (522/842) phase-engine game::triggers::tests::logical_zone_production_carriers_cover_every_source_role
+        PASS [   0.264s] (523/842) phase-engine game::triggers::tests::senu_exile_you_attack_unblocked_returns_source_attacking
+        PASS [   0.513s] (524/842) phase-engine game::triggers::tests::raph_mikey_revealed_creature_enters_attacking_and_deals_damage
+        PASS [   0.173s] (525/842) phase-engine game::triggers::tests::soulbond_other_enters_rechecks_triggering_creature_on_battlefield
+        PASS [   0.162s] (526/842) phase-engine game::triggers::tests::soulbond_pair_choice_ignores_targeting_restrictions
+        PASS [   0.068s] (527/842) phase-engine game::triggers::tests::source_enters_untapped_fires_when_object_untapped
+        PASS [   0.088s] (528/842) phase-engine game::triggers::tests::source_enters_untapped_suppressed_when_object_tapped
+        PASS [   0.207s] (529/842) phase-engine game::triggers::tests::soulbond_paired_static_applies_to_both_and_ends_when_pair_breaks
+        PASS [   0.071s] (530/842) phase-engine game::triggers::tests::source_is_face_up_inverse_of_face_down
+        PASS [   0.204s] (531/842) phase-engine game::triggers::tests::soulbond_partner_choice_does_not_become_target
+        PASS [   0.380s] (532/842) phase-engine game::triggers::tests::shelob_spider_damage_death_trigger_end_to_end
+        PASS [   0.092s] (533/842) phase-engine game::triggers::tests::source_is_transformed_suppressed_when_object_front_face
+        PASS [   0.169s] (534/842) phase-engine game::triggers::tests::soulbond_source_enters_pairs_with_selected_unpaired_creature
+        PASS [   0.214s] (535/842) phase-engine game::triggers::tests::soulbond_partner_choice_happens_at_resolution
+        PASS [   0.202s] (536/842) phase-engine game::triggers::tests::soulbond_source_enter_rechecks_source_on_battlefield
+        PASS [   0.129s] (537/842) phase-engine game::triggers::tests::source_is_transformed_fires_when_object_transformed
+        PASS [   0.093s] (538/842) phase-engine game::triggers::tests::source_matches_filter_checks_trigger_source_properties
+        PASS [   0.088s] (539/842) phase-engine game::triggers::tests::source_matches_filter_gates_on_enchanted_noncreature
+        PASS [   0.116s] (540/842) phase-engine game::triggers::tests::source_matches_filter_gates_on_equipped
+        PASS [   0.113s] (541/842) phase-engine game::triggers::tests::source_scoped_etb_suppression_preserves_friendly_triggers
+        PASS [   0.057s] (542/842) phase-engine game::triggers::tests::stack_condition_strips_event_time_gates_but_keeps_intervening_if
+        PASS [   0.076s] (543/842) phase-engine game::triggers::tests::stack_condition_strips_min_co_attackers_only_for_attacks
+        PASS [   0.094s] (544/842) phase-engine game::triggers::tests::stack_condition_strips_attack_target_counts_only_for_compatible_attack_target_filters
+        PASS [   0.105s] (545/842) phase-engine game::triggers::tests::stack_condition_reduces_and_conditions_but_preserves_or_conditions
+        PASS [   0.102s] (546/842) phase-engine game::triggers::tests::stack_condition_strips_controller_attack_counts_for_attack_declaration_modes
+        PASS [   0.080s] (547/842) phase-engine game::triggers::tests::stack_push_uses_event_incarnation_after_zone_change_reentry
+        PASS [   0.058s] (548/842) phase-engine game::triggers::tests::starting_life_fire_time_binding_tracks_player_scope
+        PASS [   0.097s] (549/842) phase-engine game::triggers::tests::stack_zone_spell_cast_trigger_fires_from_stack
+        PASS [   0.199s] (550/842) phase-engine game::triggers::tests::species_specialist_co_departure_keeps_its_latched_source_through_resolution
+        PASS [   0.082s] (551/842) phase-engine game::triggers::tests::statically_granted_cascade_triggers_for_cast_spell
+        PASS [   0.086s] (552/842) phase-engine game::triggers::tests::suppress_triggers_does_not_block_transform_on_reentry
+        PASS [   0.086s] (553/842) phase-engine game::triggers::tests::suppress_triggers_hushbringer_blocks_creature_dies
+        PASS [   0.109s] (554/842) phase-engine game::triggers::tests::stated_duration_multi_fire_survives_a_false_intervening_if
+        PASS [   0.086s] (555/842) phase-engine game::triggers::tests::suppress_triggers_ignores_non_zone_change_events
+        PASS [   0.102s] (556/842) phase-engine game::triggers::tests::suppress_triggers_hushbringer_permits_non_creature_dies
+        PASS [   0.089s] (557/842) phase-engine game::triggers::tests::suppress_triggers_no_suppressor_means_trigger_fires
+        PASS [   0.087s] (558/842) phase-engine game::triggers::tests::suppress_triggers_torpor_blocks_creature_etb_observer
+        PASS [   0.072s] (559/842) phase-engine game::triggers::tests::test_adamant_false_when_not_enough
+        PASS [   0.112s] (560/842) phase-engine game::triggers::tests::suppress_triggers_torpor_permits_non_creature_etb
+        PASS [   0.053s] (561/842) phase-engine game::triggers::tests::test_adamant_respects_minimum_one
+        PASS [   0.892s] (562/842) phase-engine game::triggers::tests::roll_a_one_trigger_fires_only_on_face_one
+        PASS [   0.135s] (563/842) phase-engine game::triggers::tests::suppress_triggers_torpor_permits_dies_event
+        PASS [   0.095s] (564/842) phase-engine game::triggers::tests::test_adamant_false_when_wrong_color
+        PASS [   0.054s] (565/842) phase-engine game::triggers::tests::test_adamant_true_when_enough_color_spent
+        PASS [   0.059s] (566/842) phase-engine game::triggers::tests::test_dealt_damage_by_source_condition
+        PASS [   0.072s] (567/842) phase-engine game::triggers::tests::test_damage_dealt_this_turn_cleared_on_turn
+        PASS [   0.067s] (568/842) phase-engine game::triggers::tests::test_dealt_damage_by_source_rejects_reentered_incarnation
+        PASS [   0.102s] (569/842) phase-engine game::triggers::tests::test_damaged_player_is_event_source_owner_condition
+        PASS [   0.081s] (570/842) phase-engine game::triggers::tests::test_evolve_smaller_or_equal_creature_no_counter
+        PASS [   0.839s] (571/842) phase-engine game::triggers::tests::skyclave_apparition_ltb_trigger_uses_zone_change_linked_exile_snapshot
+        PASS [   0.094s] (572/842) phase-engine game::triggers::tests::test_evolve_larger_creature_grants_counter
+        PASS [   0.061s] (573/842) phase-engine game::triggers::tests::test_first_time_object_tapped_this_turn_condition
+        PASS [   0.077s] (574/842) phase-engine game::triggers::tests::test_evolved_trigger_fires_after_evolve_counter_is_added
+        PASS [   0.501s] (575/842) phase-engine game::triggers::tests::sowing_mycospawn_unkicked_cast_trigger_does_not_exile_land
+        PASS [   0.058s] (576/842) phase-engine game::triggers::tests::test_no_monarch_trigger_condition
+        PASS [   0.320s] (577/842) phase-engine game::triggers::tests::target_lock_crime_trigger_waits_behind_sibling_etb_triggers
+        PASS [   0.328s] (578/842) phase-engine game::triggers::tests::syphon_mind_with_waste_not_four_player_draws_six
+        PASS [   0.143s] (579/842) phase-engine game::triggers::tests::test_granted_evolve_triggers
+        PASS [   0.130s] (580/842) phase-engine game::triggers::tests::test_observe_object_taps_counts_each_tap_event
+        PASS [   0.116s] (581/842) phase-engine game::triggers::tests::tokens_created_trigger_fires_once_for_two_creature_tokens
+        PASS [   0.122s] (582/842) phase-engine game::triggers::tests::the_external_pending_cast_carrier_blocks_the_post_announcement_drain
+        PASS [   0.079s] (583/842) phase-engine game::triggers::tests::tokens_created_trigger_rejects_noncreature_token
+        PASS [   0.077s] (584/842) phase-engine game::triggers::tests::tokens_created_trigger_rejects_opponent_creator
+        PASS [   0.150s] (585/842) phase-engine game::triggers::tests::the_completed_mana_frame_classifier_accepts_only_the_stackless_safe_context
+        PASS [   0.171s] (586/842) phase-engine game::triggers::tests::the_beast_owner_relation_fires_through_aggregate_early_gate
+        PASS [   0.081s] (587/842) phase-engine game::triggers::tests::training_condition_counts_only_higher_power_coattackers
+        PASS [   0.066s] (588/842) phase-engine game::triggers::tests::transactional_admission_rejection_leaves_no_local_or_batched_side_effect
+        PASS [   0.086s] (589/842) phase-engine game::triggers::tests::transactional_max_times_per_turn_admits_one_of_two_expanded_damage_candidates
+        PASS [   0.081s] (590/842) phase-engine game::triggers::tests::transactional_once_per_turn_admits_one_of_two_expanded_damage_candidates
+        PASS [   0.083s] (591/842) phase-engine game::triggers::tests::trigger_collection_session_applies_event_observation_operation
+        PASS [   0.098s] (592/842) phase-engine game::triggers::tests::transactional_once_per_game_admits_one_of_two_expanded_damage_candidates
+        PASS [   0.114s] (593/842) phase-engine game::triggers::tests::transactional_per_opponent_admission_rechecks_already_matched_candidates
+        PASS [   0.061s] (594/842) phase-engine game::triggers::tests::trigger_controls_commander_own_excludes_stolen
+        PASS [   0.098s] (595/842) phase-engine game::triggers::tests::trigger_controls_commander_any_counts_stolen
+        PASS [   0.047s] (596/842) phase-engine game::triggers::tests::trigger_event_unreachable_in_phase_shape_is_pinned
+        PASS [   0.060s] (597/842) phase-engine game::triggers::tests::trigger_no_targeting_effect_goes_on_stack
+        PASS [   0.090s] (598/842) phase-engine game::triggers::tests::trigger_event_unreachable_in_phase_is_fail_closed
+        PASS [   0.103s] (599/842) phase-engine game::triggers::tests::trigger_distributed_damage_uses_chosen_amounts
+        PASS [   0.114s] (600/842) phase-engine game::triggers::tests::trigger_distributed_damage_scopes_distribution_to_own_targets_not_sibling
+        PASS [   0.279s] (601/842) phase-engine game::triggers::tests::tolsimir_attack_trigger_runs_from_parser_through_stack_to_block_legality
+        PASS [   0.062s] (602/842) phase-engine game::triggers::tests::trigger_observation_time_classifies_cr_603_10_zone_changes
+        PASS [   0.856s] (603/842) phase-engine game::triggers::tests::sowing_mycospawn_kicked_cast_trigger_exiles_target_land
+        PASS [   0.092s] (604/842) phase-engine game::triggers::tests::trigger_target_multi_targets_sets_pending
+        PASS [   0.121s] (605/842) phase-engine game::triggers::tests::trigger_no_execute_goes_on_stack_without_targeting
+        PASS [   0.096s] (606/842) phase-engine game::triggers::tests::trigger_target_zero_targets_skips
+        PASS [   0.077s] (607/842) phase-engine game::triggers::tests::unresolvable_designation_anchor_absorbs_or_cr_603_4
+        PASS [   0.673s] (608/842) phase-engine game::triggers::tests::tenth_doctor_allons_y_grants_working_suspend
+        PASS [   0.099s] (609/842) phase-engine game::triggers::tests::trigger_with_condition_only_matches_when_met
+        PASS [   0.110s] (610/842) phase-engine game::triggers::tests::trigger_target_single_target_auto_selects
+        PASS [   0.082s] (611/842) phase-engine game::triggers::tests::two_deep_chain_mirrors_the_resolvers_direct_sub_test
+        PASS [   0.089s] (612/842) phase-engine game::triggers::tests::venom_sliver_self_grants_deathtouch_via_layer_flush_in_process_triggers
+        PASS [   0.102s] (613/842) phase-engine game::triggers::tests::unresolvable_designation_anchor_is_false_in_both_polarities_cr_603_4
+        PASS [   0.051s] (614/842) phase-engine game::triggers::tests::ward_cost_to_ability_cost_all_variants
+        PASS [   0.109s] (615/842) phase-engine game::triggers::tests::utopia_sprawl_triggered_mana_ability_resolves_chosen_color_inline
+        PASS [   0.063s] (616/842) phase-engine game::triggers::tests::ward_trigger_does_not_fire_on_own_targeting
+        PASS [   0.077s] (617/842) phase-engine game::triggers::tests::ward_trigger_fires_on_opponent_targeting
+        PASS [   0.078s] (618/842) phase-engine game::triggers::tests::was_cast_controller_scope_checks_caster
+        PASS [   0.061s] (619/842) phase-engine game::triggers::tests::was_cast_false_when_aura_put_onto_battlefield_even_though_source_was_cast
+        PASS [   0.114s] (620/842) phase-engine game::triggers::tests::ward_suppressed_by_becomes_targeted_suppress_static
+        PASS [   0.113s] (621/842) phase-engine game::triggers::tests::ward_trigger_does_not_fire_without_ward
+        PASS [   0.060s] (622/842) phase-engine game::triggers::tests::was_cast_record_lki_answers_zone_caster_and_owner_scopes
+        PASS [   0.060s] (623/842) phase-engine game::triggers::tests::was_cast_record_lki_rejects_wrong_caster_scope
+        PASS [   0.081s] (624/842) phase-engine game::triggers::tests::was_cast_reads_original_entrant_lki_after_leave_and_reentry
+        PASS [   0.086s] (625/842) phase-engine game::triggers::tests::was_cast_reads_event_record_lki_when_entrant_has_left
+        PASS [   0.102s] (626/842) phase-engine game::triggers::tests::was_cast_false_when_subject_absent_and_record_has_no_context
+        PASS [   0.102s] (627/842) phase-engine game::triggers::tests::was_cast_non_battlefield_destination_reads_record_lki_not_cleared_live_object
+        PASS [   0.059s] (628/842) phase-engine game::triggers::tests::was_cast_uses_entering_object_from_zone_changed_event
+        PASS [   0.268s] (629/842) phase-engine game::triggers::tests::twilight_diviner_batched_graveyard_origin_condition_gates_trigger_runtime
+        PASS [   0.075s] (630/842) phase-engine game::triggers::tests::was_cast_source_fallback_survives_for_spell_cast_shape
+        PASS [   0.058s] (631/842) phase-engine game::triggers::tests::was_played_condition_checks_zone_change_object_play_provenance
+        PASS [   0.107s] (632/842) phase-engine game::triggers::tests::was_cast_self_referential_falls_back_to_source_id
+        PASS [   0.096s] (633/842) phase-engine game::triggers::tests::was_cast_zone_scoped_reads_event_subject_not_source
+        PASS [   0.060s] (634/842) phase-engine game::triggers::tests::zone_change_object_condition_checks_entering_token_identity
+        PASS [   0.091s] (635/842) phase-engine game::triggers::tests::zero_slot_distribution_is_staged_without_targeting_events
+        PASS [   0.094s] (636/842) phase-engine game::triggers::tests::zone_change_object_condition_checks_dead_object_snapshot
+        PASS [   0.101s] (637/842) phase-engine game::triggers::tests::when_next_event_one_shot_is_consumed_by_a_false_intervening_if
+        PASS [   0.715s] (638/842) phase-engine game::triggers::tests::test_syr_konrad_disjunctive_trigger_fires_per_milled_creature
+        PASS [   0.074s] (639/842) phase-engine game::triggers::tests::zone_change_object_condition_entering_uses_exit_lki_after_leaving_battlefield
+        PASS [   0.099s] (640/842) phase-engine game::triggers::tests::zone_change_object_condition_checks_entering_object_not_trigger_source
+        PASS [   0.086s] (641/842) phase-engine game::triggers::tests::zone_change_object_condition_entering_greater_pt_than_source
+        PASS [   0.081s] (642/842) phase-engine game::triggers::tests::zone_change_object_condition_uses_original_exit_lki_after_leave_and_reentry
+        PASS [   0.068s] (643/842) phase-engine game::triggers::tests::zone_change_object_is_tapped_reads_entering_object_from_event
+        PASS [   0.065s] (644/842) phase-engine game::turns::tests::production_phase_assignment_census_is_frozen
+        PASS [   0.056s] (645/842) phase-engine source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.180s] (646/842) phase-engine game::triggers::tests::you_cast_from_your_graveyard_scopes_both_caster_and_owner
+        PASS [   0.241s] (647/842) phase-engine parser::oracle_quantity::tests::masters_councillors_static_gets_dynamic_power_for_graveyard_census
+        PASS [   0.175s] (648/842) phase-engine::integration battlefield_entry_authority_census::the_anaphora_publish_resolver_keys_on_cfg_scope_and_on_the_call_tail
+        PASS [   0.211s] (649/842) phase-engine::integration battlefield_entry_authority_census::bare_trailing_fn_header_is_an_error_not_a_panic
+        PASS [   0.242s] (650/842) phase-engine::integration activation_cost_work_census::a_production_call_after_a_mid_file_test_module_is_counted
+        PASS [   0.991s] (651/842) phase-engine game::triggers::tests::teval_leave_graveyard_trigger_is_battlefield_only
+        PASS [   0.073s] (652/842) phase-engine::integration battlefield_entry_authority_census::the_token_created_resolver_keys_on_cfg_scope_and_on_field_completeness
+        PASS [   0.078s] (653/842) phase-engine::integration battlefield_entry_authority_census::the_census_resolver_keys_on_cfg_scope_and_on_the_literal_from_field
+        PASS [   0.339s] (654/842) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+        PASS [   0.055s] (655/842) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        PASS [   2.686s] (656/842) phase-engine game::triggers::tests::parsed_each_of_your_main_phases_fires_only_on_controller_main_phases
+        PASS [   0.184s] (657/842) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS [   0.221s] (658/842) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS [   0.155s] (659/842) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS [   0.055s] (660/842) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS [   0.073s] (661/842) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+        PASS [   0.035s] (662/842) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS [   0.680s] (663/842) phase-engine::integration defending_player_controls_combat_anchor::hazy_homunculus_controls_census_is_battlefield_scoped
+        PASS [   0.478s] (664/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::archery_training_damage_reads_the_granter_counters
+        PASS [   0.600s] (665/842) phase-engine::integration granted_ability_self_binding::archery_training_quantity_ref_channel_binds_the_granter
+        PASS [   0.214s] (666/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::batched_granted_trigger_counts_subjects_against_the_granter
+        PASS [   7.647s] (667/842) phase-engine game::engine::stage2_injector_tests::the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event
+        PASS [   0.053s] (668/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::bound_condition_reads_the_granter_not_the_host
+        PASS [   0.052s] (669/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::distinct_from_a_bound_granter_excludes_it_across_trigger_batches
+        PASS [   0.544s] (670/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::archery_training_two_granters_each_read_their_own
+        PASS [   0.692s] (671/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::archery_training_removed_in_response_uses_last_known_counters
+        PASS [   0.276s] (672/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::dire_blunderbuss_cannot_sacrifice_itself
+        PASS [   0.211s] (673/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_animate_to_the_shared_granters_counters_needs_ordering
+        PASS [   0.199s] (674/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_copy_riders_grant_reads_the_granter
+        PASS [   0.429s] (675/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::every_condition_and_quantity_arm_binds_the_granter
+        PASS [   1.369s] (676/842) phase-engine::integration granted_ability_self_binding::animal_friend_exclusion_channel_masks_without_leaking
+        PASS [   0.114s] (677/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_counter_placement_reading_the_shared_granter_needs_ordering
+        PASS [   0.094s] (678/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_static_reads_its_granters_counters
+        PASS [   0.210s] (679/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_emblems_cant_block_names_the_granter
+        PASS [   0.104s] (680/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_triggers_not_reading_the_shared_granter_are_auto_ordered
+        PASS [   0.276s] (681/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_trigger_gains_the_granters_counters
+        PASS [   0.360s] (682/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_pump_by_the_shared_granters_counters_needs_ordering
+        PASS [   0.545s] (683/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::granted_triggers_bound_to_distinct_granters_need_ordering
+        PASS [   1.040s] (684/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::fishing_pole_tap_cost_taps_the_granter
+        PASS [   0.454s] (685/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::grothama_granted_fight_fights_grothama
+        PASS [   0.631s] (686/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_ooze_copy_reads_the_original_granter
+        PASS [   0.765s] (687/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_leaving_makes_its_token_zero
+        PASS [   0.714s] (688/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_ooze_stays_at_its_granters_count
+        PASS [   1.472s] (689/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_blinked_before_resolution_latches_the_old_object
+        PASS [   1.452s] (690/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_existing_token_drops_to_zero_power_when_its_creator_is_blinked
+        PASS [   0.568s] (691/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_token_survives_at_the_granters_count
+        PASS [   0.253s] (692/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::hankyu_remove_all_reads_the_granter
+        PASS [   0.258s] (693/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::heliods_punishment_cast_enters_with_four_and_destroys_itself_on_the_fourth
+        PASS [   0.840s] (694/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_parse_reads_the_granter
+        PASS [   0.165s] (695/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::nettlevine_blight_attach_moves_the_granter
+        PASS [   0.203s] (696/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::nettlevine_blight_chooses_its_new_host_after_the_sacrifice
+        PASS [   0.175s] (697/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::spare_dagger_sacrifices_the_dagger_and_deals_damage
+        PASS [   0.378s] (698/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::krovikan_plague_tap_cost_taps_the_enchanted_creature
+        PASS [   0.526s] (699/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::heliods_punishment_counts_and_destroys_the_granter
+        PASS [   0.161s] (700/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::trusty_boomerang_taps_the_target_and_returns_itself
+        PASS [   0.185s] (701/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::trusty_boomerang_blinked_in_response_stays
+        PASS [   1.156s] (702/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::gutter_grime_two_granters_each_latch_their_own
+        PASS [   3.966s] (703/842) phase-engine::integration granted_ability_self_binding::class_corpus_has_no_unreached_granter_reference
+        PASS [   0.265s] (704/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::the_aetherspark_loyalty_lands_on_itself
+        PASS [   0.169s] (705/842) phase-engine::integration granted_ability_self_binding::concretizer_seams::unstamped_granter_reads_on_distinct_sources_need_ordering
+        PASS [   0.135s] (706/842) phase-engine::integration granted_ability_self_binding::counter_gate_pronoun_follows_its_antecedent
+        PASS [   0.186s] (707/842) phase-engine::integration granted_ability_self_binding::deconstruction_hammer_sacrifice_hits_the_equipment_not_the_host
+        PASS [   0.161s] (708/842) phase-engine::integration granted_ability_self_binding::food_fight_named_self_filter_is_not_masked
+        PASS [   0.431s] (709/842) phase-engine::integration granted_ability_self_binding::emblem_linked_exile_name_is_not_refused
+        PASS [   0.471s] (710/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::caster_reference_parses_as_the_granted_triggers_recipient
+        PASS [   0.407s] (711/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::refused_static_caster_grant_installs_nothing
+        PASS [   0.325s] (712/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::spell_chain_caster_grant_draws_on_damage_to_the_caster
+        PASS [   0.134s] (713/842) phase-engine::integration granted_ability_self_binding::granter_stamp::activation_restriction_reads_the_granter
+        PASS [   5.581s] (714/842) phase-engine::integration battlefield_entry_authority_census::every_token_created_construction_lives_in_the_single_emitter
+        PASS [   1.168s] (715/842) phase-engine::integration granted_ability_self_binding::fishing_pole_tap_cost_names_the_granter
+        PASS [   0.200s] (716/842) phase-engine::integration granted_ability_self_binding::granter_stamp::aggregate_excludes_the_granter
+        PASS [   0.111s] (717/842) phase-engine::integration granted_ability_self_binding::granter_stamp::blinked_granter_rebinds_the_granted_replacement
+        PASS [   0.385s] (718/842) phase-engine::integration granted_ability_self_binding::granter_stamp::batched_zone_intervening_if_at_trigger_time_reads_the_granter
+        PASS [   0.183s] (719/842) phase-engine::integration granted_ability_self_binding::granter_stamp::blinked_granter_rebinds_the_granted_static
+        PASS [   0.054s] (720/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::damage_all_player_threshold_reads_the_stamped_granter
+        PASS [   1.514s] (721/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::granted_trigger_fires_only_on_damage_to_the_caster
+        PASS [   0.643s] (722/842) phase-engine::integration granted_ability_self_binding::granter_stamp::activation_restriction_threshold_reads_the_granter
+        PASS [   0.127s] (723/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::granted_animate_pt_reads_the_granter
+        PASS [   0.115s] (724/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::own_host_counter_list_puts_every_counter_on_the_host
+        PASS [   0.233s] (725/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::printed_ability_grant_reads_the_departed_source
+        PASS [   0.098s] (726/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::prompted_granter_tap_and_counter_list_act_on_the_granter
+        PASS [   0.240s] (727/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::printed_static_grant_does_not_follow_a_blinked_source
+        PASS [   0.436s] (728/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::granter_read_from_empty_targets_is_refused
+        PASS [   0.116s] (729/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::refused_granter_read_grants_nothing
+        PASS [   2.198s] (730/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::caster_reference_on_the_cast_spells_chain_stays_supported
+        PASS [   0.690s] (731/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::every_printed_kind_with_an_unreached_reference_is_demoted_whole
+        PASS [   0.213s] (732/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::remembered_answer_fights_the_granter
+        PASS [   0.197s] (733/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::spell_grant_names_the_resolved_spell
+        PASS [   0.098s] (734/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::tap_gate_reads_the_current_granter
+        PASS [   0.154s] (735/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::tap_gate_ignores_a_blinked_granter
+        PASS [   0.082s] (736/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::untapped_gate_reads_the_current_granter
+        PASS [   0.344s] (737/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::remembered_answer_hands_the_granter_to_a_target_slot_reader
+        PASS [   0.169s] (738/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::unreached_granter_reference_is_unsupported_and_grants_nothing
+        PASS [   0.112s] (739/842) phase-engine::integration granted_ability_self_binding::granter_stamp::counters_read_the_granter
+        PASS [   0.174s] (740/842) phase-engine::integration granted_ability_self_binding::granter_stamp::condition_exclusion_reads_the_granter
+        PASS [   7.045s] (741/842) phase-engine::integration deterministic_game_state_serde::serde_hash_owner_census_is_exhaustive_and_every_canonical_owner_names_its_adapter
+        PASS [   1.968s] (742/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::uncast_copy_grants_a_trigger_that_never_fires
+        PASS [   0.271s] (743/842) phase-engine::integration granted_ability_self_binding::granter_stamp::delayed_payload_carries_its_own_stamp
+        PASS [   0.244s] (744/842) phase-engine::integration granted_ability_self_binding::granter_stamp::delayed_return_naming_the_granter_returns_the_granter
+        PASS [   0.450s] (745/842) phase-engine::integration granted_ability_self_binding::granter_stamp::cost_eligibility_threshold_reads_the_granter
+        PASS [   0.150s] (746/842) phase-engine::integration granted_ability_self_binding::granter_stamp::exclusion_count_excludes_the_granter
+        PASS [   0.180s] (747/842) phase-engine::integration granted_ability_self_binding::granter_stamp::exclusion_names_the_granter_incarnation_not_its_id
+        PASS [   0.142s] (748/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_assemble_replacement_applies_to_the_granters_assemble
+        PASS [   0.449s] (749/842) phase-engine::integration granted_ability_self_binding::granter_stamp::effect_naming_the_granter_acts_on_the_granter
+        PASS [   0.246s] (750/842) phase-engine::integration granted_ability_self_binding::granter_stamp::exile_cost_naming_the_granter_exiles_the_granter
+        PASS [   0.275s] (751/842) phase-engine::integration granted_ability_self_binding::granter_stamp::exile_cost_you_control_reads_the_payer
+        PASS [   0.163s] (752/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_mana_ability_exile_cost_exiles_the_granter
+        PASS [   0.156s] (753/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_mana_ability_sacrifice_cost_sacrifices_the_granter
+        PASS [   0.410s] (754/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_copy_duration_reads_the_granters_counters
+        PASS [   0.386s] (755/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_duration_does_not_follow_a_blinked_granter
+        PASS [   0.116s] (756/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_replacement_execute_reads_the_granter
+        PASS [   0.203s] (757/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_replacement_applies_to_the_granters_event
+        PASS [   0.142s] (758/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_replacement_condition_excludes_the_granter
+        PASS [   0.482s] (759/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_entry_restriction_condition_excludes_the_granter
+        PASS [   8.048s] (760/842) phase-engine::integration battlefield_entry_authority_census::every_from_none_battlefield_entry_construction_lives_in_the_authority
+        PASS [   0.084s] (761/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_restriction_condition_excludes_the_granter
+        PASS [   0.132s] (762/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_state_trigger_counter_condition_reads_the_granter
+        PASS [   0.088s] (763/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_static_affected_filter_excludes_the_granter
+        PASS [   0.203s] (764/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_state_trigger_fires_on_the_granters_counters
+        PASS [   0.632s] (765/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_duration_reads_the_granters_counters
+        PASS [   1.435s] (766/842) phase-engine::integration granted_ability_self_binding::granter_stamp::bound_granter::spell_token_static_names_the_spell
+        PASS [   0.215s] (767/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_static_counter_condition_reads_the_granter
+        PASS [   0.242s] (768/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_static_condition_excludes_the_granter
+        PASS [   0.114s] (769/842) phase-engine::integration granted_ability_self_binding::granter_stamp::host_self_references_stay_on_the_host
+        PASS [   0.273s] (770/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_static_quantity_excludes_the_granter
+        PASS [   0.250s] (771/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_trigger_bodies_read_the_granter
+        PASS [   0.059s] (772/842) phase-engine::integration granted_ability_self_binding::granter_stamp::stamp_is_omitted_when_absent_and_round_trips_when_present
+        PASS [   0.819s] (773/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_play_permission_duration_names_the_granter
+        PASS [   0.056s] (774/842) phase-engine::integration granted_ability_self_binding::granter_stamp::stamped_granter_is_what_every_resolution_reader_names
+        PASS [   0.200s] (775/842) phase-engine::integration granted_ability_self_binding::granter_stamp::reveal_cost_threshold_reads_the_granter
+        PASS [   0.379s] (776/842) phase-engine::integration granted_ability_self_binding::granter_stamp::intervening_if_at_trigger_time_reads_the_granter
+        PASS [   0.119s] (777/842) phase-engine::integration granted_ability_self_binding::granter_stamp::state_trigger_condition_excludes_the_granter
+        PASS [   0.405s] (778/842) phase-engine::integration granted_ability_self_binding::granter_stamp::intervening_if_recheck_reads_the_granter
+        PASS [   0.368s] (779/842) phase-engine::integration granted_ability_self_binding::granter_stamp::mana_trigger_event_filter_excludes_the_granter
+        PASS [   0.160s] (780/842) phase-engine::integration granted_ability_self_binding::granter_stamp::target_slot_threshold_reads_the_granter
+        PASS [   0.660s] (781/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_trigger_counter_condition_reads_the_granter
+        PASS [   4.336s] (782/842) phase-engine::integration granted_ability_self_binding::granted_caster_reference::caster_reference_no_cast_reaches_is_refused
+        PASS [   0.145s] (783/842) phase-engine::integration granted_ability_self_binding::granter_stamp::transient_evasion_count_does_not_follow_a_blinked_granter
+        PASS [   0.153s] (784/842) phase-engine::integration granted_ability_self_binding::granter_stamp::transient_evasion_does_not_honor_a_blinked_granter
+        PASS [   0.610s] (785/842) phase-engine::integration granted_ability_self_binding::granter_stamp::token_copy_counter_condition_reads_its_creator
+        PASS [   1.141s] (786/842) phase-engine::integration granted_ability_self_binding::granter_stamp::granted_token_substitution_reads_the_granter
+        PASS [   0.180s] (787/842) phase-engine::integration granted_ability_self_binding::granter_stamp::transient_evasion_excludes_the_granter
+        PASS [   0.113s] (788/842) phase-engine::integration granted_ability_self_binding::granter_stamp::transient_granted_static_does_not_follow_a_blinked_granter
+        PASS [   0.153s] (789/842) phase-engine::integration granted_ability_self_binding::granter_stamp::transient_granted_replacement_does_not_follow_a_blinked_granter
+        PASS [   0.671s] (790/842) phase-engine::integration granted_ability_self_binding::granter_stamp::transient_cost_reduction_excludes_the_granter
+        PASS [   0.117s] (791/842) phase-engine::integration granted_ability_self_binding::hankyu_remove_all_cost_names_the_granter
+        PASS [   0.273s] (792/842) phase-engine::integration granted_ability_self_binding::grothama_granted_fight_names_the_granter
+        PASS [   1.165s] (793/842) phase-engine::integration granted_ability_self_binding::granter_stamp::token_cda_excludes_its_creator
+        PASS [  13.069s] (794/842) phase-engine game::triggers::tests::logical_zone_production_carriers_preserve_apnap_target_and_modal_placement
+        PASS [   0.158s] (795/842) phase-engine::integration granted_ability_self_binding::heliods_punishment_parse_reads_the_granter
+        PASS [   0.054s] (796/842) phase-engine::integration granted_ability_self_binding::object_scope_reads::bound_object_scope_blinked_granter_is_a_new_object
+        PASS [   0.037s] (797/842) phase-engine::integration granted_ability_self_binding::object_scope_reads::bound_object_scope_departed_reads_zero_statically_lki_when_resolving
+        PASS [   0.148s] (798/842) phase-engine::integration granted_ability_self_binding::meandered_towershell_refused_operand_demotes_its_grant
+        PASS [   0.034s] (799/842) phase-engine::integration granted_ability_self_binding::object_scope_reads::object_scope_granter_values_round_trip
+        PASS [   1.155s] (800/842) phase-engine::integration granted_ability_self_binding::granter_stamp::token_static_condition_excludes_its_creator
+        PASS [   0.083s] (801/842) phase-engine::integration granted_ability_self_binding::object_scope_reads::bound_object_scope_cda_reads_the_granter_not_the_host
+        PASS [   0.053s] (802/842) phase-engine::integration granted_ability_self_binding::object_scope_reads::unbound_granting_object_counters_read_the_source
+        PASS [   0.515s] (803/842) phase-engine::integration granted_ability_self_binding::granter_stamp::two_granters_grant_two_abilities
+        PASS [   1.240s] (804/842) phase-engine::integration granted_ability_self_binding::granter_stamp::token_static_counter_condition_does_not_follow_a_blinked_creator
+        PASS [   0.106s] (805/842) phase-engine::integration granted_ability_self_binding::placeholder_leak_guard_reports_a_planted_marker
+        PASS [   1.434s] (806/842) phase-engine::integration granted_ability_self_binding::granter_stamp::token_static_counter_condition_reads_its_creator
+        PASS [   0.253s] (807/842) phase-engine::integration granted_ability_self_binding::sakashima_copy_except_grant_description_renders_the_granter
+        PASS [   1.548s] (808/842) phase-engine::integration granted_ability_self_binding::granter_stamp::token_copy_static_condition_excludes_its_creator
+        PASS [   0.122s] (809/842) phase-engine::integration granted_ability_self_binding::sliver_host_ref_sacrifice_stays_on_the_host_not_the_granter
+        PASS [   0.027s] (810/842) phase-engine::integration granted_ability_self_binding::torrent_of_lava_damage_source_channel_not_masked
+        PASS [   0.484s] (811/842) phase-engine::integration granted_ability_self_binding::refused_corpus_demotes_every_affected_grant
+        PASS [   0.167s] (812/842) phase-engine::integration granted_ability_self_binding::the_dominion_bracelet_exile_hits_the_bracelet_reduction_reads_the_host
+        PASS [   0.029s] (813/842) phase-engine::integration loop_shortcut_offer_writer_census::the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses
+        PASS [   0.097s] (814/842) phase-engine::integration granted_ability_self_binding::trusty_boomerang_return_bounces_the_equipment_not_the_host
+        PASS [   0.031s] (815/842) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_counts_occurrences_and_not_lines
+        PASS [   0.034s] (816/842) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_ignores_a_trailing_comment_mention
+        PASS [   0.697s] (817/842) phase-engine::integration granted_ability_self_binding::quicksilver_copies_no_ability_from_a_refused_iron_fist_grant
+        PASS [   1.215s] (818/842) phase-engine::integration granted_ability_self_binding::granter_stamp::trigger_event_filter_excludes_the_granter
+        PASS [   0.112s] (819/842) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_instrument_reports_both_answers_on_planted_input
+        PASS [   0.027s] (820/842) phase-engine::integration source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.115s] (821/842) phase-engine::integration masters_councillors::masters_councillors_pt_scales_with_graveyard_census_across_players
+        PASS [   0.559s] (822/842) phase-engine::integration granted_ability_self_binding::self_grant_refused_name_demotes_its_grant
+        PASS [   0.035s] (823/842) phase-engine::integration waiting_for_actor_authority_census::mulligan_adapters_preserve_the_single_pending_actor_rule
+        PASS [  11.005s] (824/842) phase-engine::integration activation_cost_work_census::every_activation_cost_payment_entry_is_classified
+        PASS [   1.301s] (825/842) phase-engine::integration granted_ability_self_binding::r4_counter_channel_targets_the_granter
+        PASS [   1.372s] (826/842) phase-engine::integration granted_ability_self_binding::refused_name_on_a_created_or_equipped_host_is_demoted
+        PASS [   0.104s] (827/842) phase-engine::bin/resolution-face-census tests::export_identity_census_excludes_mixed_audited_layout_pairs
+        PASS [   0.039s] (828/842) phase-engine::bin/resolution-face-census tests::export_identity_census_reports_non_candidates_without_widening_candidates
+        PASS [  11.673s] (829/842) phase-engine::integration activation_cost_work_census::every_activation_mana_resume_entry_is_classified
+        PASS [   1.980s] (830/842) phase-engine::integration granted_ability_self_binding::saproling_burst_granted_cda_reads_the_granter
+        PASS [  11.988s] (831/842) phase-engine source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [   4.077s] (832/842) phase-engine::integration granted_ability_self_binding::placeholder_never_leaks_into_any_description
+        PASS [  19.332s] (833/842) phase-engine game::triggers::ordering_parity_tests::ordering_parity_sweep
+        PASS [   3.676s] (834/842) phase-engine::integration waiting_for_actor_authority_census::every_waiting_for_arm_declares_its_acting_authority
+        PASS [  14.541s] (835/842) phase-engine::integration battlefield_entry_authority_census::every_single_id_anaphora_publish_lives_in_an_authority
+        PASS [   5.671s] (836/842) phase-engine::integration source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [   7.685s] (837/842) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [   8.383s] (838/842) phase-engine::integration loop_shortcut_seat_pin_census::no_target_class_producer_constructs_a_choice_class_player_pin
+        PASS [  16.682s] (839/842) phase-engine::integration loop_shortcut_offer_writer_census::the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_validates_pins
+        PASS [  46.563s] (840/842) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+        PASS [  43.172s] (841/842) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+        PASS [  43.154s] (842/842) phase-engine::integration wba_loop_firewall_interposition::unactivated_ability_relief_offers_on_three_real_census_lands
+────────────
+     Summary [  61.035s] 842 tests run: 842 passed, 32546 skipped
+done rc=0

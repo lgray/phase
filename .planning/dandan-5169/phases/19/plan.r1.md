@@ -1,0 +1,125 @@
+# Phase 19 plan — CR 613.8 text-change dependencies from the recipient's current text
+
+Base: `PHASE_BASE_SHA` acf5422906 (W HEAD). Task: maintainer HIGH on PR #9669 (`run-level/review-9669.json`). Mode: engine-planner phase-plan mode. Charter entry: `phase-charter` RE-CHARTER r6, Phase 19 (Deferral list: none; addenda `addenda/phase-19`, empty).
+
+## Step 0 — premise: verbatim Oracle text
+
+Fetched by `jq -r --arg n "<name>" '.[$n].oracle_text // .[$n].oracle' client/public/card-data.json` and `curl https://api.scryfall.com/cards/named?exact=<name>`; the two sources agree for every card below.
+
+- Magical Hack: "Change the text of target spell or permanent by replacing all instances of one basic land type with another. (For example, you may change "swampwalk" to "plainswalk." This effect lasts indefinitely.)"
+- Crystal Spray: "Change the text of target spell or permanent by replacing all instances of one color word with another or one basic land type with another until end of turn.\nDraw a card."
+- Sleight of Mind: "Change the text of target spell or permanent by replacing all instances of one color word with another. (For example, you may change "target black spell" to "target blue spell." This effect lasts indefinitely.)"
+- Rules-text recipients used by the rows: Bog Wraith "Swampwalk (This creature can't be blocked as long as defending player controls a Swamp.)"; Bad Moon "Black creatures get +1/+1."; Sirocco "Target player reveals their hand. For each blue instant card revealed this way, that player discards that card unless they pay 4 life."
+
+CR (each grepped in `docs/MagicCompRules.txt`, subject checked against the claim): 613.8a (dependency = applying the other changes the text, existence, what it applies to, or what it does to the things it applies to), 613.8b (dependent waits; loop falls to timestamp order), 613.8c ("After each effect is applied, the order of remaining effects is reevaluated"), 613.7 (timestamp order within a layer), 613.1c (layer 3 is text-changing effects), 612.1 (text-changing effect changes rules text and type-line text), 612.2 (only words used in the correct way), 305.6 (basic land type implies the intrinsic mana ability), 205.3i (land types are subtypes on the type line), 514.2 ("until end of turn" effects end at cleanup), 611.2a (a stated duration or the rest of the game).
+
+## Code shape (derived, then confirmed by entry-point trace)
+
+`layers.rs` owns dependency selection: `order_with_dependencies` builds one fixed graph for the layer buckets; `apply_ability_effects_with_referenced_grants` is the state-aware selector that picks one effect, applies it, and rebuilds the edges (the select-next expression over `edges` and `dependency_path_exists` is inline there). Layer 3 word substitutions never reach either: `bucket_effects_by_layer` drops every `SubstituteTextWord` and the layer loop's arm is exhaustiveness-only. They are applied by `text_substitution.rs` — the Layer 3 pre-pass `apply_battlefield_text_substitutions` for permanents (called from `evaluate_layers` before the main gather) and `restamp_resolving_spell_text` for spells (called from `stack.rs::resolve_top`) — and both read `active_text_substitutions`, which freezes a list ordered by `order_active_continuous_effects(Layer::Text, ..)`, i.e. by the word-pair `SubstituteTextWord` arm of `depends_on`. The one text-rewrite authority is `TextSubstitution::rewrite` + `WORD_CARRIERS`.
+
+Claims established at base (each bought by command):
+- Word-pair, state-blind arm: `git grep -n 'SubstituteTextWord' -- crates/engine/src/game/layers.rs`; the `depends_on` arm compares only `from`/`to` words of the two specs (`b_to == a_from || b_from == a_from`) and the `_state` parameter is unused. Confirmed by reading; closed by the probe below.
+- Both consumers get their order from the one function: `git grep -n 'active_text_substitutions' -- crates` shows `apply_battlefield_text_substitutions`, `restamp_resolving_spell_text`, and one integration test.
+- Text effects reach text only through the pre-pass and the restamp: `bucket_effects_by_layer` skips `SubstituteTextWord`; the layer-loop arm is `{}`. `order_active_continuous_effects(Layer::Text, ..)` has exactly one non-test caller, `active_text_substitutions` (`git grep -n 'order_active_continuous_effects' -- crates`).
+- The select-next expression is separable: its only inputs are `edges` and `dependency_path_exists`.
+
+## Probes (design-relevant; run in a scratch tree, base then prototype)
+
+Driver: a scratch copy of W (deleted after use) with throwaway rows appended to `text_substitution_cr612.rs`, production `GameScenario` cast pipeline with real Magical Hack / Crystal Spray / Sleight of Mind from the shared card DB; rows V1–V3 below are those probes made permanent.
+
+- At base (acf5422906), the maintainer's Island cycle A=Island→Swamp, B=Forest→Island (Magical Hack ×2), C=Swamp→Forest (Crystal Spray), cast in that order: types `["Forest"]`, mana `{Green}` — the review's prediction holds. Positive reach-guard in the same driver, C not cast: `["Swamp"]`, `{Black}`, so every spell is live.
+- Same shape on rules text at base: Bog Wraith with A=Swamp→Forest, B=Plains→Swamp, C=Forest→Plains ends `["Plains"]`; Bad Moon with A=Black→Red, B=White→Black (Sleight of Mind ×2), C=Red→White (Crystal Spray) buffs the white creature, not the black one.
+- Prototype of this plan's design in the scratch tree (not committed): the Island row ends `["Island"]`/`{Blue}` (guard unchanged: Swamp/Black), Bog Wraith ends `["Swamp"]`, Bad Moon buffs the black creature. The order A, C, B is therefore what the recipient-text relation selects.
+- Unprobed at base, labelled derived: the second casting order (C, A, B) rows and the spell-recipient (restamp) rows; they are run red at base by the executor before the fix (failing-first).
+
+## Design
+
+Principle (CR 613.8a): effect X depends on effect Y iff applying Y to the recipient's current text changes how many words X rewrites there. "What X does" is the occurrence count through the one rewrite authority, so the relation is read from the recipient text, never from word pairs. For a single `(from, to)` pair with `from != to` the count changes exactly when Y removes or creates an occurrence of `X.from` on a classified carrier, so count equality is the whole relation (a Y that both creates and removes `X.from` would need `Y.from == Y.to`, which a `TextSubstitution` cannot be).
+
+1. **Counting through the rewrite authority** (`text_substitution.rs`). `TextSubstitution::rewrite` becomes a wrapper over a private `rewrite_counted` returning `(value, occurrences)`; `rewrite_in_place`, `rewrite_each`, `apply_to_permanent_text` (type-line subtype match counts one) and `rewrite_resolved_ability` return the occurrences they rewrote. No second walker: the preview is the same function that applies.
+2. **One selection-and-apply routine for both consumers.** `apply_in_dependency_order<R: Clone>(recipient, pending, apply: fn(&mut R, &TextSubstitution) -> usize)` loops: build `dependency_edges` from clones of the recipient (edge `i -> j` iff `apply(clone-after-j, i) != apply(clone, i)`), take `select_next_effect(edges)`, apply that effect to the real recipient, repeat on the changed text (CR 613.8c). `apply_battlefield_text_substitutions` calls it with `GameObject` + `apply_to_permanent_text`; `restamp_resolving_spell_text` with `ResolvedAbility` + `rewrite_resolved_ability`. A single pending effect skips edge building, so the clones are paid only by a recipient with two or more live text changes.
+3. **`active_text_substitutions` stops ordering by dependency.** It returns the per-recipient `Fixed` substitutions in timestamp order via `order_by_timestamp` (made `pub(crate)`), so no fixed graph sees Layer 3. Its doc says timestamp order and that the routine picks application order.
+4. **The selector kernel is extracted, not duplicated.** The inline select-next expression of `apply_ability_effects_with_referenced_grants` becomes `pub(crate) fn select_next_effect(edges: &[Vec<usize>]) -> usize` in `layers.rs` (same body, CR 613.8b loop rule through `dependency_path_exists`, oldest-loop-member tiebreak); the ability-layer selector calls it, and so does the text routine. Behavior of the ability layer is unchanged by construction; the existing suites pin that.
+5. **The `SubstituteTextWord` arm of `depends_on` is deleted** with its import fallout (`TextSubstitution`, `TextSubstitutionSpec` in `layers.rs` if nothing else uses them) and the two inline tests that pin it. `Phase 4b`'s loop-only fallback in `order_with_dependencies` is untouched.
+
+No new variant, serialized shape, wire field or protocol change. `stack.rs` is untouched (`restamp_resolving_spell_text` keeps its signature). The `ManaColorSpent` carrier row and everything else in `WORD_CARRIERS` is untouched (Phase 20). `Layer::Text` stays in `has_dependency_ordering` (`types/layers.rs` is outside this phase's scope and no live path reads it for Text: the bucket drops Layer 3 effects).
+
+## Skills and checklist
+
+`/add-static-ability` (layer evaluation flow, "Layer Evaluation Flow" and tests checklist: a layer test whose assertion fails on revert) and `/card-test` (cast-pipeline recipe). `/add-engine-variant` does not apply (no enum change; engine-inventory not needed). Checklist items for new types/parser/AST/frontend/AI/multiplayer: not applicable, no new construct. `DEFERRED(phase n)`: none (charter Deferral list: none).
+
+## Analogous trace
+
+Traced the referenced-grant selector end to end: `apply_ability_effects_with_referenced_grants` (`layers.rs`) → edge building via `referenced_grant_depends_on` (clone state, apply the writer on the scratch state, compare the reader's output before/after) → select-next expression with `dependency_path_exists` → `apply_continuous_effect_filtered` on the real state → loop on the changed state. Files: `crates/engine/src/game/layers.rs`; its callers inside `evaluate_layers`; and the Layer 3 consumer path `layers.rs::evaluate_layers` → `text_substitution.rs::apply_battlefield_text_substitutions` / `stack.rs::resolve_top` → `restamp_resolving_spell_text`. The text routine is the same shape (clone, apply, compare, select, apply, repeat) with the recipient text as the state.
+
+## Pattern Coverage (assessed against the charter's class attribution)
+
+The class is every card whose resolution installs a `Layer::Text` `SubstituteTextWord` effect on a recipient, interacting with any other such effect on that recipient: the Phase 5 family (Magical Hack, Crystal Spray, Sleight of Mind, Alter Reality, Glamerdye, Mind Bend, Spectral Shift, Trait Doctoring, Whim of Volrath) in every pair or triple. Regenerate the set: `jq -r 'to_entries[] | select((.value.oracle_text // "") | test("Change the text of")) | .key' client/public/card-data.json`. The routine is generic over the recipient (`GameObject`, `ResolvedAbility`) and the word domain (`Color`, `BasicLandType`) because it measures through the rewrite authority.
+
+## Sizing
+
+- Units: 1 — one dependency-evaluation rule (recipient-text relation, one effect at a time) applied to two layers through one kernel. No inter-unit edges. Behaviors tested independently: the recipient-text relation on permanents and on spell recipients are the same unit (one routine, two call sites).
+- Registration surfaces: `layers.rs` (kernel extraction, call site, deleted `depends_on` arm, import cleanup, `order_by_timestamp` visibility, two inline tests replaced by kernel and arm-gone rows); `text_substitution.rs` (counting, routine, two consumers, `active_text_substitutions`); `tests/integration/text_substitution_cr612.rs` (new rows; the `active_text_substitutions` row rewritten). No `mod` line (module exists).
+- Expected scope-path count (phase-fit rule): 3. `stack.rs` is not touched.
+- Small-change-lane eligibility: yes — one unit, three counted paths (≤ four), no new enum variant, serialized surface, `WaitingFor` or `GameAction` change.
+- T1 (≥2 units): false. T2 (≥13 paths): false. The conjunction cannot fire.
+- Estimate: the scratch prototype of items 1–5 measured by `git diff --no-index --numstat` on the two source files is about +135/−110 primary lines.
+
+## Building Blocks
+
+`TextSubstitution::rewrite`/`walk_strings`/`carrier_class` (single rewrite authority, extended with counting, never re-implemented); `apply_to_permanent_text`, `rewrite_resolved_ability`; `order_by_timestamp` (the CR 613.7 sort shared with the other layers); `select_next_effect` extracted from the ability-layer selector, with `dependency_path_exists`; the scenario pipeline `GameScenario::add_real_card` + `GameRunner::cast(..).target_objects(..).choose_option(..).resolve()`, and the file's `cast_text_change`, `walks`, `offered_mana`, `build` helpers. No new helper beyond the two functions of item 2 (a trait for the recipient is rejected: a `fn` pointer parameter does the same job).
+
+## Logic Placement
+
+All in the engine crate. The dependency relation and the loop rule are layer-system logic (`layers.rs` kernel); measuring "what an effect does" belongs with the rewrite authority (`text_substitution.rs`) because only it knows carrier positions. No transport, frontend or AI change.
+
+## Rust Idioms
+
+No wildcard arms added; `rewrite_resolved_ability` keeps its field-exhaustive destructure (a new field still forces a decision). Occurrence counts are `usize` totals, not booleans. The routine is generic over `R: Clone` with a plain `fn` argument.
+
+## Nom Compliance
+
+No file under `parser/` changes.
+
+## Extension vs Creation
+
+Extends the existing state-aware selector (kernel extraction) and the existing rewrite authority (counting); creates no parallel graph. The word-pair arm is deleted, so there is one relation, not two.
+
+## Variant Discoverability
+
+No enum variant added; `cargo engine-inventory` consult not triggered.
+
+## Identity / Provenance Contract
+
+- Recipient identity: `TargetFilter::SpecificObject { id }`, bound when the text-changing spell resolved (unchanged); effects are gathered live each pass from the transient effects whose duration holds (`gather_transient_continuous_effects`), so Crystal Spray's end-of-turn expiry (CR 514.2) removes its effect from the pending set on the next pass.
+- Live vs snapshot: nothing is snapshotted. Per pass the permanent starts from reset text and per resolution the spell entry's ability is the starting text; the relation is recomputed from that text after every application and not stored.
+- Multi-authority hostile fixtures: effects on different recipients are grouped apart (existing `same_from_changes_on_different_objects_do_not_interact`, plus the rewritten grouping row); several effects on one recipient are the cycle rows.
+
+## Verification Matrix
+
+Seam: `apply_in_dependency_order` (via `apply_battlefield_text_substitutions` and `restamp_resolving_spell_text`) over `select_next_effect`. Production entry: cast and resolve through `GameRunner::cast(..).resolve()`; the restamp row drives `restamp_resolving_spell_text` as `stack.rs::resolve_top` does. All rows live in `crates/engine/tests/integration/text_substitution_cr612.rs` unless marked unit.
+
+- V1 (Island, production): helper loops two cast orders, (A, B, C) and (C, A, B), labels `Island -> Swamp`, `Forest -> Island`, `Swamp -> Forest` cast from two Magical Hack and one Crystal Spray at an Island on the battlefield. Assert type line `["Island"]` and `offered_mana == {Blue}` in both orders. Differs from head: base ends Forest/Green for (A, B, C). Paired positive reach-guard in the same driver: with C not cast the Island is `["Swamp"]` and `{Black}` (each spell is live and A,B resolve). Revert-failing: row 1 is red at base (probed), row 2 red at base (derived, shown by the executor).
+- V2 (rules text, production): Bog Wraith, A=`Swamp -> Forest`, B=`Plains -> Swamp`, C=`Forest -> Plains`, orders (A, B, C) and (C, A, B): `walks == ["Swamp"]`; guard in the same driver: C absent ends `["Forest"]`. Red at base (Plains).
+- V2s (stack-spell recipient, restamp seam): a `ResolvedAbility` built from Sirocco with three transient effects installed in order A=Blue→Red, B=White→Blue, C=Red→White; after `restamp_resolving_spell_text` the ability JSON equals its pre-restamp JSON (the "blue" stays blue); guard: with only A and B installed `repeat_for` reads Red. Red at base (reads White).
+- V3 (color words, production): Bad Moon with a black, a white and a red creature; A=`Black -> Red`, B=`White -> Black` (Sleight of Mind ×2), C=`Red -> White` (Crystal Spray): black 3/3, white 2/2, red 2/2; guard with C absent: red 3/3, black 2/2. Red at base (white buffed).
+- V4 (kernel and loop/chain preserved, green at base and after): the existing `chain_of_text_changes_applies_dependency_order_in_both_casting_orders`, `loop_of_text_changes_applies_timestamp_order`, `chain_plus_loop_on_one_object_and_unrelated_loop_on_another` run unchanged; they pin a chain by dependency, a same-`from` loop by timestamp, and a chain beside a loop. Unit rows in `layers.rs` for `select_next_effect` on literal edge lists: no edges picks the oldest; a chain picks the provider; a two-node loop picks the older; a loop member with an edge leaving the loop waits for it (each row's expected index derived from CR 613.8b, none copied from the old inline expression).
+- V5 (recipients isolated): existing `same_from_changes_on_different_objects_do_not_interact` unchanged; `active_substitutions_are_grouped_and_ordered_per_recipient` rewritten to assert one list per recipient in timestamp order (X's chain is listed in cast order, not dependency order — the order is the routine's job and V4/V1 assert it).
+- V6 (arm gone, unit): `depends_on` is false for a former chain pair of text-word entries (true at base) with a positive control in the same test: a type-writer/type-reader pair still returns true.
+- V7 (mutation, shown red then reverted in the scratch tree; result lines recorded in the executor's report): (M1) replace the footprint comparison in `dependency_edges` by the word-pair predicate — V1 and V2 red; (M2) compute `dependency_edges` once before the loop and select against stale edges — V1 (A, B, C) red (derivation: B's dependency on C appears only after A applies); (M3) drop the `select_next_effect` call and apply in timestamp order — V1, V2, V3 red and `chain_of_text_changes_*` red.
+- Hostile fixtures per seam: empty pending (no call), single pending (no edge building, existing single-change rows), same-`from` loop (existing), chain (existing), different recipient (existing), different word domain on one recipient (V3 uses color words while the Bad Moon text has no land word; the existing `color_word_in_keyword_changes_and_unrelated_color_is_a_no_op` stays green), a pending effect whose word is absent from the recipient (V1 guard: B contributes nothing yet is correctly last). Unreachable hostile row: a `Chosen` spec (not latched) is filtered before the routine by `active_text_substitutions` (`TextSubstitutionSpec::Fixed` only), unchanged.
+- Existing suites that must stay green: `loop_only_dependency_fallback.rs`, `text_substitution_cr612.rs` (except the rewritten row), the `game::layers::` module tests (the referenced-grant selector now calls the extracted kernel). Regenerating command for the module run: `cargo nextest run -p phase-engine -E 'test(/^game::layers::/) | test(/loop_only_dependency_fallback/) | test(/text_substitution_cr612/)'`.
+- Coverage status impact: none (no parser or card-data change); no Oracle text accepted with deferred semantics.
+
+## Reference Readings
+
+Rows whose expected value comes from another reading: V4's preserved chain/loop rows and the rewritten grouping row. Derived from the card and the CR before measurement: a chain (Swamp→Plains, Plains→Forest on a Swampwalk creature) — the second effect's count rises after the first, so it depends on the first (CR 613.8a/b) and the creature ends Forest in either casting order; a same-`from` pair — each removes the word the other rewrites, a dependency loop, timestamp order (CR 613.8b), so the first-cast change wins; the cycle rows — derived by hand above and by the measured prototype. All preserved rows are green at base and agree with their derivation (`cargo nextest run -p phase-engine -E 'test(/text_substitution_cr612/)'` at base). The base cycle reading (Forest/Green) disagrees with the CR 613.8a/c derivation: a pre-existing defect that this phase fixes itself; V1–V3 assert the derived value.
+
+## Step-by-step
+
+1. `crates/engine/src/game/layers.rs`: add `pub(crate) fn select_next_effect(edges: &[Vec<usize>]) -> usize` (doc: CR 613.8b; body is the former inline selection with `dependency_path_exists`) and call it from `apply_ability_effects_with_referenced_grants`; make `order_by_timestamp` `pub(crate)`; delete the `SubstituteTextWord` arm of `depends_on` and update the `depends_on` doc only if it mentions text words; drop imports left unused; delete the inline tests `text_word_substitutions_depend_only_on_one_recipient_and_one_word_class` and `text_word_chain_orders_by_dependency_not_timestamp` (and their helpers `word_entry`, `land_word` if unused) and add the V4 kernel rows and V6.
+2. `crates/engine/src/game/text_substitution.rs`: counting (`rewrite_counted`, `rewrite_in_place`, `rewrite_each`, `apply_to_permanent_text`, `rewrite_resolved_ability` return occurrences); `apply_in_dependency_order` and `dependency_edges` (CR 613.8a/c cited in their docs); re-point `active_text_substitutions` to `order_by_timestamp`; call the routine from `apply_battlefield_text_substitutions` and `restamp_resolving_spell_text`; fix imports (`order_active_continuous_effects` out, `order_by_timestamp`, `select_next_effect` in).
+3. `crates/engine/tests/integration/text_substitution_cr612.rs`: add V1, V2, V2s, V3 (helper for permuted cast order), rewrite the grouping row; each new row is run red on the unmodified source first.
+4. Run the V7 mutations in a scratch tree under `/home/lgray/vibe-coding/dandan-run/scratch/` (never in W), then `cargo fmt --all`, clippy and the suites above with the standard env.
+
+Comment constraint for the executor: one sentence per comment, none narrating history; CR citations carry their rule text.
