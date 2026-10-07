@@ -1,0 +1,3 @@
+Gate G PASS (router/grant architecture: strict router vs permissive grant boundary intact)
+Gate A: scanned 5 file(s) under crates/engine/src/parser (working tree vs 4ab824580838640e817fac7190280d9433851401).
+Gate A PASS head=10b758a281b9b29c32c818beef8062dd44df40ec base=4ab824580838640e817fac7190280d9433851401

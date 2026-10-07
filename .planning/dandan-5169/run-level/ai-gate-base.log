@@ -1,0 +1,87 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/ai-base
+35880
+    Finished `server-release` profile [optimized] target(s) in 0.96s
+     Running `/home/lgray/vibe-coding/dandan-run/target-scratch-aibase/server-release/ai-gate --games 10 --seed 10573729 --difficulty medium`
+13:04:50 [red-mirror] game 1/10 seed=10579729 start
+13:04:50 [red-mirror] game 3/10 seed=10579731 start
+13:04:50 [red-mirror] game 4/10 seed=10579732 start
+13:04:50 [red-mirror] game 2/10 seed=10579730 start
+13:04:50 [red-mirror] game 5/10 seed=10579733 start
+13:04:50 [red-mirror] game 7/10 seed=10579735 start
+13:04:50 [red-mirror] game 10/10 seed=10579738 start
+13:04:50 [affinity-mirror] game 1/10 seed=10592729 start
+13:04:50 [affinity-mirror] game 2/10 seed=10592730 start
+13:04:50 [red-mirror] game 8/10 seed=10579736 start
+13:04:50 [affinity-mirror] game 3/10 seed=10592731 start
+13:04:50 [red-mirror] game 6/10 seed=10579734 start
+13:04:50 [red-mirror] game 9/10 seed=10579737 start
+13:04:50 [affinity-mirror] game 4/10 seed=10592732 start
+13:04:50 [affinity-mirror] game 5/10 seed=10592733 start
+13:04:50 [affinity-mirror] game 6/10 seed=10592734 start
+13:05:50 [red-mirror] game 5/10 seed=10579733 done winner=p1 turns=11 60325ms
+13:05:50 [affinity-mirror] game 7/10 seed=10592735 start
+13:05:54 [red-mirror] game 7/10 seed=10579735 done winner=p1 turns=15 64471ms
+13:05:54 [affinity-mirror] game 8/10 seed=10592736 start
+13:05:59 [red-mirror] game 6/10 seed=10579734 done winner=p0 turns=10 69093ms
+13:05:59 [affinity-mirror] game 9/10 seed=10592737 start
+13:06:09 [red-mirror] game 8/10 seed=10579736 done winner=p0 turns=10 79048ms
+13:06:09 [affinity-mirror] game 10/10 seed=10592738 start
+13:06:13 [red-mirror] game 2/10 seed=10579730 done winner=p1 turns=10 83013ms
+13:06:13 [enchantress-mirror] game 1/10 seed=10593729 start
+13:06:16 [red-mirror] game 10/10 seed=10579738 done winner=p1 turns=12 85945ms
+13:06:16 [enchantress-mirror] game 2/10 seed=10593730 start
+13:07:08 [red-mirror] game 9/10 seed=10579737 done winner=p0 turns=19 138441ms
+13:07:08 [enchantress-mirror] game 3/10 seed=10593731 start
+13:07:47 [affinity-mirror] game 8/10 seed=10592736 done winner=p1 turns=13 112509ms
+13:07:47 [enchantress-mirror] game 4/10 seed=10593732 start
+13:09:04 [affinity-mirror] game 2/10 seed=10592730 done winner=p1 turns=12 254471ms
+13:09:04 [enchantress-mirror] game 5/10 seed=10593733 start
+13:09:59 [red-mirror] game 1/10 seed=10579729 done winner=p1 turns=18 309133ms
+13:09:59 [enchantress-mirror] game 6/10 seed=10593734 start
+13:10:07 [red-mirror] game 4/10 seed=10579732 done winner=p0 turns=16 317075ms
+13:10:07 [enchantress-mirror] game 7/10 seed=10593735 start
+13:10:45 [red-mirror] game 3/10 seed=10579731 done winner=p1 turns=16 355844ms
+13:10:45 [enchantress-mirror] game 8/10 seed=10593736 start
+13:11:28 [affinity-mirror] game 3/10 seed=10592731 done winner=p0 turns=12 398523ms
+13:11:28 [enchantress-mirror] game 9/10 seed=10593737 start
+13:11:48 [affinity-mirror] game 9/10 seed=10592737 done winner=p1 turns=13 349189ms
+13:11:48 [enchantress-mirror] game 10/10 seed=10593738 start
+13:12:38 [affinity-mirror] game 1/10 seed=10592729 done winner=p0 turns=14 467997ms
+13:12:51 [enchantress-mirror] game 4/10 seed=10593732 done winner=p1 turns=16 304888ms
+13:13:00 [enchantress-mirror] game 1/10 seed=10593729 done winner=p1 turns=12 407096ms
+13:13:10 [enchantress-mirror] game 3/10 seed=10593731 done winner=p1 turns=12 361631ms
+13:13:38 [affinity-mirror] game 7/10 seed=10592735 done winner=p1 turns=14 467837ms
+13:13:58 [enchantress-mirror] game 10/10 seed=10593738 done winner=p0 turns=11 130394ms
+13:14:27 [affinity-mirror] game 6/10 seed=10592734 done winner=p0 turns=14 576953ms
+13:14:31 [enchantress-mirror] game 2/10 seed=10593730 done winner=p1 turns=15 495349ms
+13:15:05 [enchantress-mirror] game 8/10 seed=10593736 done winner=p1 turns=15 259965ms
+13:15:21 [affinity-mirror] game 5/10 seed=10592733 done winner=p0 turns=14 630923ms
+13:15:49 [enchantress-mirror] game 6/10 seed=10593734 done winner=p1 turns=14 350036ms
+13:16:06 [affinity-mirror] game 4/10 seed=10592732 done winner=p0 turns=14 676392ms
+13:16:14 [enchantress-mirror] game 7/10 seed=10593735 done winner=p0 turns=15 367017ms
+13:16:41 [affinity-mirror] game 10/10 seed=10592738 done winner=p0 turns=14 632475ms
+13:16:44 [enchantress-mirror] game 5/10 seed=10593733 done winner=p0 turns=14 460333ms
+13:18:23 [enchantress-mirror] game 9/10 seed=10593737 done winner=p1 turns=22 415275ms
+[ 1/3] red-mirror  done (games: 10)
+       PASS  p0=  4/10 (40%)  turns=13.7
+[ 2/3] affinity-mirror  done (games: 10)
+       PASS  p0=  6/10 (60%)  turns=13.4
+[ 3/3] enchantress-mirror  done (games: 10)
+       PASS  p0=  3/10 (30%)  turns=14.6
+
+| matchup | exercises | p0% | avg turns | status |
+|---------|-----------|-----|-----------|--------|
+| red-mirror | AggroPressure | 40% | 13.7 | PASS |
+| affinity-mirror | Artifacts, PlusOneCounters, AggroPressure | 60% | 13.4 | PASS |
+| enchantress-mirror | Enchantments | 30% | 14.6 | PASS |
+
+| matchup | exercises | baseline p0% | current p0% | flips W→L | flips L→W | sign p | dec→draw | draw→dec | draw sign p | unpaired base | unpaired cur | Δ avg turns | suite status | status |
+|---------|-----------|--------------|-------------|-----------|-----------|--------|----------|----------|-------------|---------------|--------------|-------------|--------------|--------|
+| affinity-mirror | Artifacts, PlusOneCounters, AggroPressure | 40% | 60% | 0 | 2 | 0.1250 | 0 | 2 | 0.1250 | 0 | 0 | +2.0 | Pass | WARN |
+|  ↳ _paired shift: W→L=0 L→W=2 sign-test p=0.1250_ | | | | | | | | | | | | | | |
+| enchantress-mirror | Enchantments | 40% | 30% | 3 | 2 | 0.3438 | 0 | 0 | — | 0 | 0 | +0.0 | Pass | WARN |
+|  ↳ _paired shift: W→L=3 L→W=2 sign-test p=0.3438_ | | | | | | | | | | | | | | |
+| red-mirror | AggroPressure | 40% | 40% | 0 | 0 | — | 0 | 0 | — | 0 | 0 | -0.2 | Pass | PASS |
+
+compare: 0 FAIL, 2 WARN, 1 PASS, 0 NEW, 0 REMOVED
+done rc=0

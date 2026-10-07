@@ -1,0 +1,2 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-complete
+done rc=0

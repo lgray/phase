@@ -65,3 +65,4 @@
 [2026-10-07T06:00:49Z] Phase 16 ACCEPTED at 1370f48547 (impl loop: r1 behavior 0 blocking/2 LOW folded, delta r2 clean; completion p16b rc0 nextest 37782/37782; frontend tsc/lint/vitest rc0). Pushed; 8 behind upstream. Phase 17 base = 1370f48547.
 [2026-10-07T06:01:17Z] Phase 17 scope frozen (12 paths), executor r1 dispatched from 1370f48547.
 [2026-10-07T09:12:31Z] Phase 17 ACCEPTED at 2796efca82 (impl r1 behavior 1 MED -> r3 fix, delta r2 clean + comment-only correction; completion p17c rc0 nextest 37816/37816). Pushed. Next: upstream merge, run-level acceptance.
+[2026-10-07T15:19:06Z] PR OPENED phase-rs/phase#9669 (same-repo branch feat/dandan-format @ 10b758a281; fork receive-pack 500 -> USER chose upstream push). Final review: 3 slices + delta clean; ai-gate base==head (2 WARN at both); residuals in PR body.

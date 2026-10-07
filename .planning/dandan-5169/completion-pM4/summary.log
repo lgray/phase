@@ -1,0 +1,9 @@
+sha=b0ca259fbf3e4f6ec1af5132daaf258708ebba4c
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [   4.830s] ( 3519/37929) phase-ai::ai_quality control_prefers_mana_rock_over_comparable_creature_as_disclosed
+     Summary [2967.320s] 37929 tests run: 37928 passed (127 slow), 1 failed, 51 skipped
+done rc=0

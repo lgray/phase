@@ -1,0 +1,35 @@
+# Integration review (review-engine-impl, integration mode) — HEAD b0ca259fbf
+MODEL: claude-sonnet-5-5
+Verdict: PASS. Blocking findings: behavior 0, text 0, machinery 0.
+Diff base used: 4ab8245808 (merged upstream tip). Local upstream/main has since advanced to 60296e29b7 (#9654, layers.rs + static_provider_layer_reference.rs); `git merge-tree --write-tree HEAD upstream/main` is conflict-free.
+
+## 1 Charter completeness
+- Read-population walk: `python3 .planning/dandan-5169/brief/scripts/count_reads_lines.py REV -v` (field reads `.library|.graveyard`): 4ab8245808 = 166, b9ba936096 = 165, HEAD = 40 (positive control: base nonzero). All 40 residuals classify: storage accessors in game_state.rs, six scry/dig writers in engine_resolution_choices.rs (each resolves `zone_storage_seat` first), mulligan.rs (`start_mulligan` per-seat shuffle, `shuffle_library_of` via holder), all-seat flat-maps (targeting, costs, triggers, visibility, derived, engine has_libraries), state hashes (game_state, planner, resource C1b), deck_loading shuffle, axis reads (draw.rs, mod.rs, derived_views). None is an unrouted single-seat read.
+- Owner-compared container readers (a class the field regex cannot see): window sweep `ownercmp.py` (Zone::Library|Graveyard within +-4 lines of owner comparison, production code): base 19, HEAD 20; the new lines are the Phase 17 `zone_storage_seat` routes. Remaining owner==player graveyard-cast routes (casting.rs graveyard_keyword_routes_open, mayhem_castable_from_graveyard, game_object.rs is_delve_eligible) are closed by verdict (Phase 11 plan 3.5; no decklist card reaches them; jq control found Mental Note) — pre-existing, not re-opened.
+- Authorities exist and are consumed (git grep, control = absent symbol 0 hits): every axis method has a non-test consumer (opening_hand_equivalence -> fixed_deck_keepables; best_of_three_ceiling -> engine.rs + wasm export + HostSetup/GameSetupPage; hand_entry_ownership -> zone_pipeline; free_reveal_mulligan/deal_order/shared_zones -> mulligan.rs/draw.rs/effects/mod.rs); deck_pool_of is the only seat-keyed pool reader on Dandan paths (remaining `deck_pools` seat finds = BetweenGames sideboard, commander, companion: charter-stated unreachable).
+- One container-identity authority: `zone_storage_seat`/`shared_zone_holder`; `zone_axis_admits` (Phase 10), `object_in_players_library` (Phase 17), `zone_dedup_key` (Phase 10) and `non_owner_graveyard_ids` (Phase 8) are four call-shaped helpers over it, no second authority.
+
+## 2 Seams
+- Protocol: `node scripts/check-protocol-version.mjs` rc 0 (control: copy with `+ 45` -> "must remain 116: Rust=115, client=115"). Constants: full-game 115 (lobby-broker, server-core re-export, ws-adapter), wire 97, lobby 16, MIN_LOBBY_PROTOCOL_FOR_DANDAN 16, RESOLUTION_STATE_WIRE_VERSION 5; pin tests agree (protocol.rs 115/16, server-core 115, protocol.test.ts 16/97). History entries 109..115 contiguous after upstream 108; upstream 108 entry intact.
+- Bindings: `scripts/check-interaction-bindings.sh --check` rc 0 on a rebuilt bin; control (append a line to generated index.ts) rc 1, file restored. engine_wasm.d.ts diff = new export + a doc refresh of a pre-existing stale upstream comment.
+- Decode: RESOLUTION v4 and v5 share the typed-frame reader (`LEGACY_DEALERLESS...` arm); `declared`, `kind`, `rebound_from`, `shared_piles` are serde default/skip; TS mirrors match Rust tags.
+- Merge resolutions: scoped_library_search.rs `has_no_resolution_riders` carries the `illegal_targets_disposition` conjunct (upstream's) plus `optional_player` (Phase 15); layers.rs `order_with_dependencies` is Phase 4b's loop-only ordering with upstream's referenced-provider selector intact; no stale "falls back for the whole bucket" text remains.
+- rebound_from: the single production constructor of `ResolvedZoneChangeCommand` is zones.rs; replay reads it in zone_pipeline and the owner check in resolved_commands.
+- FreeReveal/Powder fail-closed: `legal_actions_full` unscoped callers outside tests = wasm `get_legal_actions_js` (no client consumer; engine-worker routes to `get_legal_actions_for_viewer_js`) and server-core session snapshots feeding phase-server `legal_actions_for_seat` (the one per-seat gate, via `with_viewer_actions`); P2P guests use the viewer-scoped transition.
+
+## 3 Addenda
+Phase 4, 10-17 addenda each honoured in the tree (checked by symbol: swallow_check carrier, zone_axis_admits in change_zone, graveyard_of in graveyard_types, shared predicate with optional_player, free_reveal_offered_to computed from live hand). No addendum breaks a decision it names; no RE-CHARTER.
+
+## 4 Shipped-format (non-Dandan) behavior
+Disclose in PR body: Serum Powder offered per viewer in every format (Phase 14, USER fold-in); CR 613.8b loop-only dependency ordering (Phase 4b) in every format; CR 612 substitution cards newly supported (Phase 5).
+Held claim "non-shared formats unchanged" by pins, not a base build: (a) upstream-authored `all_player_library_wheel::echo_of_eons...` is unedited (empty diff) and passes at HEAD; (b) all 55 `game::mulligan::tests` + `has_no_resolution_riders` lib rows pass at HEAD, and the diff has zero removed lines in mulligan.rs's pre-existing test region (the eager path and 2HG seat walk are pinned unedited); (c) `start_game_with_starting_player` rotates `seat_order` to the starting player, so `seat_walk_from_active` equals the base `seat_order` deal order.
+Tightening check: `is_plain_parent_target_delivery` (shipped scoped-search path) now also refuses `optional_player.is_some()`. Census over client/public/card-data.json: 25 scoped SearchLibrary abilities, 0 whose delivery chain carries optional_player (control: 52 abilities carry optional_player overall) — unreachable by any printed card. The dealer/wheel gates test the axis before the predicate (`plan_simultaneous_draw`, `shared_library_wheel_split`), so non-shared formats never reach the tightened predicate there.
+
+## 5 Test honesty (revert-probes, warm target-dandan; start/end `git status --porcelain` empty, HEAD b0ca259fbf)
+Baseline 16/16 green. One batch, three production edits: (M1) mulligan.rs `draw_one` without `.performed_by`; (M2) effects/mod.rs `shared_library_wheel_split` without the shared-library axis check; (M3) mulligan.rs `free_reveal_offered_to` without `entry.player == seat`.
+Result 5 red / 11 green: v3_opening_deal_and_mulligan_redraw (M1); dandan_wheel_split::w2_separate_libraries + all_player_library_wheel::echo_of_eons (M2: the Standard sibling and upstream's pin go red); dandan_free_reveal::v7 and v8 (M3). Green controls under the same edit: dandan_wheel_split w1/w1b/w1e/w3/w4/w5/w6, mulligan_serum_powder_scope v1-v3. Files restored with `git checkout --`, touched; porcelain 0.
+
+## Pre-existing / noted (untagged, non-blocking)
+- Graveyard-cast keyword routes and Delve are owner-keyed (see 1); closed Phase 11 verdict.
+- `get_legal_actions_js` (wasm) remains an unscoped enumerator with no client consumer.
+- Full engine nextest was not re-run on the merged head by this review (merge completion ran filtered 805 + 800 tests); ai-gate/coverage owed separately.

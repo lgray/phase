@@ -1,0 +1,9 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+────────────
+ Nextest run ID 7536f4f1-2b28-4ebb-bf50-38f9e6c5d7a2 with nextest profile: default
+    Starting 1 test across 1 binary (2675 tests skipped)
+        PASS [   1.069s] (1/1) phase-ai search::tests::self_destruct_target_selection_prefers_lethal_over_nonlethal_body
+────────────
+     Summary [   1.071s] 1 test run: 1 passed, 2675 skipped

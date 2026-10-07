@@ -1,0 +1,9 @@
+sha=10b758a281b9b29c32c818beef8062dd44df40ec
+fmt rc=0
+protocol-gate rc=0
+clippy rc=0
+bindings rc=0
+nextest rc=100
+        FAIL [   4.205s] ( 3319/37929) phase-ai search::tests::self_destruct_target_selection_prefers_lethal_over_nonlethal_body
+     Summary [2748.877s] 37929 tests run: 37928 passed (132 slow), 1 failed, 51 skipped
+done rc=0

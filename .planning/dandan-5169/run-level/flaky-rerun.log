@@ -1,0 +1,10 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.30s
+────────────
+ Nextest run ID a7d058c2-af0c-4d2c-8952-ea3177cbdc92 with nextest profile: default
+    Starting 1 test across 1 binary (29 tests skipped)
+        PASS [   5.052s] (1/1) phase-ai::ai_quality control_prefers_mana_rock_over_comparable_creature_as_disclosed
+────────────
+     Summary [   5.056s] 1 test run: 1 passed, 29 skipped
+done rc=0
