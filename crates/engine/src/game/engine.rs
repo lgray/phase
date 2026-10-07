@@ -5129,8 +5129,8 @@ fn apply_until_lethal_shortcut(
 
     // DRIVE one representative cycle to produce the measured post-drive `work` state.
     //
-    // SITE D (CR 732.2c): a confirmed period standing at an empty stack is performed once; one
-    // standing on the stack takes the ring arm, because a recorded mint names no winner to crown.
+    // SITE D (CR 732.2c): a period on the mark route is performed once to measure its winner;
+    // every other route takes the ring arm.
     let work: GameState = match take_route(&committed, proposal, 1) {
         TakeRoute::Mark(_) => {
             // Object-growth loop period (recast buyback+convoke, or a multi-activation mana engine)
