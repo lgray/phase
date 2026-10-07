@@ -4203,6 +4203,31 @@ impl Duration {
             | Self::Permanent => false,
         }
     }
+
+    /// CR 611.2b: true for every "for as long as" STATE reading — the
+    /// durations that may already be over when the effect would begin, and
+    /// then never start. A resolver must test them on a settled board before
+    /// installing anything (`layers::resolved_duration_begins`).
+    pub const fn is_for_as_long_as(&self) -> bool {
+        match self {
+            Self::ForAsLongAs { .. }
+            | Self::WhileControllingHost
+            | Self::WhileHostOnBattlefield => true,
+            // Event deadlines and turn boundaries cannot be over before the
+            // effect begins; listed rather than swept into `_` so a new
+            // duration has to choose a side here.
+            Self::UntilHostLeavesPlay
+            | Self::UntilEndOfTurn
+            | Self::UntilEndOfCombat
+            | Self::UntilNextTurnOf { .. }
+            | Self::UntilEndOfNextTurnOf { .. }
+            | Self::UntilNextStepOf { .. }
+            | Self::UntilSourceExilesAnotherCard
+            | Self::UntilOpponentBecomesMonarch
+            | Self::UntilEvent { .. }
+            | Self::Permanent => false,
+        }
+    }
 }
 
 /// The attacker named by a force-block instruction.
@@ -32467,11 +32492,10 @@ pub enum ContinuousModification {
     /// of** the objects matching `source` (Myr Welder / Dark Impostor / Patchwork
     /// Crawler "all [creature] cards exiled with it", Territory Forge "the exiled
     /// card", Mairsil, Experiment Kraj, …). The set is dynamic — recomputed each
-    /// layer pass — so it is expanded into one `GrantAbility` per matching
-    /// activated ability at continuous-effect collection time
-    /// (`active_continuous_effects_from_static_definitions`); the layer-6 apply of
-    /// this variant itself is therefore a no-op. `source` is resolved relative to
-    /// each recipient of the host static (`FilterContext::from_source(recipient)`).
+    /// layer pass — so the meta-effect is retained through earlier layers and
+    /// expanded into `GrantAbility` effects when it applies in layer 6. The
+    /// provider filter uses the host's identity and each recipient's current
+    /// controller for controller-relative references.
     GrantAllActivatedAbilitiesOf {
         source: TargetFilter,
         /// CR 602.5b + CR 602.5c: An optional use-restriction injected into every
@@ -32491,12 +32515,10 @@ pub enum ContinuousModification {
     /// abilities of** the objects matching `source` (Koh, the Face Stealer "Koh
     /// has all activated and triggered abilities of the last chosen card"). The
     /// triggered-ability mirror of `GrantAllActivatedAbilitiesOf`: the set is
-    /// dynamic — recomputed each layer pass — so it is expanded into one
-    /// `GrantTrigger` per matching trigger definition at continuous-effect
-    /// collection time (`expand_granted_triggered_abilities`); the layer-6 apply
-    /// of this variant itself is therefore a no-op. `source` is resolved relative
-    /// to the host static with each recipient's controller, mirroring the
-    /// activated expander. Distinct sibling rather than a parameter of
+    /// dynamic — recomputed each layer pass — so it is retained through earlier
+    /// layers and expanded into `GrantTrigger` effects when it applies in layer
+    /// 6. `source` is resolved relative to the host static with each recipient's
+    /// current controller, mirroring the activated expander. Distinct sibling rather than a parameter of
     /// `GrantAllActivatedAbilitiesOf` because activated and triggered abilities
     /// land in different stores (CR 602.1 `obj.abilities` via `GrantAbility` vs
     /// CR 603.1 `obj.trigger_definitions` via `GrantTrigger`) with different

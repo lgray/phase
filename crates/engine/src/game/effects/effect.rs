@@ -260,7 +260,7 @@ fn install_transient(
     affected: TargetFilter,
     modifications: Vec<ContinuousModification>,
     condition: Option<StaticCondition>,
-) -> u64 {
+) -> Option<u64> {
     let mut modifications = modifications;
     // CR 201.5a + CR 400.7 + CR 113.7: a grant names the object whose ability resolved, as
     // it was then; a resolving spell is still on the stack (CR 608.2n).
