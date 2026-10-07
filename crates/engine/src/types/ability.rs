@@ -7292,6 +7292,29 @@ impl TargetSelectionMode {
     }
 }
 
+/// CR 608.2b + CR 101.1: what happens when every target of this spell or
+/// ability is illegal as it tries to resolve. Root-only: read by the single
+/// CR 608.2b authority in `stack::resolve_top`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum IllegalTargetsDisposition {
+    /// CR 608.2b: the spell or ability doesn't resolve (the rules default).
+    #[default]
+    DoesNotResolve,
+    /// CR 101.1 overriding CR 608.2b: the card's own text says the ability still
+    /// resolves ("This ability still resolves if its target becomes illegal").
+    /// Illegal targets are still pruned and unaffected.
+    StillResolves,
+}
+
+impl IllegalTargetsDisposition {
+    /// `serde(skip_serializing_if)` helper: the rules default is omitted from
+    /// card-data.json so every other card's export is byte-identical.
+    pub fn is_does_not_resolve(&self) -> bool {
+        matches!(self, Self::DoesNotResolve)
+    }
+}
+
 /// CR 701.9a: How cards are selected from a zone during an effect or cost.
 ///
 /// Analogous to `TargetSelectionMode` but for cards from a player's hand (or
@@ -26191,6 +26214,9 @@ pub struct AbilityDefinition {
     pub announced_x: Option<QuantityExpr>,
     /// Stack-copy restriction from "This ability can't be copied."
     pub cant_be_copied: bool,
+    /// CR 608.2b + CR 101.1: root-only; read by stack::resolve_top. Set by the
+    /// trigger parser for "This ability still resolves if its target becomes illegal".
+    pub illegal_targets_disposition: IllegalTargetsDisposition,
     /// CR 601.2f: Self-referential cost reduction applied before activation.
     /// "This ability costs {N} less to activate for each [condition]"
     pub cost_reduction: Option<CostReduction>,
@@ -26325,6 +26351,8 @@ struct AbilityDefinitionRepr<'a> {
     announced_x: &'a Option<QuantityExpr>,
     #[serde(skip_serializing_if = "is_false")]
     cant_be_copied: bool,
+    #[serde(skip_serializing_if = "IllegalTargetsDisposition::is_does_not_resolve")]
+    illegal_targets_disposition: IllegalTargetsDisposition,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_reduction: &'a Option<CostReduction>,
     forward_result: bool,
@@ -26393,6 +26421,7 @@ impl Serialize for AbilityDefinition {
             min_x_value,
             announced_x,
             cant_be_copied,
+            illegal_targets_disposition,
             cost_reduction,
             forward_result,
             player_scope,
@@ -26443,6 +26472,7 @@ impl Serialize for AbilityDefinition {
             min_x_value: *min_x_value,
             announced_x,
             cant_be_copied: *cant_be_copied,
+            illegal_targets_disposition: *illegal_targets_disposition,
             cost_reduction,
             forward_result: *forward_result,
             player_scope,
@@ -26560,6 +26590,8 @@ struct AbilityDefinitionDe {
     #[serde(default)]
     cant_be_copied: bool,
     #[serde(default)]
+    illegal_targets_disposition: IllegalTargetsDisposition,
+    #[serde(default)]
     cost_reduction: Option<CostReduction>,
     #[serde(default)]
     forward_result: bool,
@@ -26633,6 +26665,7 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
             min_x_value: de.min_x_value,
             announced_x: de.announced_x,
             cant_be_copied: de.cant_be_copied,
+            illegal_targets_disposition: de.illegal_targets_disposition,
             cost_reduction: de.cost_reduction,
             forward_result: de.forward_result,
             player_scope: de.player_scope,
@@ -26933,6 +26966,7 @@ impl AbilityDefinition {
             min_x_value: 0,
             announced_x: None,
             cant_be_copied: false,
+            illegal_targets_disposition: IllegalTargetsDisposition::DoesNotResolve,
             cost_reduction: None,
             forward_result: false,
             player_scope: None,
@@ -33394,6 +33428,13 @@ pub struct ResolvedAbility {
     /// Stack-copy restriction from "This ability can't be copied."
     #[serde(default, skip_serializing_if = "is_false")]
     pub cant_be_copied: bool,
+    /// CR 608.2b + CR 101.1: root-only; read by stack::resolve_top. Copied from
+    /// `AbilityDefinition::illegal_targets_disposition`; a sub-ability's value is ignored.
+    #[serde(
+        default,
+        skip_serializing_if = "IllegalTargetsDisposition::is_does_not_resolve"
+    )]
+    pub illegal_targets_disposition: IllegalTargetsDisposition,
     /// CR 707.10 + CR 614.1a + CR 614.5: `Finalized` on a `repeat_for` iteration
     /// that the drain driver resumes after a per-copy pause, so the "copy an
     /// additional time" replacement bonus (Twinning Staff) is folded into the
@@ -33693,6 +33734,7 @@ impl PartialEq for ResolvedAbility {
             min_x_value: a_min_x_value,
             announced_x: a_announced_x,
             cant_be_copied: a_cant_be_copied,
+            illegal_targets_disposition: a_illegal_targets_disposition,
             copy_count_status: a_copy_count_status,
             forward_result: a_forward_result,
             unless_pay: a_unless_pay,
@@ -33763,6 +33805,7 @@ impl PartialEq for ResolvedAbility {
             min_x_value: b_min_x_value,
             announced_x: b_announced_x,
             cant_be_copied: b_cant_be_copied,
+            illegal_targets_disposition: b_illegal_targets_disposition,
             copy_count_status: b_copy_count_status,
             forward_result: b_forward_result,
             unless_pay: b_unless_pay,
@@ -33833,6 +33876,7 @@ impl PartialEq for ResolvedAbility {
             && a_min_x_value == b_min_x_value
             && a_announced_x == b_announced_x
             && a_cant_be_copied == b_cant_be_copied
+            && a_illegal_targets_disposition == b_illegal_targets_disposition
             && a_copy_count_status == b_copy_count_status
             && a_forward_result == b_forward_result
             && a_unless_pay == b_unless_pay
@@ -34180,6 +34224,7 @@ impl ResolvedAbility {
             min_x_value: 0,
             announced_x: None,
             cant_be_copied: false,
+            illegal_targets_disposition: IllegalTargetsDisposition::DoesNotResolve,
             copy_count_status: CopyCountStatus::Pending,
             forward_result: false,
             unless_pay: None,

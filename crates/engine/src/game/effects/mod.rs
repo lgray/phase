@@ -3294,7 +3294,7 @@ fn try_begin_deferred_else_branch_target_selection(
     )
     .map_err(|e| EffectError::InvalidParam(e.to_string()))?
     {
-        crate::game::ability_utils::assign_targets_in_chain(state, else_resolved, &selected)
+        crate::game::ability_utils::assign_selected_slots_in_chain(state, else_resolved, &selected)
             .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
         return Ok(false);
     }
@@ -3609,8 +3609,12 @@ fn try_materialize_reflexive_trigger_inner(
         )
         .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
         let mut reflexive_clone = reflexive.clone();
-        crate::game::ability_utils::assign_targets_in_chain(state, &mut reflexive_clone, &chosen)
-            .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
+        crate::game::ability_utils::assign_selected_slots_in_chain(
+            state,
+            &mut reflexive_clone,
+            &chosen,
+        )
+        .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
         resolve_ability_chain(state, &reflexive_clone, events, depth + 1)?;
         return Ok(true);
     }
@@ -4953,13 +4957,15 @@ fn instruction_outlives_declined_gate(
         // Printed, and naming no object or player: "up to N targets" only lets
         // the target list be empty (the targets are the effect's filters, audited
         // below); when the target is chosen; how the ability is labelled, which
-        // kind of ability it is, whether it can be copied, and X's minimum
-        // (every audited quantity is a fixed number).
+        // kind of ability it is, whether it can be copied, whether it still
+        // resolves with illegal targets (CR 608.2b, read only at the stack root),
+        // and X's minimum (every audited quantity is a fixed number).
         optional_targeting: _,
         target_choice_timing: _,
         description: _,
         kind: _,
         cant_be_copied: _,
+        illegal_targets_disposition: _,
         min_x_value: _,
         selected_mode_labels: _,
         modal_instruction_ordinal: _,
