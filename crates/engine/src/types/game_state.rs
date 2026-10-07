@@ -8181,7 +8181,7 @@ impl GameState {
     /// The seat holding `zone`'s shared container, or `None` when each seat
     /// keeps its own. Exhaustive over `Zone`: only library and graveyard can
     /// be shared.
-    fn shared_zone_holder(&self, zone: Zone) -> Option<PlayerId> {
+    pub(crate) fn shared_zone_holder(&self, zone: Zone) -> Option<PlayerId> {
         let shared = self.format_config.format.shared_zones();
         let scope = match zone {
             Zone::Library => shared.library,

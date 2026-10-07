@@ -151,7 +151,7 @@ const permanentSelectors = (id: ObjectId) => [
 // `[data-object-id]` matches one object in several zones at once.
 /** The selectors, in priority order, for object `id`'s surface in each zone.
  *  A zone with none (the command zone) has no surface to fly from or to. A
- *  hidden library card shows as its owner's pile. */
+ *  hidden library card shows as its pile (the holder's, in a shared-zone format). */
 const ZONE_SURFACES: Record<Zone, (id: ObjectId, ownerId: PlayerId) => readonly string[]> = {
   Hand: (id) => [`[data-hand-card][data-object-id="${id}"]`, `[data-opponent-hand-card="${id}"]`],
   Library: (id, ownerId) => [

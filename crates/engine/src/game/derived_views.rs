@@ -32,7 +32,7 @@ use crate::types::card::TokenImageRef;
 use crate::types::card_type::CoreType;
 use crate::types::counter::{positive_counter_entries, CounterType};
 use crate::types::events::GameEvent;
-use crate::types::format::{GameFormat, ZoneScope};
+use crate::types::format::GameFormat;
 use crate::types::game_state::{
     CastingVariant, CombatDamageSubStep, GameState, StackEntry, StackEntryKind, StackPaidSnapshot,
     SyntheticTriggerProvenance, WaitingFor,
@@ -2259,14 +2259,9 @@ fn visible_exile_object_ids(state: &GameState) -> BTreeMap<PlayerId, Vec<ObjectI
 }
 
 fn shared_piles(state: &GameState) -> Option<SharedPilesView> {
-    let zones = state.format_config.format.shared_zones();
-    let holder = |scope| match scope {
-        ZoneScope::Shared => Some(state.canonical_seat()),
-        ZoneScope::PerPlayer => None,
-    };
     let view = SharedPilesView {
-        library: holder(zones.library),
-        graveyard: holder(zones.graveyard),
+        library: state.shared_zone_holder(Zone::Library),
+        graveyard: state.shared_zone_holder(Zone::Graveyard),
     };
     (view.library.is_some() || view.graveyard.is_some()).then_some(view)
 }
