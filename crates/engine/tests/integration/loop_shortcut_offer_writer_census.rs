@@ -335,7 +335,7 @@ fn census(needle: &str) -> Vec<Hit> {
 /// none of its fields. A fifth benign read,
 /// `WaitingFor::chooses_play_before_announcement` in `types/game_state.rs`, names
 /// the variant only in its exhaustive `=> false` arm (not a pre-announcement
-/// prompt). A sixth benign read, `drive_food_chain_offer` in `analysis/corpus.rs`,
+/// prompt). A sixth benign read, `drive_mana_outlet_offer` in `analysis/corpus.rs`,
 /// reads the certificate of an offer `apply()` already minted and mints none.
 ///
 /// R8 CONJUNCT 2, same test — pin VALUE-legality has exactly ONE production

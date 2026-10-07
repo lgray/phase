@@ -1,8 +1,9 @@
 //! CR 732.2a: the confirmer's replay of a trace candidate, and the cover it certifies on.
 
 use engine::analysis::decision_template::IterationCount;
-use engine::analysis::loop_check::{OfferRoad, ShortcutResponse};
+use engine::analysis::loop_check::{LoopCertificate, OfferRoad, ShortcutResponse, WinKind};
 use engine::analysis::resource::{FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis};
+use engine::database::card_db::CardDatabase;
 use engine::game::effects::attach::attach_to;
 use engine::game::engine::certify_object_growth_frames_for_tests;
 use engine::game::perf_counters::play_trace_counters;
@@ -1235,9 +1236,12 @@ fn griffin_board_is_refused_at_its_first_window_and_offered_at_the_next() {
     );
 }
 
-/// CR 732.1b + CR 704.5a: Phyrexian Altar recurring Gravecrawler is refused by name: with no
-/// payoff nothing grows, Altar of the Brood's mill keeps the frames from covering, and Zulaport
-/// Cutthroat's "each opponent loses 1 life" moves the opponents toward losing.
+/// CR 732.1b + CR 121.4 + CR 704.5a: Phyrexian Altar recurring Gravecrawler is refused by name:
+/// with no payoff nothing grows; Moldervine Reclamation ("Whenever a creature you control dies,
+/// you gain 1 life and draw a card.") and Liliana the Repentant ("Whenever another creature or
+/// planeswalker you control enters, mill two cards.") deplete the caster's own library, beside
+/// Altar of the Brood's mill or alone; and Zulaport Cutthroat's "each opponent loses 1 life" moves
+/// the opponents toward losing.
 #[test]
 fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
     let Some(db) = shared_card_db() else { return };
@@ -1246,35 +1250,65 @@ fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
     };
     assert!(is_offer(board.runner.state()), "reach: Board C is offered");
     type Expected = fn(&Result<Vec<String>, OfferRefusal>) -> bool;
-    let refused: [(Option<&str>, Expected); 3] = [
-        (None, |v| *v == Err(OfferRefusal::NoAxis)),
-        (Some("Altar of the Brood"), |v| {
-            matches!(
-                v,
-                Err(OfferRefusal::Cover(
-                    ObjectGrowthVerdict::ResourceRecurrence(false)
-                ))
-            )
-        }),
-        (Some("Zulaport Cutthroat"), |v| {
+    fn at_cover(v: &Result<Vec<String>, OfferRefusal>) -> bool {
+        matches!(
+            v,
+            Err(OfferRefusal::Cover(
+                ObjectGrowthVerdict::ResourceRecurrence(false)
+            ))
+        )
+    }
+    // Per cycle: P0's hand, P0's library, P1's library.
+    let refused: [(&[&str], [i64; 3], Expected); 5] = [
+        (&[], [0, 0, 0], |v| *v == Err(OfferRefusal::NoAxis)),
+        (
+            &["Altar of the Brood", "Moldervine Reclamation"],
+            [1, -1, -1],
+            at_cover,
+        ),
+        (&["Liliana the Repentant"], [0, -2, 0], at_cover),
+        (
+            &["Altar of the Brood", "Liliana the Repentant"],
+            [0, -2, -1],
+            at_cover,
+        ),
+        (&["Zulaport Cutthroat"], [0, 0, 0], |v| {
             *v == Err(OfferRefusal::LossAxis)
         }),
     ];
-    for (payoff, expected) in refused {
-        let (mut runner, altar, gravecrawler) = altar_board(payoff, db);
+    let sizes = |state: &GameState| {
+        [
+            state.players[0].hand.len(),
+            state.players[0].library.len(),
+            state.players[1].library.len(),
+        ]
+        .map(|n| n as i64)
+    };
+    for (payoffs, per_cycle, expected) in refused {
+        let (mut runner, altar, gravecrawler) = altar_board(payoffs.first().copied(), db);
+        for payoff in payoffs.iter().skip(1) {
+            place(runner.state_mut(), P0, payoff, db);
+        }
         let score = |action: &GameAction| {
             2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
         };
         for cycle in 0..3 {
+            let before = sizes(runner.state());
             cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
             settle(&mut runner, &score);
             let index = ability(runner.state(), altar, true);
             activate(&mut runner, altar, index);
             settle(&mut runner, &score);
-            assert!(!is_offer(runner.state()), "{payoff:?} cycle {cycle}");
+            assert!(!is_offer(runner.state()), "{payoffs:?} cycle {cycle}");
+            let after = sizes(runner.state());
+            assert_eq!(
+                [0, 1, 2].map(|i| after[i] - before[i]),
+                per_cycle,
+                "reach: {payoffs:?} cycle {cycle}"
+            );
         }
         let verdict = latest_verdict(runner.state());
-        assert!(expected(&verdict), "{payoff:?}: {verdict:?}");
+        assert!(expected(&verdict), "{payoffs:?}: {verdict:?}");
     }
 }
 
@@ -1414,13 +1448,68 @@ fn a_period_costing_life_is_offered_once_a_floor_holds_the_life_total() {
     assert_eq!(life(runner.state()), 2);
 }
 
-/// CR 732.1b: while Altar of the Brood ("Whenever another permanent you control enters, each
-/// opponent mills a card.") has a library to mill, the Altar + Gravecrawler period does not come
-/// round; once the library is empty it does, and Soul Warden ("Whenever another creature enters,
-/// you gain 1 life.") makes it worth repeating, so the same plays are then offered.
+/// Cycles the Altar + Gravecrawler period at most `cycles` times, declining each offer `declines`
+/// holds for, to the first offer it does not; each offer's P1 library size and certificate.
+fn drive_altar_offers(
+    runner: &mut GameRunner,
+    (altar, gravecrawler): (ObjectId, ObjectId),
+    cycles: usize,
+    declines: impl Fn(&GameState) -> bool,
+) -> Vec<(usize, LoopCertificate)> {
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+    };
+    let mut offers = Vec::new();
+    for _ in 0..cycles {
+        for activates in [false, true] {
+            if activates {
+                let index = ability(runner.state(), altar, true);
+                activate(runner, altar, index);
+            } else {
+                cast(runner, gravecrawler, vec![], CastPaymentMode::Auto);
+            }
+            settle(runner, &score);
+            while let WaitingFor::LoopShortcut { certificate, .. } = &runner.state().waiting_for {
+                offers.push((runner.state().players[1].library.len(), certificate.clone()));
+                if !declines(runner.state()) {
+                    return offers;
+                }
+                act(runner, GameAction::DeclineShortcut);
+                settle(runner, &score);
+            }
+        }
+    }
+    let verdict = confirm_for_tests(runner.state())
+        .pop()
+        .map(|(_, verdict)| verdict);
+    panic!("no standing offer in {cycles} cycles; declined {offers:?}; latest verdict {verdict:?}");
+}
+
+/// CR 701.17b + CR 732.2a: Altar of the Brood ("Whenever another permanent you control enters,
+/// each opponent mills a card.") makes the Altar + Gravecrawler period mill P1 a card a cycle; it
+/// is offered as an advantage on P1's library, and a take performs its cycles.
 #[test]
-fn an_altar_gravecrawler_period_is_offered_once_the_milled_library_is_empty() {
+fn an_altar_of_the_brood_period_is_offered_and_taken() {
     let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = altar_board(Some("Altar of the Brood"), db);
+    let offers = drive_altar_offers(&mut runner, (altar, gravecrawler), 3, |_| false);
+    let (library, certificate) = offers.last().expect("an offer");
+    assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    assert_eq!(certificate.unbounded, [ResourceAxis::LibraryDelta(P1)]);
+    assert_eq!(certificate.win_kind, WinKind::Advantage);
+    take(&mut runner, 2);
+    let state = runner.state();
+    assert_eq!(state.players[1].library.len(), library - 2);
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player: P0 }),
+        "{}",
+        state.waiting_for.variant_name()
+    );
+}
+
+/// Phyrexian Altar and Gravecrawler beside Altar of the Brood and Soul Warden ("Whenever another
+/// creature enters, you gain 1 life."), with three cards in P1's library.
+fn soul_warden_mill_board(db: &CardDatabase) -> (GameRunner, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let altar = scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
@@ -1436,35 +1525,99 @@ fn an_altar_gravecrawler_period_is_offered_once_the_milled_library_is_empty() {
     }
     let mut runner = scenario.build();
     runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
-    let score = |action: &GameAction| {
-        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
-    };
-    let library = |state: &GameState| state.players[1].library.len();
-    let mut refused_while_milling = false;
-    for _ in 0..6 {
-        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
-        settle(&mut runner, &score);
-        if is_offer(runner.state()) {
-            break;
-        }
-        let index = ability(runner.state(), altar, true);
-        activate(&mut runner, altar, index);
-        settle(&mut runner, &score);
-        if is_offer(runner.state()) {
-            break;
-        }
-        refused_while_milling |= library(runner.state()) > 0
-            && latest_verdict(runner.state())
-                == Err(OfferRefusal::Cover(
-                    ObjectGrowthVerdict::ResourceRecurrence(false),
-                ));
-    }
-    assert!(
-        refused_while_milling,
-        "reach: the cover refused it mid-mill"
+    (runner, altar, gravecrawler)
+}
+
+/// CR 701.17b + CR 732.2a: the Soul Warden board's period is offered while Altar of the Brood
+/// still has P1's cards to mill, and once each offer is declined and the library is empty, Soul
+/// Warden's life alone makes it worth repeating, so the same plays are offered again.
+#[test]
+fn an_altar_gravecrawler_period_is_offered_once_the_milled_library_is_empty() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = soul_warden_mill_board(db);
+    let offers = drive_altar_offers(&mut runner, (altar, gravecrawler), 8, |state| {
+        !state.players[1].library.is_empty()
+    });
+    let (first_library, first) = &offers[0];
+    assert!(*first_library > 0, "{offers:?}");
+    assert_eq!(
+        first.unbounded,
+        [ResourceAxis::Life(P0), ResourceAxis::LibraryDelta(P1)]
     );
+    let (library, last) = offers.last().expect("an offer");
+    assert_eq!(*library, 0);
+    assert_eq!(last.unbounded, [ResourceAxis::Life(P0)]);
+    assert_eq!(last.win_kind, WinKind::Advantage);
     assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
-    assert_eq!(library(runner.state()), 0);
+}
+
+/// CR 701.17b + CR 732.2c: on the Soul Warden board, a take of the offer made at P1's last card
+/// performs its cycles, milling that card and gaining P0 its life, and marks nothing.
+#[test]
+fn a_take_whose_period_mills_the_last_card_performs_it() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = soul_warden_mill_board(db);
+    let offers = drive_altar_offers(&mut runner, (altar, gravecrawler), 8, |state| {
+        state.players[1].library.len() > 1
+    });
+    assert!(
+        offers[0]
+            .1
+            .unbounded
+            .contains(&ResourceAxis::LibraryDelta(P1)),
+        "reach: {offers:?}"
+    );
+    let (library, certificate) = offers.last().expect("an offer");
+    assert_eq!(*library, 1, "reach");
+    assert_eq!(certificate.unbounded, [ResourceAxis::Life(P0)]);
+    let state = runner.state();
+    let (graveyard, life) = (state.players[1].graveyard.len(), state.players[0].life);
+    take(&mut runner, 2);
+    let state = runner.state();
+    assert_eq!(state.players[1].library.len(), 0);
+    assert_eq!(state.players[1].graveyard.len(), graveyard + 1);
+    assert_eq!(state.players[0].life, life + 2);
+    assert!(!state
+        .unbounded_resources
+        .get(&P0)
+        .is_some_and(|axes| axes.contains(&ResourceAxis::Life(P0))));
+}
+
+/// CR 701.17b + CR 603.6a: with Genesis Chamber ("Whenever a nontoken creature enters, if this
+/// artifact is untapped, that creature's controller creates a 1/1 colorless Myr artifact creature
+/// token.") beside Altar of the Brood, each Gravecrawler entry and each Myr entry mills P1 a card,
+/// so a take of the offer made at P1's last two cards performs its cycle rather than standing on
+/// the token mark.
+#[test]
+fn a_take_whose_minting_period_mills_the_last_cards_performs_them() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = altar_board(Some("Altar of the Brood"), db);
+    place(runner.state_mut(), P0, "Genesis Chamber", db);
+    let offers = drive_altar_offers(&mut runner, (altar, gravecrawler), 8, |state| {
+        state.players[1].library.len() > 2
+    });
+    assert!(
+        offers[0]
+            .1
+            .unbounded
+            .contains(&ResourceAxis::LibraryDelta(P1)),
+        "reach: {offers:?}"
+    );
+    let (library, certificate) = offers.last().expect("an offer");
+    assert_eq!(*library, 2, "reach");
+    assert!(certificate.unbounded.contains(&ResourceAxis::TokensCreated));
+    assert!(!certificate
+        .unbounded
+        .contains(&ResourceAxis::LibraryDelta(P1)));
+    let state = runner.state();
+    let (graveyard, myr) = (state.players[1].graveyard.len(), tokens(state, P0).len());
+    take(&mut runner, 1);
+    let state = runner.state();
+    assert_eq!(state.players[1].library.len(), 0);
+    assert_eq!(state.players[1].graveyard.len(), graveyard + 2);
+    assert_eq!(tokens(state, P0).len(), myr + 1);
+    assert!(!marks_tokens(state, P0));
+    assert!(!state.pending_unbounded_materialization.contains_key(&P0));
 }
 
 /// CR 732.3: two seats each tapping and untapping their own Basalt Monolith under Power Artifact

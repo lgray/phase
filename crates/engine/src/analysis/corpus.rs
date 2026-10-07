@@ -577,6 +577,14 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         gated_on: None,
         deferral: None,
     },
+    ComboRow {
+        name: "Phyrexian Altar + Gravecrawler + Altar of the Brood",
+        cards: &["Phyrexian Altar", "Gravecrawler", "Altar of the Brood"],
+        family: ResourceFamily::Mill,
+        win_kind: WinKind::Advantage,
+        gated_on: None,
+        deferral: None,
+    },
 ];
 
 #[cfg(test)]
@@ -708,6 +716,7 @@ pub(crate) const DRIVERS: &[(usize, ComboDriver)] = &[
     (40, ComboDriver::Offline(drive_food_chain_scourge_offer)),
     (50, ComboDriver::Offline(drive_offline_spike_archangel)),
     (54, ComboDriver::Offline(drive_food_chain_squee_offer)),
+    (55, ComboDriver::Offline(drive_altar_brood_offer)),
 ];
 
 /// Number of rows in the corpus.
@@ -2226,18 +2235,23 @@ pub(crate) fn first_gameover_beat(trace: &[BeatTrace]) -> Option<(usize, PlayerI
     })
 }
 
-/// CR 732.2a: Food Chain exiling `creature`, which its own text lets be cast from exile, then that
-/// cast, cycle by cycle through `apply()` on a four-seat board until the engine offers the loop;
-/// the offer's certificate.
-fn drive_food_chain_offer(
+/// CR 732.2a: `outlet` paying its mana-ability cost with `creature`, which its own text lets be
+/// cast from where that cost put it, then that cast, cycle by cycle through `apply()` on a
+/// four-seat board with `beside` until the engine offers the loop; the offer's certificate.
+fn drive_mana_outlet_offer(
     db: &CardDatabase,
+    outlet: &str,
+    beside: &[&str],
     creature: &str,
     land: &str,
     color: ManaType,
 ) -> Option<LoopCertificate> {
     let mut scenario = GameScenario::new_n_player(4, 42);
     scenario.at_phase(Phase::PreCombatMain);
-    let food_chain = scenario.add_real_card(P0, "Food Chain", Zone::Battlefield, db);
+    let outlet = scenario.add_real_card(P0, outlet, Zone::Battlefield, db);
+    for card in beside {
+        scenario.add_real_card(P0, card, Zone::Battlefield, db);
+    }
     let creature = scenario.add_real_card(P0, creature, Zone::Battlefield, db);
     for seat in 0..4 {
         for _ in 0..8 {
@@ -2253,7 +2267,7 @@ fn drive_food_chain_offer(
     for _ in 0..4 {
         runner
             .act(GameAction::ActivateAbility {
-                source_id: food_chain,
+                source_id: outlet,
                 ability_index: 0,
             })
             .ok()?;
@@ -2268,6 +2282,10 @@ fn drive_food_chain_offer(
                 count: 1,
             })
             .ok()?;
+        // The mana ability leaves an empty-stack priority frame, where an offer can stand.
+        if let Some(certificate) = offered(&runner) {
+            return Some(certificate);
+        }
         let card_id = runner.state().objects.get(&creature)?.card_id;
         runner
             .act(GameAction::CastSpell {
@@ -2295,12 +2313,41 @@ fn drive_food_chain_offer(
 
 /// C1: Eternal Scourge ("You may cast this card from exile. …").
 pub(crate) fn drive_food_chain_scourge_offer(db: &CardDatabase) -> Option<LoopCertificate> {
-    drive_food_chain_offer(db, "Eternal Scourge", "Swamp", ManaType::Black)
+    drive_mana_outlet_offer(
+        db,
+        "Food Chain",
+        &[],
+        "Eternal Scourge",
+        "Swamp",
+        ManaType::Black,
+    )
 }
 
 /// C2: Squee, the Immortal ("You may cast this card from your graveyard or from exile.").
 pub(crate) fn drive_food_chain_squee_offer(db: &CardDatabase) -> Option<LoopCertificate> {
-    drive_food_chain_offer(db, "Squee, the Immortal", "Mountain", ManaType::Red)
+    drive_mana_outlet_offer(
+        db,
+        "Food Chain",
+        &[],
+        "Squee, the Immortal",
+        "Mountain",
+        ManaType::Red,
+    )
+}
+
+/// Phyrexian Altar ("Sacrifice a creature: Add one mana of any color.") sacrificing Gravecrawler,
+/// cast back from the graveyard beside the Zombie Walking Corpse, while Altar of the Brood
+/// ("Whenever another permanent you control enters, each opponent mills a card.") mills each
+/// opponent once a cycle.
+pub(crate) fn drive_altar_brood_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    drive_mana_outlet_offer(
+        db,
+        "Phyrexian Altar",
+        &["Altar of the Brood", "Walking Corpse"],
+        "Gravecrawler",
+        "Swamp",
+        ManaType::Black,
+    )
 }
 
 /// Drive one live drain cascade (idx 17 / idx 18) to its first `GameOver`. The two

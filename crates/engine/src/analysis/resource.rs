@@ -2883,9 +2883,10 @@ impl ResourceAxis {
             // defaulted. Reachability at the object-growth producer:
             //   * CR 119.3 `Life`, CR 122.1 `Counter`, `TokensCreated` — reachable today, each
             //     with a batched item (`LoopCollapseAxis::from_resource_axis` => `Some`).
-            //   * CR 401 `LibraryDelta` — reachable POSITIVE today; NEGATIVE once the mill board
-            //     is admitted (`ResourceVector::unbounded_components`' CR 401 exemption keeps a
-            //     negative library delta). Replay-only for now: no batched item exists.
+            //   * CR 401 `LibraryDelta` — reachable POSITIVE, and NEGATIVE on either cover arm
+            //     when a certified departure depletes an opponent's library
+            //     (`ResourceVector::unbounded_components`' CR 401 exemption keeps a negative
+            //     library delta). Replay-only for now: no batched item exists.
             //   * CR 704.5c `Poison` — blocked today by `has_no_loss_axis` (`poison <= 0`).
             //   * The event-fed axes — `delta` here is a two-`snapshot` diff and only
             //     `tokens_created` is fed back in, so they read 0 at this producer.
@@ -4620,7 +4621,8 @@ pub enum FodderCoverRefusal {
 pub enum ObjectGrowthVerdict {
     /// One homogeneous class was minted: each frame pair's fodder-cover refusals.
     FodderGrowth([Vec<FodderCoverRefusal>; 2]),
-    /// Nothing was minted: whether both pairs recur modulo resources or counter growth.
+    /// Nothing was minted: whether both pairs recur modulo resources or counter growth, each
+    /// pair's certified instructed departure stripped.
     ResourceRecurrence(bool),
 }
 
@@ -4634,14 +4636,15 @@ impl ObjectGrowthVerdict {
 }
 
 /// CR 732.1b: whether a mint of bare tapped copies under the period's controller makes what a
-/// fodder cover admitted as the period's growth.
+/// cover admitted as the period's growth.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CoveredGrowth {
     /// Objects of the grown class and nothing else, each under the period's controller.
     #[default]
     Mintable,
-    /// CR 702.10b + CR 603.7a + CR 111.2: a grown object carries a keyword, a delayed trigger acts
-    /// on it alone, or another player controls it, so only performing the period makes it.
+    /// CR 702.10b + CR 603.7a + CR 111.2 + CR 701.17b: a grown object carries a keyword, a delayed
+    /// trigger acts on it alone, another player controls it, or a certified instructed departure
+    /// moved it, so only performing the period makes it.
     PerformedOnly,
 }
 
@@ -4736,12 +4739,60 @@ pub(crate) fn fodder_growth_cover_refusals(
         .iter()
         .filter_map(|id| cf.objects.get(id))
         .any(|o| o.zone == Zone::Battlefield && o.controller != caster);
-    let growth = if keyword || delayed_trigger || other_controller {
+    // CR 701.17b: no mint makes a certified departure, so only performing the period does.
+    let growth = if keyword || delayed_trigger || other_controller || certified.is_some() {
         CoveredGrowth::PerformedOnly
     } else {
         CoveredGrowth::Mintable
     };
     (refusals, growth)
+}
+
+/// `state` with each of `ids` removed from `objects` and from the zone collection its own object
+/// names (CR 400.1).
+pub(crate) fn frame_without<'a>(
+    state: &GameState,
+    ids: impl IntoIterator<Item = &'a ObjectId>,
+) -> GameState {
+    let mut frame = state.clone();
+    for id in ids {
+        if let Some((zone, owner)) = frame.objects.get(id).map(|o| (o.zone, o.owner)) {
+            // allow-raw-zone: prunes a discarded comparison-frame clone, not a gameplay zone event.
+            crate::game::zones::remove_from_zone(&mut frame, *id, zone, owner);
+            frame.objects.remove(id);
+        }
+    }
+    frame
+}
+
+/// CR 732.2a: the no-mint arm's cover of one frame pair, with the growth it admits. The pair
+/// covers when it is equal modulo projected resources or covers modulo preserved-`Generic`
+/// counter growth, or does so once the ids of a certified instructed departure are stripped
+/// from both frames; the offer is declinable and never crowns a `GameOver`.
+pub(crate) fn resource_recurrence_covers(
+    prior: &GameState,
+    current: &GameState,
+    caster: PlayerId,
+) -> Option<CoveredGrowth> {
+    let covers = |a: &GameState, b: &GameState| {
+        loop_states_equal_modulo_resources(a, b) || loop_states_cover_modulo_counter_growth(a, b)
+    };
+    if covers(prior, current) {
+        return Some(CoveredGrowth::Mintable);
+    }
+    // CR 701.17b: the fodder arm's certificate, asked on the fodder arm's frames.
+    let cf = flush_clone(current);
+    let certified = certify_instructed_opponent_library_departure(
+        &project_out_resources(&flush_clone(prior)),
+        &project_out_resources(&cf),
+        caster,
+    )?;
+    (grown_objects_are_inert(&cf, &certified.departed)
+        && covers(
+            &frame_without(prior, &certified.departed),
+            &frame_without(current, &certified.departed),
+        ))
+    .then_some(CoveredGrowth::PerformedOnly)
 }
 
 // ===========================================================================
@@ -24170,6 +24221,74 @@ mod tests {
         assert!(
             !fodder_cover(&prior, &current),
             "an unnamed card's drift is refused even though a certificate exists for 900"
+        );
+    }
+
+    /// Two otherwise identical frames holding card 900 in `owner`'s library, departed to `to` in
+    /// `current` only.
+    fn no_mint_pair_with_departure(owner: PlayerId, to: Zone) -> (GameState, GameState) {
+        let mut prior = GameState::new_two_player(42);
+        cover_library_card(&mut prior, 900, owner);
+        let mut current = prior.clone();
+        cover_depart(&mut current, ObjectId(900), to);
+        (prior, current)
+    }
+
+    /// CR 701.17b: the no-mint arm admits an opponent's certified departure as growth only
+    /// performing makes, and refuses the caster's, a non-inert one, and an unnamed card's drift.
+    #[test]
+    fn the_no_mint_cover_admits_only_a_certified_inert_departure_and_only_its_ids() {
+        let mut prior = GameState::new_two_player(42);
+        cover_library_card(&mut prior, 900, PlayerId(1));
+        assert_eq!(
+            resource_recurrence_covers(&prior, &prior.clone(), PlayerId(0)),
+            Some(CoveredGrowth::Mintable),
+            "reach: the departure-free pair covers"
+        );
+
+        let (prior, current) = no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            Some(CoveredGrowth::PerformedOnly)
+        );
+
+        let (prior, current) = no_mint_pair_with_departure(PlayerId(0), Zone::Graveyard);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            None
+        );
+
+        let (prior, mut current) = no_mint_pair_with_departure(PlayerId(1), Zone::Battlefield);
+        current
+            .objects
+            .get_mut(&ObjectId(900))
+            .expect("the arrived card is live")
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            None,
+            "an arrival carrying a counter is not inert"
+        );
+
+        let (mut prior, mut current) = no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard);
+        cover_library_card(&mut prior, 901, PlayerId(1));
+        cover_library_card(&mut current, 901, PlayerId(1));
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            Some(CoveredGrowth::PerformedOnly),
+            "reach: a second, motionless library card does not disturb the cover"
+        );
+        current
+            .objects
+            .get_mut(&ObjectId(901))
+            .expect("the motionless card is live")
+            .counters
+            .insert(CounterType::Stun, 1);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            None,
+            "the strip relieves only the certified ids"
         );
     }
 

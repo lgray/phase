@@ -6832,11 +6832,9 @@ pub(crate) fn certify_object_growth_frames(
     //  - fodder-growth (one HOMOGENEOUS class of k >= 1 members was reproduced each period,
     //    `derived_fodder_class` is `Some`): cover modulo the inert reproduced fodder class (the
     //    P3 object-growth path, unchanged — the cover consumes only the class, never k).
-    //  - pure resource growth (NO new battlefield object — the multi-activation mana-engine class):
-    //    the board returns EQUAL modulo projected resources (mana grows +N/period, board identical).
-    //    PROBE-1 measured `loop_states_equal_modulo_resources` TRUE on real Basalt+Power sequence
-    //    boundaries. A PARTIAL period never reaches here board-equal (the drive re-taps a tapped
-    //    source and aborts first), so the drive+cover IS the period-boundary check.
+    //  - nothing minted: `resource_recurrence_covers` on each pair. A PARTIAL period never
+    //    reaches here covered (the drive re-taps a tapped source and aborts first), so the
+    //    drive+cover IS the period-boundary check.
     match derived_fodder_class(s_n, s_n1) {
         Some((mut fodder, _k)) => {
             crate::analysis::resource::project_object_for_loop(&mut fodder);
@@ -6852,22 +6850,16 @@ pub(crate) fn certify_object_growth_frames(
             )
         }
         None => {
-            // FIX-2 (CR 732.2a / CR 104.4b): the multi-activation / pure-counter class returns
-            // EQUAL modulo projected resources OR covers modulo preserved-`Generic` counter growth
-            // (Pentad charge, One Ring burden — the whole preserved-`Generic` family, not one
-            // card). The base `loop_states_equal_modulo_resources` PRESERVES `Generic` counters, so
-            // a +1-charge/cycle loop is UNEQUAL there; the counter-growth cover accepts it. Sound:
-            // the offer is declinable and never crowns a `GameOver` (the cover's own doc,
-            // `resource.rs`), and is deliberately NOT wired into any Path-A/Path-B lethal seam.
-            let cover = |a: &GameState, b: &GameState| {
-                crate::analysis::resource::loop_states_equal_modulo_resources(a, b)
-                    || crate::analysis::resource::loop_states_cover_modulo_counter_growth(a, b)
-            };
-            (
-                ObjectGrowthVerdict::ResourceRecurrence(
-                    cover(&cs_n, &cs_n1) && cover(&cs_n1, &cs_n2),
+            let first =
+                crate::analysis::resource::resource_recurrence_covers(&cs_n, &cs_n1, caster);
+            let second =
+                crate::analysis::resource::resource_recurrence_covers(&cs_n1, &cs_n2, caster);
+            first.zip(second).map_or(
+                (
+                    ObjectGrowthVerdict::ResourceRecurrence(false),
+                    CoveredGrowth::Mintable,
                 ),
-                CoveredGrowth::Mintable,
+                |(a, b)| (ObjectGrowthVerdict::ResourceRecurrence(true), a.max(b)),
             )
         }
     }

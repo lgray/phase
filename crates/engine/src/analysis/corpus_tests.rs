@@ -61,7 +61,7 @@ fn card_db() -> &'static CardDatabase {
 /// fails loudly: the row total, the card-gated rows, and their testable complement.
 #[test]
 fn corpus_table_shape_is_locked() {
-    assert_eq!(corpus::corpus_len(), 55, "corpus must hold all 55 rows");
+    assert_eq!(corpus::corpus_len(), 56, "corpus must hold all 56 rows");
     let gated = (0..corpus::corpus_len())
         .filter(|&i| corpus::row(i).gated_on.is_some())
         .count();
@@ -85,7 +85,7 @@ fn corpus_table_shape_is_locked() {
     }
     // The testable rows are the complement of the gated rows.
     let testable = corpus::corpus_len() - gated;
-    assert_eq!(testable, 51, "51 corpus combos are testable once driven");
+    assert_eq!(testable, 52, "52 corpus combos are testable once driven");
 }
 
 /// META-TEST: the corpus is a clean partition — every row is exactly one of
@@ -104,7 +104,7 @@ fn corpus_partition_is_locked() {
         .filter(|&i| corpus::row(i).deferral.is_some())
         .collect();
 
-    assert_eq!(driven.len(), 15, "15 driven rows");
+    assert_eq!(driven.len(), 16, "16 driven rows");
     assert_eq!(gated.len(), 4, "4 gated rows");
     assert_eq!(deferred.len(), 36, "36 deferred rows");
 
@@ -127,7 +127,7 @@ fn corpus_partition_is_locked() {
         n,
         "driven ∪ gated ∪ deferred must cover every one of the {n} rows"
     );
-    assert_eq!(n, 55);
+    assert_eq!(n, 56);
 
     // Exclusivity: a driven or gated row must not also declare a deferral bucket.
     for &i in driven.iter().chain(gated.iter()) {
@@ -285,6 +285,23 @@ fn drive_row_classifies_corpus_via_shared_pipeline() {
             }
             other => panic!("idx {idx} (Food Chain) must be Confirmed, got {other:?}"),
         }
+    }
+
+    // Confirmed (offer): the Altar of the Brood member mills each of the three opponents.
+    match corpus::drive_row(db, 55).status {
+        corpus::RowStatus::Confirmed {
+            unbounded,
+            win_kind,
+        } => {
+            assert_eq!(win_kind, WinKind::Advantage);
+            for seat in 1..4 {
+                assert!(
+                    unbounded.contains(&ResourceAxis::LibraryDelta(PlayerId(seat))),
+                    "idx 55 must name P{seat}'s library (got {unbounded:?})"
+                );
+            }
+        }
+        other => panic!("idx 55 (Altar of the Brood) must be Confirmed, got {other:?}"),
     }
 
     // Deferred: a non-driven testable row reports its structural bucket, never Failed.

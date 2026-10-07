@@ -11,7 +11,7 @@ use crate::analysis::decision_template::{
     ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
 };
 use crate::analysis::resource::{
-    CertifiedInstructedDeparture, CoveredGrowth, ObjectGrowthVerdict, ResourceVector,
+    frame_without, CertifiedInstructedDeparture, CoveredGrowth, ObjectGrowthVerdict, ResourceVector,
 };
 use crate::game::engine::{
     announced_target_pins, apply, certify_object_growth_frames, clear_frame_bookkeeping,
@@ -603,14 +603,7 @@ fn answered_choice(replay: &GameState, action: &GameAction) -> Option<PinnedDeci
 /// The frame with every object the period cast removed, since a cast card returns where it
 /// came from (CR 400.7), and its churning bookkeeping cleared.
 pub(crate) fn normalize_cast_frame(state: &GameState, casts: &[ObjectId]) -> GameState {
-    let mut normalized = state.clone();
-    for id in casts {
-        if let Some(object) = normalized.objects.get(id).cloned() {
-            // allow-raw-zone: prunes a discarded comparison-frame clone, not a gameplay zone event.
-            crate::game::zones::remove_from_zone(&mut normalized, *id, object.zone, object.owner);
-            normalized.objects.remove(id);
-        }
-    }
+    let mut normalized = frame_without(state, casts);
     clear_frame_bookkeeping(&mut normalized);
     normalized
 }
