@@ -5945,7 +5945,7 @@ enum TakeRoute {
     /// The confirmed period, performed now.
     Replay,
     /// CR 732.1b: the ∞ mark, whose count its controller names when the step ends.
-    Mark(PeriodGrowth),
+    Mark(Box<PeriodGrowth>),
     /// The ring drain.
     Ring,
 }
@@ -5980,7 +5980,7 @@ fn take_route(
     if growth.collapse_is_replay(state, proposal) {
         TakeRoute::Replay
     } else {
-        TakeRoute::Mark(growth)
+        TakeRoute::Mark(Box::new(growth))
     }
 }
 
@@ -6165,7 +6165,7 @@ fn materialize_fixed_shortcut(
                 .pending_unbounded_materialization
                 .get(&proposal.proposer)
                 .map_or(0, Vec::len);
-            materialize_object_growth_shortcut(state, result, proposal, growth);
+            materialize_object_growth_shortcut(state, result, proposal, *growth);
             if state
                 .pending_unbounded_materialization
                 .get(&proposal.proposer)
