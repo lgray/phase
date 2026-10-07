@@ -5968,11 +5968,15 @@ fn take_route(
         || proposal.shortened_by.is_some()
         || !state.stack.is_empty()
         || proposal.period.growth() == crate::analysis::resource::CoveredGrowth::PerformedOnly
-        || adds_restricted_mana(state, &proposal.period, proposal.proposer)
     {
         return TakeRoute::Replay;
     }
-    let growth = PeriodGrowth::derive(state, proposal);
+    // Every accept-time derivation below reads this one driven cycle.
+    let frames = drive_one_period_frames(state, &proposal.period, proposal.proposer);
+    if adds_restricted_mana(frames.as_ref(), proposal.proposer) {
+        return TakeRoute::Replay;
+    }
+    let growth = PeriodGrowth::derive(frames.as_ref(), proposal.proposer);
     if growth.collapse_is_replay(state, proposal) {
         TakeRoute::Replay
     } else {
@@ -5988,10 +5992,15 @@ struct PeriodGrowth {
 }
 
 impl PeriodGrowth {
-    fn derive(state: &GameState, proposal: &crate::analysis::loop_check::ShortcutProposal) -> Self {
+    fn derive(frames: Option<&(GameState, GameState)>, controller: PlayerId) -> Self {
         use crate::types::game_state::{PersistentAxisMaterialization, TokenGrowth};
-        let (period, controller) = (&proposal.period, proposal.proposer);
-        let fodder = current_period_fodder(state, period, controller);
+        let Some((before, after)) = frames else {
+            return Self {
+                fodder: None,
+                batched: Vec::new(),
+            };
+        };
+        let fodder = current_period_fodder(before, after, controller);
         let mut batched = Vec::new();
         if let Some(fodder) = &fodder {
             // CR 707.2: the profile is captured at accept, since the board is not frozen until
@@ -6005,20 +6014,16 @@ impl PeriodGrowth {
                 },
             )));
         }
-        let growths = current_period_counter_growth(state, period, controller);
+        let growths = current_period_counter_growth(before, after);
         if !growths.is_empty() {
             batched.push(PersistentAxisMaterialization::Counters(growths));
         }
-        batched.extend(
-            current_period_life_growth(state, period, controller)
-                .into_iter()
-                .map(
-                    |(player, per_cycle_delta)| PersistentAxisMaterialization::Life {
-                        player,
-                        per_cycle_delta,
-                    },
-                ),
-        );
+        batched.extend(current_period_life_growth(before, after).into_iter().map(
+            |(player, per_cycle_delta)| PersistentAxisMaterialization::Life {
+                player,
+                per_cycle_delta,
+            },
+        ));
         Self { fodder, batched }
     }
 
@@ -6073,13 +6078,9 @@ impl PeriodGrowth {
     }
 }
 
-/// CR 106.6: whether one cycle of `period` leaves its controller more mana carrying a spending
+/// CR 106.6: whether one driven cycle leaves its controller more mana carrying a spending
 /// restriction than it found.
-fn adds_restricted_mana(
-    state: &GameState,
-    period: &super::period_confirm::ConfirmedPeriod,
-    controller: PlayerId,
-) -> bool {
+fn adds_restricted_mana(frames: Option<&(GameState, GameState)>, controller: PlayerId) -> bool {
     let restricted = |state: &GameState| {
         state
             .players
@@ -6093,8 +6094,7 @@ fn adds_restricted_mana(
                     .count()
             })
     };
-    drive_one_period_frames(state, period, controller)
-        .is_some_and(|(before, after)| restricted(&after) > restricted(&before))
+    frames.is_some_and(|(before, after)| restricted(after) > restricted(before))
 }
 
 /// PR-7 Phase 4b: CR 732.2a finite materialization of a confirmed `Fixed(N)` loop
@@ -7012,20 +7012,19 @@ fn drive_one_period_frames(
 }
 
 fn current_period_fodder(
-    state: &GameState,
-    period: &super::period_confirm::ConfirmedPeriod,
+    before: &GameState,
+    after: &GameState,
     controller: PlayerId,
 ) -> Option<PeriodFodder> {
-    let (before, after) = drive_one_period_frames(state, period, controller)?;
-    let (class, per_cycle_count) = derived_fodder_class(&before, &after)?;
+    let (class, per_cycle_count) = derived_fodder_class(before, after)?;
     // CR 702.51a: the period taps a fodder iff the driven tapped-fodder multiset GREW across the
     // one-period drive. `select_convoke_taps` sorts fodder (`is_token`) FIRST, so a convoke/
     // tap-cost period taps a reproduced fodder → this grows; a mana-paid untapped-growth period
     // taps nothing → this is FALSE. This is exactly the tapped-growth axis the
     // `board_covers_modulo_fodder` `>=` untapped cover (resource.rs) does not distinguish.
-    let taps_fodder = crate::analysis::resource::tapped_fodder_members(&after, controller, &class)
+    let taps_fodder = crate::analysis::resource::tapped_fodder_members(after, controller, &class)
         .len()
-        > crate::analysis::resource::tapped_fodder_members(&before, controller, &class).len();
+        > crate::analysis::resource::tapped_fodder_members(before, controller, &class).len();
     Some(PeriodFodder {
         class,
         per_cycle_count,
@@ -7033,8 +7032,8 @@ fn current_period_fodder(
     })
 }
 
-/// CR 122.1 + CR 732.2a: THE SINGLE per-object counter derivation of an accepted period — drive
-/// ONE iteration on a clone (`drive_one_period_frames`) and diff beneficial-materializable
+/// CR 122.1 + CR 732.2a: THE SINGLE per-object counter derivation of an accepted period — diff
+/// the one driven iteration's frames (`drive_one_period_frames`) for beneficial-materializable
 /// counters (`grown_beneficial_counter_deltas`), yielding per-cycle δ for the whole beneficial
 /// class (+1/+1 / loyalty / defense / charge). Feeds BOTH consumers: the batched-collapse δ stash,
 /// and (projected to `(object, counter)`) the `∞` DISPLAY counter channel. The display half used
@@ -7047,14 +7046,10 @@ fn current_period_fodder(
 /// consumer is only reached in the UNOBSERVED route (the firewall gates it); the display
 /// registration is unconditional on both routes.
 fn current_period_counter_growth(
-    state: &GameState,
-    period: &super::period_confirm::ConfirmedPeriod,
-    controller: PlayerId,
+    before: &GameState,
+    after: &GameState,
 ) -> Vec<crate::types::game_state::CounterGrowth> {
-    let Some((before, after)) = drive_one_period_frames(state, period, controller) else {
-        return Vec::new();
-    };
-    crate::analysis::resource::grown_beneficial_counter_deltas(&before, &after)
+    crate::analysis::resource::grown_beneficial_counter_deltas(before, after)
         .into_iter()
         .map(
             |(object, counter, per_cycle_delta)| crate::types::game_state::CounterGrowth {
@@ -7066,19 +7061,12 @@ fn current_period_counter_growth(
         .collect()
 }
 
-/// CR 119.3 + CR 732.2a: re-derive the per-player life GAIN δ of the accepted period by
-/// driving ONE iteration on a clone and diffing life totals (`grown_life_deltas`). The
-/// batched-collapse δ source for the life axis. Empty when the sequence is empty or the
-/// period gains no life. Only reached in the UNOBSERVED batched route (the firewall gates it).
-fn current_period_life_growth(
-    state: &GameState,
-    period: &super::period_confirm::ConfirmedPeriod,
-    controller: PlayerId,
-) -> Vec<(PlayerId, u32)> {
-    let Some((before, after)) = drive_one_period_frames(state, period, controller) else {
-        return Vec::new();
-    };
-    crate::analysis::resource::grown_life_deltas(&before, &after)
+/// CR 119.3 + CR 732.2a: the per-player life GAIN δ of the accepted period, diffed off the one
+/// driven iteration's frames (`grown_life_deltas`). The batched-collapse δ source for the life
+/// axis. Empty when the period gains no life. Only reached in the UNOBSERVED batched route (the
+/// firewall gates it).
+fn current_period_life_growth(before: &GameState, after: &GameState) -> Vec<(PlayerId, u32)> {
+    crate::analysis::resource::grown_life_deltas(before, after)
 }
 
 /// CR 732.2a: the offer for the first of `spans` the confirmer confirms at this priority frame,
