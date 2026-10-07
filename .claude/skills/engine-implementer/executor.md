@@ -79,10 +79,10 @@ A "stop and return" is success, not failure. Bandaids that ship are far worse th
 
 Run the following only after implementation/fix edits land. Record the commands, starting SHA, ending SHA, and result as `PREPARATORY`; none completes the candidate gate. Per-commit checks are formatting and a focused test run only — no clippy, no full suite, no card-data generation; those run once, at the acceptance candidate ([SKILL.md Step 5](SKILL.md#step-5--verify-the-committed-candidate)). Existing discriminating-test, maintainer-simulation, selected-authority/provenance, coverage-honesty, and CR-annotation gates below remain single-sourced and mandatory for implementation/fix mode.
 
-After edits land, derive `RUST_PATHS` from the frozen authorized path list (only `*.rs` entries). If it is empty, skip formatting. Otherwise format only those exact paths; never run workspace-wide formatting in `IMPLEMENTATION_WORKTREE`, because it can create an out-of-scope delta:
+After edits land, derive `RUST_PATHS` from the frozen authorized path list (only `*.rs` entries). If it is empty, skip formatting. Otherwise format only those exact paths; never run workspace-wide formatting in `IMPLEMENTATION_WORKTREE`, because it can create an out-of-scope delta. `cargo fmt` formats every workspace target whatever paths follow `--`, and plain `rustfmt` follows `mod` declarations into child files, so call `rustfmt` with `skip_children`:
 
 ```bash
-(cd "$IMPLEMENTATION_WORKTREE" && cargo fmt --all -- "${RUST_PATHS[@]}")
+(cd "$IMPLEMENTATION_WORKTREE" && rustfmt --edition 2021 --config skip_children=true "${RUST_PATHS[@]}")
 ```
 
 For Rust / engine / parser work, run the focused set: every test the change adds or edits, the tests in each module the diff touches, and the tests that scan the source tree (named `*census*` by convention), since an edit anywhere can move their counts. Building that run is the per-commit compile check. Report `FOCUSED_FILTER` (a nextest filterset) with the result:
@@ -91,7 +91,7 @@ For Rust / engine / parser work, run the focused set: every test the change adds
 (cd "$IMPLEMENTATION_WORKTREE" && cargo nextest run -p phase-engine --features test-support -E "$FOCUSED_FILTER")
 ```
 
-For frontend work, run the test files the change adds, edits, or whose subject it touches:
+For frontend work, run the test files the change adds, edits, or whose subject it touches. If there are none, skip the run and report why; `vitest run` with no file arguments runs the whole suite:
 
 ```bash
 (cd "$IMPLEMENTATION_WORKTREE/client" && pnpm vitest run "${FOCUSED_TEST_FILES[@]}")
