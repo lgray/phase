@@ -16022,7 +16022,7 @@ fn resolve_chain_body(
             if let Some(choice) = state.may_trigger_auto_choice_for_live_prompt(key) {
                 resolve_optional_effect_decision(
                     state,
-                    ability.clone(),
+                    ability_with_event_context_targets(state, ability),
                     choice,
                     events,
                     depth + 1,

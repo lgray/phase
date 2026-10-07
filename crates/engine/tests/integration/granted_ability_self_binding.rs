@@ -5469,6 +5469,8 @@ mod granter_stamp {
 
     mod bound_granter {
         use super::*;
+        use engine::types::game_state::{AutoMayChoice, MayTriggerAutoChoiceScope};
+        use engine::types::keywords::KeywordKind;
 
         fn set_tapped(b: &mut Board, id: ObjectId, tapped: bool) {
             let st = b.runner.state_mut();
@@ -5835,6 +5837,210 @@ mod granter_stamp {
                 "reach-guard: the Animate installed its effect on the host"
             );
             assert_eq!(power(&b), 6);
+        }
+
+        const UNREACHED: &str = "Effect:granter_reference_unreached";
+
+        fn keyword_counters(b: &Board, id: ObjectId, kind: KeywordKind) -> u32 {
+            b.runner.state().objects[&id]
+                .counters
+                .get(&CounterType::Keyword(kind))
+                .copied()
+                .unwrap_or(0)
+        }
+
+        /// Resolves the host's last granted ability, accepting each "you may".
+        fn resolve_accepting(b: &mut Board) {
+            activate_last(b);
+            for _ in 0..8 {
+                match b.runner.state().waiting_for {
+                    WaitingFor::OptionalEffectChoice { .. } => {
+                        b.runner
+                            .act(GameAction::DecideOptionalEffect { accept: true })
+                            .unwrap();
+                    }
+                    _ => b.runner.advance_until_stack_empty(),
+                }
+            }
+        }
+
+        /// CR 201.5a + CR 115.10a: an unprompted tap of the granter, or a counter list headed
+        /// by it, is refused; the prompted forms and the other granter recipients are not.
+        #[test]
+        fn granter_read_from_empty_targets_is_refused() {
+            let shape = "Creatures you control have \"BODY\"";
+            for refused in [
+                "{1}: Tap Foo Bar.",
+                "{T}: Put a flying counter and a vigilance counter on Foo Bar.",
+                "{T}: Put a +1/+1 counter, a flying counter and a vigilance counter on Foo Bar.",
+                "Whenever this creature attacks, tap Foo Bar.",
+                "{T}: Draw a card. Put a flying counter and a vigilance counter on Foo Bar.",
+            ] {
+                let (gaps, json) = printed_kind_parse(shape, "Artifact", refused);
+                assert_eq!(gaps, [UNREACHED], "{refused}");
+                assert!(!json.contains("\"GrantingObject\""), "{refused}: {json}");
+            }
+            for served in [
+                "{1}: You may tap Foo Bar.",
+                "{T}: You may put a flying counter and a vigilance counter on Foo Bar.",
+                "{T}: Put a flying counter on Foo Bar.",
+                "{T}: Remove a +1/+1 counter from Foo Bar.",
+                "{T}: Sacrifice Foo Bar.",
+                "{T}: Exile Foo Bar.",
+                "{T}: Return Foo Bar to its owner's hand.",
+                "{T}: Destroy Foo Bar.",
+                "Whenever this creature attacks, you may have it fight Foo Bar.",
+            ] {
+                let (gaps, json) = printed_kind_parse(shape, "Artifact", served);
+                assert!(json.contains("\"GrantingObject\""), "reach-guard: {served}");
+                assert_eq!(gaps, Vec::<String>::new(), "{served}");
+            }
+        }
+
+        /// CR 201.5a: a refused body grants its host nothing.
+        #[test]
+        fn refused_granter_read_grants_nothing() {
+            let granted = |body: &str| {
+                let b = board(body, false);
+                b.runner.state().objects[&b.host].abilities.len()
+            };
+            assert_eq!(
+                granted("{T}: Put a flying counter on Foo Bar."),
+                1,
+                "reach-guard"
+            );
+            for body in [
+                "{T}: Tap Foo Bar.",
+                "{T}: Put a flying counter and a vigilance counter on Foo Bar.",
+            ] {
+                assert_eq!(granted(body), 0, "{body}");
+            }
+        }
+
+        /// CR 608.2d + CR 201.5a: the "you may" prompt hands the granter to the tap and to the
+        /// counter list's later entries.
+        #[test]
+        fn prompted_granter_tap_and_counter_list_act_on_the_granter() {
+            let mut b = board("{T}: You may tap Foo Bar.", false);
+            let fb = b.granters[0];
+            resolve_accepting(&mut b);
+            assert!(b.runner.state().objects[&fb].tapped);
+            assert!(
+                !b.runner.state().objects[&b.host].abilities.is_empty(),
+                "reach-guard"
+            );
+
+            let mut b = board(
+                "{T}: You may put a flying counter and a vigilance counter on Foo Bar.",
+                false,
+            );
+            let fb = b.granters[0];
+            resolve_accepting(&mut b);
+            for (id, expected) in [(fb, 1), (b.host, 0)] {
+                assert_eq!(keyword_counters(&b, id, KeywordKind::Flying), expected);
+                assert_eq!(keyword_counters(&b, id, KeywordKind::Vigilance), expected);
+            }
+        }
+
+        /// The own-host list names the host for every entry.
+        #[test]
+        fn own_host_counter_list_puts_every_counter_on_the_host() {
+            let mut b = board(
+                "{T}: Put a flying counter and a vigilance counter on this creature.",
+                false,
+            );
+            let fb = b.granters[0];
+            activate_last(&mut b);
+            b.runner.advance_until_stack_empty();
+            for (id, expected) in [(b.host, 1), (fb, 0)] {
+                assert_eq!(keyword_counters(&b, id, KeywordKind::Flying), expected);
+                assert_eq!(keyword_counters(&b, id, KeywordKind::Vigilance), expected);
+            }
+        }
+
+        /// CR 603.5 + CR 201.5a: a remembered "you may" answer hands the reader the granter the
+        /// prompt would.
+        #[test]
+        fn remembered_answer_hands_the_granter_to_a_target_slot_reader() {
+            let mut b = board_full(
+                "Whenever you gain life, you may tap Foo Bar.",
+                &[3],
+                None,
+                "{0}: You gain 1 life.\n",
+            );
+            let fb = b.granters[0];
+            for prompted in [true, false] {
+                b.runner.state_mut().objects.get_mut(&fb).unwrap().tapped = false;
+                b.runner
+                    .act(GameAction::ActivateAbility {
+                        source_id: fb,
+                        ability_index: 0,
+                    })
+                    .unwrap();
+                assert_eq!(remember_accept(&mut b.runner), prompted, "reach-guard");
+                assert!(b.runner.state().objects[&fb].tapped, "prompted={prompted}");
+            }
+        }
+
+        /// Drives to rest, answering each "you may" with a remembered yes; whether it asked.
+        fn remember_accept(runner: &mut GameRunner) -> bool {
+            let mut asked = false;
+            for _ in 0..8 {
+                match runner.state().waiting_for {
+                    WaitingFor::OptionalEffectChoice { .. } => {
+                        asked = true;
+                        runner
+                            .act(GameAction::DecideOptionalEffectAndRemember {
+                                choice: AutoMayChoice::Accept,
+                                scope: MayTriggerAutoChoiceScope::ExactInstance,
+                            })
+                            .unwrap();
+                    }
+                    _ => runner.advance_until_stack_empty(),
+                }
+            }
+            asked
+        }
+
+        /// CR 603.5 + CR 701.14a: Grothama's form, "you may have it fight <granter>", fights the
+        /// granter on a remembered answer too.
+        #[test]
+        fn remembered_answer_fights_the_granter() {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let host = scenario
+                .add_creature_from_oracle(P0, "Bearer", 2, 9, "{0}: You gain 1 life.")
+                .id();
+            let fb = scenario
+                .add_creature_from_oracle(
+                    P0,
+                    "Foo Bar",
+                    1,
+                    9,
+                    "Other creatures you control have \"Whenever you gain life, you may have \
+                     this creature fight Foo Bar.\"",
+                )
+                .id();
+            let mut runner = scenario.build();
+            relayer(runner.state_mut());
+            for (prompted, damage) in [(true, (2, 1)), (false, (4, 2))] {
+                runner
+                    .act(GameAction::ActivateAbility {
+                        source_id: host,
+                        ability_index: 0,
+                    })
+                    .unwrap();
+                assert_eq!(remember_accept(&mut runner), prompted, "reach-guard");
+                let st = runner.state();
+                assert_eq!(
+                    (
+                        st.objects[&fb].damage_marked,
+                        st.objects[&host].damage_marked
+                    ),
+                    damage,
+                    "prompted={prompted}"
+                );
+            }
         }
     }
 }

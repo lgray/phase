@@ -25,7 +25,7 @@ use crate::types::ability::{
     TriggerDefinition, TypeFilter, TypedFilter, UnloweredGuard, VoteSubject,
 };
 use crate::types::ability_visit::{
-    each_granter_symbol, granter_symbols, visit_ability_def_scoped, DefinitionNode, ResolutionScope,
+    granter_symbols, visit_ability_def_scoped, DefinitionNode, ResolutionScope,
 };
 use crate::types::card::DraftEffect;
 use crate::types::card_type::CoreType;
@@ -9563,7 +9563,7 @@ fn demote_refused_granter_names(
 }
 
 /// CR 201.5a: whether `node` holds a granter reference that `each_granter_symbol` misses,
-/// or a caster reference no cast latches.
+/// a caster reference no cast latches, or a granter its resolver reads from empty targets.
 pub(crate) fn granter_reference_unreached(node: DefinitionNode<'_>) -> bool {
     let tree = match &node {
         DefinitionNode::Ability(def) => serde_json::to_value(def),
@@ -9572,10 +9572,40 @@ pub(crate) fn granter_reference_unreached(node: DefinitionNode<'_>) -> bool {
         DefinitionNode::Replacement(def) => serde_json::to_value(def),
     };
     let mut reached = latched_caster_count(&node);
-    each_granter_symbol(node, &mut |symbol| {
-        reached += usize::from(!matches!(symbol, granter_symbols::Symbol::Caster(_)));
+    let mut unserved = 0;
+    granter_symbols::each_node(node, &mut |node| {
+        if let DefinitionNode::Ability(def) = &node {
+            unserved += usize::from(granter_read_from_empty_targets(def));
+        }
+        granter_symbols::node_fields(node, &mut |symbol| {
+            reached += usize::from(!matches!(symbol, granter_symbols::Symbol::Caster(_)));
+        });
     });
-    !tree.is_ok_and(|tree| granter_reference_count(&tree) == reached)
+    !tree.is_ok_and(|tree| granter_reference_count(&tree) + unserved == reached)
+}
+
+/// CR 115.10a: a named granter is not a target, so `ability.targets` holds it only once the
+/// "you may" prompt puts it there; an unprompted tap of the granter, or a counter list headed
+/// by it, reads that empty list.
+fn granter_read_from_empty_targets(def: &AbilityDefinition) -> bool {
+    let granter = |target: &TargetFilter| matches!(target, TargetFilter::GrantingObject { .. });
+    !def.optional
+        && match &*def.effect {
+            Effect::SetTapState { target, .. } => granter(target),
+            Effect::PutCounter { target, .. } => {
+                granter(target)
+                    && def.sub_ability.as_deref().is_some_and(|sub| {
+                        matches!(
+                            &*sub.effect,
+                            Effect::PutCounter {
+                                target: TargetFilter::ParentTarget,
+                                ..
+                            }
+                        )
+                    })
+            }
+            _ => false,
+        }
 }
 
 /// CR 601.2i + CR 707.10: only a spell's own instructions carry its cast, so a caster reference

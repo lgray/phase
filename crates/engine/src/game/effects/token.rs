@@ -9496,6 +9496,33 @@ mod tests {
         assert!(unparsed_lines.is_empty(), "{unparsed_lines:?}");
     }
 
+    /// CR 201.5a + CR 115.10a: a catalog static whose granter is read from empty targets is
+    /// unparsed.
+    #[test]
+    fn catalog_rules_text_refuses_a_granter_read_from_empty_targets() {
+        for body in [
+            "{1}: Tap Rock.",
+            "{1}: Put a flying counter and a vigilance counter on Rock.",
+        ] {
+            let (static_definitions, modifications, unparsed_lines) = catalog_rules_text_abilities(
+                &format!("Creatures you control have \"{body}\""),
+                "Rock",
+            );
+            assert!(
+                static_definitions.is_empty() && modifications.is_empty(),
+                "{body}"
+            );
+            assert_eq!(unparsed_lines.len(), 1, "{body}: {unparsed_lines:?}");
+        }
+
+        let (static_definitions, _modifications, unparsed_lines) = catalog_rules_text_abilities(
+            "Creatures you control have \"{1}: Put a flying counter on Rock.\"",
+            "Rock",
+        );
+        assert_eq!(static_definitions.len(), 1);
+        assert!(unparsed_lines.is_empty(), "{unparsed_lines:?}");
+    }
+
     /// CR 201.5a — the MEASURED BOUNDARY for this entry point's one un-rendered
     /// output. `catalog_rules_text_abilities` renders the marker out of the
     /// parsed statics' and modifications' display descriptions, but the third
