@@ -25176,8 +25176,8 @@ fn activation_structural_eligibility(
 
     // CR 602.2 + CR 108.4a: use controller_or_owner so off-zone cards and
     // command-zone emblems retain their respective activation authorities.
-    // CR 602.2 + CR 702.170f: the plot-from-library grant says otherwise -- its
-    // activator is the seat the grant authorizes, whoever owns the library card.
+    // CR 702.170b + CR 702.170f: plot is a special action of the seat the grant authorizes,
+    // whoever owns the library card.
     let may_begin =
         if obj.zone == Zone::Library && ability_def.activation_zone == Some(Zone::Library) {
             top_of_library_plot_source(state, player).is_some_and(|(top_id, _)| top_id == source_id)
