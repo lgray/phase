@@ -1,0 +1,74 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.95s
+────────────
+ Nextest run ID 22eb3316-a59b-4072-96cd-fb39ddaa04fb with nextest profile: default
+    Starting 4 tests across 8 binaries (33057 tests skipped)
+        FAIL [   2.195s] (1/4) phase-engine::integration dandan_look_top_of_library::dandan_every_looked_at_spell_is_offered_whoever_owns_it
+  stdout ───
+
+    running 1 test
+    test dandan_look_top_of_library::dandan_every_looked_at_spell_is_offered_whoever_owns_it ... FAILED
+
+    failures:
+
+    failures:
+        dandan_look_top_of_library::dandan_every_looked_at_spell_is_offered_whoever_owns_it
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9636 filtered out; finished in 2.17s
+
+  stderr ───
+
+    thread 'dandan_look_top_of_library::dandan_every_looked_at_spell_is_offered_whoever_owns_it' (513441) panicked at crates/engine/tests/integration/dandan_look_top_of_library.rs:115:5:
+    assertion `left == right` failed: P1-owned spells are P0's library cards too
+      left: [ObjectId(5)]
+     right: [ObjectId(2), ObjectId(4), ObjectId(5)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   2.313s] (2/4) phase-engine::integration dandan_look_top_of_library::standard_offers_the_controllers_own_spells_and_leaves_the_opponent_library_alone
+        FAIL [   2.323s] (3/4) phase-engine::integration dandan_look_top_of_library::dandan_casting_an_opponent_owned_hit_bottoms_every_other_looked_at_card
+  stdout ───
+
+    running 1 test
+    test dandan_look_top_of_library::dandan_casting_an_opponent_owned_hit_bottoms_every_other_looked_at_card ... FAILED
+
+    failures:
+
+    failures:
+        dandan_look_top_of_library::dandan_casting_an_opponent_owned_hit_bottoms_every_other_looked_at_card
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9636 filtered out; finished in 2.31s
+
+  stderr ───
+
+    thread 'dandan_look_top_of_library::dandan_casting_an_opponent_owned_hit_bottoms_every_other_looked_at_card' (513438) panicked at crates/engine/tests/integration/dandan_look_top_of_library.rs:129:10:
+    choosing a P1-owned hit must succeed: InvalidAction("Selected card not in eligible set")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   2.552s] (4/4) phase-engine::integration dandan_look_top_of_library::dandan_declining_bottoms_all_four_looked_at_cards
+  stdout ───
+
+    running 1 test
+    test dandan_look_top_of_library::dandan_declining_bottoms_all_four_looked_at_cards ... FAILED
+
+    failures:
+
+    failures:
+        dandan_look_top_of_library::dandan_declining_bottoms_all_four_looked_at_cards
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9636 filtered out; finished in 2.53s
+
+  stderr ───
+
+    thread 'dandan_look_top_of_library::dandan_declining_bottoms_all_four_looked_at_cards' (513439) panicked at crates/engine/tests/integration/dandan_look_top_of_library.rs:157:5:
+    assertion `left == right` failed: all four looked-at cards moved to the bottom
+      left: [ObjectId(5), ObjectId(9), ObjectId(10), ObjectId(11)]
+     right: [ObjectId(2), ObjectId(3), ObjectId(4), ObjectId(5)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   2.587s] 4 tests run: 1 passed, 3 failed, 33057 skipped
+        FAIL [   2.195s] (1/4) phase-engine::integration dandan_look_top_of_library::dandan_every_looked_at_spell_is_offered_whoever_owns_it
+        FAIL [   2.323s] (3/4) phase-engine::integration dandan_look_top_of_library::dandan_casting_an_opponent_owned_hit_bottoms_every_other_looked_at_card
+        FAIL [   2.552s] (4/4) phase-engine::integration dandan_look_top_of_library::dandan_declining_bottoms_all_four_looked_at_cards
+error: test run failed
+done rc=100

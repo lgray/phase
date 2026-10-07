@@ -1,0 +1,68 @@
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+warning: unused variable: `co_seat_hands`
+   --> crates/phase-ai/src/deck_knowledge.rs:197:9
+    |
+197 |     let co_seat_hands = pool_seats(state, pool.player)
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_co_seat_hands`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-ai` (lib) generated 1 warning (run `cargo fix --lib -p phase-ai` to apply 1 suggestion)
+warning: `phase-ai` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.31s
+────────────
+ Nextest run ID 7a727a81-1545-4350-9320-0852b8e521bf with nextest profile: default
+    Starting 10 tests across 26 binaries (2881 tests skipped)
+        PASS [   0.014s] ( 1/10) phase-ai deck_knowledge::tests::ignores_tokens_and_non_spell_stack_entries
+        PASS [   0.014s] ( 2/10) phase-ai deck_knowledge::tests::separate_pools_subtract_only_their_own_seats_cards
+        PASS [   0.014s] ( 3/10) phase-ai deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once
+        PASS [   0.015s] ( 4/10) phase-ai deck_knowledge::tests::subtracts_only_spell_stack_entries
+        PASS [   0.015s] ( 5/10) phase-ai deck_knowledge::tests::subtracts_accounted_non_token_cards
+        PASS [   0.015s] ( 6/10) phase-ai deck_knowledge::tests::pool_decrements_once_for_public_object_also_in_known_ids
+        PASS [   0.015s] ( 7/10) phase-ai deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard
+        PASS [   0.015s] ( 8/10) phase-ai deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat
+        FAIL [   0.015s] ( 9/10) phase-ai deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+  stdout ───
+
+    running 1 test
+    test deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool ... FAILED
+
+    failures:
+
+    failures:
+        deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool' (511530) panicked at crates/phase-ai/src/deck_knowledge.rs:531:9:
+    assertion `left == right` failed
+      left: ["Card 0", "Card 1", "Card 2", "Card 3", "Card 4", "Card 5", "Card 6", "Card 7"]
+     right: ["Card 2", "Card 3", "Card 4", "Card 5", "Card 6", "Card 7"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.016s] (10/10) phase-ai deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names
+  stdout ───
+
+    running 1 test
+    test deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names ... FAILED
+
+    failures:
+
+    failures:
+        deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names' (511529) panicked at crates/phase-ai/src/deck_knowledge.rs:553:13:
+    seed 0: P0's own hand cards leaked into P1's unknown slots
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.021s] 10 tests run: 8 passed, 2 failed, 2881 skipped
+        FAIL [   0.015s] ( 9/10) phase-ai deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+        FAIL [   0.016s] (10/10) phase-ai deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names
+error: test run failed

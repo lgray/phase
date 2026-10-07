@@ -1,0 +1,69 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.73s
+────────────
+ Nextest run ID 62e2ec9f-cab2-4f77-a81d-13436f3b1a2b with nextest profile: default
+    Starting 59 tests across 26 binaries (2834 tests skipped)
+        PASS [   0.020s] ( 1/59) phase-ai features::tests::graveyard_types::empty_deck_produces_defaults
+        PASS [   0.021s] ( 2/59) phase-ai features::tests::graveyard_types::dig_to_graveyard_is_an_enabler_from_either_carrier
+        PASS [   0.021s] ( 3/59) phase-ai features::tests::graveyard_types::ability_chain_threshold_participates_in_highest_threshold
+        PASS [   0.021s] ( 4/59) phase-ai features::tests::graveyard_types::detects_trigger_threshold_payoff
+        PASS [   0.022s] ( 5/59) phase-ai config::tests::policy_penalties_load_pre_graveyard_types_artifact
+        PASS [   0.023s] ( 6/59) phase-ai features::tests::graveyard_types::delirium_shell_hits_calibration_floor
+        PASS [   0.023s] ( 7/59) phase-ai features::tests::graveyard_types::descend_eight_tracks_highest_threshold
+        PASS [   0.023s] ( 8/59) phase-ai features::tests::graveyard_types::dig_without_graveyard_rest_is_not_an_enabler
+        PASS [   0.023s] ( 9/59) phase-ai features::tests::graveyard_types::ability_chain_and_or_follow_the_shared_combinator_rules
+        PASS [   0.025s] (10/59) phase-ai features::tests::graveyard_types::detects_self_mill_enabler
+        PASS [   0.026s] (11/59) phase-ai features::tests::graveyard_types::and_takes_the_highest_mandatory_threshold
+        PASS [   0.027s] (12/59) phase-ai features::tests::graveyard_types::detects_scaling_payoff
+        PASS [   0.029s] (13/59) phase-ai features::tests::graveyard_types::detects_static_threshold_payoff
+        PASS [   0.032s] (14/59) phase-ai features::tests::graveyard_types::all_graveyards_scope_is_not_own_graveyard
+        PASS [   0.032s] (15/59) phase-ai features::tests::graveyard_types::control_deck_below_floor
+        PASS [   0.034s] (16/59) phase-ai features::tests::graveyard_types::enablers_without_payoffs_collapse
+        PASS [   0.017s] (17/59) phase-ai features::tests::graveyard_types::mirrored_orientation_normalizes_to_lower_bound
+        PASS [   0.018s] (18/59) phase-ai features::tests::graveyard_types::opponent_mill_not_an_enabler
+        PASS [   0.021s] (19/59) phase-ai features::tests::graveyard_types::negated_ability_chain_threshold_is_not_a_payoff
+        PASS [   0.023s] (20/59) phase-ai features::tests::graveyard_types::lone_goyf_without_enablers_below_floor
+        PASS [   0.023s] (21/59) phase-ai features::tests::graveyard_types::negated_threshold_is_not_a_payoff
+        PASS [   0.017s] (22/59) phase-ai features::tests::graveyard_types::positive_comparators_yield_thresholds
+        PASS [   0.023s] (23/59) phase-ai features::tests::graveyard_types::non_positive_comparator_in_the_ability_chain_is_not_a_payoff
+        PASS [   0.018s] (24/59) phase-ai features::tests::graveyard_types::threshold_in_the_ability_chain_is_detected
+        PASS [   0.031s] (25/59) phase-ai features::tests::graveyard_types::or_is_a_gate_only_when_every_branch_is_graveyard
+        PASS [   0.021s] (26/59) phase-ai features::tests::graveyard_types::trigger_only_enablers_still_clear_the_floor
+        PASS [   0.036s] (27/59) phase-ai features::tests::graveyard_types::opponent_scoped_graveyard_count_ignored
+        PASS [   0.034s] (28/59) phase-ai features::tests::graveyard_types::payoff_names_dedup_per_face
+        PASS [   0.038s] (29/59) phase-ai features::tests::graveyard_types::non_positive_comparators_are_not_thresholds
+        PASS [   0.026s] (30/59) phase-ai features::tests::graveyard_types::trigger_borne_mill_is_an_enabler
+        PASS [   0.035s] (31/59) phase-ai features::tests::graveyard_types::payoffs_without_enablers_collapse
+        PASS [   0.030s] (32/59) phase-ai features::tests::graveyard_types::threshold_payoff_not_double_counted_as_scaling
+        PASS [   0.021s] (33/59) phase-ai features::tests::graveyard_types::vanilla_creature_not_registered
+        PASS [   0.020s] (34/59) phase-ai policies::graveyard_types::tests::shared_graveyard_counts_every_owners_types_for_both_seats
+        PASS [   0.019s] (35/59) phase-ai policies::mill_targeting::tests::mill_plus_change_zone_from_graveyard_qualifies
+        PASS [   0.035s] (36/59) phase-ai features::tests::graveyard_types::scaling_only_deck_has_no_threshold
+        PASS [   0.022s] (37/59) phase-ai policies::graveyard_types::tests::per_seat_graveyards_count_only_their_own_types
+        PASS [   0.023s] (38/59) phase-ai policies::mill_targeting::tests::empty_shared_pile_keeps_the_empty_library_penalty
+        PASS [   0.023s] (39/59) phase-ai policies::mill_targeting::tests::mill_plus_library_draw_is_not_conditional_payoff
+        PASS [   0.020s] (40/59) phase-ai policies::mill_targeting::tests::mill_without_retrieval_payoff_is_neutral
+        PASS [   0.019s] (41/59) phase-ai policies::mill_targeting::tests::self_target_gets_self_mill_penalty_for_conditional_payoff
+        PASS [   0.020s] (42/59) phase-ai policies::tests::graveyard_types::activation_opts_in_above_floor
+        PASS [   0.029s] (43/59) phase-ai policies::mill_targeting::tests::opponent_target_gets_bonus_for_mill_with_choose_from_zone_payoff
+        PASS [   0.023s] (44/59) phase-ai policies::tests::graveyard_types::verdict_ignores_a_cast_whose_etb_trigger_does_not_fill
+        PASS [   0.023s] (45/59) phase-ai policies::tests::graveyard_types::verdict_ignores_cast_of_a_body_with_an_activated_mill
+        PASS [   0.025s] (46/59) phase-ai policies::tests::graveyard_types::verdict_credits_the_activated_mill_ability
+        PASS [   0.022s] (47/59) phase-ai policies::tests::graveyard_types::verdict_mixed_deck_keeps_scaling_past_threshold
+        PASS [   0.028s] (48/59) phase-ai policies::tests::graveyard_types::verdict_credits_a_cast_whose_etb_trigger_mills
+        PASS [   0.026s] (49/59) phase-ai policies::tests::graveyard_types::verdict_ignores_a_non_filling_spell
+        PASS [   0.023s] (50/59) phase-ai policies::tests::graveyard_types::verdict_is_neutral_once_threshold_met_without_scaling
+        PASS [   0.028s] (51/59) phase-ai policies::tests::graveyard_types::verdict_credits_a_spell_that_mills_on_resolution
+        PASS [   0.028s] (52/59) phase-ai policies::tests::graveyard_types::verdict_rewards_the_last_missing_type_strongly
+        PASS [   0.020s] (53/59) phase-ai policies::tests::graveyard_types::verdict_scales_progress_by_deficit
+        PASS [   0.038s] (54/59) phase-ai policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat
+        PASS [   0.038s] (55/59) phase-ai policies::tests::graveyard_types::empty_graveyard_counts_zero_types
+        PASS [   0.039s] (56/59) phase-ai policies::tests::graveyard_types::activation_opts_out_below_floor
+        PASS [   0.019s] (57/59) phase-ai policies::tests::graveyard_types::verdict_scaling_reward_diminishes
+        PASS [   0.039s] (58/59) phase-ai policies::tests::graveyard_types::distinct_graveyard_types_counts_each_core_type_once
+        PASS [   0.016s] (59/59) phase-ai policies::tests::graveyard_types::verdict_still_rewards_scaling_only_deck_above_four_types
+────────────
+     Summary [   0.103s] 59 tests run: 59 passed, 2834 skipped
+done rc=0

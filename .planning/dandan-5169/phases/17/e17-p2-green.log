@@ -1,0 +1,224 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 39s
+────────────
+ Nextest run ID 66f4387d-2d8e-4fc4-b2c3-eb7a9ed162f9 with nextest profile: default
+    Starting 212 tests across 8 binaries (32850 tests skipped)
+        PASS [   0.049s] (  1/212) phase-engine game::ability_scan::tests::suspect_unsuspect_census_is_scope_sensitive
+        PASS [   0.047s] (  2/212) phase-engine game::ability_scan::tests::round2_mass_battlefield_resolvers_census_in_both_oracles
+        PASS [   0.064s] (  3/212) phase-engine analysis::resource::tests::a_foreign_mana_ability_reading_a_creature_census_still_vetoes
+        PASS [   0.101s] (  4/212) phase-engine game::ability_rw::tests::zone_census_battlefield_write_vs_graveyard_read_discriminates
+        PASS [   0.107s] (  5/212) phase-engine game::ability_scan::tests::census_hole_arms_are_load_bearing
+        PASS [   0.114s] (  6/212) phase-engine game::ability_scan::tests::obligation_ii_census_exception_is_exactly_settapstate
+        PASS [   0.116s] (  7/212) phase-engine game::ability_scan::tests::census_tag_set_is_exactly_enumerated
+        PASS [   0.122s] (  8/212) phase-engine game::ability_scan::tests::census_partition_agrees_with_effect_target_ctx
+        PASS [   0.059s] (  9/212) phase-engine game::effects::cast_from_zone::tests::exiled_by_source_filter_materializes_linked_exile_cards_without_targets
+        PASS [   0.127s] ( 10/212) phase-engine game::ability_scan::tests::unless_controls_subtype_reports_the_census_it_runs
+        PASS [   0.131s] ( 11/212) phase-engine game::ability_rw::tests::l1_zone_card_count_census_and_zone_extraction
+        PASS [   0.132s] ( 12/212) phase-engine game::ability_rw::tests::ne_iv_census_overlap
+        PASS [   0.090s] ( 13/212) phase-engine game::effects::cast_from_zone::tests::a_graveyard_grant_does_not_survive_the_card_leaving_the_graveyard
+        PASS [   0.155s] ( 14/212) phase-engine game::ability_scan::tests::b4_execute_census_scanned_while_matchers_stay_read_free
+        PASS [   0.063s] ( 15/212) phase-engine game::effects::cast_from_zone::tests::exiles_card_not_in_exile_then_grants_permission
+        PASS [   0.140s] ( 16/212) phase-engine game::effects::cast_from_zone::tests::a_hand_grant_does_not_survive_the_card_leaving_the_hand
+        PASS [   0.070s] ( 17/212) phase-engine game::effects::cast_from_zone::tests::hand_cast_without_targets_emits_effect_zone_choice
+        PASS [   0.093s] ( 18/212) phase-engine game::effects::cast_from_zone::tests::grants_mana_value_constraint_on_permission
+        PASS [   0.092s] ( 19/212) phase-engine game::effects::cast_from_zone::tests::grants_zero_cost_permission_on_exiled_card
+        PASS [   0.094s] ( 20/212) phase-engine game::effects::cast_from_zone::tests::graveyard_cast_exile_rider_stamps_permission_flag
+        PASS [   0.097s] ( 21/212) phase-engine game::effects::cast_from_zone::tests::graveyard_target_grant_stays_in_graveyard_with_timed_permission
+        PASS [   0.073s] ( 22/212) phase-engine game::effects::cast_from_zone::tests::hand_in_place_grant_defaults_to_until_end_of_turn
+        PASS [   0.065s] ( 23/212) phase-engine game::effects::cast_from_zone::tests::hand_pick_aborts_when_borrowed_keyword_cost_is_unreadable
+        PASS [   0.117s] ( 24/212) phase-engine game::effects::cast_from_zone::tests::hand_cast_without_eligible_cards_resolves_without_prompt
+        PASS [   0.121s] ( 25/212) phase-engine game::effects::cast_from_zone::tests::hand_cast_selection_casts_during_resolution_without_lingering_permission
+        PASS [   0.064s] ( 26/212) phase-engine game::effects::cast_from_zone::tests::look_peek_exiled_by_source_cast_uses_last_revealed_library_cards
+        PASS [   0.272s] ( 27/212) phase-engine analysis::resource::tests::spent_self_entry_relieves_a_board_censusing_entry_condition
+        PASS [   0.145s] ( 28/212) phase-engine game::effects::cast_from_zone::tests::hand_cast_decline_consumes_prompt_without_permission
+        PASS [   0.175s] ( 29/212) phase-engine game::effects::cast_from_zone::tests::face_of_boe_picks_suspend_card_and_pays_suspend_cost
+        PASS [   0.113s] ( 30/212) phase-engine game::effects::cast_from_zone::tests::looked_at_cards_follow_the_library_the_controller_reads
+        PASS [   0.113s] ( 31/212) phase-engine game::effects::cast_from_zone::tests::no_targets_emits_resolved_event
+        PASS [   0.105s] ( 32/212) phase-engine game::effects::cast_from_zone::tests::own_graveyard_immediate_free_cast_moves_directly_to_stack
+        PASS [   0.127s] ( 33/212) phase-engine game::effects::cast_from_zone::tests::opponent_graveyard_free_cast_moves_directly_to_stack
+        PASS [   0.115s] ( 34/212) phase-engine game::effects::cast_from_zone::tests::play_mode_with_alt_ability_cost_does_not_stamp_play_from_exile
+        PASS [   0.094s] ( 35/212) phase-engine game::effects::cast_from_zone::tests::private_immediate_candidates_isolate_rejected_and_face_swapped_siblings
+        PASS [   0.116s] ( 36/212) phase-engine game::effects::cast_from_zone::tests::play_mode_without_paying_stamps_zero_cost_cast_and_play_from_exile
+        PASS [   0.180s] ( 37/212) phase-engine game::effects::cast_from_zone::tests::hand_pick_binds_nested_last_revealed_before_modal_face_choice
+        PASS [   0.096s] ( 38/212) phase-engine game::effects::cast_from_zone::tests::private_hand_pick_stashes_during_resolution_only_for_exact_free_spell_cast
+        PASS [   0.101s] ( 39/212) phase-engine game::effects::cast_from_zone::tests::resolution_filter_freeze_preserves_pt_sign_and_clamps_counter_count
+        PASS [   0.163s] ( 40/212) phase-engine game::effects::cast_from_zone::tests::paused_private_pick_freezes_counter_and_signed_pt_policy_before_resume
+        PASS [   0.065s] ( 41/212) phase-engine game::effects::cast_from_zone::tests::resolution_window_replaces_forwarded_targets_with_active_linked_batch
+        PASS [   0.110s] ( 42/212) phase-engine game::effects::cast_from_zone::tests::resolution_filter_freeze_recurses_through_every_direct_filter_carrier
+        PASS [   0.065s] ( 43/212) phase-engine game::effects::cast_from_zone::tests::the_land_companion_takes_the_same_enforceable_duration_as_the_cast_half
+        PASS [   0.113s] ( 44/212) phase-engine game::effects::cast_from_zone::tests::siege_self_ref_cast_with_empty_targets_casts_from_exile
+        PASS [   0.099s] ( 45/212) phase-engine game::effects::cast_from_zone::tests::spell_cast_writer_error_mappings_are_explicit_and_non_panicking_for_stack_copy
+        PASS [   0.077s] ( 46/212) phase-engine game::engine_resolution_choices::tests::boundary_hold_census_matches_the_apply_loop
+        PASS [   0.097s] ( 47/212) phase-engine game::effects::cast_from_zone::tests::without_paying_false_uses_card_mana_cost
+        PASS [   0.086s] ( 48/212) phase-engine game::layers::tests::incremental_flush_skips_the_census_of_a_dynamic_count_reaching_no_recipient
+        PASS [   0.112s] ( 49/212) phase-engine game::effects::cast_from_zone::tests::suspend_last_counter_free_cast_puts_spell_on_stack
+        PASS [   0.216s] ( 50/212) phase-engine game::effects::cast_from_zone::tests::private_immediate_targeted_candidates_use_one_baseline_without_target_fallback
+        PASS [   0.120s] ( 51/212) phase-engine game::engine::priority_reducer_census_tests::priority_reducer_has_the_frozen_action_family_census
+        PASS [   0.074s] ( 52/212) phase-engine game::mana_sources::tests::leaf_component_census_counts_the_flattened_tree
+        PASS [   0.076s] ( 53/212) phase-engine game::triggers::tests::construction_finisher_rejects_a_wait_outside_the_closed_census
+        PASS [   0.089s] ( 54/212) phase-engine game::layers::tests::incremental_flush_still_runs_the_census_of_a_dynamic_count_reaching_a_recipient
+        PASS [   0.172s] ( 55/212) phase-engine game::effects::cast_from_zone::tests::stack_spell_copy_parent_target_casts_without_zone_move
+        PASS [   0.086s] ( 56/212) phase-engine game::turns::tests::production_phase_assignment_census_is_frozen
+        PASS [   0.117s] ( 57/212) phase-engine source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.619s] ( 58/212) phase-engine analysis::resource::tests::s4_s5_player_axis_board_census_keeps_the_veto
+        PASS [   0.683s] ( 59/212) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census
+        PASS [   0.167s] ( 60/212) phase-engine::integration battlefield_entry_authority_census::bare_trailing_fn_header_is_an_error_not_a_panic
+        PASS [   0.197s] ( 61/212) phase-engine parser::oracle_quantity::tests::masters_councillors_static_gets_dynamic_power_for_graveyard_census
+        PASS [   0.193s] ( 62/212) phase-engine::integration activation_cost_work_census::a_production_call_after_a_mid_file_test_module_is_counted
+        PASS [   0.082s] ( 63/212) phase-engine::integration battlefield_entry_authority_census::the_anaphora_publish_resolver_keys_on_cfg_scope_and_on_the_call_tail
+        PASS [   0.119s] ( 64/212) phase-engine::integration battlefield_entry_authority_census::the_census_resolver_keys_on_cfg_scope_and_on_the_literal_from_field
+        PASS [   0.067s] ( 65/212) phase-engine::integration battlefield_entry_authority_census::the_token_created_resolver_keys_on_cfg_scope_and_on_field_completeness
+        PASS [   0.701s] ( 66/212) phase-engine game::effects::cast_from_zone::tests::keldon_flamesage_parsed_trigger_reaches_modal_choice_with_tracked_policy
+        PASS [   0.448s] ( 67/212) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+        PASS [   0.953s] ( 68/212) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census
+        PASS [   6.822s] ( 69/212) phase-engine::integration dandan_filter_owner_axis::in_standard_a_card_from_the_other_seats_graveyard_does_not_transform_grist
+        PASS [   7.096s] ( 70/212) phase-engine::integration battlefield_entry_authority_census::every_token_created_construction_lives_in_the_single_emitter
+        PASS [   7.530s] ( 71/212) phase-engine game::engine::stage2_injector_tests::the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event
+        PASS [   7.775s] ( 72/212) phase-engine::integration dandan_filter_owner_axis::in_standard_a_creature_from_the_other_seats_graveyard_does_not_wake_the_watcher
+        PASS [   8.639s] ( 73/212) phase-engine::integration dandan_filter_owner_axis::in_standard_a_milled_card_is_not_a_permanent_you_control
+        PASS [   9.540s] ( 74/212) phase-engine::integration dandan_filter_owner_axis::a_creature_you_control_from_the_shared_pile_transforms_a_graveyard_grist
+        PASS [   9.931s] ( 75/212) phase-engine::integration dandan_filter_owner_axis::a_card_milled_from_a_library_is_not_a_permanent_you_control
+        PASS [  10.376s] ( 76/212) phase-engine::integration battlefield_entry_authority_census::every_from_none_battlefield_entry_construction_lives_in_the_authority
+        PASS [  10.598s] ( 77/212) phase-engine::integration dandan_filter_owner_axis::an_entrant_from_the_shared_pile_entered_from_your_graveyard
+        PASS [  11.228s] ( 78/212) phase-engine::integration dandan_filter_owner_axis::a_creature_from_the_shared_pile_entered_from_your_graveyard_for_a_graveyard_watcher
+        PASS [  12.265s] ( 79/212) phase-engine source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [  12.730s] ( 80/212) phase-engine::integration dandan_filter_owner_axis::in_standard_an_entrant_from_the_other_seats_graveyard_did_not_enter_from_yours
+        PASS [  16.232s] ( 81/212) phase-engine::integration battlefield_entry_authority_census::every_single_id_anaphora_publish_lives_in_an_authority
+        PASS [   9.631s] ( 82/212) phase-engine::integration dandan_filter_owner_axis::v14_a_sacrifice_observer_ignores_the_other_seats_sacrifice_into_the_shared_graveyard
+        PASS [  10.578s] ( 83/212) phase-engine::integration dandan_filter_owner_axis::v16_a_dies_observer_ignores_the_other_seats_creature_in_the_shared_graveyard
+        PASS [   9.093s] ( 84/212) phase-engine::integration dandan_filter_owner_axis::v17_exile_all_opponents_graveyards_in_standard_leaves_the_casters_own
+        PASS [  18.519s] ( 85/212) phase-engine::integration activation_cost_work_census::every_activation_mana_resume_entry_is_classified
+        PASS [  20.364s] ( 86/212) phase-engine::integration activation_cost_work_census::every_activation_cost_payment_entry_is_classified
+        PASS [  10.332s] ( 87/212) phase-engine::integration dandan_filter_owner_axis::v18_a_card_leaving_the_shared_graveyard_left_your_graveyard
+        PASS [  13.887s] ( 88/212) phase-engine::integration dandan_filter_owner_axis::v17_an_artifact_card_in_your_graveyard_in_standard_offers_only_your_own
+        PASS [  13.365s] ( 89/212) phase-engine::integration dandan_filter_owner_axis::v17_an_artifact_card_in_your_graveyard_offers_the_whole_shared_pile
+        PASS [  12.046s] ( 90/212) phase-engine::integration dandan_filter_owner_axis::v18_in_standard_only_your_own_graveyard_counts
+        PASS [  13.211s] ( 91/212) phase-engine::integration dandan_filter_owner_axis::v17_exile_all_opponents_graveyards_takes_the_whole_shared_pile
+        PASS [  12.009s] ( 92/212) phase-engine::integration dandan_filter_owner_axis::v19_a_creature_card_leaving_the_shared_graveyard_left_your_graveyard
+        PASS [  15.255s] ( 93/212) phase-engine::integration dandan_filter_owner_axis::v19_a_card_reanimated_from_the_shared_graveyard_left_your_graveyard
+        PASS [  11.159s] ( 94/212) phase-engine::integration dandan_filter_owner_axis::v20_a_library_origin_controller_form_reads_the_whole_shared_library
+        PASS [  16.325s] ( 95/212) phase-engine::integration dandan_filter_owner_axis::v19_in_standard_only_your_own_graveyard_triggers_on_reanimation
+        PASS [  12.265s] ( 96/212) phase-engine::integration dandan_filter_owner_axis::v20_a_controller_form_origin_trigger_reads_the_whole_shared_pile
+        PASS [  14.557s] ( 97/212) phase-engine::integration dandan_filter_owner_axis::v1_fengraf_in_standard_returns_only_the_activators_own_graveyard_card
+        PASS [  14.524s] ( 98/212) phase-engine::integration dandan_filter_owner_axis::v1_fengraf_returns_the_other_seats_creature_from_the_shared_graveyard
+        PASS [  14.455s] ( 99/212) phase-engine::integration dandan_filter_owner_axis::v20_a_one_of_origin_trigger_reads_the_whole_shared_library
+        PASS [  11.725s] (100/212) phase-engine::integration dandan_filter_owner_axis::v20_in_standard_only_your_own_library_triggers_the_library_origin
+        PASS [   0.064s] (101/212) phase-engine::integration dandan_shared_pile_storage::shuffling_the_empty_seat_consumes_no_entropy
+        PASS [   0.059s] (102/212) phase-engine::integration dandan_shared_pile_storage::v14_wasm_boot_guard_reads_the_library_accessor
+        PASS [  21.656s] (103/212) phase-engine::integration dandan_filter_owner_axis::v19_in_standard_only_your_own_graveyard_triggers
+        PASS [  11.441s] (104/212) phase-engine::integration dandan_filter_owner_axis::v2_mystic_sanctuary_targets_the_other_seats_instant_in_the_shared_graveyard
+        PASS [  13.477s] (105/212) phase-engine::integration dandan_filter_owner_axis::v20_in_standard_only_your_own_library_triggers_the_one_of_origin
+        PASS [  15.101s] (106/212) phase-engine::integration dandan_filter_owner_axis::v20_in_standard_only_your_own_graveyard_triggers_the_controller_form
+        PASS [  13.669s] (107/212) phase-engine::integration dandan_filter_owner_axis::v2_mystic_sanctuary_in_standard_cannot_reach_the_other_seats_graveyard
+        PASS [  15.178s] (108/212) phase-engine::integration dandan_filter_owner_axis::v22_a_creature_you_control_entering_is_judged_as_the_permanent
+        PASS [   5.065s] (109/212) phase-engine::integration dandan_shared_pile_storage::v10_pool_resolver_maps_both_seats_to_the_pile_holder
+        PASS [  18.589s] (110/212) phase-engine::integration dandan_filter_owner_axis::v20_a_reanimation_by_either_seat_leaves_the_shared_graveyard_of_the_watcher
+        PASS [   9.533s] (111/212) phase-engine::integration dandan_look_top_of_library::standard_offers_the_controllers_own_spells_and_leaves_the_opponent_library_alone
+        PASS [  16.687s] (112/212) phase-engine::integration dandan_filter_owner_axis::v3_disposal_mummy_in_standard_excludes_the_casters_own_graveyard
+        PASS [  14.560s] (113/212) phase-engine::integration dandan_look_top_of_library::dandan_casting_an_opponent_owned_hit_bottoms_every_other_looked_at_card
+        PASS [  15.189s] (114/212) phase-engine::integration dandan_filter_owner_axis::v3_disposal_mummy_treats_the_shared_graveyard_as_an_opponents
+        PASS [   9.386s] (115/212) phase-engine::integration dandan_shared_pile_storage::v1_boot_loads_one_pile_into_the_canonical_seat
+        PASS [  10.726s] (116/212) phase-engine::integration dandan_shared_pile_storage::v1_non_shared_formats_keep_per_seat_libraries
+        PASS [  16.672s] (117/212) phase-engine::integration dandan_look_top_of_library::dandan_every_looked_at_spell_is_offered_whoever_owns_it
+        PASS [  17.866s] (118/212) phase-engine::integration dandan_look_top_of_library::dandan_declining_bottoms_all_four_looked_at_cards
+        PASS [  14.179s] (119/212) phase-engine::integration dandan_shared_pile_storage::v15_library_placement_by_the_zone_pipeline_targets_the_pile
+        PASS [   0.344s] (120/212) phase-engine::integration defending_player_controls_combat_anchor::hazy_homunculus_controls_census_is_battlefield_scoped
+        PASS [  11.415s] (121/212) phase-engine::integration dandan_shared_pile_storage::v3_mulligan_by_either_seat_shuffles_the_pile
+        PASS [   0.128s] (122/212) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS [   0.221s] (123/212) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS [   0.070s] (124/212) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        PASS [   0.232s] (125/212) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS [  16.079s] (126/212) phase-engine::integration dandan_shared_pile_storage::v15_surveil_keeps_cards_on_top_of_the_pile_for_the_non_canonical_seat
+        PASS [   0.097s] (127/212) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+        PASS [   0.050s] (128/212) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS [   0.072s] (129/212) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS [  16.734s] (130/212) phase-engine::integration dandan_shared_pile_storage::v15_scry_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   0.366s] (131/212) phase-engine::integration kiora_self_library_peek_cast::a_second_resolution_offers_only_its_own_exile_batch
+        PASS [   0.819s] (132/212) phase-engine::integration issue_5996_planetarium_look_cast::kiora_mixed_land_and_spell_keeps_eligible_cast_offer
+        PASS [  19.112s] (133/212) phase-engine::integration dandan_shared_pile_storage::v15_dig_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   1.142s] (134/212) phase-engine::integration kiora_self_library_peek_cast::a_refused_paid_batch_cast_grants_no_casting_permission_in_production
+        PASS [   0.598s] (135/212) phase-engine::integration kiora_self_library_peek_cast::an_undated_coordinated_play_and_cast_grant_stays_a_resolution_window
+        PASS [   8.362s] (136/212) phase-engine::integration dandan_shared_pile_storage::v7_conjure_into_the_library_lands_in_the_pile_only
+        PASS [   0.594s] (137/212) phase-engine::integration kiora_self_library_peek_cast::and_or_joined_cast_type_gate_is_a_disjunction
+        PASS [   0.777s] (138/212) phase-engine::integration kiora_self_library_peek_cast::and_joined_cast_type_gate_is_a_disjunction
+        PASS [   0.762s] (139/212) phase-engine::integration kiora_self_library_peek_cast::collected_conjuring_does_not_offer_an_instant
+        PASS [   0.502s] (140/212) phase-engine::integration kiora_self_library_peek_cast::counted_cast_type_gate_keeps_the_type_leg
+        PASS [  15.366s] (141/212) phase-engine::integration dandan_shared_pile_storage::v2_fixed_list_resolves_against_the_real_database
+        PASS [   0.247s] (142/212) phase-engine::integration kiora_self_library_peek_cast::duration_and_hand_anaphors_stay_lingering_permissions
+        PASS [   0.216s] (143/212) phase-engine::integration kiora_self_library_peek_cast::epic_experiment_decline_still_runs_its_uncast_cleanup
+        PASS [   0.297s] (144/212) phase-engine::integration kiora_self_library_peek_cast::epic_experiment_does_not_offer_a_creature_inside_its_mana_value_ceiling
+        PASS [  16.148s] (145/212) phase-engine::integration dandan_shared_pile_storage::v1_pile_stays_in_the_lowest_seat_when_another_seat_starts
+        PASS [   0.240s] (146/212) phase-engine::integration kiora_self_library_peek_cast::epic_experiment_window_casts_within_x_then_runs_its_uncast_cleanup
+        PASS [   0.072s] (147/212) phase-engine::integration kiora_self_library_peek_cast::hand_bound_cast_keeps_rich_typed_gate_as_a_complete_predicate
+        PASS [   0.068s] (148/212) phase-engine::integration kiora_self_library_peek_cast::hand_bound_cast_retains_the_instant_or_sorcery_gate
+        PASS [   0.068s] (149/212) phase-engine::integration kiora_self_library_peek_cast::hand_bound_or_shaped_gate_ands_rather_than_grafts
+        PASS [   0.340s] (150/212) phase-engine::integration kiora_self_library_peek_cast::from_among_them_cast_retains_the_instant_or_sorcery_gate
+        PASS [   9.439s] (151/212) phase-engine::integration dandan_shared_pile_storage::v8_library_shuffle_acts_on_the_pile_and_replays
+        PASS [   0.384s] (152/212) phase-engine::integration kiora_self_library_peek_cast::itazura_raises_no_redundant_optional_prompt_and_still_runs_its_hand_instruction
+        PASS [   0.341s] (153/212) phase-engine::integration kiora_self_library_peek_cast::kiora_accept_casts_during_resolution_and_bottoms_the_rest
+        PASS [   0.445s] (154/212) phase-engine::integration kiora_self_library_peek_cast::kiora_library_choice_is_private_across_serde_round_trip
+        PASS [   1.284s] (155/212) phase-engine::integration kiora_self_library_peek_cast::exile_batch_anaphors_are_resolution_windows_with_their_stated_bounds
+        PASS [   2.076s] (156/212) phase-engine::integration kiora_self_library_peek_cast::dig_peek_suffix_constraints_and_negative_siblings
+        PASS [   0.491s] (157/212) phase-engine::integration kiora_self_library_peek_cast::kiora_multi_candidate_choice_casts_exactly_one_and_bottoms_the_rest
+        PASS [   0.486s] (158/212) phase-engine::integration kiora_self_library_peek_cast::kiora_zero_eligible_cards_bottom_without_parking_a_choice
+        PASS [   1.000s] (159/212) phase-engine::integration kiora_self_library_peek_cast::kiora_decline_bottoms_every_looked_at_card_without_a_permission
+        PASS [   0.104s] (160/212) phase-engine::integration kiora_self_library_peek_cast::or_shaped_cast_gate_still_references_the_exile_set
+        PASS [  14.728s] (161/212) phase-engine::integration dandan_shared_pile_storage::v4_opening_deal_draws_both_hands_from_the_pile
+        PASS [   1.124s] (162/212) phase-engine::integration kiora_self_library_peek_cast::kiora_bottom_order_is_deterministic_under_a_fixed_seed
+        PASS [   0.339s] (163/212) phase-engine::integration kiora_self_library_peek_cast::ral_leyline_prodigy_mid_clause_duration_is_detected_but_not_yet_stamped
+        PASS [   0.390s] (164/212) phase-engine::integration kiora_self_library_peek_cast::sanwell_offers_only_vehicles_and_artifact_creatures
+        PASS [   3.400s] (165/212) phase-engine::integration kiora_self_library_peek_cast::coordinated_leading_durations_bind_to_the_cast_half
+        PASS [   8.907s] (166/212) phase-engine::integration dandan_shared_pile_storage::v9_library_boundary_by_either_seat_forgets_the_looked_at_pile
+        PASS [   0.344s] (167/212) phase-engine::integration kiora_self_library_peek_cast::sanwell_type_gate_holds_under_a_real_trigger_context
+        PASS [   1.411s] (168/212) phase-engine::integration kiora_self_library_peek_cast::primeval_spawn_enforces_its_running_total_mana_value_budget
+        PASS [  14.278s] (169/212) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+        PASS [   1.680s] (170/212) phase-engine::integration kiora_self_library_peek_cast::perception_bobblehead_excludes_mana_value_four
+        PASS [   0.140s] (171/212) phase-engine::integration kiora_self_library_peek_cast::subtype_and_multiword_cast_type_gate
+        PASS [   1.195s] (172/212) phase-engine::integration kiora_self_library_peek_cast::self_library_peek_constraints_are_retained
+        PASS [   0.786s] (173/212) phase-engine::integration kiora_self_library_peek_cast::serial_comma_cast_type_gate_yields_all_three_legs
+        PASS [   0.536s] (174/212) phase-engine::integration kiora_self_library_peek_cast::svella_activated_peek_casts_one_spell_and_bottoms_the_rest
+        PASS [   0.709s] (175/212) phase-engine::integration kiora_self_library_peek_cast::singular_batch_anaphors_are_one_shot_resolution_windows
+        PASS [   4.101s] (176/212) phase-engine::integration kiora_self_library_peek_cast::from_among_window_refuses_a_cap_it_cannot_carry_instead_of_granting_an_uncapped_permission
+        PASS [   0.423s] (177/212) phase-engine::integration kiora_self_library_peek_cast::svella_untyped_peek_still_offers_a_creature
+        PASS [   0.522s] (178/212) phase-engine::integration kiora_self_library_peek_cast::the_omenkeel_plural_land_play_is_not_refused
+        PASS [   6.244s] (179/212) phase-engine::integration kiora_self_library_peek_cast::a_stated_duration_keeps_the_grant_a_lingering_permission
+        PASS [   0.310s] (180/212) phase-engine::integration kiora_self_library_peek_cast::untyped_pre_anchor_prefix_adds_no_type_gate
+        PASS [  10.060s] (181/212) phase-engine::integration deterministic_game_state_serde::serde_hash_owner_census_is_exhaustive_and_every_canonical_owner_names_its_adapter
+        PASS [   0.032s] (182/212) phase-engine::integration loop_shortcut_offer_writer_census::the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses
+        PASS [   0.777s] (183/212) phase-engine::integration kiora_self_library_peek_cast::the_will_cycle_window_rides_the_delivered_permission
+        PASS [   3.306s] (184/212) phase-engine::integration kiora_self_library_peek_cast::real_cards_whose_printed_cap_no_mechanism_can_carry_are_refused
+        PASS [   0.088s] (185/212) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_counts_occurrences_and_not_lines
+        PASS [   0.035s] (186/212) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_ignores_a_trailing_comment_mention
+        PASS [   0.103s] (187/212) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_instrument_reports_both_answers_on_planted_input
+        PASS [   2.761s] (188/212) phase-engine::integration kiora_self_library_peek_cast::self_library_peek_casts_route_during_resolution
+        PASS [  15.053s] (189/212) phase-engine::integration dandan_shared_pile_storage::v5_v6_standard_format_cycles_in_the_owners_own_zones
+        PASS [   0.112s] (190/212) phase-engine::integration masters_councillors::masters_councillors_pt_scales_with_graveyard_census_across_players
+        PASS [   0.037s] (191/212) phase-engine::integration source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.799s] (192/212) phase-engine::integration kiora_self_library_peek_cast::velomachus_power_constraint_is_frozen_before_the_library_choice
+        PASS [   0.031s] (193/212) phase-engine::integration waiting_for_actor_authority_census::mulligan_adapters_preserve_the_single_pending_actor_rule
+        PASS [   4.015s] (194/212) phase-engine::integration kiora_self_library_peek_cast::resolution_window_grants_are_never_double_wrapped_in_an_optional_choice
+        PASS [   1.596s] (195/212) phase-engine::integration kiora_self_library_peek_cast::untyped_hand_bound_cast_keeps_a_bare_card_filter
+        PASS [   0.103s] (196/212) phase-engine::bin/resolution-face-census tests::export_identity_census_excludes_mixed_audited_layout_pairs
+        PASS [   1.510s] (197/212) phase-engine::integration kiora_self_library_peek_cast::velomachus_does_not_offer_a_creature_inside_its_mana_value_ceiling
+        PASS [   0.032s] (198/212) phase-engine::bin/resolution-face-census tests::export_identity_census_reports_non_candidates_without_widening_candidates
+        PASS [  12.194s] (199/212) phase-engine::integration dandan_shared_pile_storage::v9_standard_shuffle_keeps_the_other_players_library_knowledge
+        PASS [   3.518s] (200/212) phase-engine::integration kiora_self_library_peek_cast::sentence_leading_duration_over_a_capped_coordinated_cast_refuses
+        SLOW [> 60.000s] (───────) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+        PASS [   2.822s] (201/212) phase-engine::integration kiora_self_library_peek_cast::untyped_from_among_them_cast_stays_a_bare_exile_anaphor
+        PASS [   1.844s] (202/212) phase-engine::integration waiting_for_actor_authority_census::every_waiting_for_arm_declares_its_acting_authority
+        PASS [  14.696s] (203/212) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+        PASS [  10.161s] (204/212) phase-engine::integration source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [  14.290s] (205/212) phase-engine::integration kiora_self_library_peek_cast::no_card_is_both_instant_and_sorcery
+        PASS [  14.461s] (206/212) phase-engine::integration loop_shortcut_seat_pin_census::no_target_class_producer_constructs_a_choice_class_player_pin
+        PASS [  16.249s] (207/212) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [  21.484s] (208/212) phase-engine::integration loop_shortcut_offer_writer_census::the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_validates_pins
+        PASS [  90.356s] (209/212) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+        PASS [  46.344s] (210/212) phase-engine::integration wba_loop_firewall_interposition::unactivated_ability_relief_offers_on_three_real_census_lands
+        PASS [  49.588s] (211/212) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+        SLOW [> 60.000s] (───────) phase-engine::integration kiora_self_library_peek_cast::unbounded_resolution_window_casts_past_the_former_255_cap
+        SLOW [>120.000s] (───────) phase-engine::integration kiora_self_library_peek_cast::unbounded_resolution_window_casts_past_the_former_255_cap
+        SLOW [>180.000s] (───────) phase-engine::integration kiora_self_library_peek_cast::unbounded_resolution_window_casts_past_the_former_255_cap
+        PASS [ 193.625s] (212/212) phase-engine::integration kiora_self_library_peek_cast::unbounded_resolution_window_casts_past_the_former_255_cap
+────────────
+     Summary [ 251.907s] 212 tests run: 212 passed (2 slow), 32850 skipped
+done rc=0

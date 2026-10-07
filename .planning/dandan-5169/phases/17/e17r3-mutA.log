@@ -1,0 +1,51 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 29s
+────────────
+ Nextest run ID 1c14f289-2705-41d8-b4d6-d85e1250c0a6 with nextest profile: default
+    Starting 3 tests across 8 binaries (33065 tests skipped)
+        FAIL [   3.885s] (1/3) phase-engine::integration dandan_look_top_of_library::top_plot::dandan_plot_is_not_granted_to_the_non_holder_owner
+  stdout ───
+
+    running 1 test
+    test dandan_look_top_of_library::top_plot::dandan_plot_is_not_granted_to_the_non_holder_owner ... FAILED
+
+    failures:
+
+    failures:
+        dandan_look_top_of_library::top_plot::dandan_plot_is_not_granted_to_the_non_holder_owner
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9642 filtered out; finished in 3.84s
+
+  stderr ───
+
+    thread 'dandan_look_top_of_library::top_plot::dandan_plot_is_not_granted_to_the_non_holder_owner' (813552) panicked at crates/engine/tests/integration/dandan_look_top_of_library.rs:441:9:
+    reach: the holder is offered the plot
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.904s] (2/3) phase-engine::integration dandan_look_top_of_library::top_plot::dandan_fblthp_plots_the_pile_top_whoever_owns_it
+  stdout ───
+
+    running 1 test
+    test dandan_look_top_of_library::top_plot::dandan_fblthp_plots_the_pile_top_whoever_owns_it ... FAILED
+
+    failures:
+
+    failures:
+        dandan_look_top_of_library::top_plot::dandan_fblthp_plots_the_pile_top_whoever_owns_it
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9642 filtered out; finished in 3.84s
+
+  stderr ───
+
+    thread 'dandan_look_top_of_library::top_plot::dandan_fblthp_plots_the_pile_top_whoever_owns_it' (813556) panicked at crates/engine/tests/integration/dandan_look_top_of_library.rs:414:50:
+    the pile top carries the plot ability
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   3.905s] (3/3) phase-engine::integration dandan_look_top_of_library::top_plot::standard_plots_only_the_holders_own_library_top
+────────────
+     Summary [   3.955s] 3 tests run: 1 passed, 2 failed, 33065 skipped
+        FAIL [   3.885s] (1/3) phase-engine::integration dandan_look_top_of_library::top_plot::dandan_plot_is_not_granted_to_the_non_holder_owner
+        FAIL [   3.904s] (2/3) phase-engine::integration dandan_look_top_of_library::top_plot::dandan_fblthp_plots_the_pile_top_whoever_owns_it
+error: test run failed
+done

@@ -1,0 +1,327 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 24s
+────────────
+ Nextest run ID e009a769-89e0-4b75-b542-eb439d3fe201 with nextest profile: default
+    Starting 310 tests across 26 binaries (2581 tests skipped)
+        PASS [   0.019s] (  1/310) phase-ai deck_knowledge::tests::separate_pools_subtract_only_their_own_seats_cards
+        PASS [   0.019s] (  2/310) phase-ai deck_knowledge::tests::subtracts_accounted_non_token_cards
+        PASS [   0.020s] (  3/310) phase-ai deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once
+        PASS [   0.022s] (  4/310) phase-ai determinize::tests::empty_pool_and_undersized_pool
+        PASS [   0.023s] (  5/310) phase-ai determinize::tests::pins_revealed_cards
+        PASS [   0.024s] (  6/310) phase-ai determinize::tests::preserves_hidden_zone_sizes
+        PASS [   0.025s] (  7/310) phase-ai deck_knowledge::tests::subtracts_only_spell_stack_entries
+        PASS [   0.025s] (  8/310) phase-ai deck_knowledge::tests::pool_decrements_once_for_public_object_also_in_known_ids
+        PASS [   0.025s] (  9/310) phase-ai deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat
+        PASS [   0.026s] ( 10/310) phase-ai deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+        PASS [   0.027s] ( 11/310) phase-ai determinize::tests::pins_durable_knowledge_and_expires_library_peeks_after_shuffle
+        PASS [   0.028s] ( 12/310) phase-ai determinize::tests::pins_continuous_reveal_static_on_non_derived_state
+        PASS [   0.036s] ( 13/310) phase-ai deck_knowledge::tests::ignores_tokens_and_non_spell_stack_entries
+        PASS [   0.036s] ( 14/310) phase-ai determinize::tests::preserves_public_and_own_zones
+        PASS [   0.036s] ( 15/310) phase-ai deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard
+        PASS [   0.024s] ( 16/310) phase-ai determinize::tests::seed_deterministic
+        PASS [   0.025s] ( 17/310) phase-ai determinize::tests::residual_fields_are_not_reset
+        PASS [   0.021s] ( 18/310) phase-ai policies::mill_targeting::tests::empty_shared_pile_keeps_the_empty_library_penalty
+        PASS [   0.031s] ( 19/310) phase-ai determinize::tests::samples_only_from_decklist_and_skips_tokens
+        PASS [   0.027s] ( 20/310) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+        PASS [   0.027s] ( 21/310) phase-ai policies::mill_targeting::tests::mill_without_retrieval_payoff_is_neutral
+        PASS [   0.029s] ( 22/310) phase-ai policies::mill_targeting::tests::mill_plus_change_zone_from_graveyard_qualifies
+        PASS [   0.034s] ( 23/310) phase-ai policies::mill_targeting::tests::mill_plus_library_draw_is_not_conditional_payoff
+        PASS [   0.023s] ( 24/310) phase-ai policies::tests::mill_payoff::activation_above_floor_returns_commitment
+        PASS [   0.033s] ( 25/310) phase-ai policies::mill_targeting::tests::opponent_target_gets_bonus_for_mill_with_choose_from_zone_payoff
+        PASS [   0.034s] ( 26/310) phase-ai policies::mill_targeting::tests::self_target_gets_self_mill_penalty_for_conditional_payoff
+        PASS [   0.032s] ( 27/310) phase-ai policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat
+        PASS [   0.042s] ( 28/310) phase-ai determinize::tests::unknown_slots_in_a_per_seat_format_stay_per_seat
+        PASS [   0.028s] ( 29/310) phase-ai policies::tests::mill_payoff::activation_at_floor_returns_some
+        PASS [   0.027s] ( 30/310) phase-ai policies::tests::mill_payoff::activation_below_floor_returns_none
+        PASS [   0.025s] ( 31/310) phase-ai policies::tests::mill_payoff::identity_is_mill_payoff
+        PASS [   0.073s] ( 32/310) phase-ai deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names
+        PASS [   0.022s] ( 33/310) phase-ai policies::tests::mill_payoff::verdict_elevated_library_is_x2
+        PASS [   0.033s] ( 34/310) phase-ai policies::tests::mill_payoff::urgency_constants_are_ordered
+        PASS [   0.025s] ( 35/310) phase-ai policies::tests::mill_payoff::verdict_normal_library_is_x1
+        PASS [   0.024s] ( 36/310) phase-ai policies::tests::mill_payoff::verdict_urgent_library_is_x3
+        PASS [   0.033s] ( 37/310) phase-ai policies::tests::mill_payoff::verdict_non_cast_action_is_na
+        PASS [   0.021s] ( 38/310) phase-ai search::tests::ai_bottoms_own_least_valuable_count_via_choose_action
+        PASS [   0.033s] ( 39/310) phase-ai policies::tests::mill_payoff::verdict_non_mill_spell_is_inert
+        PASS [   0.029s] ( 40/310) phase-ai search::tests::ai_land_nonland_opponent_guess_uses_rng
+        PASS [   0.026s] ( 41/310) phase-ai search::tests::ai_opening_hand_bottom_scopes_to_own_count_via_choose_action
+        PASS [   0.035s] ( 42/310) phase-ai search::tests::ai_declines_multikicker_when_it_would_over_commit_mana
+        PASS [   0.023s] ( 43/310) phase-ai search::tests::ai_pays_multikicker_when_mana_is_plentiful
+        PASS [   0.028s] ( 44/310) phase-ai search::tests::ai_regular_land_nonland_choice_does_not_use_guess_randomizer
+        PASS [   0.032s] ( 45/310) phase-ai search::tests::attacker_declarations_bypass_hidden_information_sampling
+        PASS [   0.064s] ( 46/310) phase-ai search::tests::a_revealed_order_only_pile_is_still_arranged_by_card_value
+        PASS [   0.039s] ( 47/310) phase-ai search::tests::budget_limits_stop_search
+        PASS [   0.046s] ( 48/310) phase-ai search::tests::beneficial_aura_target_selection_keeps_the_normal_scoring_path
+        PASS [   0.037s] ( 49/310) phase-ai search::tests::category_choice_fallback_allows_duplicate_object_slots_and_applies
+        PASS [   0.025s] ( 50/310) phase-ai search::tests::choose_action_declines_silently_for_a_seat_that_owes_no_decision
+        PASS [   0.088s] ( 51/310) phase-ai search::tests::a_blind_order_only_pile_is_not_arranged_by_card_value
+        PASS [   0.054s] ( 52/310) phase-ai search::tests::choose_action_accepts_resolve_all_consent_before_tactical_scoring
+        PASS [   0.044s] ( 53/310) phase-ai search::tests::choose_action_passes_empty_stack_upkeep_before_search
+        PASS [   0.094s] ( 54/310) phase-ai search::tests::beam_only_run_is_search_value_free
+        PASS [   0.040s] ( 55/310) phase-ai search::tests::choose_objects_fallback_uses_an_issued_required_selection
+        PASS [   0.057s] ( 56/310) phase-ai search::tests::chooser_keeps_historical_return_behavior_with_complete_domain
+        PASS [   0.155s] ( 57/310) phase-ai search::tests::a_same_player_split_is_still_arranged_by_card_value
+        PASS [   0.044s] ( 58/310) phase-ai search::tests::classic_vote_falls_back_to_first_option
+        PASS [   0.098s] ( 59/310) phase-ai search::tests::choose_action_simulates_meld_pair_outcomes
+        PASS [   0.142s] ( 60/310) phase-ai search::tests::choose_action_answers_constrained_zone_choice_and_resumes_continuation
+        PASS [   0.033s] ( 61/310) phase-ai search::tests::controller_labels_ai_labels_opponent_foe
+        PASS [   0.103s] ( 62/310) phase-ai search::tests::combat_tax_prompt_is_answered_by_rollouts_and_the_fallback
+        PASS [   0.049s] ( 63/310) phase-ai search::tests::copy_retarget_fallback_keeps_existing_targets_with_legal_action
+        PASS [   0.193s] ( 64/310) phase-ai search::tests::choose_action_never_picks_current_host_at_equip_announcement
+        PASS [   0.113s] ( 65/310) phase-ai search::tests::contextual_aura_target_selection_keeps_the_direct_fallback
+        PASS [   0.040s] ( 66/310) phase-ai search::tests::deck_color_demand_keeps_each_seats_own_pool_in_standard
+        PASS [   0.072s] ( 67/310) phase-ai search::tests::copy_retarget_fallback_selects_first_target_for_fresh_copy_cast
+        PASS [   0.049s] ( 68/310) phase-ai search::tests::deck_color_demand_reads_the_shared_pool_for_both_seats
+        PASS [   0.150s] ( 69/310) phase-ai search::tests::controller_labels_ai_labels_self_friend
+        PASS [   0.154s] ( 70/310) phase-ai search::tests::copy_retarget_fallback_keeps_current_slot_before_later_empty_slot
+        PASS [   0.354s] ( 71/310) phase-ai search::tests::affiliated_flexible_mana_uses_witnessed_support_in_public_and_enabled_beam_paths
+        PASS [   0.060s] ( 72/310) phase-ai search::tests::declare_blockers_never_returns_pass_priority
+        PASS [   0.088s] ( 73/310) phase-ai search::tests::declare_attackers_never_returns_pass_priority
+        PASS [   0.057s] ( 74/310) phase-ai search::tests::deterministic_sacrifice_gives_up_a_small_creature_before_a_costly_artifact
+        PASS [   0.043s] ( 75/310) phase-ai search::tests::deterministic_sacrifice_prefers_an_expensive_artifact_over_a_land
+        PASS [   0.045s] ( 76/310) phase-ai search::tests::deterministic_sacrifice_prefers_creature_over_land
+        PASS [   0.038s] ( 77/310) phase-ai search::tests::determinization_aggregation_means_per_action_scores
+        PASS [   0.054s] ( 78/310) phase-ai search::tests::determinization_candidate_set_stable_over_resampled_opponent_hand
+        PASS [   0.423s] ( 79/310) phase-ai search::tests::certified_pact_route_auto_targets_and_auto_pays_at_upkeep
+        PASS [   0.173s] ( 80/310) phase-ai search::tests::deterministic_choice_routes_cedh_combat_lookahead_through_config
+        PASS [   0.043s] ( 81/310) phase-ai search::tests::dig_choice_up_to_still_takes_nothing_below_the_scalar_threshold
+        PASS [   0.050s] ( 82/310) phase-ai search::tests::discard_to_hand_size_does_not_promote_a_rock_on_a_land_only_deficit
+        PASS [   0.024s] ( 83/310) phase-ai search::tests::discard_to_hand_size_keeps_an_accelerant_while_behind_on_mana
+        PASS [   0.044s] ( 84/310) phase-ai search::tests::discard_to_hand_size_gate_is_the_submitter_authority_not_a_seat_compare
+        PASS [   0.039s] ( 85/310) phase-ai search::tests::discard_to_hand_size_keeps_mana_sources_while_behind_on_lands
+        PASS [   0.041s] ( 86/310) phase-ai search::tests::discard_to_hand_size_keys_plan_and_lands_on_the_discarding_player
+        PASS [   0.031s] ( 87/310) phase-ai search::tests::discard_to_hand_size_pitches_surplus_land_while_flooded
+        PASS [   0.048s] ( 88/310) phase-ai search::tests::discard_to_hand_size_on_curve_matches_scalar_ordering
+        PASS [   0.024s] ( 89/310) phase-ai search::tests::discard_to_hand_size_prefers_a_vanilla_sibling_over_a_mana_dork
+        PASS [   0.534s] ( 90/310) phase-ai search::tests::choose_action_never_activates_reequip_without_better_host
+        PASS [   0.531s] ( 91/310) phase-ai search::tests::choose_action_rejects_bad_self_destruct_before_cast_and_keeps_source_in_hand
+        PASS [   0.027s] ( 92/310) phase-ai search::tests::discard_to_hand_size_without_plan_entry_matches_scalar_ordering
+        PASS [   0.046s] ( 93/310) phase-ai search::tests::distribute_among_deterministic_choice_prefers_lethal_split
+        PASS [   0.049s] ( 94/310) phase-ai search::tests::discard_to_hand_size_protects_a_self_deciding_seat
+        PASS [   0.326s] ( 95/310) phase-ai search::tests::deterministic_discard_choice_stays_within_the_issued_candidates
+        PASS [   0.066s] ( 96/310) phase-ai search::tests::evoke_ordinary_prompt_recognizes_opposing_stack_interaction
+        PASS [   0.091s] ( 97/310) phase-ai search::tests::evoke_ordinary_prompt_prefers_only_proven_immediate_value
+        PASS [   0.330s] ( 98/310) phase-ai search::tests::determinization_tiny_shared_deadline_returns_nonempty_floor
+        PASS [   0.021s] ( 99/310) phase-ai search::tests::fallback_choose_from_zone_up_to_still_prefers_the_empty_selection
+        PASS [   0.041s] (100/310) phase-ai search::tests::expired_attacker_root_uses_one_zero_work_threat_fallback
+        PASS [   0.026s] (101/310) phase-ai search::tests::fallback_discard_to_hand_size_is_accepted_by_the_engine
+        PASS [   0.641s] (102/310) phase-ai search::tests::competing_opponent_trigger_order_makes_pact_root_uncertifiable_and_unselectable
+        PASS [   0.041s] (103/310) phase-ai search::tests::fallback_mulligan_bottom_answers_the_contracts_seat_not_the_first_pending
+        PASS [   0.092s] (104/310) phase-ai search::tests::evoke_uses_engine_target_facts_and_preserves_non_target_etb_value
+        PASS [   0.029s] (105/310) phase-ai search::tests::fallback_mulligan_bottom_cards_selects_the_owed_count
+        PASS [   0.025s] (106/310) phase-ai search::tests::fallback_partition_is_balanced
+        PASS [   0.039s] (107/310) phase-ai search::tests::fallback_never_emits_a_selection_the_contract_refuses
+        PASS [   0.058s] (108/310) phase-ai search::tests::fallback_multi_target_selection_uses_the_issued_exact_selection
+        PASS [   0.055s] (109/310) phase-ai search::tests::fallback_opening_hand_bottom_answers_the_contracts_seat
+        PASS [   0.033s] (110/310) phase-ai search::tests::fallback_preserves_commander_zone_return_behavior
+        PASS [   0.053s] (111/310) phase-ai search::tests::fallback_pay_cost_mana_ability_discard_selects_exactly_count
+        PASS [   0.042s] (112/310) phase-ai search::tests::fallback_rejects_a_non_owner_contract_after_constructing_an_action
+        PASS [   0.034s] (113/310) phase-ai search::tests::fallback_returns_none_when_the_contract_issues_no_selection
+        PASS [   0.047s] (114/310) phase-ai search::tests::fallback_sacrifice_prefers_creature_over_land
+        PASS [   0.045s] (115/310) phase-ai search::tests::fallback_single_blocker_no_trample_all_to_blocker
+        PASS [   0.043s] (116/310) phase-ai search::tests::fallback_single_blocker_trample_tramples_excess
+        PASS [   0.047s] (117/310) phase-ai search::tests::fallback_spell_target_selection_cancels_required_empty_current_slot
+        PASS [   0.342s] (118/310) phase-ai search::tests::evoke_keeps_legal_no_normal_fallback_and_rejects_stale_options
+        PASS [   0.040s] (119/310) phase-ai search::tests::fallback_ward_discard_selects_exactly_one
+        PASS [   0.066s] (120/310) phase-ai search::tests::fallback_spell_target_selection_skips_optional_empty_current_slot
+        PASS [   0.066s] (121/310) phase-ai search::tests::fallback_spell_target_selection_uses_current_legal_target_when_slot_is_stale
+        PASS [   0.037s] (122/310) phase-ai search::tests::foreign_stack_pass_only_passes
+        PASS [   0.042s] (123/310) phase-ai search::tests::foreign_stack_pass_or_mana_only_passes_without_search
+        PASS [   0.041s] (124/310) phase-ai search::tests::foreign_stack_with_castable_candidate_does_not_fast_pass
+        PASS [   0.034s] (125/310) phase-ai search::tests::gifts_ungiven_search_choice_returns_quickly_with_distinct_names
+        PASS [   0.026s] (126/310) phase-ai search::tests::harmful_aura_target_selection_keeps_the_normal_scoring_path
+        PASS [   0.042s] (127/310) phase-ai search::tests::heuristic_mode_works_for_easy
+        PASS [   0.033s] (128/310) phase-ai search::tests::id_ceiling_matches_planner_mode_and_platform
+        PASS [   0.230s] (129/310) phase-ai search::tests::improvise_mana_only_strands_mandatory_blue
+        PASS [   0.037s] (130/310) phase-ai search::tests::k3_combat_scores_ignore_hidden_identity_with_public_hand_count_fixed
+        PASS [   0.750s] (131/310) phase-ai search::tests::ensemble_is_deterministic_with_move_ordering
+        PASS [   0.046s] (132/310) phase-ai search::tests::k3_expired_mandatory_attacker_fallback_is_nonempty_and_engine_accepted
+        PASS [   0.777s] (133/310) phase-ai search::tests::durable_session_selected_pact_stays_live_through_payment_and_expires
+        PASS [   0.026s] (134/310) phase-ai search::tests::land_fast_path_only_accepts_a_unique_legal_land
+        PASS [   0.038s] (135/310) phase-ai search::tests::land_penalty_strictly_exceeds_the_noncreature_cap
+        PASS [   0.341s] (136/310) phase-ai search::tests::iterative_deepening_deepens_beyond_rung_zero
+        PASS [   0.026s] (137/310) phase-ai search::tests::large_board_main_phase_fast_action_requires_battlefield_threshold
+        PASS [   0.056s] (138/310) phase-ai search::tests::large_board_main_phase_fast_action_does_not_fire_off_turn
+        PASS [   1.028s] (139/310) phase-ai search::tests::determinized_search_ignores_real_opponent_hand
+        PASS [   0.033s] (140/310) phase-ai search::tests::loop_shortcut_fallback_selects_legal_decline
+        PASS [   0.049s] (141/310) phase-ai search::tests::large_board_own_graveyard_is_a_development_source_in_standard
+        PASS [   0.051s] (142/310) phase-ai search::tests::large_board_shared_graveyard_is_a_development_source_for_either_seat
+        PASS [   1.102s] (143/310) phase-ai search::tests::determinization_k0_equals_core_baseline
+        PASS [   0.039s] (144/310) phase-ai search::tests::low_value_priority_does_not_skip_permanent_progress_activation
+        PASS [   0.038s] (145/310) phase-ai search::tests::low_value_priority_does_not_skip_spell_responses
+        PASS [   0.046s] (146/310) phase-ai search::tests::low_value_priority_does_not_skip_opponent_stack
+        PASS [   0.034s] (147/310) phase-ai search::tests::low_value_priority_does_not_skip_stack_interactive_activation
+        PASS [   0.034s] (148/310) phase-ai search::tests::low_value_priority_passes_over_board_activations_on_own_stack
+        PASS [   0.036s] (149/310) phase-ai search::tests::low_value_priority_passes_empty_stack_upkeep_over_board_activations
+        PASS [   0.036s] (150/310) phase-ai search::tests::measurement_combat_ignores_zero_timeout_and_k0_k3_scores_match
+        PASS [   0.033s] (151/310) phase-ai search::tests::meld_pair_fallback_prefers_canonical_pair_in_hostile_order
+        PASS [   0.033s] (152/310) phase-ai search::tests::modeled_else_branch_keeps_target_selection_on_the_normal_scoring_path
+        PASS [   0.147s] (153/310) phase-ai search::tests::mana_ability_fallback_preserves_canonical_order_without_payment_veto
+        PASS [   0.037s] (154/310) phase-ai search::tests::modeled_mode_keeps_target_selection_on_the_normal_scoring_path
+        PASS [   0.632s] (155/310) phase-ai search::tests::insufficient_pact_payment_cannot_be_certified_or_selected
+        PASS [   1.662s] (156/310) phase-ai search::tests::choose_action_never_answers_outside_the_engine_issued_domain
+        PASS [   0.025s] (157/310) phase-ai search::tests::multiplayer_attack_choice_survives_engine_completion
+        PASS [   0.018s] (158/310) phase-ai search::tests::named_choice_card_name_fallback_none_when_all_card_names_empty
+        PASS [   0.014s] (159/310) phase-ai search::tests::named_choice_card_name_fallback_uses_issued_contract_when_options_empty
+        PASS [   0.039s] (160/310) phase-ai search::tests::opponent_guess_ai_choice_is_independent_of_private_answer_authority
+        PASS [   0.479s] (161/310) phase-ai search::tests::large_board_main_phase_fast_action_honors_loop_guards
+        PASS [   0.033s] (162/310) phase-ai search::tests::optional_target_selection_can_skip_when_no_targets_exist
+        PASS [   0.498s] (163/310) phase-ai search::tests::large_board_main_phase_fast_action_uses_bounded_policy_scoring
+        PASS [   0.376s] (164/310) phase-ai search::tests::measurement_score_candidates_deterministic_in_process
+        PASS [   0.145s] (165/310) phase-ai search::tests::ordinary_cycling_is_finite_and_scored_below_pass_at_root
+        PASS [   1.515s] (166/310) phase-ai search::tests::drown_in_dreams_modal_xcast_gate_rejects_zero_and_allows_one
+        PASS [   0.557s] (167/310) phase-ai search::tests::opponent_lethal_attack_makes_pact_root_uncertifiable_and_unselectable
+        PASS [   0.115s] (168/310) phase-ai search::tests::payment_certificates_remain_bound_to_issued_positions_not_action_equality
+        PASS [   0.027s] (169/310) phase-ai search::tests::pick_lowest_value_sacrifices_spares_an_owned_commander_in_both_input_orders
+        PASS [   0.030s] (170/310) phase-ai search::tests::plan_aware_bottoming_cuts_surplus_lands_to_plan_target
+        PASS [   0.104s] (171/310) phase-ai search::tests::plan_aware_bottoming_protects_feature_payoff_names
+        PASS [   0.284s] (172/310) phase-ai search::tests::pre_expired_deadline_collapses_to_zero_apply_floor
+        PASS [   0.072s] (173/310) phase-ai search::tests::pre_expired_deadline_records_no_rungs
+        PASS [   0.221s] (174/310) phase-ai search::tests::printed_typecycling_is_not_rejected_by_self_cost_policy
+        PASS [   1.222s] (175/310) phase-ai search::tests::parallel_worker_pact_scores_defer_to_durable_canonical_selection
+        PASS [   0.093s] (176/310) phase-ai search::tests::priority_decision_vs_thousand_opponent_tokens_stays_fast
+        PASS [   1.543s] (177/310) phase-ai search::tests::owner_trigger_order_choice_makes_pact_root_uncertifiable
+        PASS [   1.595s] (178/310) phase-ai search::tests::pact_certificate_expires_for_wrong_provenance_and_after_consumption
+        PASS [   2.082s] (179/310) phase-ai search::tests::mandatory_sacrifice_ranks_issued_combinations_before_proposal_gating
+        PASS [   1.580s] (180/310) phase-ai search::tests::pact_terminal_certification_uses_the_real_installed_receipt
+        PASS [   0.012s] (181/310) phase-ai search::tests::pv_argmax_is_deterministic_and_nan_safe
+        PASS [   0.031s] (182/310) phase-ai search::tests::quiescence_context_none_keeps_main_discard_ordering
+        PASS [   0.424s] (183/310) phase-ai search::tests::public_damage_target_selection_prefers_threat_over_low_life
+        PASS [   0.328s] (184/310) phase-ai search::tests::public_fixed_lethal_damage_keeps_its_finish_preference
+        PASS [   0.055s] (185/310) phase-ai search::tests::resolve_all_consent_fallback_accepts_the_user_proposed_shortcut
+        PASS [   0.049s] (186/310) phase-ai search::tests::resolving_effect_any_combination_saturates_each_colour_demand_once
+        PASS [   0.031s] (187/310) phase-ai search::tests::resolving_effect_any_combination_uses_marginal_saturated_demand
+        PASS [   0.030s] (188/310) phase-ai search::tests::resolving_effect_any_combination_uses_the_full_prompt_demand
+        PASS [   0.345s] (189/310) phase-ai search::tests::pv_rotate_gives_pv_candidate_full_depth_under_starvation
+        PASS [   0.047s] (190/310) phase-ai search::tests::resolving_effect_mana_prefers_known_hand_demand_in_scored_and_direct_routes
+        PASS [   0.055s] (191/310) phase-ai search::tests::resolving_effect_mana_ranks_issued_products_when_the_combination_cap_excludes_its_preference
+        PASS [   0.499s] (192/310) phase-ai search::tests::public_harmful_object_target_prefers_the_threatening_controller
+        PASS [   0.030s] (193/310) phase-ai search::tests::resolving_effect_without_demand_uses_canonical_prompt_order_in_every_route
+        PASS [   0.024s] (194/310) phase-ai search::tests::returns_none_for_no_legal_actions
+        PASS [   0.046s] (195/310) phase-ai search::tests::retained_root_payment_successor_bypasses_inapplicable_fallback
+        PASS [   0.087s] (196/310) phase-ai search::tests::resolving_effect_mana_scores_only_for_the_supplied_semantic_owner
+        PASS [   0.028s] (197/310) phase-ai search::tests::returns_single_action_immediately
+        PASS [   0.029s] (198/310) phase-ai search::tests::root_combat_comparison_requires_context_but_root_scoring_reaches_it
+        PASS [   0.248s] (199/310) phase-ai search::tests::rung_stats_saturated_rung_is_still_accepted
+        PASS [   0.257s] (200/310) phase-ai search::tests::rung_stats_record_completion_and_node_usage
+        PASS [   0.030s] (201/310) phase-ai search::tests::sacrifice_ordering_survives_a_trained_land_penalty_under_the_cap
+        PASS [   0.029s] (202/310) phase-ai search::tests::score_candidates_filters_activation_at_per_turn_cap
+        PASS [   0.290s] (203/310) phase-ai search::tests::rung_zero_rotate_is_gated_off
+        PASS [   0.026s] (204/310) phase-ai search::tests::score_candidates_filters_activation_pending_on_stack
+        PASS [   0.045s] (205/310) phase-ai search::tests::score_candidates_passes_empty_stack_upkeep_before_search
+        PASS [   0.033s] (206/310) phase-ai search::tests::scored_candidates_accept_resolve_all_consent_before_tactical_scoring
+        PASS [   0.021s] (207/310) phase-ai search::tests::search_choice_picks_best_tutor_target
+        PASS [   0.015s] (208/310) phase-ai search::tests::search_prefers_board_advantage
+        PASS [   0.327s] (209/310) phase-ai search::tests::score_candidates_with_session_matches_fresh_session
+        PASS [   0.392s] (210/310) phase-ai search::tests::score_candidates_non_measurement_order_is_cmp_stable_canonical
+        PASS [   0.332s] (211/310) phase-ai search::tests::self_destruct_lethal_player_target_keeps_root_candidate
+        PASS [   0.027s] (212/310) phase-ai search::tests::self_targeting_is_penalized
+        PASS [   0.284s] (213/310) phase-ai search::tests::session_cache_reused_across_board_mutation_stays_correct
+        PASS [   0.014s] (214/310) phase-ai search::tests::session_policy_memory_survives_consecutive_decisions
+        PASS [   0.012s] (215/310) phase-ai search::tests::softmax_fallback_tiebreak_is_cmp_stable_deterministic
+        PASS [   0.011s] (216/310) phase-ai search::tests::softmax_high_temp_is_more_random
+        PASS [   0.018s] (217/310) phase-ai search::tests::softmax_low_temp_picks_highest
+        PASS [   5.109s] (218/310) phase-ai search::tests::chosen_evoke_action_runs_through_cast_target_and_resolution
+        PASS [   0.473s] (219/310) phase-ai search::tests::self_destruct_trade_remains_a_root_candidate
+        PASS [   0.033s] (220/310) phase-ai search::tests::specialist_rows_reach_the_arms_they_cover
+        PASS [   0.035s] (221/310) phase-ai search::tests::target_selection_prefers_opponent_over_self
+        PASS [   0.056s] (222/310) phase-ai search::tests::targeted_exchange_allows_fight_trade
+        PASS [   0.059s] (223/310) phase-ai search::tests::targeted_exchange_allows_reversed_fight_target_order_when_ai_fighter_wins
+        PASS [   0.208s] (224/310) phase-ai search::tests::sole_planned_cycling_land_waits_but_remains_finite
+        PASS [   0.063s] (225/310) phase-ai search::tests::targeted_exchange_judges_fight_before_later_removal_effect
+        PASS [   0.095s] (226/310) phase-ai search::tests::targeted_exchange_rejects_fight_when_ai_two_two_loses_to_enemy_three_three
+        PASS [   0.031s] (227/310) phase-ai search::tests::unmodeled_target_selection_uses_a_reducer_validated_forward_action
+        PASS [   0.075s] (228/310) phase-ai search::tests::targeted_exchange_replays_prefix_pump_before_judging_fight
+        PASS [   0.029s] (229/310) phase-ai search::tests::validated_declare_attackers_drops_illegal_attacker
+        PASS [   0.288s] (230/310) phase-ai search::tests::very_hard_casts_creature_instead_of_tapping_lands
+        PASS [   0.050s] (231/310) phase-ai search::tests::very_hard_prefers_playing_available_land
+        PASS [   4.353s] (232/310) phase-ai search::tests::mulligan_keeps_a_hand_the_registry_endorses_even_when_a_free_reveal_is_issued
+        PASS [   5.288s] (233/310) phase-ai search::tests::field_of_ruin_is_not_scored_as_a_fetchland
+        PASS [   0.036s] (234/310) phase-ai session::tests::bracket_tier_propagates_through_load_deck_into_state
+        PASS [   0.419s] (235/310) phase-ai search::tests::xcast_affordable_activation_committed_at_root
+        PASS [   0.038s] (236/310) phase-ai session::tests::cedh_tier_pool_records_cedh_bracket
+        PASS [   1.091s] (237/310) phase-ai search::tests::stateless_pact_apis_never_return_a_certified_pact_root
+        PASS [   0.020s] (238/310) phase-ai session::tests::commander_counts_toward_feature_detection_with_buildaround_weight
+        PASS [   0.036s] (239/310) phase-ai session::tests::fingerprint_covers_which_pool_backs_each_seat
+        PASS [   0.043s] (240/310) phase-ai session::tests::empty_deck_pools_fingerprint_is_safe_and_deterministic
+        PASS [   0.031s] (241/310) phase-ai session::tests::fingerprint_distinguishes_bracket_tier
+        PASS [   0.367s] (242/310) phase-ai search::tests::xcast_zero_no_op_not_committed_at_root
+        PASS [   0.028s] (243/310) phase-ai session::tests::get_or_project_caches_and_reuses_arc_on_identical_key
+        PASS [   0.054s] (244/310) phase-ai session::tests::fingerprint_is_stable_across_serde_round_trip
+        PASS [   0.032s] (245/310) phase-ai session::tests::get_or_project_serves_cache_hit_under_expired_deadline
+        PASS [   0.030s] (246/310) phase-ai session::tests::optimized_tier_pool_records_non_cedh_bracket
+        PASS [   0.030s] (247/310) phase-ai session::tests::separate_libraries_keep_each_seats_own_analysis
+        PASS [   0.032s] (248/310) phase-ai session::tests::session_cache_rebuilds_when_deck_composition_changes
+        PASS [   0.088s] (249/310) phase-ai session::tests::get_or_project_forwards_deadline_and_does_not_cache_a_bail
+        PASS [   0.033s] (250/310) phase-ai session::tests::session_cache_reuses_when_deck_pools_unchanged
+        PASS [   0.029s] (251/310) phase-ai zone_eval::tests::control_weights_value_hand_more
+        PASS [   0.032s] (252/310) phase-ai zone_eval::tests::castable_cards_worth_more
+        PASS [   0.036s] (253/310) phase-ai zone_eval::tests::available_mana_counts_creature_mana_dorks
+        PASS [   0.046s] (254/310) phase-ai session::tests::shared_pile_session_analyses_the_pile_for_both_seats
+        PASS [   0.026s] (255/310) phase-ai zone_eval::tests::graveyard_flashback_bonus
+        PASS [   0.033s] (256/310) phase-ai zone_eval::tests::shared_graveyard_cancels_for_both_seats
+        PASS [   0.030s] (257/310) phase-ai zone_eval::tests::shared_graveyard_leaves_hand_difference_intact
+        PASS [   0.037s] (258/310) phase-ai zone_eval::tests::per_seat_graveyard_counts_for_its_owner_only
+        PASS [   0.028s] (259/310) phase-ai zone_eval::tests::targeted_and_loyalty_mana_abilities_are_not_development_sources
+        PASS [   0.038s] (260/310) phase-ai zone_eval::tests::treasure_is_available_mana_but_not_a_development_source
+        PASS [   0.088s] (261/310) phase-ai::scenarios ai_attacks_through_propaganda_and_pays_the_tax
+        PASS [   0.117s] (262/310) phase-ai::scenarios ai_declare_attackers_completion_returns_apply_accepted_legal_action
+        PASS [   0.107s] (263/310) phase-ai::scenarios ai_declines_a_propaganda_tax_that_outprices_the_attack
+        PASS [   0.092s] (264/310) phase-ai::scenarios ai_drops_a_block_it_cannot_pay_the_tax_for
+        PASS [   0.062s] (265/310) phase-ai::scenarios ai_holds_back_when_the_propaganda_tax_is_unaffordable
+        PASS [   0.060s] (266/310) phase-ai::scenarios ai_pays_a_block_tax_to_keep_a_profitable_block
+        PASS [   0.050s] (267/310) phase-ai::scenarios ai_taxed_attack_round_trip_terminates
+        PASS [   0.133s] (268/310) phase-ai::scenarios ai_pays_a_block_tax_for_a_wall_that_stops_the_damage
+        PASS [   0.115s] (269/310) phase-ai::scenarios ai_tax_decision_counts_a_tapped_sick_tapless_mana_source
+        PASS [   0.069s] (270/310) phase-ai::scenarios ai_taxed_attack_round_trip_terminates_for_a_control_seat
+        PASS [   0.082s] (271/310) phase-ai::scenarios ai_trims_the_attack_to_the_propaganda_tax_it_can_afford
+        PASS [   0.161s] (272/310) phase-ai::scenarios commander_driver_small_action_cap_is_never_exceeded
+        PASS [   2.286s] (273/310) phase-ai search::tests::self_destruct_target_selection_prefers_lethal_over_nonlethal_body
+        PASS [   0.389s] (274/310) phase-ai::scenarios ai_obeys_planeswalker_directed_attack_requirement
+        PASS [   0.021s] (275/310) phase-ai::scenarios mindslaver_human_control_stops_ai_loop
+        PASS [   0.119s] (276/310) phase-ai::scenarios emrakul_ai_control_runs_for_controlled_human
+        PASS [   0.090s] (277/310) phase-ai::scenarios run_ai_actions_bounded_stops_exactly_at_budget
+        PASS [   0.029s] (278/310) phase-ai::scenarios scenario_blocks_lethal_attack_when_a_block_exists
+        PASS [   0.043s] (279/310) phase-ai::scenarios scenario_bounded_ai_sequence_progresses_without_panicking
+        PASS [   4.240s] (280/310) phase-ai search::tests::real_subtlety_prompt_stays_conservative_against_an_opposing_creature_spell
+        PASS [   1.187s] (281/310) phase-ai::scenarios gollum_opponent_guess_runs_in_ai_loop_and_wrong_guess_deals_damage
+        PASS [   0.042s] (282/310) phase-ai::scenarios scenario_curie_exile_mana_first_board_is_legal
+        PASS [   0.041s] (283/310) phase-ai::scenarios scenario_curie_exile_witness_board_is_legal
+        PASS [   1.277s] (284/310) phase-ai::scenarios scenario_claws_of_gix_mana_first_board_proposes_and_completes
+        PASS [   0.024s] (285/310) phase-ai::scenarios scenario_master_transmuter_return_mana_first_board_is_legal
+        PASS [   0.033s] (286/310) phase-ai::scenarios scenario_master_transmuter_witness_board_is_legal
+        PASS [   0.596s] (287/310) phase-ai::scenarios scenario_claws_of_gix_witness_board_does_not_dead_end
+        PASS [   0.027s] (288/310) phase-ai::scenarios scenario_multiplayer_attacks_to_finish_exposed_player
+        PASS [   0.030s] (289/310) phase-ai::scenarios scenario_prefers_opponent_target_over_self
+        PASS [   0.056s] (290/310) phase-ai::scenarios scenario_single_playable_land_uses_deterministic_shortcut
+        PASS [   0.033s] (291/310) phase-ai::scenarios scenario_skips_optional_target_with_no_legal_choices
+        PASS [   8.848s] (292/310) phase-ai policies::tests::mill_payoff::shared_pile_size_is_seen_from_both_seats
+        PASS [   0.179s] (293/310) phase-ai::scenarios scenario_very_hard_wasm_passes_instead_of_postcombat_giant_growth
+        PASS [   8.672s] (294/310) phase-ai search::tests::dark_ritual_respects_its_window_before_and_after_real_resolution
+        PASS [   0.091s] (295/310) phase-ai::scenarios scenario_very_hard_wasm_passes_with_empty_stack_counterspell
+        PASS [   0.719s] (296/310) phase-ai::scenarios scenario_harvester_of_misery_cast_is_preferred_over_pass
+        PASS [   0.184s] (297/310) phase-ai::scenarios scenario_very_hard_wasm_passes_on_redundant_removal
+        PASS [   8.145s] (298/310) phase-ai search::tests::fallback_takes_an_issued_free_reveal_and_otherwise_keeps
+        PASS [   5.784s] (299/310) phase-ai search::tests::prospective_fetch_choice_survives_to_the_real_search_prompt
+        PASS [   0.431s] (300/310) phase-ai::scenarios scenario_very_hard_wasm_uses_giant_growth_to_win_combat
+        PASS [   2.580s] (301/310) phase-ai::scenarios dandan_shared_pile_ai_pair_both_act_and_draw
+        PASS [   0.892s] (302/310) phase-ai::scenarios scenario_priority_choice_remains_reducer_legal
+        PASS [   9.629s] (303/310) phase-ai policies::tests::mill_payoff::small_shared_pile_is_urgent_from_both_seats
+        PASS [   8.020s] (304/310) phase-ai search::tests::mulligan_selects_the_engine_issued_free_reveal_and_never_derives_it
+        PASS [   8.360s] (305/310) phase-ai search::tests::mulligan_prefers_a_free_reveal_to_a_serum_powder
+        PASS [   4.671s] (306/310) phase-ai search::tests::untapped_fetchland_outscores_passing_on_its_own_turn
+        PASS [  13.491s] (307/310) phase-ai search::tests::ai_pair_leaves_the_dandan_mulligan_taking_free_reveals
+        PASS [  11.582s] (308/310) phase-ai search::tests::real_solitude_pipeline_evaluates_empty_opposing_and_own_targets
+        PASS [  12.509s] (309/310) phase-ai::scenarios saved_cosmic_crucible_mana_prompt_uses_an_issued_action_and_advances
+  Cancelling due to signal: 1 test still running
+     SIGTERM [  22.332s] (310/310) phase-ai::scenarios commander_driver_cap_beyond_one_batch_exercises_remaining_arithmetic
+  stdout ───
+
+    running 1 test
+
+    (test aborted with signal 15: SIGTERM)
+
+────────────
+     Summary [  29.200s] 310 tests run: 309 passed, 1 failed, 2581 skipped
+     SIGTERM [  22.332s] (310/310) phase-ai::scenarios commander_driver_cap_beyond_one_batch_exercises_remaining_arithmetic
+error: test run failed

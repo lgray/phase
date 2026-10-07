@@ -1,0 +1,230 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7m 36s
+────────────
+ Nextest run ID 2c5498d4-ad95-4c6d-8ff5-894ffff83c8b with nextest profile: default
+    Starting 17 tests across 26 binaries (2874 tests skipped)
+        PASS [   0.063s] ( 1/17) phase-ai planner::tests::position_hashes_fold_the_shared_pile_once
+        FAIL [   0.071s] ( 2/17) phase-ai zone_eval::tests::shared_graveyard_cancels_for_both_seats
+  stdout ───
+
+    running 1 test
+    test zone_eval::tests::shared_graveyard_cancels_for_both_seats ... FAILED
+
+    failures:
+
+    failures:
+        zone_eval::tests::shared_graveyard_cancels_for_both_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'zone_eval::tests::shared_graveyard_cancels_for_both_seats' (493573) panicked at crates/phase-ai/src/zone_eval.rs:307:13:
+    assertion `left == right` failed
+      left: 0.25
+     right: 0.0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.105s] ( 3/17) phase-ai policies::mill_targeting::tests::empty_shared_pile_keeps_the_empty_library_penalty
+        FAIL [   0.105s] ( 4/17) phase-ai policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat
+  stdout ───
+
+    running 1 test
+    test policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat ... FAILED
+
+    failures:
+
+    failures:
+        policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat' (493574) panicked at crates/phase-ai/src/policies/mill_targeting.rs:386:9:
+    assertion `left == right` failed
+      left: -0.7
+     right: 0.3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.103s] ( 5/17) phase-ai determinize::tests::unknown_slots_select_the_shared_pile_by_storage
+        FAIL [   0.106s] ( 6/17) phase-ai deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard
+  stdout ───
+
+    running 1 test
+    test deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard ... FAILED
+
+    failures:
+
+    failures:
+        deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard' (493579) panicked at crates/phase-ai/src/deck_knowledge.rs:454:9:
+    assertion `left == right` failed
+      left: []
+     right: [("Beta", 1)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.104s] ( 7/17) phase-ai combo::detection::tests::graveyard_piece_reads_the_shared_pile_from_either_seat
+        PASS [   0.106s] ( 8/17) phase-ai zone_eval::tests::per_seat_graveyard_counts_for_its_owner_only
+        PASS [   0.104s] ( 9/17) phase-ai search::tests::large_board_own_graveyard_is_a_development_source_in_standard
+        FAIL [   0.109s] (10/17) phase-ai search::tests::large_board_shared_graveyard_is_a_development_source_for_either_seat
+  stdout ───
+
+    running 1 test
+    test search::tests::large_board_shared_graveyard_is_a_development_source_for_either_seat ... FAILED
+
+    failures:
+
+    failures:
+        search::tests::large_board_shared_graveyard_is_a_development_source_for_either_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.03s
+
+  stderr ───
+
+    thread 'search::tests::large_board_shared_graveyard_is_a_development_source_for_either_seat' (493580) panicked at crates/phase-ai/src/search.rs:8626:13:
+    assertion failed: !large_board_main_phase_has_no_development_sources(&state, ai)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.121s] (11/17) phase-ai zone_eval::tests::shared_graveyard_leaves_hand_difference_intact
+  stdout ───
+
+    running 1 test
+    test zone_eval::tests::shared_graveyard_leaves_hand_difference_intact ... FAILED
+
+    failures:
+
+    failures:
+        zone_eval::tests::shared_graveyard_leaves_hand_difference_intact
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.03s
+
+  stderr ───
+
+    thread 'zone_eval::tests::shared_graveyard_leaves_hand_difference_intact' (493583) panicked at crates/phase-ai/src/zone_eval.rs:326:9:
+    assertion failed: (zone_bonus(&state, PlayerId(0), DeckArchetype::Midrange) - expected).abs() <
+        1e-9
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.132s] (12/17) phase-ai policies::fetch_land_patience::tests::untapped_fetchland_reads_the_shared_pile_from_either_seat
+        FAIL [   0.135s] (13/17) phase-ai deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once
+  stdout ───
+
+    running 1 test
+    test deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once ... FAILED
+
+    failures:
+
+    failures:
+        deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once' (493585) panicked at crates/phase-ai/src/deck_knowledge.rs:470:9:
+    assertion `left == right` failed
+      left: []
+     right: ["Alpha"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.137s] (14/17) phase-ai session::tests::shared_pile_session_analyses_the_pile_for_both_seats
+  stdout ───
+
+    running 1 test
+    test session::tests::shared_pile_session_analyses_the_pile_for_both_seats ... FAILED
+
+    failures:
+
+    failures:
+        session::tests::shared_pile_session_analyses_the_pile_for_both_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'session::tests::shared_pile_session_analyses_the_pile_for_both_seats' (493587) panicked at crates/phase-ai/src/session.rs:963:49:
+    no entry found for key
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.263s] (15/17) phase-ai::scenarios dandan_shared_pile_ai_pair_both_act_and_draw
+  stdout ───
+
+    running 1 test
+    test dandan_shared_pile_ai_pair_both_act_and_draw ... FAILED
+
+    failures:
+
+    failures:
+        dandan_shared_pile_ai_pair_both_act_and_draw
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.21s
+
+  stderr ───
+
+    thread 'dandan_shared_pile_ai_pair_both_act_and_draw' (493584) panicked at crates/phase-ai/tests/scenarios.rs:2497:5:
+    reach: the session analyses both seats
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   4.105s] (16/17) phase-ai policies::tests::mill_payoff::small_shared_pile_is_urgent_from_both_seats
+  stdout ───
+
+    running 1 test
+    test policies::tests::mill_payoff::small_shared_pile_is_urgent_from_both_seats ... FAILED
+
+    failures:
+
+    failures:
+        policies::tests::mill_payoff::small_shared_pile_is_urgent_from_both_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 4.02s
+
+  stderr ───
+
+    thread 'policies::tests::mill_payoff::small_shared_pile_is_urgent_from_both_seats' (493581) panicked at crates/phase-ai/src/policies/tests/mill_payoff.rs:438:9:
+    assertion `left == right` failed
+      left: 0
+     right: 4
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   4.144s] (17/17) phase-ai policies::tests::mill_payoff::shared_pile_size_is_seen_from_both_seats
+  stdout ───
+
+    running 1 test
+    test policies::tests::mill_payoff::shared_pile_size_is_seen_from_both_seats ... FAILED
+
+    failures:
+
+    failures:
+        policies::tests::mill_payoff::shared_pile_size_is_seen_from_both_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 4.10s
+
+  stderr ───
+
+    thread 'policies::tests::mill_payoff::shared_pile_size_is_seen_from_both_seats' (493569) panicked at crates/phase-ai/src/policies/tests/mill_payoff.rs:424:9:
+    assertion `left == right` failed
+      left: 0
+     right: 20
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   4.154s] 17 tests run: 7 passed, 10 failed, 2874 skipped
+        FAIL [   0.071s] ( 2/17) phase-ai zone_eval::tests::shared_graveyard_cancels_for_both_seats
+        FAIL [   0.105s] ( 4/17) phase-ai policies::mill_targeting::tests::shared_pile_is_not_an_empty_library_for_the_non_holder_seat
+        FAIL [   0.106s] ( 6/17) phase-ai deck_knowledge::tests::shared_pool_accounts_for_every_seats_cards_and_the_shared_graveyard
+        FAIL [   0.109s] (10/17) phase-ai search::tests::large_board_shared_graveyard_is_a_development_source_for_either_seat
+        FAIL [   0.121s] (11/17) phase-ai zone_eval::tests::shared_graveyard_leaves_hand_difference_intact
+        FAIL [   0.135s] (13/17) phase-ai deck_knowledge::tests::shared_graveyard_card_also_pinned_known_subtracts_once
+        FAIL [   0.137s] (14/17) phase-ai session::tests::shared_pile_session_analyses_the_pile_for_both_seats
+        FAIL [   0.263s] (15/17) phase-ai::scenarios dandan_shared_pile_ai_pair_both_act_and_draw
+        FAIL [   4.105s] (16/17) phase-ai policies::tests::mill_payoff::small_shared_pile_is_urgent_from_both_seats
+        FAIL [   4.144s] (17/17) phase-ai policies::tests::mill_payoff::shared_pile_size_is_seen_from_both_seats
+error: test run failed
+done rc=100

@@ -1,0 +1,97 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+────────────
+ Nextest run ID ddac05f1-17d6-40b6-ab79-88a93008ccc3 with nextest profile: default
+    Starting 8 tests across 26 binaries (2883 tests skipped)
+        FAIL [   0.062s] (1/8) phase-ai deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+  stdout ───
+
+    running 1 test
+    test deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool ... FAILED
+
+    failures:
+
+    failures:
+        deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool' (494319) panicked at crates/phase-ai/src/deck_knowledge.rs:513:9:
+    assertion `left == right` failed
+      left: []
+     right: ["Card 2", "Card 3", "Card 4", "Card 5", "Card 6", "Card 7"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.068s] (2/8) phase-ai deck_knowledge::tests::separate_pools_subtract_only_their_own_seats_cards
+        FAIL [   0.103s] (3/8) phase-ai deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat
+  stdout ───
+
+    running 1 test
+    test deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat ... FAILED
+
+    failures:
+
+    failures:
+        deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat' (494326) panicked at crates/phase-ai/src/deck_knowledge.rs:547:13:
+    PlayerId(0): the opponent's deck is the shared pool
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.103s] (4/8) phase-ai session::tests::fingerprint_covers_which_pool_backs_each_seat
+  stdout ───
+
+    running 1 test
+    test session::tests::fingerprint_covers_which_pool_backs_each_seat ... FAILED
+
+    failures:
+
+    failures:
+        session::tests::fingerprint_covers_which_pool_backs_each_seat
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'session::tests::fingerprint_covers_which_pool_backs_each_seat' (494325) panicked at crates/phase-ai/src/session.rs:1004:9:
+    assertion `left != right` failed: the seat-to-pool resolution is a from_game input
+      left: 2611584556635087828
+     right: 2611584556635087828
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.112s] (5/8) phase-ai search::tests::deck_color_demand_keeps_each_seats_own_pool_in_standard
+        FAIL [   0.113s] (6/8) phase-ai search::tests::deck_color_demand_reads_the_shared_pool_for_both_seats
+  stdout ───
+
+    running 1 test
+    test search::tests::deck_color_demand_reads_the_shared_pool_for_both_seats ... FAILED
+
+    failures:
+
+    failures:
+        search::tests::deck_color_demand_reads_the_shared_pool_for_both_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2673 filtered out; finished in 0.07s
+
+  stderr ───
+
+    thread 'search::tests::deck_color_demand_reads_the_shared_pool_for_both_seats' (494321) panicked at crates/phase-ai/src/search.rs:8580:9:
+    assertion `left == right` failed
+      left: [0, 0, 0, 0, 0]
+     right: [0, 0, 0, 4, 0]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.113s] (7/8) phase-ai session::tests::separate_libraries_keep_each_seats_own_analysis
+        PASS [   0.129s] (8/8) phase-ai deck_knowledge::tests::determinized_opponent_slots_never_receive_the_observers_hand_names
+────────────
+     Summary [   0.139s] 8 tests run: 4 passed, 4 failed, 2883 skipped
+        FAIL [   0.062s] (1/8) phase-ai deck_knowledge::tests::co_seat_hand_leaves_the_unknown_pool
+        FAIL [   0.103s] (3/8) phase-ai deck_knowledge::tests::threat_profile_exists_for_the_non_holder_seat
+        FAIL [   0.103s] (4/8) phase-ai session::tests::fingerprint_covers_which_pool_backs_each_seat
+        FAIL [   0.113s] (6/8) phase-ai search::tests::deck_color_demand_reads_the_shared_pool_for_both_seats
+error: test run failed
