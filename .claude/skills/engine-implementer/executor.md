@@ -85,10 +85,10 @@ After edits land, derive `RUST_PATHS` from the frozen authorized path list (only
 (cd "$IMPLEMENTATION_WORKTREE" && rustfmt --edition 2021 --config skip_children=true "${RUST_PATHS[@]}")
 ```
 
-For Rust / engine / parser work, run the focused set: every test the change adds or edits, the tests in each module the diff touches, and the tests that scan the source tree (named `*census*` by convention), since an edit anywhere can move their counts. Select every package that holds one of those tests (`phase-ai` tests do not run under `-p phase-engine`): `FOCUSED_PACKAGE_ARGS` carries one `-p <package>` per package. Building that run is the per-commit compile check. Report the packages and `FOCUSED_FILTER` (a nextest filterset) with the result:
+For Rust / engine / parser work, run the focused set: every test the change adds or edits, the tests in each module the diff touches, and the tests that scan the source tree (named `*census*` by convention), since an edit anywhere can move their counts. Select every package that holds one of those tests (`phase-ai` tests do not run under `-p phase-engine`): `FOCUSED_PACKAGE_ARGS` carries one `-p <package>` per package. `FOCUSED_FEATURES` is `phase-engine/test-support` plus, package-qualified, every feature a selected test needs to be compiled: its target's `required-features` (`oracle-gen` tests need `phase-engine/cli`) or a `#[cfg(feature = …)]` gate on its module (`phase-engine/proptest`). A filter cannot select a test its features leave uncompiled. Building that run is the per-commit compile check. Report the packages, features and `FOCUSED_FILTER` (a nextest filterset) with the result:
 
 ```bash
-(cd "$IMPLEMENTATION_WORKTREE" && cargo nextest run "${FOCUSED_PACKAGE_ARGS[@]}" --features phase-engine/test-support -E "$FOCUSED_FILTER")
+(cd "$IMPLEMENTATION_WORKTREE" && cargo nextest run "${FOCUSED_PACKAGE_ARGS[@]}" --features "$FOCUSED_FEATURES" -E "$FOCUSED_FILTER")
 ```
 
 For frontend work, run the test files the change adds, edits, or whose subject it touches. If there are none, skip the run and report why; `vitest run` with no file arguments runs the whole suite:
