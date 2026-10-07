@@ -1,0 +1,2 @@
+cargo-isolate: seeded /home/lgray/vibe-coding/.cargo-homes/perf-base/registry (reflink from ~/.cargo/registry)
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/perf-base
