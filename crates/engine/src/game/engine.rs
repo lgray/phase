@@ -5132,7 +5132,7 @@ fn apply_until_lethal_shortcut(
     // SITE D (CR 732.2c): a confirmed period standing at an empty stack is performed once; one
     // standing on the stack takes the ring arm, because a recorded mint names no winner to crown.
     let work: GameState = match take_route(&committed, proposal, 1) {
-        TakeRoute::Mark => {
+        TakeRoute::Mark(_) => {
             // Object-growth loop period (recast buyback+convoke, or a multi-activation mana engine)
             // declared `UntilLethal` by the AI (the shape it proposes against an offer that narrowed no
             // bound; a bounded one gets `Fixed`). Drive one real period on a clone under the
@@ -5941,38 +5941,135 @@ fn departure_verdict(
 }
 
 /// Which drive takes an accepted proposal (CR 732.2c).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TakeRoute {
     /// The confirmed period, performed now.
     Replay,
     /// CR 732.1b: the ∞ mark, whose count its controller names when the step ends.
-    Mark,
+    Mark(PeriodGrowth),
     /// The ring drain.
     Ring,
 }
 
 /// CR 732.2c: the one route decision for an accepted proposal. The mark stands only where it
 /// reaches what the replay would: a zero or shortened count is performed as agreed (CR 732.2b),
-/// a period standing on the stack cannot be replayed from the step-end collapse's empty stack,
-/// the mark would refill restricted mana without its restriction (CR 106.6), and its mint makes
+/// a period standing on the stack cannot be performed from the step-end collapse's empty stack,
+/// the mark would refill restricted mana without its restriction (CR 106.6), its mint makes
 /// bare tapped copies under the proposer, without a keyword, delayed trigger or other controller
-/// the cover admitted as growth.
+/// the cover admitted as growth, and its batched collapse must not miss what the board observes.
 fn take_route(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
     n: u32,
 ) -> TakeRoute {
     if proposal.period.is_empty() {
-        TakeRoute::Ring
-    } else if n == 0
+        return TakeRoute::Ring;
+    }
+    if n == 0
         || proposal.shortened_by.is_some()
         || !state.stack.is_empty()
         || proposal.period.growth() == crate::analysis::resource::CoveredGrowth::PerformedOnly
         || adds_restricted_mana(state, &proposal.period, proposal.proposer)
     {
+        return TakeRoute::Replay;
+    }
+    let growth = PeriodGrowth::derive(state, proposal);
+    if growth.collapse_is_replay(state, proposal) {
         TakeRoute::Replay
     } else {
-        TakeRoute::Mark
+        TakeRoute::Mark(growth)
+    }
+}
+
+/// CR 732.2a: one accepted period's growth, derived at accept from one driven cycle: the fodder
+/// its ∞ pile is drawn from, and the batched N×δ items a marked take's CR 500.5 collapse applies.
+struct PeriodGrowth {
+    fodder: Option<PeriodFodder>,
+    batched: Vec<crate::types::game_state::PersistentAxisMaterialization>,
+}
+
+impl PeriodGrowth {
+    fn derive(state: &GameState, proposal: &crate::analysis::loop_check::ShortcutProposal) -> Self {
+        use crate::types::game_state::{PersistentAxisMaterialization, TokenGrowth};
+        let (period, controller) = (&proposal.period, proposal.proposer);
+        let fodder = current_period_fodder(state, period, controller);
+        let mut batched = Vec::new();
+        if let Some(fodder) = &fodder {
+            // CR 707.2: the profile is captured at accept, since the board is not frozen until
+            // the step ends.
+            batched.push(PersistentAxisMaterialization::Tokens(Box::new(
+                TokenGrowth {
+                    profile: Box::new(crate::game::printed_cards::intrinsic_copiable_values(
+                        &fodder.class,
+                    )),
+                    per_cycle_delta: fodder.per_cycle_count,
+                },
+            )));
+        }
+        let growths = current_period_counter_growth(state, period, controller);
+        if !growths.is_empty() {
+            batched.push(PersistentAxisMaterialization::Counters(growths));
+        }
+        batched.extend(
+            current_period_life_growth(state, period, controller)
+                .into_iter()
+                .map(
+                    |(player, per_cycle_delta)| PersistentAxisMaterialization::Life {
+                        player,
+                        per_cycle_delta,
+                    },
+                ),
+        );
+        Self { fodder, batched }
+    }
+
+    /// CR 732.2c: whether the batched collapse would land a state other than performing the
+    /// period does, so the take performs it instead. Read off the items it would register.
+    fn collapse_is_replay(
+        &self,
+        state: &GameState,
+        proposal: &crate::analysis::loop_check::ShortcutProposal,
+    ) -> bool {
+        use crate::analysis::resource as res;
+        use crate::types::game_state::PersistentAxisMaterialization as Item;
+        let token_profile = self.batched.iter().find_map(|item| match item {
+            Item::Tokens(growth) => Some(growth),
+            Item::Counters(_) | Item::Life { .. } => None,
+        });
+        let counters = self
+            .batched
+            .iter()
+            .any(|item| matches!(item, Item::Counters(_)));
+        let life = self
+            .batched
+            .iter()
+            .any(|item| matches!(item, Item::Life { .. }));
+        // An axis this collapse would end with no batched item for it is delivered only by
+        // performing the period.
+        let unbatchable_deferred = proposal.unbounded.iter().any(|axis| {
+            axis.unbounded_mark_kind() == res::UnboundedMarkKind::DeferredAccrual
+                && crate::types::game_state::LoopCollapseAxis::from_resource_axis(*axis).is_none()
+        });
+        // CR 122.1 / CR 119.3: a lump counter or life application fires an observer once, not
+        // once per cycle.
+        let counter_observed = counters && res::counter_growth_is_observed(state);
+        let life_observed = life && res::life_growth_is_observed(state);
+        // CR 603.6a: the minted tokens' entries would re-earn the batched life.
+        let life_etb_sourced =
+            life && token_profile.is_some() && res::board_has_functioning_etb_trigger(state);
+        // CR 601.2i: the batched collapse casts nothing, so no cast trigger re-fires.
+        let cast_sourced = res::board_has_functioning_cast_trigger(state);
+        // CR 614.1a: a per-cycle count above one may already carry a replacement's factor, which
+        // the batched mint would apply again.
+        let token_growth_needs_replay = token_profile
+            .is_some_and(|growth| growth.per_cycle_delta > 1)
+            && res::token_growth_is_observed(state);
+        unbatchable_deferred
+            || (!self.batched.is_empty()
+                && (counter_observed
+                    || life_observed
+                    || life_etb_sourced
+                    || cast_sourced
+                    || token_growth_needs_replay))
     }
 }
 
@@ -6063,12 +6160,12 @@ fn materialize_fixed_shortcut(
             end_shortcut_at_priority(state, result, proposal, delivered == n);
             return;
         }
-        TakeRoute::Mark => {
+        TakeRoute::Mark(growth) => {
             let stashed_before = state
                 .pending_unbounded_materialization
                 .get(&proposal.proposer)
                 .map_or(0, Vec::len);
-            materialize_object_growth_shortcut(state, result, proposal);
+            materialize_object_growth_shortcut(state, result, proposal, growth);
             if state
                 .pending_unbounded_materialization
                 .get(&proposal.proposer)
@@ -7159,26 +7256,6 @@ pub(crate) fn period_sign_check(
     Ok((delta, certified_departure))
 }
 
-/// CR 732.2a: which materialization strategy an accepted object-growth collapse selected.
-///
-/// A LOCAL name for a decision `materialize_object_growth_shortcut` makes and consumes in
-/// adjacent expressions. The route is never stored, returned, or read at a distance, so the type
-/// buys nothing at a distance either. What it does buy is the wildcard-free `match` below: the
-/// two registration bodies sit under one exhaustive dispatch, so a future third strategy
-/// build-breaks here rather than silently inheriting `Batched`. Never re-derive a route from a
-/// registration — `LoopCollapseAxis::from_materializations` cannot tell the routes apart at all,
-/// since a `DriveSequence { collapsed_axes: [TokensCreated] }` folds to the same
-/// `LoopCollapseAxis::Tokens` the batched `Tokens(_)` item folds to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoopCollapseRoute {
-    /// N x delta batched items (`Tokens` / `Counters` / `Life`). O(1) in N; no per-cycle replay.
-    Batched,
-    /// `DriveSequence` — the captured period replayed through real `apply()` N times. Cubic in N,
-    /// so this arm is where a future iteration budget would attach; there is none today, and the
-    /// published ceiling stays the accepted count.
-    Replay,
-}
-
 /// PR-7 Phase 4d-ii / P7 v3 (CR 732.2a): "materialize" a confirmed UNBOUNDED object-growth
 /// shortcut (fodder/token reproduction, or a multi-activation mana engine). An unbounded loop is
 /// NOT replayed a discrete number of times — that would both CAP the infinite at N and be O(N)
@@ -7199,270 +7276,75 @@ fn materialize_object_growth_shortcut(
     state: &mut GameState,
     result: &mut ActionResult,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
+    growth: PeriodGrowth,
 ) {
     // CR 732.2a: reuse the single `unbounded_resources` writer (never mutate the map inline). The
     // proposer is the loop controller (the offer required the whole period to be theirs).
     state.mark_unbounded_loop(proposal.proposer, &proposal.unbounded);
     // CR 732.2a / CR 110.1: snapshot the ∞ pile — the proposer's tapped fodder-class members —
-    // for `DerivedViews::unbounded_pile`. Re-derive the fodder class HERE by driving one period
-    // on a clone. A mana-engine loop
-    // reproduces no token ⇒ `current_period_fodder` is `None` ⇒ no pile (correct).
-    // DISPLAY (hoisted, unconditional — runs for BOTH the observed and unobserved routes so an
-    // observed token+X loop keeps its on-battlefield ∞ pile accept→boundary): seed the pile's
-    // anchors and register it, capturing the token copiable profile for the batched Tokens stash.
-    // PAIRED, not two bindings: the per-cycle count `k` travels WITH the profile so
-    // `per_cycle_delta > 1 ⇒ token_profile.is_some()` is enforced by the type rather than by a
-    // reader remembering it. A `k` bound outside this `if let` (defaulted to 1) would compile and
-    // silently disable the route guard below.
-    let token_growth: Option<(crate::types::ability::CopiableValues, u32)> =
-        if let Some(period) = current_period_fodder(state, &proposal.period, proposal.proposer) {
-            let class = &period.class;
-            // CR 732.2a / CR 707.2: capture the fodder's copiable profile NOW. At the next
-            // phase/step boundary the loop controller names a finite
-            // N and N tapped copy-tokens are minted from this profile (the deferred shortcut
-            // count). Stored as CopiableValues, NOT an ObjectId: the board is not frozen
-            // accept→boundary, and a token's oracle_id is empty so a ResidualPermanent could not
-            // recreate it. A mana-engine loop has no fodder class (`None`) → no token stash.
+    // for `DerivedViews::unbounded_pile`. A mana-engine loop reproduces no token ⇒ no fodder ⇒ no
+    // pile (correct).
+    if let Some(period) = &growth.fodder {
+        let class = &period.class;
+        // CR 702.51a (convoke optional) + CR 732.2a: seed the ∞ pile's tapped anchor AND the
+        // W+1 untapped remainder ONLY when the certified period actually TAPS a fodder each
+        // cycle (`period.taps_fodder`) AND the live board has no tapped fodder yet (a one-shot
+        // bootstrap tapped a creature OUTSIDE the fodder class, e.g. convoking the {B}{G}
+        // cost-reducer for {G}). `board_covers_modulo_fodder`'s `>=` untapped cover
+        // (resource.rs) admits pure untapped-partition growth, so a mana-paid untapped-growth
+        // loop also reaches here with an empty tapped-fodder set — `is_empty()` alone
+        // over-fires; `period.taps_fodder == false` there → no spurious seed. The untapped
+        // seed is CR 702.51a's optional-convoke final cast (pay {G} from mana, make a
+        // Saproling without tapping one → +1 untapped); it is excluded from the ∞ pile because
+        // `tapped_fodder_members` filters `o.tapped`.
+        if period.taps_fodder
+            && crate::analysis::resource::tapped_fodder_members(state, proposal.proposer, class)
+                .is_empty()
+        {
             let profile = crate::game::printed_cards::intrinsic_copiable_values(class);
-            // CR 702.51a (convoke optional) + CR 732.2a: seed the ∞ pile's tapped anchor AND the
-            // W+1 untapped remainder ONLY when the certified period actually TAPS a fodder each
-            // cycle (`period.taps_fodder`) AND the live board has no tapped fodder yet (a one-shot
-            // bootstrap tapped a creature OUTSIDE the fodder class, e.g. convoking the {B}{G}
-            // cost-reducer for {G}). `board_covers_modulo_fodder`'s `>=` untapped cover
-            // (resource.rs) admits pure untapped-partition growth, so a mana-paid untapped-growth
-            // loop also reaches here with an empty tapped-fodder set — `is_empty()` alone
-            // over-fires; `period.taps_fodder == false` there → no spurious seed. The untapped
-            // seed is CR 702.51a's optional-convoke final cast (pay {G} from mana, make a
-            // Saproling without tapping one → +1 untapped); it is excluded from the ∞ pile because
-            // `tapped_fodder_members` filters `o.tapped`.
-            if period.taps_fodder
-                && crate::analysis::resource::tapped_fodder_members(state, proposal.proposer, class)
-                    .is_empty()
-            {
-                seed_representative_fodder(
-                    state,
-                    result,
-                    proposal.proposer,
-                    &profile,
-                    /*tapped=*/ true,
-                );
-                seed_representative_fodder(
-                    state,
-                    result,
-                    proposal.proposer,
-                    &profile,
-                    /*tapped=*/ false,
-                );
-            }
-            // Re-read AFTER the mint so the pile names the freshly-seeded tapped anchor (if any);
-            // `register_unbounded_loop_pile` is a no-op on the still-empty set for the untapped
-            // (non-seeded) case, preserving pre-existing untapped-growth behavior. The untapped
-            // remainder seed is EXCLUDED here (`tapped_fodder_members` filters `o.tapped`).
-            let pile =
-                crate::analysis::resource::tapped_fodder_members(state, proposal.proposer, class);
-            state.register_unbounded_loop_pile(proposal.proposer, pile);
-            Some((profile, period.per_cycle_count))
-        } else {
-            None
-        };
-    // ROUTE the STASH element only (the DISPLAY below is unconditional). `proposal.unbounded` IS
-    // the ∞-mark set `mark_unbounded_loop` wrote.
-    //
-    // AXIS-AWARE routing: a loop that grows a batchable COUNTER or LIFE axis OBSERVED by the current
-    // board must DRIVE the whole loop (the batched δ apply would miscount the observer — a lump
-    // life gain fires a "whenever you gain life" trigger once not N×, and `apply_counter_addition`
-    // bypasses the counter doubler pipeline). Everything else BATCHES. A pure token/mana loop grows
-    // no counter/life axis (`growths`/`life` empty) → its only observer surface is token creation,
-    // already vetted by the OFFER-time fodder firewall → it always batches even when the board
-    // carries an unrelated life/counter observer (the observedness firewall is
-    // AXIS-SPECIFIC so an incidental board observer never mis-routes a disjoint-axis loop).
-    let growths = current_period_counter_growth(state, &proposal.period, proposal.proposer);
-    // CR 732.2a / CR 122.1: the ∞ counter DISPLAY targets are the SAME per-object growth the
-    // batched stash carries — ONE derivation, projected. Registering from `growths` (rather than a
-    // second, `Generic`-only diff) is what makes `clear_collapsed_materializations`'
-    // `collapsed_pairs` a superset of the registered set on the batched route, so the boundary
-    // clear is unchanged; on the `DriveSequence` route a pair whose derived axis was not collapsed
-    // survives, which is the disclosed display over-keep on `UnboundedFamilyView`. DISPLAY-ONLY:
-    // the object's real counter count is NOT mutated (CR 701.34a already added the real counter on
-    // each live cycle; this only marks the pill to render ∞). Unconditional on both routes; a mana /
-    // token / object-growth loop grows no beneficial counter ⇒ empty ⇒ no-op writer.
+            seed_representative_fodder(
+                state,
+                result,
+                proposal.proposer,
+                &profile,
+                /*tapped=*/ true,
+            );
+            seed_representative_fodder(
+                state,
+                result,
+                proposal.proposer,
+                &profile,
+                /*tapped=*/ false,
+            );
+        }
+        // Re-read AFTER the mint so the pile names the freshly-seeded tapped anchor (if any);
+        // `register_unbounded_loop_pile` is a no-op on the still-empty set for the untapped
+        // (non-seeded) case, preserving pre-existing untapped-growth behavior. The untapped
+        // remainder seed is EXCLUDED here (`tapped_fodder_members` filters `o.tapped`).
+        let pile =
+            crate::analysis::resource::tapped_fodder_members(state, proposal.proposer, class);
+        state.register_unbounded_loop_pile(proposal.proposer, pile);
+    }
+    // CR 122.1: the ∞ counter pills are the batched `Counters` item, projected. DISPLAY-ONLY: no
+    // object's real counter count is mutated.
     state.register_unbounded_counter_targets(
         proposal.proposer,
-        growths
+        growth
+            .batched
             .iter()
+            .filter_map(|item| match item {
+                crate::types::game_state::PersistentAxisMaterialization::Counters(growths) => {
+                    Some(growths)
+                }
+                crate::types::game_state::PersistentAxisMaterialization::Tokens(_)
+                | crate::types::game_state::PersistentAxisMaterialization::Life { .. } => None,
+            })
+            .flatten()
             .map(|g| (g.object, g.counter.clone()))
             .collect(),
     );
-    let life = current_period_life_growth(state, &proposal.period, proposal.proposer);
-    let counter_observed =
-        !growths.is_empty() && crate::analysis::resource::counter_growth_is_observed(state);
-    let life_observed =
-        !life.is_empty() && crate::analysis::resource::life_growth_is_observed(state);
-    // CR 732.2a + CR 603.6a: a life axis the board RE-EARNS on a battlefield entry also belongs on
-    // the concrete replay. Not an observedness question (the batched arithmetic is right) but a
-    // ROUTE one: the batched `Tokens` collapse mints N real tokens whose real CR 603.6a entries
-    // re-earn the same life the batched `Life` already applied, so the accept pays twice.
-    //
-    // The conjuncts are AXIS-shaped, never effect-shaped: a life axis grew (`!life.is_empty()`),
-    // the collapse will mint the tokens that re-earn it (`token_profile.is_some()` — a mana-only
-    // collapse mints nothing, so nothing re-fires), and the board has an entry trigger at all.
-    // Testing the trigger's EFFECT for `GainLife` would be under-approximate: life reaches
-    // `apply_life_gain` from four resolvers, including CR 702.15b lifelink on an ETB damage
-    // trigger (the Terror of the Peaks shape), which no effect-shape test can see.
-    let life_etb_sourced = !life.is_empty()
-        && token_growth.is_some()
-        && crate::analysis::resource::board_has_functioning_etb_trigger(state);
-    // CR 601.2i + CR 732.2a: a per-cycle side effect the board re-earns from the loop's own CAST
-    // also belongs on the concrete replay. The conjuncts above are AXIS-shaped because the
-    // batched arm PRODUCES the ETB events it must not double-pay; the cast axis has no such
-    // analogue, since the batched collapse never casts anything, so the cast event belongs to the
-    // ELIDED period and the batched arm re-performs it 0x. `token_profile.is_some()` is therefore
-    // UNSOUND as a cast-side narrowing (a counter loop driven by a buyback recast has a cast
-    // trigger and no token profile), and an action-shape period-side alternative is unsound too
-    // (excluding activations batches a period whose activated ability casts during resolution).
-    //
-    // HOISTED before the move below (`token_growth` is consumed by the `if let` in `batched`),
-    // exactly as `life_etb_sourced` reads it. `u32` is `Copy`, so this is a read, not a clone. 0
-    // when no `Tokens` item exists — never 1, which would read as "one token per cycle" and
-    // switch the route guard off for a stash that does not exist.
-    let token_per_cycle_delta: u32 = token_growth.as_ref().map_or(0, |(_, k)| *k);
-    // SINGLE AUTHORITY for what the batched arm registers: the exact item list this block hands
-    // to `register_pending_materialization`, built ONCE and consumed as a VALUE by both that arm
-    // and the route's `!batched.is_empty()` conjunct — deliberately NOT a predicate mirroring the
-    // arm's per-axis conditions, which is the drift this shape forecloses. A future fourth
-    // batched axis is a fourth push HERE and feeds the route guard for free.
-    let batched: Vec<crate::types::game_state::PersistentAxisMaterialization> = {
-        use crate::types::game_state::{PersistentAxisMaterialization, TokenGrowth};
-        let mut items = Vec::new();
-        if let Some((profile, per_cycle_delta)) = token_growth {
-            items.push(PersistentAxisMaterialization::Tokens(Box::new(
-                TokenGrowth {
-                    profile: Box::new(profile),
-                    per_cycle_delta,
-                },
-            )));
-        }
-        if !growths.is_empty() {
-            items.push(PersistentAxisMaterialization::Counters(growths));
-        }
-        items.extend(life.into_iter().map(|(player, per_cycle_delta)| {
-            PersistentAxisMaterialization::Life {
-                player,
-                per_cycle_delta,
-            }
-        }));
-        items
-    };
-    let cast_sourced = crate::analysis::resource::board_has_functioning_cast_trigger(state);
-    // CR 614.1a + CR 603.6a: the batched `Tokens` mint collapses k·N real creations into ONE
-    // `ProposedEvent::CreateToken` of size k·N and RE-RUNS the replacement pipeline on it
-    // (`token_copy`'s `replace_event` call, keyed by
-    // `replacement::replacement_event_keys_for_event`), so it is faithful only if nothing
-    // re-derives a count from that event or its entries. At k > 1 the multiplicity came from
-    // SOMEWHERE and the batched arm cannot tell a replacement's factor from the period's own
-    // count, so it refuses to guess and replays — otherwise the mint proposes k·N and the doubler
-    // multiplies it again, elision 2k·N against performance k·N. The gate also keeps every
-    // currently-green LoopShortcut row on its route (all are k == 1) and makes an
-    // OPPONENT-controlled doubler a no-op, since doublers match by `token_owner_scope`. k == 1 is
-    // left EXACTLY as shipped, which is NOT a claim that the old path is exact: a rider-only
-    // `CreateToken` replacement changes no count, so it never produces k >= 2 and this conjunct
-    // switches off, yet it fires once per EVENT — a lump mint fires it 1x where N cycles fire it
-    // Nx. The same hole exists for a NON-TOKEN fodder class; both are PRE-EXISTING.
-    let token_growth_needs_replay =
-        token_per_cycle_delta > 1 && crate::analysis::resource::token_growth_is_observed(state);
-    // CR 732.2c: the shortcut is TAKEN, "with all game choices contained in the shortcut
-    // proposal having been taken". A promise the collapse cannot deliver must not be accepted.
-    // An axis whose ∞ mark this collapse ENDS (`DeferredAccrual`) but for which NO batched item
-    // exists can only be delivered by replaying the period — so it routes to the replay
-    // regardless of what else the period grew. Expressed over the two shipped classifiers
-    // rather than over a hard-coded axis, so a future replay-only deferred axis inherits it.
-    let unbatchable_deferred = proposal.unbounded.iter().any(|axis| {
-        axis.unbounded_mark_kind() == crate::analysis::resource::UnboundedMarkKind::DeferredAccrual
-            && crate::types::game_state::LoopCollapseAxis::from_resource_axis(*axis).is_none()
-    });
-    // `!batched.is_empty()` is the SYMMETRY guard for the OTHER four disjuncts, a conjunct of
-    // that sub-disjunction rather than a narrowing bolted onto the cast leg: a replay with
-    // nothing deferred to deliver is
-    // pure cost — UNCAPPED and cubic in N — plus a spurious CR 500.5 collapse prompt for a loop
-    // with nothing to collapse, since the prompt gate
-    // `next_apnap_player_with_pending_materialization` tests STASH PRESENCE only. Pinned by
-    // `loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing`. Hoisting it is
-    // exactly equivalent to narrowing the cast leg alone, because the other three disjuncts
-    // already imply it, and a future fifth inherits it. Do NOT replace it with
-    // `!accountable.is_empty()`: `growths` / `life` come from `current_period_counter_growth` /
-    // `current_period_life_growth` at accept time, a DIFFERENT derivation from the offer-time
-    // `proposal.unbounded`, and the two can disagree in exactly the direction that would route an
-    // OBSERVED counter loop to the batched arm.
-    //
-    // `unbatchable_deferred` sits OUTSIDE that guard: such an axis routes to Replay whatever
-    // `batched` holds. CR 732.2c advances the game "with all game choices contained in the
-    // shortcut proposal having been taken", so no route may DROP AN AXIS the proposal covered —
-    // which is this comment's subject. It says nothing about how many iterations are delivered:
-    // the drive below commits whole-period prefixes under CR 732.2a, and that is not a partial
-    // delivery in 732.2c's sense. Neither population may take the
-    // O(1) mint and drop the deferred axis — not a period whose only growth is that axis (EMPTY
-    // `batched`), nor one that grows a batchable axis alongside it (NON-EMPTY `batched`: tokens,
-    // counters or life plus a library delta, the shipped mill board). Both therefore pay the
-    // uncapped, cubic-in-N replay at N up to `MAX_SHORTCUT_CYCLES`, which the `Replay` arm's own
-    // doc records as where a future iteration budget attaches. The guard's other cost, a spurious
-    // CR 500.5 prompt, does not arise: such a period genuinely has something to collapse. Pinned
-    // by `wba_loop_firewall_interposition`'s Altar / Altar-free route pair.
-    let route = if unbatchable_deferred
-        || (!batched.is_empty()
-            && (counter_observed
-                || life_observed
-                || life_etb_sourced
-                || cast_sourced
-                || token_growth_needs_replay))
-    {
-        LoopCollapseRoute::Replay
-    } else {
-        LoopCollapseRoute::Batched
-    };
-    // Exhaustive, no wildcard: a future third strategy must build-break here rather than
-    // silently inherit one of these two registrations.
-    match route {
-        LoopCollapseRoute::Replay => {
-            // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the loop;
-            // replaying the captured sequence recreates every per-cycle effect honoring
-            // observers. Do NOT also register batched items (the routes are exclusive per
-            // accept). `collapsed_axes` is the set this materialization is ACCOUNTABLE for —
-            // computed per axis, NEVER a wholesale copy of `proposal.unbounded`. The copy
-            // asserted that every ∞-marked axis is one this collapse ends, which is false for a
-            // STANDING capability: an ∞-mana mark whose only authority is CR 500.5 + CR 106.4
-            // (`turns::drain_pending_phase_transition_progress`, which deliberately EXCLUDES
-            // `debug_infinite_mana` seats) would be ended by the collapse. See
-            // `ResourceAxis::unbounded_mark_kind` for the criterion and the per-axis table. The
-            // replay drives the WHOLE period, so it delivers every DEFERRED axis whether or not a
-            // batched item for it exists yet — batchability is owned by
-            // `LoopCollapseAxis::from_resource_axis`, and a subset-of-batchable filter here would
-            // refuse a mill board.
-            state.register_pending_materialization(
-                proposal.proposer,
-                crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
-                    period: proposal.period.clone(),
-                    collapsed_axes: proposal
-                        .unbounded
-                        .iter()
-                        .copied()
-                        .filter(|axis| {
-                            axis.unbounded_mark_kind()
-                                == crate::analysis::resource::UnboundedMarkKind::DeferredAccrual
-                        })
-                        .collect(),
-                },
-            );
-        }
-        LoopCollapseRoute::Batched => {
-            // UNOBSERVED fast path — register each grown persistent axis for the batched N×δ
-            // collapse. The payload was built ONCE above, in the same Tokens → Counters → Life
-            // order the per-axis pushes use; this arm carries no per-axis
-            // condition of its own, so what the route's `!batched.is_empty()` guard measured and
-            // what lands here cannot disagree.
-            for item in batched {
-                state.register_pending_materialization(proposal.proposer, item);
-            }
-        }
+    for item in growth.batched {
+        state.register_pending_materialization(proposal.proposer, item);
     }
     state.loop_detect_ring.clear();
     // CR 603.5: the recorded "may" answers describe the window that just ended.
@@ -7475,16 +7357,13 @@ fn materialize_object_growth_shortcut(
     result.waiting_for = state.waiting_for.clone();
 }
 
-/// CR 732.2a: replay a confirmed period `n` times through real `apply()`, at acceptance or at the
-/// CR 500.5 step/phase boundary, committing each period atomically — observers (Heliod / Corpsejack)
-/// fire each cycle, so an OBSERVED loop's N-cycle result is exact where a single batched N×δ would
-/// be wrong. The simulation guard is HELD across the whole drive so the injector's internal
-/// `apply_action` never recurses into the shortcut offer/detection hooks (`in_simulation_probe`
-/// gates those only). Aborts to the successful prefix if the loop can no longer replay — the
-/// machinery left the board between accept and boundary (CR 800.4a / CR 400.7) — committing the
-/// cycles that did replay. `n` is pre-clamped `[0, MAX_SHORTCUT_CYCLES]` at the prompt.
+/// CR 732.2a: perform a confirmed period `n` times through real `apply()` at the take, committing
+/// each period atomically — observers (Heliod / Corpsejack) fire each cycle, so an OBSERVED loop's
+/// N-cycle result is exact where a single batched N×δ would be wrong. The simulation guard is HELD
+/// across the whole drive so the injector's internal `apply_action` never recurses into the
+/// shortcut offer/detection hooks (`in_simulation_probe` gates those only).
 ///
-/// **What the abort implements, beyond the machinery departure above.** CR 732.2a bounds a
+/// **What the abort implements.** CR 732.2a bounds a
 /// proposal to choices "that may be legally taken based on the current game state and the
 /// predictable results of the sequence of choices", forbids "conditional actions, where the
 /// outcome of a game event determines the next action a player takes", and requires the ending
@@ -7496,29 +7375,7 @@ fn materialize_object_growth_shortcut(
 ///
 /// The delivered prefix is a value in `[0, n]` and is RETURNED, because a caller that cannot
 /// separate a full delivery from a truncated one cannot decide who holds the ending point
-/// (CR 732.2b/c). The table already consented to every value in
-/// that range — see the L3 prefix-consent statement at `game::turns`' `PayableResource::LoopCollapse`
-/// prompt, which is the licence and is not restated here. That block is cited for prefix consent
-/// ALONE.
-/// An engine-chosen prefix k is therefore observationally identical to the controller naming k at
-/// that same prompt, which the prompt's `min: 0` explicitly permits. That identity is why the
-/// collapse stays `Committed` rather than becoming conditional: nothing was delivered that a
-/// legal answer at the prompt could not have produced.
-///
-/// Two `waiting_for` shapes survive this function: an untouched `PayAmountChoice` when the drive
-/// aborts on iteration zero, and a `Priority` beat otherwise. NEITHER is the terminal beat. The
-/// caller — the `PayableResource::LoopCollapse` submit arm in `game::engine_resolution_choices` —
-/// re-drains and, once that completes the phase entry, hands BOTH shapes to `turns::auto_advance`:
-/// a `Priority` this function wrote is the CR 117.3a grant with the entered phase's own triggers
-/// still owed, so it is no more terminal than the untouched prompt. So the abort is not observable
-/// as a terminal state, and the CR 732.2a ending point is the turn interpreter's.
-/// `the_delivered_prefix_tracks_the_interposers_depth` pins the `depth = 0` arm.
-///
-/// The abort is only one route to zero delivery. An interposer-free board reaches it when the
-/// controller simply answers `0`, the value the prompt's own `min: 0` advertises and the submit
-/// handler accepts, and the batched route reaches it without entering this function at all — every
-/// one of them ends at that same caller exit. Bounded to opt-in boards: no offer exists unless
-/// `loop_detection` was turned on at match creation, and it defaults `Off`.
+/// (CR 732.2b/c).
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     period: &super::period_confirm::ConfirmedPeriod,
@@ -7569,7 +7426,7 @@ pub(crate) fn drive_persistent_axis_collapse(
         take_cost.finish(delivered);
         append_take_end_digest(state, delivered);
     }
-    // `_guard` drops HERE — before the caller re-drains — so the restored beat is offer-eligible.
+    // `_guard` drops HERE — before the caller hands back priority — so that beat is offer-eligible.
     delivered
 }
 

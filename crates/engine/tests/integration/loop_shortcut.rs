@@ -8253,6 +8253,12 @@ fn r6a_offer_state() -> GameState {
     outcome.state().clone()
 }
 
+/// The real 4p Sprout board whose take batches: its accept stashes a `Tokens` collapse for the
+/// CR 500.5 boundary, where the Witherbloom board above now performs at the take.
+fn batched_offer_state() -> GameState {
+    crate::combo_infinite_pile::offer_state()
+}
+
 /// Proposer declares `Fixed(n)`; every living opponent accepts (APNAP).
 fn r6a_declare_and_accept_all(state: &mut GameState, proposer: PlayerId, n: u32) {
     apply(
@@ -8294,8 +8300,8 @@ fn r6a_drive_to_boundary(state: &mut GameState) {
     panic!("r6a_drive_to_boundary: no phase boundary within 64 passes");
 }
 
-/// R6a-1 (PRIMARY), INVERTED to option (B). Accepting the Witherbloom/Sprout loop writes
-/// `unbounded_resources = {P0: [Life(0), TokensCreated]}` plus a non-empty ∞ pile, and
+/// R6a-1 (PRIMARY), INVERTED to option (B). Accepting the batched Sprout loop writes
+/// `unbounded_resources = {P0: [TokensCreated]}` plus a non-empty ∞ pile, and
 /// registers a finite collapse. The COUNT is fixed at accept (`pending_materialization_count`,
 /// which bounds the boundary prompt per CR 732.2c); what this engine defers is APPLYING it, until
 /// the CR 500.5 boundary (`game::turns`), while the game advances to the proposal's ending point
@@ -8325,7 +8331,7 @@ fn r6a_drive_to_boundary(state: &mut GameState) {
 ///    row loop ⇒ the ROWS assertion below FAILS while the PILE assertion above it passes.
 #[test]
 fn scheduled_collapse_still_renders_the_unbounded_badge() {
-    let mut state = r6a_offer_state();
+    let mut state = batched_offer_state();
 
     // (0) reach-guard: the real cast reached the CR 732.2a offer.
     assert!(
@@ -8335,9 +8341,17 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
     );
 
     // BASELINE, captured BEFORE the accept so the unmaterialized claim below is falsifiable.
-    // A `life > 0` assertion would also pass AFTER materialization (200 accepted gains would leave
-    // life well above 0), so it could not distinguish the state this test exists to pin.
-    let life_before = state.players.iter().find(|p| p.id == P0).unwrap().life;
+    let saprolings = |s: &GameState| {
+        s.battlefield
+            .iter()
+            .filter(|id| {
+                s.objects
+                    .get(id)
+                    .is_some_and(|o| o.controller == P0 && o.name == "Saproling")
+            })
+            .count()
+    };
+    let saprolings_before = saprolings(&state);
 
     r6a_declare_and_accept_all(&mut state, P0, 200);
 
@@ -8348,10 +8362,6 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         .get(&P0)
         .expect("accept must mark P0's ∞ axes in the store")
         .clone();
-    assert!(
-        marked.contains(&ResourceAxis::Life(P0)),
-        "MEASURED defect axis: the accept marks Life(P0) ∞, got {marked:?}"
-    );
     assert!(
         marked.contains(&ResourceAxis::TokensCreated),
         "the accept marks TokensCreated ∞, got {marked:?}"
@@ -8365,16 +8375,13 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         1,
         "exactly one controller has a scheduled collapse"
     );
-    // The growth is UNMATERIALIZED: the accepted count has not been applied, so P0's life is
-    // EXACTLY what it was before the accept. The ∞ row beside it reports the live loop mark, not
-    // the current total. Asserting EQUALITY against the pre-accept baseline (not `> 0`) is what
-    // makes this row discriminating: a premature materialization of the accepted 200 Life(P0)
-    // gains moves this number and reds the row, whereas `life > 0` survives it.
-    let life = state.players.iter().find(|p| p.id == P0).unwrap().life;
+    // The growth is UNMATERIALIZED: the accepted count has not been applied, so P0's Saprolings
+    // are EXACTLY what they were before the accept; a premature materialization of the accepted
+    // 200 mints moves this number.
     assert_eq!(
-        life, life_before,
-        "the ∞-badged Life(P0) axis must be UNMATERIALIZED at this point — life must equal its \
-         pre-accept baseline, got {life} vs {life_before}"
+        saprolings(&state),
+        saprolings_before,
+        "the ∞-badged token axis must be UNMATERIALIZED at this point"
     );
 
     // (2) FAIL-CLOSED CONTROL, in the SAME state: every ∞ axis the accept scheduled is
@@ -8392,12 +8399,9 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
 
     // (3) DISCRIMINATOR — on the WIRE, for EVERY viewer (and the spectator view), the ∞ pile and
     // both ∞ rows still project. No ∞ surface consults the collapse schedule, so the HUD can never
-    // show a card group's ∞ while hiding its resource badge. The PER-SURFACE positive rows live on
-    // their own real fixtures —
-    // `combo_infinite_pile::real_4p_object_growth_accept_writes_infinite_pile` (pile) and
-    // `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_
-    // target` (counter pills) — so a regression on ONE surface stays visible even though this
-    // row covers pile + rows at once.
+    // show a card group's ∞ while hiding its resource badge. The pile's own positive row is
+    // `combo_infinite_pile::real_4p_object_growth_accept_writes_infinite_pile`, so a regression on
+    // ONE surface stays visible even though this row covers pile + rows at once.
     for viewer in [None, Some(P0), Some(P1), Some(P2), Some(PlayerId(3))] {
         let views = engine::game::derived_views::derive_views(&state, viewer);
         assert!(
@@ -8406,8 +8410,8 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         );
         let axes: Vec<ResourceAxis> = views.unbounded_resources.iter().map(|r| r.axis).collect();
         assert!(
-            axes.contains(&ResourceAxis::Life(P0)) && axes.contains(&ResourceAxis::TokensCreated),
-            "...and both ∞ rows beside it (viewer {viewer:?}), got {axes:?}"
+            axes.contains(&ResourceAxis::TokensCreated),
+            "...and the ∞ row beside it (viewer {viewer:?}), got {axes:?}"
         );
     }
 
@@ -8442,7 +8446,7 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         .filter(|id| state.battlefield.contains(id))
         .collect();
     assert!(
-        expected_axes.len() >= 2 && !expected_pile.is_empty(),
+        !expected_axes.is_empty() && !expected_pile.is_empty(),
         "control: the expectations themselves must be non-trivial, got {expected_axes:?} / \
          {} pile members",
         expected_pile.len()
@@ -8475,9 +8479,8 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         // the battlefield; this fixture keeps its backing intact, pinned by `expected_pile`.)
         //
         // R2 — the SCHEDULE survives the viewer-filtered broadcast path. Read off
-        // `unbounded_families`, the channel that replaced the per-row `scheduled` flag; the
-        // certainty CLASS is pinned elsewhere (B-1, W2, M2-a/M2-c), what matters here is that a
-        // scheduled family reaches every viewer.
+        // `unbounded_families`, the channel that replaced the per-row `scheduled` flag; what
+        // matters here is that a scheduled family reaches every viewer.
         let scheduled_families: Vec<UnboundedFamily> = views
             .unbounded_families
             .iter()
@@ -8485,9 +8488,8 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
             .map(|f| f.family)
             .collect();
         assert!(
-            scheduled_families.contains(&UnboundedFamily::Life)
-                && scheduled_families.contains(&UnboundedFamily::Tokens),
-            "R2/filtered: the filtered broadcast path reports both scheduled families (viewer \
+            scheduled_families.contains(&UnboundedFamily::Tokens),
+            "R2/filtered: the filtered broadcast path reports the scheduled family (viewer \
              {viewer:?}), got {:?}",
             views.unbounded_families
         );
@@ -8547,7 +8549,7 @@ fn stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store() {
     use engine::types::zones::Zone;
     use std::collections::BTreeSet;
 
-    let mut state = r6a_offer_state();
+    let mut state = batched_offer_state();
     assert!(
         matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
         "reach-guard: at the offer, got {:?}",
@@ -8667,7 +8669,7 @@ fn stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store() {
 /// probe, because the stash is already gone when it runs.
 #[test]
 fn unregistered_axis_still_renders_its_infinity_badge() {
-    let mut state = r6a_offer_state();
+    let mut state = batched_offer_state();
     assert!(
         matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
         "reach-guard: at the offer, got {:?}",
@@ -8682,8 +8684,8 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         .expect("accept marked the ∞ axes")
         .clone();
     assert!(
-        marked.contains(&ResourceAxis::TokensCreated) && marked.contains(&ResourceAxis::Life(P0)),
-        "reach-guard: both labellable axes are marked, got {marked:?}"
+        marked.contains(&ResourceAxis::TokensCreated),
+        "reach-guard: the labellable token axis is marked, got {marked:?}"
     );
     assert_eq!(
         state.pending_unbounded_materialization.len(),
@@ -8696,9 +8698,8 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         engine::game::derived_views::derive_views(&state, None).unbounded_resources;
     let scheduled_axes: Vec<ResourceAxis> = scheduled_rows.iter().map(|r| r.axis).collect();
     assert!(
-        scheduled_axes.contains(&ResourceAxis::TokensCreated)
-            && scheduled_axes.contains(&ResourceAxis::Life(P0)),
-        "a merely-SCHEDULED collapse still projects both ∞ rows, got {scheduled_axes:?}"
+        scheduled_axes.contains(&ResourceAxis::TokensCreated),
+        "a merely-SCHEDULED collapse still projects the ∞ row, got {scheduled_axes:?}"
     );
 
     // R3 PRE-CLEAR positive control — without it the post-clear "every family Unscheduled" below
@@ -8760,10 +8761,6 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         "FAIL-CLOSED: a collapsible-LABELLED axis with NO registered materialization is \
          still unbounded and must keep its ∞ badge, got {axes:?}"
     );
-    assert!(
-        axes.contains(&ResourceAxis::Life(P0)),
-        "FAIL-CLOSED: same for the life axis, got {axes:?}"
-    );
 }
 
 /// R4-C4b (CR 732.2c). "Once the last player has either accepted or shortened the shortcut
@@ -8776,7 +8773,7 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
 /// reads 1000 ⇒ FAILS. `min: 0` is asserted unchanged (a collapse-to-nothing stays legal).
 #[test]
 fn accepted_fixed_count_bounds_the_boundary_collapse_prompt() {
-    let mut state = r6a_offer_state();
+    let mut state = batched_offer_state();
     assert!(
         matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
         "reach-guard: at the offer, got {:?}",
@@ -9007,11 +9004,11 @@ pub(crate) fn assert_take_pool_walk_is_flat(large: u32, mut take: impl FnMut(u32
     );
 }
 
-/// The Sprout Swarm collapse's per-cycle history work does not grow with its count.
+/// The Witherbloom/Sprout take's per-cycle history work does not grow with its count.
 #[test]
 fn sprout_take_history_work_is_flat_per_cycle() {
     assert_take_history_work_is_flat(
-        32,
+        9,
         &[
             TakeHistoryVector::JournalEntries,
             TakeHistoryVector::ProducedMana,
@@ -9021,11 +9018,8 @@ fn sprout_take_history_work_is_flat_per_cycle() {
         &[TakeHistoryMap::AbilityResolutions],
         |n| {
             let mut state = r6a_offer_state();
-            r6a_declare_and_accept_all(&mut state, P0, n);
-            r6a_drive_to_boundary(&mut state);
             engine::game::perf_counters::reset();
-            apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
-                .expect("the loop controller collapses at the accepted count");
+            r6a_declare_and_accept_all(&mut state, P0, n);
             state
         },
     );
@@ -9053,7 +9047,7 @@ fn sprout_take_history_work_is_flat_per_cycle() {
 /// out-of-range submit is ACCEPTED ⇒ assertions (4), (5) and (6) FAIL.
 #[test]
 fn two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count() {
-    let mut state = r6a_offer_state();
+    let mut state = batched_offer_state();
 
     // (1) reach-guard: the first real cast reached the CR 732.2a offer.
     assert!(
@@ -9081,8 +9075,14 @@ fn two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count() 
                 .is_some_and(|o| o.controller == P0 && !o.tapped && o.name.contains("Saproling"))
         })
         .expect("an untapped P0 Saproling remains to convoke the second cast");
+    let sprout = state
+        .objects
+        .values()
+        .find(|o| o.name == "Sprout Swarm" && o.zone == engine::types::zones::Zone::Hand)
+        .map(|o| o.id)
+        .expect("the buyback returned Sprout Swarm to P0's hand");
     let mut state = GameRunner::from_state(state)
-        .cast(R6A_SPROUT)
+        .cast(sprout)
         .accept_optional()
         .convoke_with(&[fodder])
         .commit()
@@ -9126,7 +9126,6 @@ fn two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count() 
             .count()
     };
     let permanents_before = p0_permanents(&state);
-    let life_before = state.players.iter().find(|p| p.id == P0).unwrap().life;
 
     r6a_drive_to_boundary(&mut state);
 
@@ -9156,9 +9155,9 @@ fn two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count() 
         "CR 732.2c: the later accept's 1000 cannot be collapsed at, got {over:?}"
     );
 
-    // (7) WHAT B'S 1000 ACTUALLY BECOMES: exactly 1. Each of the two stashed sequences replays
-    // ONCE — one new token and one life per sequence — so the first accept keeps precisely the
-    // single cycle the table agreed to, and the second is capped down to the same.
+    // (7) WHAT B'S 1000 ACTUALLY BECOMES: exactly 1. Each of the two stashed collapses mints
+    // ONCE — one new token per collapse — so the first accept keeps precisely the single cycle the
+    // table agreed to, and the second is capped down to the same.
     //
     // NOT the BASE discriminator, and deliberately not claimed as one: this submits
     // `amount: 1`, which the BASE overwrite ALSO materializes as Δ2. A bare-`insert` revert
@@ -9172,11 +9171,6 @@ fn two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count() 
         p0_permanents(&state) - permanents_before,
         2,
         "one materialized cycle per stashed accept, never 1000"
-    );
-    assert_eq!(
-        state.players.iter().find(|p| p.id == P0).unwrap().life - life_before,
-        2,
-        "same for the life axis: one cycle per stashed accept"
     );
 }
 
@@ -9209,7 +9203,7 @@ fn a_count_of_zero_performs_nothing_and_takes_the_shortcut_on_either_response() 
     };
 
     // ── The control: the same rig at ONE registers and prompts.
-    let mut one = r6a_offer_state();
+    let mut one = batched_offer_state();
     r6a_declare_and_accept_all(&mut one, P0, 1);
     assert_eq!(
         one.pending_unbounded_materialization
@@ -9232,7 +9226,7 @@ fn a_count_of_zero_performs_nothing_and_takes_the_shortcut_on_either_response() 
     );
 
     // ── The Accept leg, on the subclass that registers.
-    let mut zero = r6a_offer_state();
+    let mut zero = batched_offer_state();
     assert!(
         matches!(zero.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
         "reach-guard: at the offer, got {:?}",
@@ -9365,10 +9359,10 @@ fn a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed() {
             s.players.iter().find(|p| p.id == P0).unwrap().life as i64,
         )
     };
-    let at_offer = board(&r6a_offer_state());
+    let at_offer = board(&batched_offer_state());
 
     // Control: ACCEPTED at a non-zero count — the growth is deferred, not delivered.
-    let mut accepted = r6a_offer_state();
+    let mut accepted = batched_offer_state();
     r6a_declare_and_accept_all(&mut accepted, P0, 2);
     assert_eq!(
         board(&accepted),
@@ -9397,7 +9391,7 @@ fn a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed() {
     );
 
     for place in [1u32, 2] {
-        let mut state = r6a_offer_state();
+        let mut state = batched_offer_state();
         apply(
             &mut state,
             P0,
@@ -9433,7 +9427,7 @@ fn a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed() {
 
         assert_eq!(
             board(&state),
-            (at_offer.0 + i64::from(place), at_offer.1 + i64::from(place)),
+            (at_offer.0 + i64::from(place), at_offer.1),
             "CR 732.2c at place {place}: that many real periods stand on the board"
         );
         assert!(
@@ -9486,7 +9480,7 @@ fn a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed() {
 fn the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save() {
     // A save written before the swallow: a registered stash AND the bound its accept wrote.
     let saved = |bound: u32| {
-        let mut state = r6a_offer_state();
+        let mut state = batched_offer_state();
         r6a_declare_and_accept_all(&mut state, P0, 1);
         assert_eq!(
             state

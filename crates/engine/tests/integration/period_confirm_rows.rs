@@ -599,17 +599,22 @@ fn take_to_step_end(runner: &mut GameRunner, count: u32) {
 
 /// Every seat passes until the step ends, where a collapse prompt is answered `count`.
 fn take_to_step_end_after_take(runner: &mut GameRunner, count: u32) {
-    let phase = runner.state().phase;
-    while matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
-        && runner.state().phase == phase
-    {
-        act(runner, GameAction::PassPriority);
-    }
+    pass_to_step_end(runner);
     if matches!(
         runner.state().waiting_for,
         WaitingFor::PayAmountChoice { .. }
     ) {
         act(runner, GameAction::SubmitPayAmount { amount: count });
+    }
+}
+
+/// Every seat passes until the step ends or something other than priority is asked.
+fn pass_to_step_end(runner: &mut GameRunner) {
+    let phase = runner.state().phase;
+    while matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        && runner.state().phase == phase
+    {
+        act(runner, GameAction::PassPriority);
     }
 }
 
@@ -964,6 +969,100 @@ fn a_take_of_a_period_feeding_an_opponents_token_trigger_gives_them_its_tokens()
     assert!(!marks_tokens(state, P0), "at the step end");
     assert_eq!(tokens(state, P1).len(), insects + 3);
     assert_eq!(tokens(state, P0), Vec::<ObjectId>::new());
+}
+
+/// The Altar + Gravecrawler board with `payoffs` under P0, driven to its offer.
+fn altar_payoffs_offered(payoffs: &[&str]) -> Option<GameRunner> {
+    let db = shared_card_db()?;
+    let (mut runner, altar, gravecrawler) = altar_board(None, db);
+    for payoff in payoffs {
+        place(runner.state_mut(), P0, payoff, db);
+    }
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+    };
+    for cycle in 0.. {
+        assert!(cycle < 4, "{payoffs:?}: no offer in four cycles");
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+    }
+    Some(runner)
+}
+
+/// CR 732.2c: Aetherflux Reservoir ("Whenever you cast a spell, you gain 1 life for each spell
+/// you've cast this turn.") observes the Altar + Gravecrawler + Genesis Chamber period's casts, so
+/// its take performs the cycles where it is accepted: each Gravecrawler cast makes its Myr and
+/// gains its life then, and nothing is left for the step end to collapse.
+#[test]
+fn a_take_whose_collapse_would_replay_performs_its_cycles_at_the_take() {
+    let Some(mut runner) = altar_payoffs_offered(&["Genesis Chamber", "Aetherflux Reservoir"])
+    else {
+        return;
+    };
+    let state = runner.state();
+    let (phase, myr, life) = (state.phase, tokens(state, P0).len(), state.players[0].life);
+    let cast = state.spells_cast_this_turn_by_player[&P0].len() as i32;
+    take(&mut runner, 3);
+    let state = runner.state();
+    assert_eq!(
+        state.phase, phase,
+        "reach: the take ends in the step it began"
+    );
+    assert_eq!(tokens(state, P0).len(), myr + 3, "the take makes its Myr");
+    assert_eq!(
+        state.players[0].life,
+        life + (cast + 1) + (cast + 2) + (cast + 3),
+        "each cast gains its life at the take"
+    );
+    assert!(!state.pending_unbounded_materialization.contains_key(&P0));
+    pass_to_step_end(&mut runner);
+    let state = runner.state();
+    assert_ne!(state.phase, phase, "reach: the step ended");
+    assert!(
+        !matches!(state.waiting_for, WaitingFor::PayAmountChoice { .. }),
+        "no collapse is named at the step end"
+    );
+    assert_eq!(tokens(state, P0).len(), myr + 3);
+}
+
+/// CR 732.1b: Genesis Chamber's Myr are bare tokens nothing observes, so the take of the Altar +
+/// Gravecrawler + Genesis Chamber period stands on the ∞ mark and its count is named when the
+/// step ends.
+#[test]
+fn a_take_whose_collapse_batches_names_its_count_at_the_step_end() {
+    let Some(mut runner) = altar_payoffs_offered(&["Genesis Chamber"]) else {
+        return;
+    };
+    let myr = tokens(runner.state(), P0).len();
+    take(&mut runner, 3);
+    let state = runner.state();
+    assert!(marks_tokens(state, P0), "the take stands on the mark");
+    assert_eq!(tokens(state, P0).len(), myr, "no Myr is made at the take");
+    assert!(state.pending_unbounded_materialization.contains_key(&P0));
+    pass_to_step_end(&mut runner);
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::PayAmountChoice { .. }
+        ),
+        "the step end asks for the count: {}",
+        runner.state().waiting_for.variant_name()
+    );
+    act(&mut runner, GameAction::SubmitPayAmount { amount: 3 });
+    assert_eq!(
+        tokens(runner.state(), P0).len(),
+        myr + 3,
+        "the step end makes the named Myr"
+    );
 }
 
 /// CR 732.2a: P1's Kiki-Jiki period on P0's turn is offered to P1, at P1's own priority, and never

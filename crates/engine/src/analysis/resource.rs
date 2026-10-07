@@ -2835,7 +2835,7 @@ pub enum ResourceAxis {
 /// answered: an accepted materialization ends the marks it DELIVERS, and only those.
 ///
 /// NOT the batchability question. Whether a DEFERRED axis can be delivered by a batched
-/// per-axis item or only by the `DriveSequence` replay is answered by
+/// per-axis item or only by performing the period at the take is answered by
 /// `types::game_state::LoopCollapseAxis::from_resource_axis` — `Some(_)` = a batched item exists,
 /// `None` = replay-only. **That `None` arm is the ledger of not-yet-batchable axes**; do not
 /// duplicate it here. A `StandingCapability` axis and a not-yet-batchable axis both map to `None`
@@ -17897,10 +17897,10 @@ mod tests {
     ///   is about.
     /// - **SUPPRESS (`game::engine_resolution_choices`'s `ObservedGrowth::at_boundary` ->
     ///   `boundary_declines`).** A `true` makes the boundary `continue` PAST the stashed
-    ///   `Counters` / `Life` item without applying it, leaving that axis ∞ for manual play
-    ///   (`BoundaryHold::ObservedGrowth`). Over-approximating there withholds a finite amount
-    ///   the table accepted, so a spurious `true` is a real user-visible cost — which is what
-    ///   makes the life axis's structurally-inert SelfRef false positive worth excluding.
+    ///   `Counters` / `Life` item without applying it, leaving that axis ∞ for manual play.
+    ///   Over-approximating there withholds a finite amount the table accepted, so a spurious
+    ///   `true` is a real user-visible cost — which is what makes the life axis's
+    ///   structurally-inert SelfRef false positive worth excluding.
     ///
     /// Both predicates keep the 2-arg wrappers (`LoopWindowScope::unproven()`), so the
     /// phase-unreachability narrowing must NOT reach them — a `{Phase, End}` observer scanned

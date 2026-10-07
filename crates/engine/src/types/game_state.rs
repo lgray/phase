@@ -77,9 +77,7 @@ use super::resolved_commands::{
 use super::zones::{ChainReferentIntent, EtbTapState};
 use super::zones::{ExileCostSourceZone, Zone};
 
-use crate::analysis::resource::{
-    object_class, CounterClass, ObjectClass, ResourceAxis, UnboundedMarkKind,
-};
+use crate::analysis::resource::{object_class, CounterClass, ObjectClass, ResourceAxis};
 use crate::game::bracket_estimate::CommanderBracketTier;
 use crate::game::combat::{AttackTarget, BlockHistoryPair, CombatState};
 use crate::game::deck_loading::DeckEntry;
@@ -4149,7 +4147,7 @@ pub struct PendingCopyTokenBatch {
 /// persistent-growth axis, applied at the CR 500.5 step/phase boundary at the
 /// controller-named N. Generalizes the shipped token-only deferred materialization to
 /// the whole persistent-materialization class (tokens, beneficial-growable counters,
-/// life gain) plus the observed-growth discrete-cycle replay. A future persistent axis
+/// life gain). A future persistent axis
 /// is a new leaf variant + one submit arm + one clear arm (exhaustive `match` keeps
 /// every seam honest — a new variant will not compile until classified).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4159,8 +4157,8 @@ pub enum PersistentAxisMaterialization {
     /// `materialize_object_growth_shortcut`'s `derived_fodder_class` proves is a HOMOGENEOUS
     /// multiset — every member equal under `analysis::resource::fodder_content_eq` AND under
     /// `game::printed_cards::intrinsic_copiable_values`, so one profile faithfully represents all
-    /// k. A count contributed by a live `CreateToken` replacement is NOT in k: that period routes
-    /// to `DriveSequence` instead (`analysis::resource::token_growth_is_observed`), because this
+    /// k. A count contributed by a live `CreateToken` replacement is NOT in k: that period is
+    /// performed at the take instead (`analysis::resource::token_growth_is_observed`), because this
     /// arm re-runs the replacement pipeline and would otherwise apply it twice.
     /// (Mirrors `Counters`/`Life`, which carry the same field.)
     Tokens(Box<TokenGrowth>),
@@ -4171,22 +4169,6 @@ pub enum PersistentAxisMaterialization {
     Life {
         player: PlayerId,
         per_cycle_delta: u32,
-    },
-    /// CR 732.2a: an OBSERVED-growth loop cannot be single-batched (a per-cycle
-    /// trigger/replacement reads or reacts to the growing axis, e.g. Heliod on life gain
-    /// or Corpsejack on counter placement). Replay the offer's confirmed `period` N
-    /// times through real `apply()` at the boundary so each observer fires each cycle.
-    /// The `period` is CLONED into the stash (it serializes) so the boundary read survives
-    /// save/reload.
-    /// `collapsed_axes` is the subset of the loop's ∞-mark set that THIS materialization is
-    /// accountable for ending — the `DeferredAccrual` axes, per
-    /// `analysis::resource::ResourceAxis::unbounded_mark_kind`, captured at accept for a scoped
-    /// clear. It is deliberately NOT `proposal.unbounded`: a `StandingCapability` axis (today,
-    /// `Mana(_)`) is already materialized in the pool and its `∞` ends under CR 500.5 + CR 106.4,
-    /// not with this collapse.
-    DriveSequence {
-        period: crate::game::period_confirm::ConfirmedPeriod,
-        collapsed_axes: Vec<ResourceAxis>,
     },
 }
 
@@ -4268,7 +4250,7 @@ pub(crate) fn collapsed_counter_axis(
 /// `CreateToken` REPLACEMENT is deliberately NOT in it: the boundary mint re-runs that pipeline
 /// (`game::effects::token_copy::drive_copy_token_batches` -> `ProposedEvent::CreateToken` ->
 /// `replacement::replace_event`), so folding the replacement's multiplication in here would apply
-/// it twice. Such a period never reaches this struct — it routes to `DriveSequence`; see
+/// it twice. Such a period never reaches this struct — it is performed at the take; see
 /// `analysis::resource::token_growth_is_observed`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenGrowth {
@@ -16560,9 +16542,7 @@ impl LoopCollapseAxis {
     /// CR 732.2a: derive the prompt label from the controller's deferred
     /// materialization stash. Folds every item's axis into a set: exactly one
     /// distinct axis → that axis; two or more → `Mixed`; empty → `Mixed` (defensive —
-    /// a populated stash is the only way this prompt fires). The flagship observed-
-    /// growth combo (Kilo) pushes a single `DriveSequence`, so mapping its
-    /// `collapsed_axes` is load-bearing, not incidental.
+    /// a populated stash is the only way this prompt fires).
     pub fn from_materializations(items: &[PersistentAxisMaterialization]) -> Self {
         let mut axes: BTreeSet<LoopCollapseAxis> = BTreeSet::new();
         for item in items {
@@ -16575,13 +16555,6 @@ impl LoopCollapseAxis {
                 }
                 PersistentAxisMaterialization::Life { .. } => {
                     axes.insert(LoopCollapseAxis::Life);
-                }
-                PersistentAxisMaterialization::DriveSequence { collapsed_axes, .. } => {
-                    for ax in collapsed_axes {
-                        if let Some(mapped) = Self::from_resource_axis(*ax) {
-                            axes.insert(mapped);
-                        }
-                    }
                 }
             }
         }
@@ -20961,10 +20934,8 @@ declare_game_state! {
     /// marks the ∞ axes and mutates NOTHING (or, for a token loop, seeds a display
     /// anchor); the concrete finite growth is applied at the next phase/step boundary,
     /// where the controller is prompted (`PayableResource::LoopCollapse`) for a finite
-    /// N. Each element is one `PersistentAxisMaterialization` — an unobserved loop
-    /// registers per-axis batched items (`Tokens` mint recipe / `Counters` δ / `Life` δ)
-    /// that apply N×δ; an OBSERVED loop registers one `DriveSequence` that replays N real
-    /// cycles so every per-cycle observer fires. The token profile is a `CopiableValues`
+    /// N. Each element is one `PersistentAxisMaterialization` — a per-axis batched item
+    /// (`Tokens` mint recipe / `Counters` δ / `Life` δ) that applies N×δ. The token profile is a `CopiableValues`
     /// mint recipe, NOT an `ObjectId` (the board is not frozen accept→boundary) and NOT a
     /// `ResidualPermanent` (a token's `oracle_id` is empty). Written ONLY by
     /// `register_pending_materialization` (push); taken by `take_pending_materialization`;
@@ -20976,9 +20947,7 @@ declare_game_state! {
     /// `unbounded_loop_enablers` / `unbounded_loop_pile`): deferred-materialization
     /// annotation, not rules state for equality — a populated live state must still
     /// compare equal to the empty ring snapshots, or CR 104.4b loop detection
-    /// yields false negatives. NOTE: the `DriveSequence.period` payload IS
-    /// load-bearing across save/reload — it lives IN this serialized stash and drives the
-    /// boundary replay; round-trip is verified in the integration suite.
+    /// yields false negatives.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending_unbounded_materialization: BTreeMap<PlayerId, Vec<PersistentAxisMaterialization>>,
 
@@ -29674,9 +29643,8 @@ impl GameState {
 
     /// CR 732.2a: single write authority for `pending_unbounded_materialization` — only
     /// `game::engine::materialize_object_growth_shortcut` calls this, at accept, PUSHING
-    /// one deferred axis materialization onto the controller's list. An unobserved loop
-    /// pushes per-axis batched items (`Tokens` / `Counters` / `Life`); an observed loop
-    /// pushes one `DriveSequence`. Consumed at the next phase/step boundary
+    /// one deferred per-axis batched item (`Tokens` / `Counters` / `Life`) onto the
+    /// controller's list. Consumed at the next phase/step boundary
     /// (`take_pending_materialization`) to apply the deferred finite growth. Appends
     /// (multiple axes of one loop, or two accepts by the same controller, coexist).
     pub fn register_pending_materialization(
@@ -29773,8 +29741,9 @@ impl GameState {
     /// (a) UNOBSERVED → batch. `batch(N) ≡ perform-each(N)` by the growth-observed firewall's own
     ///     precondition: the batch route is entered only when no observer can make the lump apply
     ///     differently from N separate applications.
-    /// (b) OBSERVED AT ACCEPT → `DriveSequence`, which literally performs the iterations, so
-    ///     observers fire exactly as they would in manual play.
+    /// (b) OBSERVED AT ACCEPT → the take performs the period
+    ///     (`game::engine::drive_persistent_axis_collapse`), so observers fire exactly as they
+    ///     would in manual play.
     /// (c) BECAME OBSERVED IN-WINDOW → `engine_resolution_choices::boundary_declines` → manual
     ///     play, where the player performs the actions.
     /// (d) DRAIN PATH → the bounded-cycle certificate producer
@@ -29796,9 +29765,9 @@ impl GameState {
     /// replaying an observer-laden sequence would execute a proposal nobody made or accepted.
     /// Decline-to-manual is the only CR 732-faithful behavior left. **The gate is not the
     /// deviation; the two alternatives it forecloses are.** `boundary_declines` is exhaustive over
-    /// `PersistentAxisMaterialization` with no wildcard — `Tokens` (real ETB events) and
-    /// `DriveSequence` (real replay) never decline; only the batched `Counters`/`Life` axes can,
-    /// and only when their own observer appeared.
+    /// `PersistentAxisMaterialization` with no wildcard — `Tokens` (real ETB events) never
+    /// declines; only the batched `Counters`/`Life` axes can, and only when their own observer
+    /// appeared.
     ///
     /// Supporting lemmas, each checkable at a symbol rather than by argument:
     /// * **L1 OPTIONALITY** — the trace names a candidate period only around an optional play or
@@ -29825,18 +29794,11 @@ impl GameState {
     /// interactivity is CR 732.2b's shortening right made continuous: strictly MORE player rights
     /// than the paper procedure, never fewer.
     ///
-    /// `FamilyCollapseState` still distinguishes `Committed` from the weaker variants, because a
-    /// badge that reads `∞→N` is a promise about what WILL land and the engine only makes that
-    /// promise where it can keep it.
     /// While it is pending, the `∞` HUD rows, the ∞ object pile and the ∞ counter pills all keep
     /// projecting, because the marks and their enablers are still live. This set says nothing
     /// about them — it names what the boundary will REMOVE, not what the display may show.
     ///
-    /// Returns the axes UNFILTERED because filtering is the REGISTRATION site's job, not this
-    /// reader's — `game::engine::materialize_object_growth_shortcut` stores only `DeferredAccrual`
-    /// axes (`analysis::resource::ResourceAxis::unbounded_mark_kind`), so a stored `Mana(_)` can
-    /// now arrive only from a pre-fix save or a deliberate test graft, and this function reports
-    /// faithfully what is stored rather than hiding it. Note the two axis classes end their `∞` by
+    /// No item kind names a `Mana(_)` axis. Note the two axis classes end their `∞` by
     /// different routes: `Tokens` / `Counters` / `Life` are DEFERRED and end here, when the
     /// boundary applies the growth; a `Mana(_)` is already materialized in the pool
     /// (`mana_payment::refill_infinite_mana` re-tops it off this very store) and its `∞` ends at
@@ -29851,9 +29813,6 @@ impl GameState {
     /// FAIL-CLOSED: only an axis some REGISTERED item actually collapses is returned, so an
     /// ∞ axis with no registration (a mana engine registers nothing) is never removed here —
     /// it keeps its badge until CR 500.5 ends it.
-    /// The `DriveSequence` arm's verbatim `extend` is correct *because* the stored set is now
-    /// computed at REGISTRATION rather than copied from the loop's whole ∞-mark set — see
-    /// `analysis::resource::ResourceAxis::unbounded_mark_kind`.
     /// EXHAUSTIVE over `PersistentAxisMaterialization` (no wildcard) — a future variant
     /// build-breaks here instead of silently leaking a stale `∞`.
     pub fn scheduled_collapse_axes(
@@ -29873,9 +29832,6 @@ impl GameState {
                 }
                 PersistentAxisMaterialization::Life { player, .. } => {
                     axes.insert(ResourceAxis::Life(*player));
-                }
-                PersistentAxisMaterialization::DriveSequence { collapsed_axes, .. } => {
-                    axes.extend(collapsed_axes.iter().copied());
                 }
             }
         }
@@ -29905,21 +29861,10 @@ impl GameState {
     ///   display target still backs (a coexisting uncollapsed Generic counter loop keeps
     ///   its axis + pill).
     /// - `Life { player, .. }` ⇒ remove `ResourceAxis::Life(player)`.
-    /// - `DriveSequence { collapsed_axes, .. }` ⇒ remove exactly `collapsed_axes` and the
-    ///   display targets those axes back (the driven loop collapses its `DeferredAccrual` axes;
-    ///   a `StandingCapability` axis it never named is not collapsed here — see
-    ///   `analysis::resource::ResourceAxis::unbounded_mark_kind`).
     ///
     /// PRESERVES any coexisting NON-collapsed axis (a debug `SetInfiniteMana` `Mana(_)`
-    /// axis, or a second uncollapsed loop). The batched `Tokens` / `Counters` / `Life` items
-    /// never name a `Mana(_)` axis, so a batched collapse preserves mana by construction; and NO
-    /// PRODUCTION PATH constructs a `DriveSequence` naming one either —
-    /// `game::engine::materialize_object_growth_shortcut` is the only production registration
-    /// site and it filters `collapsed_axes` to `DeferredAccrual`. So both routes now preserve a
-    /// standing `Mana(_)` capability by the SAME rule, and the preservation promise in
-    /// `game::engine_resolution_choices` holds on both. (Deliberately "no production path", not
-    /// "cannot exist": shipped fixtures graft `Mana(_)`-naming `DriveSequence`s by hand to
-    /// exercise the projection, and this function reports whatever is stored.)
+    /// axis, or a second uncollapsed loop). The `Tokens` / `Counters` / `Life` items never name a
+    /// `Mana(_)` axis, so a collapse preserves mana by construction.
     /// Drops `unbounded_resources[controller]`
     /// (and its `unbounded_loop_enablers` entry in engine-state lockstep, mirroring
     /// `clear_unbounded_mana_loop`) only when its axis set becomes empty. Always removes
@@ -29934,30 +29879,12 @@ impl GameState {
         // The axis set comes from `scheduled_collapse_axes`, so "what a stash schedules" and
         // "what is removed once applied" are one match, never two copies of it.
         let mut axes_to_remove = self.scheduled_collapse_axes(collapsed);
-        // CR 500.5 + CR 106.4: DEFENSE IN DEPTH at the consuming authority.
-        // `game::engine::materialize_object_growth_shortcut` already stores only
-        // `DeferredAccrual` axes, so on a stash from THIS build this retain removes nothing. It
-        // is kept because `ResourceAxis`'s exhaustive `match` build-breaks on a new AXIS, never
-        // on a new REGISTRATION SITE: a future second producer inherits the guarantee only if it
-        // is enforced where the value is USED. Reachability, not an obligation:
-        // `pending_unbounded_materialization` is `#[serde]`-persisted, so a `Mana(_)`-bearing
-        // stash can be grafted by a test or written by an older build (cross-version save
-        // compatibility is EXPRESSLY NOT a goal here), and either route lands ONLY on a
-        // `debug_infinite_mana` seat — `turns::drain_pending_phase_transition_progress`' CR 500.5
-        // loop-mana clear runs before this prompt and excludes exactly those seats. Mirrors the
-        // POSTURE of `derived_views::scheduled_display_axes`, NOT its question, so the predicates
-        // are deliberately NOT unified. Not applied inside `scheduled_collapse_axes`, which must
-        // keep reporting faithfully what a stash stores.
-        axes_to_remove
-            .retain(|axis| axis.unbounded_mark_kind() == UnboundedMarkKind::DeferredAccrual);
-        // The token pile drops exactly when the token axis collapses — true for a batched
-        // `Tokens` item and for a `DriveSequence` that names `TokensCreated`.
+        // The token pile drops exactly when the token axis collapses.
         let drop_token_pile = axes_to_remove.contains(&ResourceAxis::TokensCreated);
         // Counter DISPLAY-TARGET bookkeeping — a different question from "which axes
         // collapse", so it stays local rather than widening the shared authority.
         // Exhaustive (no wildcard) for the same build-break guarantee.
         let mut collapsed_pairs: BTreeSet<(ObjectId, CounterType)> = BTreeSet::new();
-        let mut driven_axes: BTreeSet<ResourceAxis> = BTreeSet::new();
         for item in collapsed {
             match item {
                 PersistentAxisMaterialization::Counters(growths) => {
@@ -29965,26 +29892,19 @@ impl GameState {
                         collapsed_pairs.insert((g.object, g.counter.clone()));
                     }
                 }
-                PersistentAxisMaterialization::DriveSequence { collapsed_axes, .. } => {
-                    driven_axes.extend(collapsed_axes.iter().copied());
-                }
                 PersistentAxisMaterialization::Tokens(_)
                 | PersistentAxisMaterialization::Life { .. } => {}
             }
         }
 
-        // Surviving Generic display targets = current minus collapsed pairs minus the
-        // driven loop's targets. A Counter axis still backed by one of these is NOT
+        // Surviving Generic display targets = current minus collapsed pairs. A Counter axis still backed by one of these is NOT
         // collapsed (coexisting uncollapsed loop keeps its ∞ pill).
         let surviving_targets: BTreeSet<(ObjectId, CounterType)> = self
             .unbounded_counter_targets
             .get(&controller)
             .map(|ts| {
                 ts.iter()
-                    .filter(|(obj, ct)| {
-                        !collapsed_pairs.contains(&(*obj, ct.clone()))
-                            && !driven_axes.contains(&collapsed_counter_axis(self, *obj, ct))
-                    })
+                    .filter(|(obj, ct)| !collapsed_pairs.contains(&(*obj, ct.clone())))
                     .cloned()
                     .collect()
             })
@@ -38716,10 +38636,8 @@ mod tests {
     }
 
     /// PR-7 v4 (CR 732.2a): the deferred-materialization stash round-trips through serde
-    /// byte-for-byte — LOAD-BEARING for the observed-growth `DriveSequence`, whose `period`
-    /// lives IN the serialized stash. A mixed `Vec` (Counters + Life +
-    /// DriveSequence) survives serialize → deserialize equal, so a save captured
-    /// mid-materialization drives correctly on reload.
+    /// byte-for-byte. A mixed `Vec` (Counters + Life) survives serialize → deserialize equal, so
+    /// a save captured mid-materialization collapses correctly on reload.
     ///
     /// REVERT-PROBE (documented): remove the `Serialize`/`Deserialize` derive from
     /// `PersistentAxisMaterialization`, or the `#[serde(default, skip_serializing_if)]` from
@@ -38728,18 +38646,6 @@ mod tests {
     #[test]
     fn persistent_axis_materialization_stash_round_trips_through_serde() {
         let mut state = GameState::new_two_player(7);
-        let period: crate::game::period_confirm::ConfirmedPeriod =
-            serde_json::from_value(serde_json::json!({ "items": [{
-                "seat": 0,
-                "action": { "type": "PassPriority" },
-                "play": null,
-                "mandatory_answer": false,
-                "next_object_id": 5,
-                "minted_since": 5,
-                "cost_move": null,
-            }] }))
-            .expect("a one-item period deserializes");
-        assert!(!period.is_empty(), "reach-guard: the payload is populated");
         let items = vec![
             PersistentAxisMaterialization::Counters(vec![CounterGrowth {
                 object: ObjectId(7),
@@ -38749,10 +38655,6 @@ mod tests {
             PersistentAxisMaterialization::Life {
                 player: PlayerId(0),
                 per_cycle_delta: 3,
-            },
-            PersistentAxisMaterialization::DriveSequence {
-                period,
-                collapsed_axes: vec![ResourceAxis::Life(PlayerId(0)), ResourceAxis::TokensCreated],
             },
         ];
         state
@@ -38765,7 +38667,7 @@ mod tests {
         assert_eq!(
             reloaded.pending_unbounded_materialization.get(&PlayerId(0)),
             Some(&items),
-            "the mixed Counters+Life+DriveSequence stash round-trips byte-equal (DriveSequence is load-bearing)"
+            "the mixed Counters+Life stash round-trips byte-equal"
         );
     }
 
@@ -38937,224 +38839,6 @@ mod tests {
                 CounterType::Generic("charge".to_string())
             )])),
             "the coexisting Generic loop's display target is preserved"
-        );
-    }
-
-    /// Shared rig for the two widened-registration boundary tests below. ONE builder, two
-    /// `#[test]`s: a single four-arm test masks its own later arms, because a mutant that reds an
-    /// early arm aborts before the rest run — which is exactly how the polarity of one of these
-    /// probes was got wrong once already.
-    ///
-    /// Returns `(state, driven_axis, widened_axis)`.
-    ///
-    /// EVERY LINE HERE IS LOAD-BEARING:
-    /// - CR 122.1: `collapsed_counter_axis` takes `CounterClass` from the COUNTER and
-    ///   `ObjectClass` from the BEARER. On a CREATURE bearer `Generic("charge")` derives
-    ///   `Counter(Other, CREATURE)` — NOT `Counter(Other, Other)`. Getting that wrong makes the
-    ///   matched negative assert about an axis nothing derives.
-    /// - `GameObject::new` sets `card_types: CardType::default()` (EMPTY `core_types`), so the
-    ///   bearer's creature-ness must be assigned explicitly. A name string does nothing; without
-    ///   the assignment every axis below is `ObjectClass::Other` and the REACH arm is false.
-    /// - `mark_unbounded_loop` writes `unbounded_resources` ONLY.
-    ///   `register_unbounded_loop_enablers` is the sole write authority for
-    ///   `unbounded_loop_enablers` and no-ops on an empty set, so without the explicit call the
-    ///   enabler-absence assertion would measure a map NOTHING in the rig can populate — a
-    ///   zero-census with no positive control.
-    fn widened_counter_rig(ct: CounterType) -> (GameState, ResourceAxis, ResourceAxis) {
-        use crate::analysis::resource::{CounterClass, ObjectClass};
-
-        let driven_axis = ResourceAxis::Counter(CounterClass::Other, ObjectClass::Creature);
-        let widened_axis = ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature);
-
-        let mut state = GameState::new_two_player(7);
-        let mut bearer = GameObject::new(
-            ObjectId(10),
-            CardId(10),
-            PlayerId(0),
-            "Beast".to_string(),
-            Zone::Battlefield,
-        );
-        bearer.card_types.core_types = vec![CoreType::Creature];
-        state.objects.insert(ObjectId(10), bearer);
-        state.battlefield.push_back(ObjectId(10));
-
-        state.mark_unbounded_loop(PlayerId(0), &[driven_axis]);
-        state.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(10)]));
-        state.register_unbounded_counter_targets(PlayerId(0), vec![(ObjectId(10), ct)]);
-        (state, driven_axis, widened_axis)
-    }
-
-    /// The stash a `DriveSequence` accept leaves, naming exactly the driven axis.
-    fn widened_counter_driven_stash(
-        driven_axis: ResourceAxis,
-    ) -> Vec<PersistentAxisMaterialization> {
-        vec![PersistentAxisMaterialization::DriveSequence {
-            period: Default::default(),
-            collapsed_axes: vec![driven_axis],
-        }]
-    }
-
-    /// CR 732.2a: widening the `∞` counter registration from `Generic`-only to the whole
-    /// beneficial partition can register a pair whose derived axis the accepted collapse never
-    /// names. This pins what that does at the boundary, on BOTH halves of
-    /// `clear_collapsed_materializations`:
-    ///
-    /// - arm 1 REACH — the two axes really differ, and BOTH derivations are asserted, so a rig
-    ///   whose bearer silently lost its creature type fails here instead of passing vacuously.
-    /// - arm 2 SUBJECT (display) — the widened pair SURVIVES the driven collapse, and the `∞`
-    ///   counter pill really is still projected for it.
-    /// - arm 3 THE ANSWER (rules state) — a surviving DISPLAY pair does NOT suppress the axis
-    ///   removal and does NOT hold the `unbounded_loop_enablers` lockstep open. Both absences are
-    ///   preceded, in the same frame, by a PRESENCE assertion on the same key, so each measures a
-    ///   REMOVAL rather than a map nothing populated.
-    ///
-    /// Its matched negative is `a_counter_pair_on_the_driven_axis_is_dropped_at_the_boundary`,
-    /// which shares this rig builder and asserts the complementary outcome on the same map.
-    ///
-    /// REVERT-PROBES, each with the arm it flips and the direction (all GREEN → RED):
-    /// - delete `&& !driven_axes.contains(&collapsed_counter_axis(..))` from the surviving-target
-    ///   filter ⇒ flips the MATCHED NEGATIVE's arm 4, not this test: the filter is `P && Q`, so
-    ///   dropping `Q` is strictly MORE permissive, more pairs survive, and only a REMOVAL
-    ///   assertion can red.
-    /// - replace `axes_to_remove.retain(|ax| !backed.contains(ax))` with
-    ///   `if !surviving_targets.is_empty() { axes_to_remove.clear(); }` — a surviving display pair
-    ///   holding the whole rules-state removal open ⇒ arm 3 reds (both halves), arm 2 stays green.
-    /// - replace the survivors if/else with an unconditional
-    ///   `self.unbounded_counter_targets.remove(&controller);` ⇒ arm 2 reds, arm 3 stays green.
-    ///
-    /// HONEST BOUND: this drives `clear_collapsed_materializations` directly with a hand-built
-    /// stash, so it is a CONTRACT test of the boundary algebra, not a live-game repro. The
-    /// mixed-stash shape in which a surviving pair CAN suppress an axis removal (two accepts by
-    /// one controller before one boundary, taking different routes) pre-exists this widening for
-    /// `Generic` pairs; the widening enlarges its domain to the beneficial partition and is
-    /// recorded as a follow-up, not fixed here.
-    #[test]
-    fn widened_counter_registration_survives_a_driven_collapse_without_moving_the_axis_set() {
-        let (mut state, driven_axis, widened_axis) = widened_counter_rig(CounterType::Plus1Plus1);
-        let bearer = ObjectId(10);
-
-        // ARM 1 — REACH. Both derivations asserted, and their difference.
-        assert_eq!(
-            collapsed_counter_axis(&state, bearer, &CounterType::Plus1Plus1),
-            widened_axis,
-            "reach: on a CREATURE bearer a +1/+1 counter derives Counter(Plus1Plus1, Creature)"
-        );
-        assert_eq!(
-            collapsed_counter_axis(&state, bearer, &CounterType::Generic("charge".to_string())),
-            driven_axis,
-            "reach: on the SAME creature bearer a Generic counter derives Counter(Other, Creature) \
-             — the ObjectClass comes from the BEARER, so this is NOT Counter(Other, Other)"
-        );
-        assert_ne!(
-            widened_axis, driven_axis,
-            "reach: the widened pair's axis is not the one the collapse drives — without this the \
-             whole fixture is about one axis"
-        );
-
-        // PRE-CLEAR PRESENCE — the positive controls. Each absence asserted after the clear is a
-        // REMOVAL because the same key is proven present here, in the same frame.
-        assert_eq!(
-            state.unbounded_counter_targets.get(&PlayerId(0)),
-            Some(&BTreeSet::from([(bearer, CounterType::Plus1Plus1)])),
-            "pre-clear: the widened pair is registered"
-        );
-        assert_eq!(
-            state.unbounded_resources.get(&PlayerId(0)),
-            Some(&BTreeSet::from([driven_axis])),
-            "pre-clear: the marked axis set is exactly the driven axis"
-        );
-        assert!(
-            state.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "pre-clear: the enabler map is POPULATED — without this the arm-3 absence below \
-             measures a map nothing in the rig can write"
-        );
-
-        state.clear_collapsed_materializations(
-            PlayerId(0),
-            &widened_counter_driven_stash(driven_axis),
-        );
-
-        // ARM 2 — SUBJECT (display). The widened pair survives, and its pill is still projected.
-        assert_eq!(
-            state.unbounded_counter_targets.get(&PlayerId(0)),
-            Some(&BTreeSet::from([(bearer, CounterType::Plus1Plus1)])),
-            "ARM2 widened pair survives: its derived axis was not collapsed, so per CR 732.2c \
-             nothing about it has ended"
-        );
-        let pills =
-            crate::game::derived_views::derive_views(&state, Some(PlayerId(0))).counter_display;
-        assert_eq!(
-            pills.get(&bearer),
-            Some(&crate::game::derived_views::ObjectCounterDisplay {
-                pills: vec![crate::game::derived_views::CounterRowView {
-                    counter: CounterType::Plus1Plus1,
-                    count: state
-                        .objects
-                        .get(&bearer)
-                        .and_then(|o| o.counters.get(&CounterType::Plus1Plus1).copied())
-                        .unwrap_or(0),
-                    magnitude: crate::game::derived_views::CounterMagnitude::Unbounded,
-                }],
-                loyalty: None,
-            }),
-            "ARM2 pill projection: the surviving pair really reaches `counter_display` — the \
-             store half alone would not prove the display over-keep is visible, got {pills:?}"
-        );
-
-        // ARM 3 — THE ANSWER (rules state). Both halves are REMOVALS, not absences.
-        assert!(
-            !state.unbounded_resources.contains_key(&PlayerId(0)),
-            "ARM3a axis set emptied: a surviving DISPLAY pair does not suppress the removal of an \
-             axis the collapse actually drove"
-        );
-        assert!(
-            !state.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "ARM3b enabler dropped: the axis set emptied, so the lockstep drop fires — a surviving \
-             display pair does not hold it open"
-        );
-    }
-
-    /// The MATCHED NEGATIVE of
-    /// `widened_counter_registration_survives_a_driven_collapse_without_moving_the_axis_set`,
-    /// on the SAME rig builder and the SAME map: a registered pair whose derived axis IS the
-    /// driven one is filtered out and its entry removed. Without this arm, the survival assertion
-    /// next door would pass against a boundary that never filters anything.
-    ///
-    /// REVERT-PROBE: delete `&& !driven_axes.contains(&collapsed_counter_axis(..))` from the
-    /// surviving-target filter ⇒ this test reds (the pair survives, the entry is re-inserted, and
-    /// `contains_key` is true) while the survival test stays green. That is the only mutation of
-    /// the three that flips THIS arm, and it flips no other.
-    #[test]
-    fn a_counter_pair_on_the_driven_axis_is_dropped_at_the_boundary() {
-        let (mut state, driven_axis, widened_axis) =
-            widened_counter_rig(CounterType::Generic("charge".to_string()));
-        let bearer = ObjectId(10);
-
-        // ARM 1 — REACH, identical to its twin: this pair's axis IS the driven one.
-        assert_eq!(
-            collapsed_counter_axis(&state, bearer, &CounterType::Generic("charge".to_string())),
-            driven_axis,
-            "reach: the Generic pair on a creature bearer derives the DRIVEN axis"
-        );
-        assert_ne!(
-            widened_axis, driven_axis,
-            "reach: the two axes this pair of tests separates really are distinct"
-        );
-        assert!(
-            state.unbounded_counter_targets.contains_key(&PlayerId(0)),
-            "pre-clear: the pair is registered — the absence below is a REMOVAL"
-        );
-
-        state.clear_collapsed_materializations(
-            PlayerId(0),
-            &widened_counter_driven_stash(driven_axis),
-        );
-
-        // ARM 4 — the pair derives a driven axis, so it is filtered and the entry removed.
-        assert!(
-            !state.unbounded_counter_targets.contains_key(&PlayerId(0)),
-            "ARM4 generic pair filtered out, entry removed: its derived axis WAS collapsed, so its \
-             ∞ has genuinely ended"
         );
     }
 
@@ -44398,8 +44082,7 @@ mod tests {
                 .expect("the just-created profile host is in `objects`"),
         );
 
-        // One item of EACH batched kind — the three arms `scheduled_collapse_axes` can take that
-        // are not `DriveSequence`.
+        // One item of EACH kind — the three arms `scheduled_collapse_axes` can take.
         let batched = [
             PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
                 profile: Box::new(profile),
@@ -44451,8 +44134,8 @@ mod tests {
         );
         assert!(
             !produced.contains(&ResourceAxis::Mana(ManaType::Colorless)),
-            "no batched item can schedule a mana axis — which is why a batched collapse preserved \
-             mana by construction long before the DriveSequence route did"
+            "no batched item can schedule a mana axis — which is why a collapse preserves mana by \
+             construction"
         );
     }
 

@@ -3630,11 +3630,6 @@ export type UnboundedFamily =
   | "turns"
   | "triggers";
 
-/** Whether the boundary can still fail to apply a scheduled collapse. Mirrors
- *  `engine::game::derived_views::CollapseCertainty`. `Conditional` means the collapse may be
- *  declined or may park, and the axis then stays unbounded. */
-export type CollapseCertainty = "Committed" | "Conditional";
-
 /**
  * One display family's collapse coverage. Mirrors
  * `engine::game::derived_views::FamilyCollapseState` (serde `tag`/`content`).
@@ -3647,7 +3642,6 @@ export type FamilyCollapseState =
   | {
       type: "Scheduled";
       data: {
-        certainty: CollapseCertainty;
         /**
          * The seat the engine will ask to name the collapse count (CR 732.2a's "specified number
          * of times") — the loop's CONTROLLER. It is emitted because it is NOT recoverable from
@@ -3674,9 +3668,9 @@ export type FamilyCollapseState =
  * only the engine can answer.
  *
  * `state` is NOT a guarantee that the growth lands, and that is typed rather than disclosed:
- * `Scheduled(Conditional)` is exactly the case where a `Counters`/`Life` axis can be declined (a
+ * `Scheduled` is exactly the case where a `Counters`/`Life` axis can be declined (a
  * counter/life observer appeared between accept and boundary) or a `Tokens` mint can park, leaving
- * the axis unbounded with nothing applied. Only `Scheduled(Committed)` promises a bound.
+ * the axis unbounded with nothing applied.
  */
 export interface UnboundedFamilyView {
   player: PlayerId;

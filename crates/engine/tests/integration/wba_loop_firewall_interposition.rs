@@ -1186,10 +1186,10 @@ use engine::analysis::resource::ResourceAxis;
 use engine::game::engine::apply;
 use engine::game::scenario::GameRunner;
 use engine::types::actions::GameAction;
-use engine::types::game_state::{PayableResource, PersistentAxisMaterialization};
+use engine::types::game_state::PersistentAxisMaterialization;
 
-/// Everything P0's accept registered. The stash discriminant is the only observable of the
-/// route from outside the engine crate — `LoopCollapseRoute` is private to `game::engine`.
+/// Everything P0's accept registered. The stash is the observable of the route from outside the
+/// engine crate: the batched route registers its items, a performed take registers nothing.
 fn registered(state: &GameState) -> &[PersistentAxisMaterialization] {
     state
         .pending_unbounded_materialization
@@ -1197,17 +1197,9 @@ fn registered(state: &GameState) -> &[PersistentAxisMaterialization] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// Whether P0's accept took the concrete replay. Panics rather than answering on an EMPTY
-/// stash, so "not the replay" can never be satisfied by an accept that registered nothing.
-fn took_the_replay(state: &GameState, why: &str) -> bool {
-    let stash = registered(state);
-    assert!(
-        !stash.is_empty(),
-        "{why}: P0's accept registered NOTHING — any route claim about it is vacuous"
-    );
-    stash
-        .iter()
-        .all(|m| matches!(m, PersistentAxisMaterialization::DriveSequence { .. }))
+/// Whether P0's take performed the period rather than standing on the batched mark.
+fn took_the_replay(state: &GameState) -> bool {
+    registered(state).is_empty()
 }
 
 /// The board driven by one real buyback+convoke recast to its CR 732.2a offer.
@@ -1244,28 +1236,6 @@ fn declare_and_accept_all(state: &mut GameState, n: u32) {
     }
 }
 
-/// Pass priority through the production path until the CR 500.5 boundary raises the collapse
-/// prompt. Bounded so a wedge fails loudly instead of hanging.
-fn drive_to_collapse_boundary(state: &mut GameState) {
-    for _ in 0..64 {
-        if matches!(
-            state.waiting_for,
-            WaitingFor::PayAmountChoice {
-                resource: PayableResource::LoopCollapse { .. },
-                ..
-            }
-        ) {
-            return;
-        }
-        let WaitingFor::Priority { player } = state.waiting_for.clone() else {
-            panic!("unexpected non-Priority prompt {:?}", state.waiting_for)
-        };
-        apply(state, player, GameAction::PassPriority)
-            .expect("pass priority toward the CR 500.5 boundary");
-    }
-    panic!("no collapse prompt within 64 passes");
-}
-
 /// Every seat's library size, in seat order.
 fn library_sizes(state: &GameState) -> Vec<(PlayerId, usize)> {
     state
@@ -1293,7 +1263,7 @@ fn the_mill_flips_a_non_empty_batched_period_onto_the_replay() {
     let mut altar_free = offer_state(load_realistic_dump());
     declare_and_accept_all(&mut altar_free, 2);
     assert!(
-        !took_the_replay(&altar_free, "altar-free"),
+        !took_the_replay(&altar_free),
         "the Altar-free board's only growth is batchable, so its accept keeps the batched mint"
     );
     assert!(
@@ -1305,18 +1275,26 @@ fn the_mill_flips_a_non_empty_batched_period_onto_the_replay() {
     );
 
     let mut milling = offer_state(mill_base());
+    let before = library_sizes(&milling);
     declare_and_accept_all(&mut milling, 2);
     assert!(
-        took_the_replay(&milling, "altar"),
+        took_the_replay(&milling),
         "CR 732.2c: the accepted proposal promises a library decline no batched item can \
          deliver, so the same period — token growth included — must route to the replay"
     );
+    assert!(
+        library_sizes(&milling)
+            .iter()
+            .zip(&before)
+            .any(|((id, after), (_, before))| *id != P0 && after < before),
+        "reach-guard: the take milled an opponent"
+    );
 }
 
-/// **An accepted mill collapse MOVES cards and RETIRES its marks.** The first row in this
-/// module that goes past the offer, and the one the offer rows cannot substitute for: a
-/// Replay arm that failed to deliver the `LibraryDelta` would move zero cards and leave a
-/// permanent infinity badge, and every assertion above would still pass.
+/// **An accepted mill take MOVES cards and leaves no mark.** The first row in this module that
+/// goes past the offer, and the one the offer rows cannot substitute for: a Replay arm that failed
+/// to deliver the `LibraryDelta` would move zero cards, and every assertion above would still
+/// pass.
 ///
 /// Direction only — a NONZERO decline per victim and an absent mark. This row stays
 /// direction-only BY DESIGN: it runs on `mill_base()`, whose library cards keep their real
@@ -1328,7 +1306,7 @@ fn the_mill_flips_a_non_empty_batched_period_onto_the_replay() {
 /// ⇒ the accept routes to the batched mint, which carries no `LibraryDelta`, so no opponent
 /// library declines and P0 keeps its `LibraryDelta` marks ⇒ **FAILS**.
 #[test]
-fn an_accepted_mill_collapse_moves_cards_and_retires_its_marks() {
+fn an_accepted_mill_take_moves_cards_and_leaves_no_mark() {
     const N: u32 = 3;
 
     let mut state = offer_state(mill_base());
@@ -1345,22 +1323,6 @@ fn an_accepted_mill_collapse_moves_cards_and_retires_its_marks() {
     );
 
     declare_and_accept_all(&mut state, N);
-    let marked_axes = state
-        .unbounded_resources
-        .get(&P0)
-        .cloned()
-        .unwrap_or_default();
-    for victim in &victims {
-        assert!(
-            marked_axes.contains(&ResourceAxis::LibraryDelta(*victim)),
-            "reach-guard: the accepted proposal carries {victim:?}'s library axis, so its \
-             retirement below is a decision rather than an absence that was never there"
-        );
-    }
-
-    drive_to_collapse_boundary(&mut state);
-    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: N })
-        .expect("P0 submits the finite loop-collapse count");
 
     let after = library_sizes(&state);
     for victim in &victims {
@@ -1373,7 +1335,7 @@ fn an_accepted_mill_collapse_moves_cards_and_retires_its_marks() {
         };
         assert!(
             lookup(&after) < lookup(&before),
-            "CR 701.17a: the collapse must actually mill {victim:?} — library went {} -> {}",
+            "CR 701.17a: the take must actually mill {victim:?} — library went {} -> {}",
             lookup(&before),
             lookup(&after)
         );
@@ -1387,8 +1349,8 @@ fn an_accepted_mill_collapse_moves_cards_and_retires_its_marks() {
     for victim in &victims {
         assert!(
             !surviving.contains(&ResourceAxis::LibraryDelta(*victim)),
-            "CR 732.2c: the collapse DELIVERED {victim:?}'s library decline, so it ends that \
-             axis's ∞ mark instead of leaving an infinite-mill badge standing"
+            "CR 732.2c: the take DELIVERED {victim:?}'s library decline, so no infinite-mill \
+             badge stands"
         );
     }
 }
@@ -1417,13 +1379,10 @@ fn an_interposer_free_mill_collapse_declines_in_proportion_to_the_accepted_count
         let before = library_sizes(&state);
         declare_and_accept_all(&mut state, n);
         assert!(
-            took_the_replay(&state, "pinned magnitude"),
+            took_the_replay(&state),
             "reach-guard: the accepted period must take the REPLAY, or a decline of zero is \
              the batched mint's silence rather than a delivered count"
         );
-        drive_to_collapse_boundary(&mut state);
-        apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
-            .expect("P0 submits the finite loop-collapse count");
         let after = library_sizes(&state);
         for (id, size) in &after {
             if *id != P0 {
@@ -1547,20 +1506,16 @@ fn step_to_decision(runner: &mut GameRunner, why: &str) -> WaitingFor {
     )
 }
 
-/// Build the interposed collapse board every interposition row below shares, accept `n`, and
-/// drive to the CR 500.5 boundary — returning the board STANDING ON the collapse prompt, the
-/// grafted interposer's `ObjectId`, and the PRE-ACCEPT `library_sizes` reading.
-///
-/// The third value is not a convenience: it is read on the offer state, after the priming cast
-/// and before the accept, so it is unrecoverable from the post-collapse state the rows measure
-/// against it.
+/// Build the interposed collapse board every interposition row below shares and accept `n`,
+/// returning the board after the take, the grafted interposer's `ObjectId`, and the PRE-ACCEPT
+/// `library_sizes` reading.
 ///
 /// `depth` IS the committed prefix. `post_cast_library_anchor` returns the id AT post-cast index
 /// `depth` and `place_before` inserts the graft AT that index, so `depth` cards sit above the
 /// interposer and the replay commits `depth` whole periods before reaching it.
 ///
 /// The graft is a parameter because the rows separate on the interposer, not on the board.
-fn boundary_with_interposer(
+fn collapse_with_interposer(
     n: u32,
     depth: usize,
     graft: fn(&mut GameState, PlayerId, ObjectId) -> ObjectId,
@@ -1571,49 +1526,17 @@ fn boundary_with_interposer(
 
     let mut state = offer_state(base);
     let before = library_sizes(&state);
-    declare_and_accept_all(&mut state, n);
-
-    // Reach-guards, both directions, BEFORE the collapse. Every one of them fires before a
-    // single iteration runs, so they hold at every `depth` including 0.
-    assert!(
-        took_the_replay(&state, "interposed"),
-        "reach-guard: the accepted period took the REPLAY, so a short decline below is a \
-         truncation rather than the batched mint never milling at all"
-    );
-    assert!(
-        state
-            .unbounded_resources
-            .get(&P0)
-            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
-        "reach-guard: {P1:?}'s library axis IS marked right after accept, so its absence \
-         after the collapse is a retirement rather than a mark that never existed"
-    );
     assert!(
         state.may_trigger_auto_choices.is_empty(),
         "reach-guard: no recorded auto-answer stands in for the interposer's decision — the \
          abort below is the undetermined choice, not a replayed one"
     );
-
-    drive_to_collapse_boundary(&mut state);
-    (state, interposer, before)
-}
-
-/// Answer the boundary's collapse prompt with the accepted count. Single-sourced so a row that
-/// reads the board on both sides of this submit is reading ONE action apart.
-fn submit_collapse(state: &mut GameState, n: u32) {
-    apply(state, P0, GameAction::SubmitPayAmount { amount: n })
-        .expect("P0 submits the finite loop-collapse count");
-}
-
-/// [`boundary_with_interposer`] with its prompt answered — the collapsed state every row that
-/// measures the delivered prefix reads.
-fn collapse_with_interposer(
-    n: u32,
-    depth: usize,
-    graft: fn(&mut GameState, PlayerId, ObjectId) -> ObjectId,
-) -> (GameState, ObjectId, Vec<(PlayerId, usize)>) {
-    let (mut state, interposer, before) = boundary_with_interposer(n, depth, graft);
-    submit_collapse(&mut state, n);
+    declare_and_accept_all(&mut state, n);
+    assert!(
+        took_the_replay(&state),
+        "reach-guard: the accepted period took the REPLAY, so a short decline below is a \
+         truncation rather than the batched mint never milling at all"
+    );
     (state, interposer, before)
 }
 
@@ -1741,17 +1664,10 @@ fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
 /// **The delivered prefix tracks the interposer's DEPTH.** Written as one row with two arms so
 /// neither is green alone: a drive that never ran makes both declines zero and reds the
 /// `depth = 1` arm; a drive that ignores interposers makes them equal and reds the `depth = 0`
-/// arm. Both prefixes are legal answers under the collapse prompt's `min: 0` floor.
+/// arm.
 ///
-/// **The `depth = 0` arm pins CR 732.2a's ending point at ZERO delivery** — the reachability that
-/// needs no applied item at all. CR 732.2a requires a taken shortcut's ending point to "be a place
-/// where a player has priority"; zero delivery leaves no applier to write a beat, so the beat is
-/// the submit arm's own exit asking `turns::auto_advance` for one. Its four legs read that beat:
-/// it is no longer the `LoopCollapse` prompt, it is no longer the boundary beat left untouched,
-/// the granted seat has a legal action, and drawing that seat's first candidate is accepted and
-/// moves the beat. Each leg carried the opposite polarity while the boundary wedged (issue #7975)
-/// and is INVERTED rather than dropped, so the per-seat surface reading that caught the wedge is
-/// still what this arm measures.
+/// **The `depth = 0` arm pins CR 732.2a's ending point at ZERO delivery**: a taken shortcut's
+/// ending point must "be a place where a player has priority", and the granted seat can act there.
 #[test]
 fn the_delivered_prefix_tracks_the_interposers_depth() {
     const N: u32 = 3;
@@ -1769,17 +1685,7 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         };
 
     // ── depth 0: the empty prefix ──
-    // Read the boundary BEFORE the submit: `empty` is this very board one `SubmitPayAmount`
-    // later, which is what lets the empty-surface leg below be attributed to the wedge instead
-    // of to the prompt kind.
-    let (mut empty, narcomoeba, before) = boundary_with_interposer(N, 0, graft_narcomoeba);
-    let boundary_beat = empty.waiting_for.clone();
-    let armed: Vec<(PlayerId, usize)> = empty
-        .players
-        .iter()
-        .map(|p| (p.id, legal_actions_for_viewer(&empty, p.id).0.len()))
-        .collect();
-    submit_collapse(&mut empty, N);
+    let (empty, narcomoeba, before) = collapse_with_interposer(N, 0, graft_narcomoeba);
     let zero = declines(&before, &library_sizes(&empty));
     assert!(
         !zero.is_empty(),
@@ -1797,61 +1703,24 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         "the aborted iteration is rolled back whole, so the interposer is still in P1's own \
          library, by ObjectId"
     );
-    // CR 732.2a: the beat the exit returned is no longer the prompt that was just answered.
+    let granted = empty.priority_player;
     assert!(
-        !matches!(
-            empty.waiting_for,
-            WaitingFor::PayAmountChoice {
-                player,
-                resource: PayableResource::LoopCollapse { .. },
-                accumulated: 0,
-                ..
-            } if player == P0
-        ),
-        "CR 732.2a: a zero-delivery collapse must not leave its own LoopCollapse prompt standing \
-         as the ending point, got {:?}",
+        matches!(empty.waiting_for, WaitingFor::Priority { .. })
+            && !legal_actions_for_viewer(&empty, granted).0.is_empty(),
+        "CR 732.2a: the zero-delivery take ends where the granted seat {granted:?} can act, got {:?}",
         empty.waiting_for
     );
-    // Not a beat that merely LOOKS different: it is answerable. Drawing the first candidate off
-    // the live surface — the action the wedge had no seat to offer at all — is accepted and moves
-    // the beat.
     let answered = answer_terminal_beat(&empty, "CR 732.2a zero-delivery ending point");
     assert_ne!(
         answered.waiting_for, empty.waiting_for,
-        "CR 732.2a: answering the zero-delivery beat ADVANCES it; a beat that survives its own \
-         answer is the wedge wearing a new shape"
-    );
-    // The per-seat surface reading, the strongest thing this arm measures. Its control is `armed`,
-    // read on the SAME beat one submit earlier — both readings take one dispatch path through
-    // `legal_actions_full`, so only the exit separates them.
-    assert_ne!(
-        empty.waiting_for, boundary_beat,
-        "CR 732.2a: the zero-delivery ending point is the turn interpreter's beat, not the \
-         boundary beat left untouched"
-    );
-    let granted = empty.priority_player;
-    let stuck: Vec<(PlayerId, usize)> = empty
-        .players
-        .iter()
-        .map(|p| (p.id, legal_actions_for_viewer(&empty, p.id).0.len()))
-        .collect();
-    assert!(
-        armed.iter().any(|(_, n)| *n > 0),
-        "control: the same beat one submit earlier DID admit a move, so the surface leg below \
-         reads a live instrument, got {armed:?}"
-    );
-    assert!(
-        stuck.iter().any(|(seat, n)| *seat == granted && *n > 0),
-        "CR 732.2a: the zero-delivery beat leaves the granted seat {granted:?} a legal action, \
-         got {stuck:?}"
+        "CR 732.2a: answering the zero-delivery beat ADVANCES it"
     );
     assert!(
         !empty
             .unbounded_resources
             .get(&P0)
             .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
-        "zero delivery still RETIRES the axis: the materialization is driven either way, so no \
-         infinite-mill badge is left standing behind an empty prefix"
+        "no infinite-mill badge is left standing behind an empty prefix"
     );
 
     // ── depth 1: a strictly larger prefix, still strictly under N ──
@@ -1876,88 +1745,6 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         "CR 732.2a: a NON-empty prefix does end at a priority window, got {:?}",
         one.waiting_for
     );
-    // Live control for the depth-0 arm's empty-surface leg — same accessor, same seat population,
-    // non-empty once the collapse reaches a priority window.
-    let live: Vec<(PlayerId, usize)> = one
-        .players
-        .iter()
-        .map(|p| (p.id, legal_actions_for_viewer(&one, p.id).0.len()))
-        .collect();
-    assert!(
-        live.iter().any(|(_, n)| *n > 0),
-        "control: a priority beat leaves someone a move, so the empty-surface leg above can red, \
-         got {live:?}"
-    );
-}
-
-/// **The wedge needs no interposer: an UNTOUCHED mill board answering `0` ends where a seat can
-/// act.** The paired sibling is [`the_delivered_prefix_tracks_the_interposers_depth`]'s
-/// `depth = 0` arm, which reaches zero delivery by TRUNCATION on a grafted board. This row
-/// reaches it the way the prompt's own `min: 0` advertises — the controller simply names 0 on a
-/// board with nothing grafted into it — so a repair keyed on an interposer-truncated abort passes
-/// that arm and reds here.
-#[test]
-fn an_interposer_free_zero_delivery_collapse_ends_where_a_seat_can_act() {
-    const N: u32 = 3;
-
-    let mut state = offer_state(pinned_mill_base());
-    let before = library_sizes(&state);
-    declare_and_accept_all(&mut state, N);
-    assert!(
-        took_the_replay(&state, "interposer-free zero delivery"),
-        "reach-guard: the accepted period takes the REPLAY, the route that reaches zero delivery \
-         without an interposer"
-    );
-    // Reach-guard, and the reading that identifies this board as the mill board: the accept marks
-    // the library axis the sibling rows measure declines on.
-    assert!(
-        state
-            .unbounded_resources
-            .get(&P0)
-            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
-        "reach-guard: the accepted mill loop marks {P1:?}'s LibraryDelta axis, so this is the \
-         board whose declines the sibling rows read"
-    );
-
-    drive_to_collapse_boundary(&mut state);
-    let boundary_beat = state.waiting_for.clone();
-    let armed: Vec<(PlayerId, usize)> = state
-        .players
-        .iter()
-        .map(|p| (p.id, legal_actions_for_viewer(&state, p.id).0.len()))
-        .collect();
-    assert!(
-        armed.iter().any(|(_, n)| *n > 0),
-        "control: the boundary prompt itself admits a move, so the surface leg below reads a live \
-         instrument, got {armed:?}"
-    );
-
-    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 0 })
-        .expect("CR 732.2a: 0 is the value the prompt's own `min: 0` advertises");
-
-    // Zero delivery, on the same accessor the sibling rows use: nothing was milled.
-    let after = library_sizes(&state);
-    let declines: Vec<(PlayerId, i64)> = before
-        .iter()
-        .zip(after.iter())
-        .filter(|((id, _), _)| *id != P0)
-        .map(|((id, b), (_, a))| (*id, *b as i64 - *a as i64))
-        .collect();
-    assert!(
-        !declines.is_empty(),
-        "reach-guard: the dump seats opponents for the Altar to mill"
-    );
-    assert!(
-        declines.iter().all(|(_, d)| *d == 0),
-        "a 0 collapse delivers nothing, so no victim is milled: {declines:?}"
-    );
-
-    assert_ne!(
-        state.waiting_for, boundary_beat,
-        "CR 732.2a: the ending point is the turn interpreter's beat, not the boundary prompt left \
-         untouched"
-    );
-    answer_terminal_beat(&state, "CR 732.2a interposer-free zero delivery");
 }
 
 /// **A MANDATORY, CHOICE-FREE interposer does not truncate: the collapse still delivers its full
@@ -1973,7 +1760,7 @@ fn an_interposer_free_zero_delivery_collapse_ends_where_a_seat_can_act() {
 ///
 /// Every decline is written as an ADDITION: the interposer's own seat ends net-unchanged, so a
 /// `usize` subtraction there panics where an assertion should red. No terminal-beat leg: both
-/// twins leave `Priority` after `SubmitPayAmount`, so a beat here discriminates nothing and
+/// twins leave `Priority` after the take, so a beat here discriminates nothing and
 /// [`an_interposer_truncates_the_collapse_to_a_whole_period_prefix`] owns the CR 732.2a ending
 /// point. The graft's final zone is deliberately not asserted — its own trigger shuffles it into
 /// a randomized library.
@@ -2167,27 +1954,12 @@ fn the_interposers_window_reaches_the_milled_player_and_the_offer_re_arms() {
 
     let before_second = library_sizes(runner.state());
     declare_and_accept_all(runner.state_mut(), N);
-    assert!(
-        runner
-            .state()
-            .unbounded_resources
-            .get(&P0)
-            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
-        "the ∞ mark is minted when the re-offer is ACCEPTED — the present half of the pair"
-    );
-    drive_to_collapse_boundary(runner.state_mut());
-    apply(
-        runner.state_mut(),
-        P0,
-        GameAction::SubmitPayAmount { amount: N },
-    )
-    .expect("P0 submits the finite loop-collapse count for the resumed loop");
     let after_second = library_sizes(runner.state());
     for (victim, per) in &per_period {
         assert_eq!(
             lookup(&after_second, *victim) + i64::from(N) * per,
             lookup(&before_second, *victim),
-            "the resumed collapse delivers all {N} periods at the per-period rate this row \
+            "the resumed take delivers all {N} periods at the per-period rate this row \
              measured for {victim:?}, so the truncation left a loop that can finish"
         );
     }
@@ -2196,13 +1968,10 @@ fn the_interposers_window_reaches_the_milled_player_and_the_offer_re_arms() {
     let mut clean = offer_state(pinned_mill_base());
     declare_and_accept_all(&mut clean, N);
     assert!(
-        took_the_replay(&clean, "interposer-free"),
+        took_the_replay(&clean),
         "reach-guard: the interposer-free accept takes the SAME replay route, so the arms differ \
          only by the graft"
     );
-    drive_to_collapse_boundary(&mut clean);
-    apply(&mut clean, P0, GameAction::SubmitPayAmount { amount: N })
-        .expect("P0 submits the finite loop-collapse count");
     let mut runner = GameRunner::from_state(clean);
     cast_one_sprout(&mut runner, "the interposer-free period");
     let end = step_to_decision(&mut runner, "the interposer-free period");
