@@ -52,6 +52,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // free reveal mulligan).
 // v113 adds the simultaneous-draw dealer to the multi-draw resolution frame
 // (`RESOLUTION_STATE_WIRE_VERSION` 5).
+// v114 adds `DerivedViews.shared_piles` (the shared-pile holder seat).
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -98,7 +99,8 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +40: v111 adds `WaitingFor::MulliganDecision.declared`.
 // +41: v112 adds `MulliganChoice::FreeReveal` and `MulliganDeclaration.kind`.
 // +42: v113 adds the simultaneous-draw dealer to the multi-draw resolution frame.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 42;
+// +43: v114 adds `DerivedViews.shared_piles` (the shared-pile holder seat).
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 43;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -165,7 +167,8 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +39: wire 93 moves with full-game v111 for `MulliganDecision.declared`.
 // +40: wire 94 moves with full-game v112 for the free reveal mulligan.
 // +41: wire 95 moves with full-game v113 for the simultaneous-draw dealer.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 41;
+// +42: wire 96 moves with full-game v114 for `DerivedViews.shared_piles`.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 42;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

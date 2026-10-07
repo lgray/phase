@@ -210,6 +210,10 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 114 — DerivedViews gains `shared_piles`, the seat whose Player container stores a
+ *      shared library and graveyard, omitted for a per-player format. A v113 peer
+ *      drops the key and renders per-seat piles for a state whose other seat's
+ *      containers are empty. Wire 96 moves with it; no lobby frame names it.
  * 113 — DrawSequenceFrame gains `dealer`, the in-game simultaneous-draw dealer,
  *      serialized in the resolution frames behind RESOLUTION_STATE_WIRE_VERSION 5.
  *      A v112 peer refuses the version-5 resolution state. Wire 95 moves with it;
@@ -725,7 +729,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 113;
+export const PROTOCOL_VERSION = 114;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

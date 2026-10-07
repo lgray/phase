@@ -3346,6 +3346,10 @@ mod tests {
         }
     }
 
+    /// `DerivedViews` gains `shared_piles` (the seat storing a shared library and
+    /// graveyard); a v113 peer drops the key and renders per-seat piles for a
+    /// state whose other seat's containers are empty, so it must be refused before
+    /// it receives v114 state.
     /// `DrawSequenceFrame` gains `dealer` (the in-game simultaneous-draw dealer),
     /// serialized in the resolution frames behind `RESOLUTION_STATE_WIRE_VERSION`
     /// 5; a v112 peer refuses that resolution state, so it must be refused before it
@@ -3439,8 +3443,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_113_for_simultaneous_draw_dealer() {
-        assert_eq!(PROTOCOL_VERSION, 113);
+    fn protocol_version_is_114_for_shared_piles_view() {
+        assert_eq!(PROTOCOL_VERSION, 114);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3451,7 +3455,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_113_for_simultaneous_draw_dealer` stays
+    /// `protocol_version_is_114_for_shared_piles_view` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

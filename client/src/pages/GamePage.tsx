@@ -194,7 +194,9 @@ import {
   getBoardChoiceView,
   getOpponentIds,
   getSeatCount,
+  getSharedPileHolder,
   getWaitingForObjectChoiceIds,
+  getZoneViewerPile,
   isSplitBoardActive,
   resolveMultiplayerBoardLayout,
   resolveFocusedOpponent,
@@ -1244,10 +1246,10 @@ function GamePageContent({
     for (const objectId of getWaitingForObjectChoiceIds(wf)) {
       const obj = objects[objectId];
       if (!obj) continue;
-      if (obj.zone !== "Graveyard" && obj.zone !== "Exile") continue;
-      const zone: "graveyard" | "exile" = obj.zone === "Graveyard" ? "graveyard" : "exile";
-      groups.add(`${zone}:${obj.owner}`);
-      if (!firstHit) firstHit = { zone, playerId: obj.owner };
+      const pile = getZoneViewerPile(gameState, obj);
+      if (!pile) continue;
+      groups.add(`${pile.zone}:${pile.playerId}`);
+      if (!firstHit) firstHit = pile;
     }
     // Only auto-open when there's a single zone+owner to open. Otherwise the
     // zone control glow prompts the user to pick.
@@ -1255,7 +1257,7 @@ function GamePageContent({
       zoneViewerReturnFocusRef.current = gameMenuTriggerRef.current;
       setViewingZone(firstHit);
     }
-  }, [canActForWaitingState, engineWaitingFor, objects]);
+  }, [canActForWaitingState, engineWaitingFor, objects, gameState]);
 
   const handleZoneViewerClose = useCallback(() => {
     setViewingZone(null);
@@ -1554,20 +1556,24 @@ function GamePageContent({
                         handleViewZone("exile", activeOpponentId, launcher)
                       }
                     />
-                    <LibraryPile
-                      playerId={activeOpponentId}
-                      size={pileSize}
-                      onView={(launcher) =>
-                        handleViewZone("library", activeOpponentId, launcher)
-                      }
-                    />
-                    <GraveyardPile
-                      playerId={activeOpponentId}
-                      size={pileSize}
-                      onClick={(launcher) =>
-                        handleViewZone("graveyard", activeOpponentId, launcher)
-                      }
-                    />
+                    {getSharedPileHolder(gameState, "library") == null && (
+                      <LibraryPile
+                        playerId={activeOpponentId}
+                        size={pileSize}
+                        onView={(launcher) =>
+                          handleViewZone("library", activeOpponentId, launcher)
+                        }
+                      />
+                    )}
+                    {getSharedPileHolder(gameState, "graveyard") == null && (
+                      <GraveyardPile
+                        playerId={activeOpponentId}
+                        size={pileSize}
+                        onClick={(launcher) =>
+                          handleViewZone("graveyard", activeOpponentId, launcher)
+                        }
+                      />
+                    )}
                   </>
                 ) : null}
               </DraggableWidget>

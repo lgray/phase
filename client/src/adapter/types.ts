@@ -3888,6 +3888,13 @@ export type TargetChoiceKind =
   | { type: "Objects"; data: { category: TargetObjectCategory } }
   | { type: "ObjectsAndPlayers"; data: { category: TargetObjectCategory } };
 
+export interface SharedPilesView {
+  /** The seat whose `Player.library` stores the shared library. */
+  library?: PlayerId;
+  /** The seat whose `Player.graveyard` stores the shared graveyard. */
+  graveyard?: PlayerId;
+}
+
 /**
  * Engine-authored projections computed at each state snapshot. Rides
  * alongside GameState through every adapter path. Frontend components
@@ -3905,6 +3912,12 @@ export interface DerivedViews {
    * browser consumes this separately authorized projection.
    */
   debug_library_cards?: DebugLibraryCardView[];
+  /**
+   * Mirrors `engine::game::derived_views::SharedPilesView`. Present only for a
+   * format that shares a library or graveyard; a missing key means that zone is
+   * per-player.
+   */
+  shared_piles?: SharedPilesView;
   /**
    * Engine-classified live keyword badges for battlefield permanents. The
    * strip renders this map directly rather than deciding which keyword timing
