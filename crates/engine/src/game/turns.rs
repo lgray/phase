@@ -2935,19 +2935,7 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
 
     // CR 514.1 + CR 402.2: Only the *active* player discards down to maximum hand size.
     // Non-active players keep their cards regardless of hand size until their own cleanup.
-    // If the active player has "no maximum hand size" (CR 402.2), skip the discard check.
-    let has_no_max = super::static_abilities::check_static_ability(
-        state,
-        StaticMode::NoMaximumHandSize,
-        &super::static_abilities::StaticCheckContext {
-            player_id: Some(active),
-            ..Default::default()
-        },
-    );
-
-    if !has_no_max {
-        let max_hand_size = compute_maximum_hand_size(state, active);
-
+    if let Some(max_hand_size) = maximum_hand_size(state, active) {
         let player = state
             .players
             .iter()
@@ -3093,6 +3081,20 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     }
 
     None
+}
+
+/// CR 402.2 + CR 514.1: `player`'s maximum hand size, or `None` when they have no maximum hand
+/// size.
+pub(crate) fn maximum_hand_size(state: &GameState, player: PlayerId) -> Option<usize> {
+    let has_no_max = super::static_abilities::check_static_ability(
+        state,
+        StaticMode::NoMaximumHandSize,
+        &super::static_abilities::StaticCheckContext {
+            player_id: Some(player),
+            ..Default::default()
+        },
+    );
+    (!has_no_max).then(|| compute_maximum_hand_size(state, player))
 }
 
 /// CR 402.2 + CR 514.1: Compute the effective maximum hand size for a player.

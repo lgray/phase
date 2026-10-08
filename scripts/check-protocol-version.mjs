@@ -47,7 +47,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v109 carries the CR 201.5a granter binding (ObjectScope + granting_object).
 // v110 splits the shortcut schema's measured bound from its deliverable capacity;
 // v111 stamps the minting road on shortcut offers; v112 adds the mana ability
-// payment window; v113 drops the recorded loop-action sequence.
+// payment window; v113 drops the recorded loop-action sequence; v114 adds the
+// confirmed period's reach and the periodic delta's cleanup pair.
 // Keep the measured base so a future merge cannot collapse independent wire
 // changes onto one number.
 const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
@@ -94,7 +95,8 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // +40: the v111 offer road stamp.
 // +41: the v112 mana ability payment window.
 // +42: the v113 retired loop-action sequence.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 42;
+// +43: the v114 period reach and cleanup pair.
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 43;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -161,7 +163,8 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +39: wire 93 moves with full-game v111 for the offer road stamp.
 // +40: wire 94 moves with full-game v112 for the mana ability payment window.
 // +41: wire 95 moves with full-game v113 for the retired loop-action sequence.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 41;
+// +42: wire 96 moves with full-game v114 for the period reach and cleanup pair.
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 42;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

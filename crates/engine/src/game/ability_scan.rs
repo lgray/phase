@@ -1937,7 +1937,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             life_payment,
             player,
         } => {
-            let mut acc = Axes::NONE;
+            let mut acc = Axes::history_of(HistoryMember::CardsDrawnThisTurn);
             acc = acc.or(scan_quantity_expr(count, mode));
             acc = acc.or(scan_quantity_expr(life_payment, mode));
             acc = acc.or(scan_target_filter(player, target_ctx, mode));
@@ -2728,7 +2728,7 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
                 event: false,
                 sibling: true,
                 projected: true,
-                history: HistoryReads::NONE,
+                history: HistoryReads::of(HistoryMember::TurnNumber),
             };
             acc = acc.or(scan_target_filter(
                 filter,
@@ -2773,7 +2773,7 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
                 event: false,
                 sibling: false,
                 projected: true,
-                history: HistoryReads::NONE,
+                history: HistoryReads::of(HistoryMember::CardsDrawnThisTurn),
             };
             acc = acc.or(scan_player_scope(player));
             acc
@@ -2812,7 +2812,7 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        QuantityRef::TurnsTaken => Axes::NONE,
+        QuantityRef::TurnsTaken => Axes::history_of(HistoryMember::PlayerTurnsTaken),
         QuantityRef::ZoneChangeCountThisTurn {
             filter,
             from: _,
@@ -3136,7 +3136,9 @@ fn scan_ability_condition(x: &AbilityCondition, mode: ScanMode) -> Axes {
         AbilityCondition::WasCast { zone: _ } => Axes::NONE,
         AbilityCondition::CastDuringPhase { phases: _ } => Axes::NONE,
         AbilityCondition::CurrentPhaseIs { phases: _ } => Axes::NONE,
-        AbilityCondition::CastTimingPermission { permission: _ } => Axes::NONE,
+        AbilityCondition::CastTimingPermission { permission: _ } => {
+            Axes::history_of(HistoryMember::TurnNumber)
+        }
         AbilityCondition::ManaColorSpent {
             color: _,
             minimum: _,
@@ -3173,14 +3175,16 @@ fn scan_ability_condition(x: &AbilityCondition, mode: ScanMode) -> Axes {
             event: false,
             sibling: false,
             projected: true,
-            history: HistoryReads::NONE,
+            history: HistoryReads::of(HistoryMember::TurnNumber),
         },
         AbilityCondition::CastVariantPaid { subject, .. } => {
-            let mut acc = Axes::NONE;
+            let mut acc = Axes::history_of(HistoryMember::TurnNumber);
             acc = acc.or(scan_object_scope(subject));
             acc
         }
-        AbilityCondition::CastVariantPaidInstead { variant: _ } => Axes::NONE,
+        AbilityCondition::CastVariantPaidInstead { variant: _ } => {
+            Axes::history_of(HistoryMember::TurnNumber)
+        }
         AbilityCondition::QuantityCheck {
             lhs,
             rhs,
@@ -3966,8 +3970,10 @@ fn scan_trigger_constraint(x: &TriggerConstraint, mode: ScanMode) -> Axes {
         }
         // Turn/phase windows, a draw ordinal, and class levels: literal thresholds only. No
         // filter, no board aggregate, no player resource.
+        TriggerConstraint::NthDrawThisTurn { n: _ } => {
+            Axes::history_of(HistoryMember::CardsDrawnThisTurn)
+        }
         TriggerConstraint::OnlyDuringYourTurn
-        | TriggerConstraint::NthDrawThisTurn { n: _ }
         | TriggerConstraint::OnlyDuringOpponentsTurn
         | TriggerConstraint::OnlyDuringYourMainPhase
         | TriggerConstraint::AtClassLevel { level: _ } => Axes::NONE,
@@ -4020,14 +4026,18 @@ fn scan_trigger_condition(x: &TriggerCondition, mode: ScanMode) -> Axes {
             acc = acc.or(scan_player_filter(player, mode));
             acc
         }
-        TriggerCondition::SourceEnteredThisTurn | TriggerCondition::SourceAttackedThisCombat => {
-            Axes {
-                event: false,
-                sibling: false,
-                projected: true,
-                history: HistoryReads::NONE,
-            }
-        }
+        TriggerCondition::SourceEnteredThisTurn => Axes {
+            event: false,
+            sibling: false,
+            projected: true,
+            history: HistoryReads::of(HistoryMember::TurnNumber),
+        },
+        TriggerCondition::SourceAttackedThisCombat => Axes {
+            event: false,
+            sibling: false,
+            projected: true,
+            history: HistoryReads::NONE,
+        },
         TriggerCondition::EchoDue => Axes::NONE,
         TriggerCondition::MinCoAttackers { filter, minimum: _ } => {
             let mut acc = Axes::NONE;
@@ -4066,7 +4076,9 @@ fn scan_trigger_condition(x: &TriggerCondition, mode: ScanMode) -> Axes {
             min_count: _,
         } => Axes::NONE,
         TriggerCondition::SourceIsAttacking => Axes::NONE,
-        TriggerCondition::CastVariantPaid { variant: _ } => Axes::NONE,
+        TriggerCondition::CastVariantPaid { variant: _ } => {
+            Axes::history_of(HistoryMember::TurnNumber)
+        }
         TriggerCondition::CastVariantPaidPersistent { variant: _ } => Axes::NONE,
         TriggerCondition::ActivatedAbilityIsNonMana => Axes::NONE,
         TriggerCondition::DealtDamageBySourceThisTurn => Axes {
@@ -4231,7 +4243,9 @@ fn scan_trigger_condition(x: &TriggerCondition, mode: ScanMode) -> Axes {
         }
         TriggerCondition::TributeNotPaid => Axes::NONE,
         TriggerCondition::CastDuringPhase { phases: _ } => Axes::NONE,
-        TriggerCondition::CastTimingPermission { permission: _ } => Axes::NONE,
+        TriggerCondition::CastTimingPermission { permission: _ } => {
+            Axes::history_of(HistoryMember::TurnNumber)
+        }
         TriggerCondition::ManaColorSpent {
             color: _,
             minimum: _,
@@ -4621,7 +4635,7 @@ fn scan_static_condition(x: &StaticCondition, mode: ScanMode) -> Axes {
             event: false,
             sibling: false,
             projected: true,
-            history: HistoryReads::NONE,
+            history: HistoryReads::of(HistoryMember::TurnNumber),
         },
         StaticCondition::SourceHasDealtDamage => Axes {
             event: false,
@@ -4781,7 +4795,6 @@ fn scan_filter_prop(x: &FilterProp, mode: ScanMode) -> Axes {
         | FilterProp::Historic
         | FilterProp::NotHistoric
         | FilterProp::InAnyZone { .. }
-        | FilterProp::EnteredThisTurn
         | FilterProp::ControlledContinuouslySinceTurnBegan
         | FilterProp::BlockedThisTurn
         | FilterProp::AttackedOrBlockedThisTurn
@@ -4802,6 +4815,7 @@ fn scan_filter_prop(x: &FilterProp, mode: ScanMode) -> Axes {
         // creature types — a board/object read, no player resource.
         | FilterProp::SharesCreatureTypeWithCommander
         | FilterProp::Other { .. } => Axes::NONE,
+        FilterProp::EnteredThisTurn => Axes::history_of(HistoryMember::TurnNumber),
 
         // --- QuantityExpr-bearing: recurse so `Ref(LifeTotal)` / `PlayerCounter`
         // thresholds surface the projected axis (CR 119 / CR 122.1). Finding A:
@@ -5143,7 +5157,9 @@ fn scan_replacement_condition(x: &ReplacementCondition, mode: ScanMode) -> Axes 
         }
         ReplacementCondition::HasMaxSpeed => Axes::NONE,
         ReplacementCondition::CastViaEscape => Axes::NONE,
-        ReplacementCondition::CastVariantPaid { variant: _ } => Axes::NONE,
+        ReplacementCondition::CastVariantPaid { variant: _ } => {
+            Axes::history_of(HistoryMember::TurnNumber)
+        }
         ReplacementCondition::CastFromZone { zone: _ } => Axes::NONE,
         ReplacementCondition::EnteredFromZone {
             origin_constraint: _,
@@ -6032,9 +6048,7 @@ fn scan_keyword(kw: &Keyword, mode: ScanMode) -> Axes {
         | Keyword::Prowl(_)
         | Keyword::Morph(_)
         | Keyword::Megamorph(_)
-        | Keyword::Mayhem(_)
         | Keyword::Madness(_)
-        | Keyword::Miracle(_)
         | Keyword::Dash(_)
         | Keyword::Harmonize(_)
         | Keyword::Foretell(_)
@@ -6132,6 +6146,10 @@ fn scan_keyword(kw: &Keyword, mode: ScanMode) -> Axes {
         | Keyword::Specialize(_)
         | Keyword::Offering(_)
         | Keyword::Unknown(_) => Axes::NONE,
+        // CR 702.187b: a mayhem cast reads whether the card was discarded this turn.
+        Keyword::Mayhem(_) => Axes::history_of(HistoryMember::TurnNumber),
+        // CR 702.94a: a miracle reads whether the card is the turn's first drawn.
+        Keyword::Miracle(_) => Axes::history_of(HistoryMember::FirstCardDrawnThisTurn),
     };
     cost_read.or(payload_read)
 }

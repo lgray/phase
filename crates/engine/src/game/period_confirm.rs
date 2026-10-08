@@ -13,8 +13,8 @@ use crate::analysis::decision_template::{
 };
 use crate::analysis::loop_check::LoopCertificate;
 use crate::analysis::resource::{
-    driving_resources_non_decreasing, frame_without, CertifiedInstructedDeparture, CoveredGrowth,
-    ObjectGrowthVerdict, ResourceVector,
+    driving_resources_non_decreasing, frame_without, CertifiedInstructedDeparture, CleanupPair,
+    CoveredGrowth, ObjectGrowthVerdict, RecurrenceCover, ResourceVector,
 };
 use crate::game::engine::{
     announced_target_pins, apply, certify_object_growth_frames, clear_frame_bookkeeping,
@@ -713,7 +713,12 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
                 &mut Vec::new(),
                 Some(&mut frames),
             )?;
-            let parts = replay_bounded_offer(frame, holder, &frames, &choices)
+            // CR 514.1: a turn-cycle period's count is bounded by its cleanup discard.
+            let cleanup = (verdict
+                == ObjectGrowthVerdict::ResourceRecurrence(Some(RecurrenceCover::TurnCycle)))
+            .then(|| CleanupPair::measure(&frames, holder))
+            .flatten();
+            let parts = replay_bounded_offer(frame, holder, &frames, &choices, cleanup)
                 .map_err(|_| OfferRefusal::LossAxis)?;
             (ResourceVector::period(&s_n1, &s_n2), None, Some(parts))
         }

@@ -6249,6 +6249,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
             victim_slot: vec![],
             declarable_victims: vec![],
             seat_life_charge: vec![],
+            cleanup: None,
         };
         v["waiting_for"]["data"]["certificate"]["per_cycle"] =
             serde_json::to_value(&period).expect("a PeriodicDelta serializes");
@@ -6304,6 +6305,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                     victim_slot: vec![],
                     declarable_victims: vec![],
                     seat_life_charge: vec![],
+                    cleanup: None,
                 }),
                 shortened_by: None,
                 published_declaration: None,
@@ -16573,6 +16575,7 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         victim_slot,
         declarable_victims,
         seat_life_charge,
+        cleanup: _,
     }) = per_cycle
     else {
         panic!(

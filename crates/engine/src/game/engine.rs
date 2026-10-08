@@ -3093,6 +3093,7 @@ fn certified_bounded_cycle_offer<'a>(
                 victim_slot: Vec::new(),
                 declarable_victims: Vec::new(),
                 seat_life_charge: Vec::new(),
+                cleanup: None,
             },
             period_frames,
         ));
@@ -3169,6 +3170,7 @@ fn certified_bounded_cycle_offer<'a>(
                     victim_slot: Vec::new(),
                     declarable_victims: Vec::new(),
                     seat_life_charge: Vec::new(),
+                    cleanup: None,
                 },
                 period_frames,
             )
@@ -3247,9 +3249,11 @@ fn bounded_offer_tail(
 
     // (5) CR 732.2a: the conjunct that proves this class is DISJOINT from Path C's
     // revocable-∞ advantage mark. An `Advantage` cycle drives nobody toward a CR 704
-    // threshold, so it has no bound to state and belongs to the other seam.
-    if crate::analysis::loop_check::classify_win_kind(proposer, &periodic.delta)
-        == crate::analysis::loop_check::WinKind::Advantage
+    // threshold, so it has no bound to state and belongs to the other seam — unless its
+    // cleanup discard bounds it (CR 514.1).
+    if periodic.cleanup.is_none()
+        && crate::analysis::loop_check::classify_win_kind(proposer, &periodic.delta)
+            == crate::analysis::loop_check::WinKind::Advantage
     {
         return Err(BoundedOfferRefusal::AdvantageOnlyCycle);
     }
@@ -3449,7 +3453,15 @@ fn bounded_offer_tail(
     // (8) The certificate, with the two fields the bounded class states differently from
     // Path A's spelled out at the site rather than mutated after the fact.
     // `build_cert`'s only use of the pair is `board_delta`, a comparand read.
-    let base = build_cert(cert_prior, current, &periodic.delta, proposer, None);
+    let mut base = build_cert(cert_prior, current, &periodic.delta, proposer, None);
+    // CR 500.7 + CR 121.4: a turn-cycle period grows its caster's extra turns and consumes its
+    // library, which the cascade bounds.
+    if periodic.cleanup.is_some() {
+        use crate::analysis::resource::ResourceAxis;
+        base.unbounded
+            .retain(|axis| *axis != ResourceAxis::LibraryDelta(proposer));
+        base.unbounded.push(ResourceAxis::ExtraTurns);
+    }
     let certificate = crate::analysis::loop_check::LoopCertificate {
         per_cycle: Some(periodic),
         // CR 732.5: honest, and currently read by nothing in production — a loop nobody can
@@ -3787,9 +3799,9 @@ fn pinned_decisions_to_points(
                 // with a short `legal_targets` under `min_targets = targets.len()`: a
                 // self-inconsistent, UNDECLARABLE point that fails downstream as
                 // `IllegalPinValue`/`UnknownChoice` rather than as "there is no offer".
-                // Dropping the point entirely is also wrong — it would let
+                // Dropping a resolvable point is also wrong — it would let
                 // `predictability_gate`'s coverage check pass trivially.
-                let legal_targets: Vec<crate::types::ability::TargetRef> = targets
+                let resolved: Vec<Option<crate::types::ability::TargetRef>> = targets
                     .iter()
                     .map(|t| {
                         crate::analysis::decision_template::resolve_target_ref(
@@ -3799,7 +3811,13 @@ fn pinned_decisions_to_points(
                             state,
                         )
                     })
-                    .collect::<Option<Vec<_>>>()?;
+                    .collect();
+                if resolved.iter().zip(targets).any(|(target, pin)| {
+                    target.is_none() && names_a_card_the_period_moves(state, slot, pin)
+                }) {
+                    continue;
+                }
+                let legal_targets = resolved.into_iter().collect::<Option<Vec<_>>>()?;
                 let count = targets.len().min(u32::MAX as usize) as u32;
                 DecisionPoint {
                     slot: slot.clone(),
@@ -3847,6 +3865,29 @@ fn pinned_decisions_to_points(
         points.push(point);
     }
     Some(points)
+}
+
+/// CR 400.7 + CR 732.2a: whether an unresolved `pin` names a card outside the battlefield and
+/// command zone at this window — for an object pin the target, for a seat pin the spell announcing
+/// it. The replayed period moved that card where it was chosen from this very state, so the choice
+/// is legal by the sequence's predictable results, yet no pin can name the new object before the
+/// period makes it; its point is withheld and the take replays the recorded answer.
+fn names_a_card_the_period_moves(
+    state: &GameState,
+    slot: &crate::analysis::decision_template::DecisionSlot,
+    pin: &crate::analysis::decision_template::TargetPin,
+) -> bool {
+    let card = match pin {
+        crate::analysis::decision_template::TargetPin::ByIdentity(source) => source,
+        _ => &slot.source,
+    };
+    let crate::types::game_state::YieldTarget::ThisObject { source_id, .. } = card else {
+        return false;
+    };
+    state
+        .objects
+        .get(source_id)
+        .is_some_and(|object| !matches!(object.zone, Zone::Battlefield | Zone::Command))
 }
 
 /// CR 115.2 + CR 732.2a: does the ability's HEAD effect declare the "target opponent" PLAYER
@@ -7272,12 +7313,14 @@ fn try_offer_object_growth_shortcut(
 }
 
 /// CR 704.5a + CR 732.2a: the threshold authority asked on one replayed cycle of a recorded loss
-/// period — `frames` its priority frames in order, `choices` the answers it recorded.
+/// period — `frames` its priority frames in order, `choices` the answers it recorded, and
+/// `cleanup` the hand a turn-cycle period carries into each cleanup (CR 514.1).
 pub(crate) fn replay_bounded_offer(
     state: &GameState,
     caster: PlayerId,
     frames: &[GameState],
     choices: &[crate::analysis::decision_template::PinnedDecision],
+    cleanup: Option<crate::analysis::resource::CleanupPair>,
 ) -> Result<super::period_confirm::BoundedOfferParts, BoundedOfferRefusal> {
     let frames: Vec<&GameState> = frames.iter().collect();
     let (&current, window) = frames
@@ -7290,6 +7333,7 @@ pub(crate) fn replay_bounded_offer(
         victim_slot: Vec::new(),
         declarable_victims: Vec::new(),
         seat_life_charge: Vec::new(),
+        cleanup,
     };
     // CR 732.2a: the points are the game choices the replay answered.
     let points = pinned_decisions_to_points(choices, state, caster)

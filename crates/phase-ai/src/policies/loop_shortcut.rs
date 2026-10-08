@@ -787,6 +787,7 @@ mod tests {
             victim_slot: vec![],
             declarable_victims: vec![],
             seat_life_charge: vec![],
+            cleanup: None,
         }
     }
 
@@ -804,6 +805,7 @@ mod tests {
             victim_slot: vec![],
             declarable_victims: vec![],
             seat_life_charge: vec![],
+            cleanup: None,
         }
     }
 
@@ -1096,6 +1098,7 @@ mod tests {
             victim_slot: vec![(slot.clone(), 2)],
             declarable_victims: vec![P0, P1],
             seat_life_charge: vec![(P0, 2), (P1, 2)],
+            cleanup: None,
         };
         let point = either_seat_point(&slot);
         let published = seat_declaration(&[(&slot, P1)]);

@@ -210,6 +210,8 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 114 — ConfirmedPeriod gains its reach and PeriodicDelta its cleanup pair;
+ *      a v113 peer cannot carry them.
  * 113 — GameState drops the recorded loop-action sequence; a v112 peer
  *      still sends it.
  * 112 — WaitingFor.ManaAbilityManaPayment and its ManaAbilityResume root are
@@ -725,7 +727,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 113;
+export const PROTOCOL_VERSION = 114;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

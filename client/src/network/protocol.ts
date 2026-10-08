@@ -106,6 +106,9 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  96 — game_setup and state_update carry GameState, whose shortcut offer's
+ *       ConfirmedPeriod gains its reach and PeriodicDelta its cleanup pair.
+ *       Bumped in lockstep with full-game protocol 114.
  *  95 — game_setup and state_update carry GameState, which drops the recorded
  *       loop-action sequence. Bumped in lockstep with full-game protocol 113.
  *  94 — game_setup and state_update carry GameState, whose WaitingFor gained
@@ -577,7 +580,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 95 as const;
+export const WIRE_PROTOCOL_VERSION = 96 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

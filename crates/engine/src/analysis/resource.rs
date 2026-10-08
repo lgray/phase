@@ -941,6 +941,51 @@ pub struct PeriodicDelta {
     /// call that consumes it.
     #[serde(default)]
     pub seat_life_charge: Vec<(PlayerId, i64)>,
+    /// CR 514.1: the hand a turn-cycle period carries into each cleanup; `None` off that cover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<CleanupPair>,
+}
+
+/// CR 514.1: how a turn-cycle period moves its caster's hand toward the cleanup discard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupPair {
+    /// Cards the hand gains from the period's window to the last priority frame of its turn.
+    pub to_cleanup: i64,
+    /// The hand's growth across one period.
+    pub growth: i64,
+}
+
+impl CleanupPair {
+    /// The pair on one replayed cycle's priority frames, the first being the period's window.
+    pub(crate) fn measure(frames: &[GameState], caster: PlayerId) -> Option<Self> {
+        let hand = |state: &GameState| {
+            state
+                .players
+                .iter()
+                .find(|p| p.id == caster)
+                .map(|p| p.hand.len() as i64)
+        };
+        let (window, current) = (frames.first()?, frames.last()?);
+        let turn_end = frames
+            .iter()
+            .rev()
+            .find(|frame| frame.turn_number == window.turn_number)?;
+        Some(Self {
+            to_cleanup: hand(turn_end)? - hand(window)?,
+            growth: hand(current)? - hand(window)?,
+        })
+    }
+
+    /// CR 402.2 + CR 514.1: the most repetitions after none of which `caster`'s cleanup discards,
+    /// each repetition passing one cleanup; `None` when nothing bounds the hand.
+    fn repetitions(self, state: &GameState, caster: PlayerId) -> Option<i64> {
+        let max_hand = crate::game::turns::maximum_hand_size(state, caster)? as i64;
+        let hand = state.players.iter().find(|p| p.id == caster)?.hand.len() as i64;
+        ResourceVector::narrowed_repetitions(&[(
+            max_hand - (hand + self.to_cleanup) + self.growth,
+            self.growth,
+        )])
+    }
 }
 
 impl PeriodicDelta {
@@ -1481,7 +1526,16 @@ impl PeriodicDelta {
                 _ => entries.push(PredictedDeparture::new(repetition, BTreeSet::from([seat]))?),
             }
         }
-        let count = entries.last()?.repetition;
+        // CR 514.1: a discarding cleanup ends the count before any crossing past it.
+        let hand = self
+            .cleanup
+            .and_then(|cleanup| cleanup.repetitions(state, proposer))
+            .map(|bound| u32::try_from(bound.max(0)).unwrap_or(u32::MAX));
+        let count = match (entries.last().map(|entry| entry.repetition), hand) {
+            (Some(crossing), Some(hand)) => crossing.min(hand),
+            (crossing, hand) => crossing.or(hand)?,
+        };
+        entries.retain(|entry| entry.repetition <= count);
         Some(EliminationCascade { count, entries })
     }
 
@@ -2003,9 +2057,9 @@ pub(crate) struct EliminationCascade {
     /// own repetition, because CR 704.3's sweep at that crossing is itself a place a player has
     /// priority and therefore an ending point CR 732.2a admits.
     pub(crate) count: u32,
-    /// Every crossing, in departure order. NON-EMPTY: a cascade with no entry is the outer
-    /// absence ([`PeriodicDelta::elimination_cascade`] returns `None`), never a cascade holding
-    /// nothing, for the same reason an entry never holds no seat.
+    /// Every crossing, in departure order. Empty only when the cleanup's hand bound ends the
+    /// count before any crossing (CR 514.1); otherwise a cascade with no entry is the outer
+    /// absence ([`PeriodicDelta::elimination_cascade`] returns `None`).
     pub(crate) entries: Vec<PredictedDeparture>,
 }
 
@@ -4776,13 +4830,16 @@ pub enum RecurrenceCover {
     Departure,
     /// Covered once per-turn and per-game history no live surface reads is equalized.
     History,
+    /// Covered once the caster's own turns and their draws are equalized.
+    TurnCycle,
 }
 
 /// CR 732.2a: the no-mint arm's cover of one frame pair, with the growth it admits and the arm
 /// that admitted it. The pair covers when it is equal modulo projected resources or covers
 /// modulo preserved-`Generic` counter growth, or does so once the ids of a certified
 /// instructed departure are stripped from both frames, or once the history it grew that no
-/// live surface reads is equalized; the offer is declinable and never crowns a `GameOver`.
+/// live surface reads is equalized, or once the caster's own turns are; the offer is declinable
+/// and never crowns a `GameOver`.
 pub(crate) fn resource_recurrence_covers(
     prior: &GameState,
     current: &GameState,
@@ -4812,8 +4869,11 @@ pub(crate) fn resource_recurrence_covers(
         return Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure));
     }
     // CR 732.2a: equalized history is not made by a mint, so only performing the period makes it.
-    history_covers(prior, current)
-        .then_some((CoveredGrowth::PerformedOnly, RecurrenceCover::History))
+    if history_covers(prior, current) {
+        return Some((CoveredGrowth::PerformedOnly, RecurrenceCover::History));
+    }
+    turn_cycle_covers(prior, current, caster)
+        .then_some((CoveredGrowth::PerformedOnly, RecurrenceCover::TurnCycle))
 }
 
 /// The equality or counter-growth disjunct of the no-mint cover.
@@ -4920,6 +4980,9 @@ history_members! {
         ParadigmPrimed => paradigm_primed: false,
         PlayerActionsThisWay => player_actions_this_way: false,
         TriggersFiredThisGame => triggers_fired_this_game: true,
+        TurnNumber => turn_number: true,
+        CardsDrawnThisTurn => cards_drawn_this_turn: true,
+        FirstCardDrawnThisTurn => first_card_drawn_this_turn: true,
     }
     player {
         PlayerBendingTypesThisTurn => bending_types_this_turn: true,
@@ -4929,6 +4992,20 @@ history_members! {
         PlayerLandsPlayedThisTurn => lands_played_this_turn: false,
         PlayerLifeLostLastTurn => life_lost_last_turn: true,
         PlayerSpeedTriggerUsedThisTurn => speed_trigger_used_this_turn: false,
+        PlayerTurnsTaken => turns_taken: true,
+    }
+}
+
+impl HistoryMember {
+    /// CR 500.1: a member only the turn-cycle cover equalizes, under its turn and draw checks.
+    const fn turn_cycle(self) -> bool {
+        matches!(
+            self,
+            HistoryMember::TurnNumber
+                | HistoryMember::CardsDrawnThisTurn
+                | HistoryMember::FirstCardDrawnThisTurn
+                | HistoryMember::PlayerTurnsTaken
+        )
     }
 }
 
@@ -4967,17 +5044,25 @@ impl HistoryReads {
 /// equalized, when each grown member is attributed and no live surface of either frame reads
 /// it, and the equalized copy passes the equality or counter-growth disjunct.
 pub(crate) fn history_covers(prior: &GameState, current: &GameState) -> bool {
+    history_covers_reading(prior, current, frame_history_reads(prior, current))
+}
+
+/// The history members a live surface of either frame reads.
+fn frame_history_reads(prior: &GameState, current: &GameState) -> HistoryReads {
+    live_history_reads(&flush_clone(prior)).or(live_history_reads(&flush_clone(current)))
+}
+
+/// [`history_covers`] under the live reads `reads`.
+fn history_covers_reading(prior: &GameState, current: &GameState, reads: HistoryReads) -> bool {
     use strum::IntoEnumIterator;
     let mut copy = current.clone();
     let grown: Vec<HistoryMember> = HistoryMember::iter()
-        .filter(|member| member.equalize(&mut copy, prior))
+        .filter(|member| !member.turn_cycle() && member.equalize(&mut copy, prior))
         .collect();
     let collapsed = collapse_inserted_unit_run(&mut copy, prior);
     if grown.is_empty() && !collapsed {
         return false;
     }
-    let reads =
-        live_history_reads(&flush_clone(prior)).or(live_history_reads(&flush_clone(current)));
     if grown
         .iter()
         .any(|member| !member.is_attributed() || reads.reads(*member))
@@ -4996,6 +5081,97 @@ pub(crate) fn history_covers(prior: &GameState, current: &GameState) -> bool {
 #[cfg(any(test, feature = "test-support"))]
 pub fn history_covers_for_tests(prior: &GameState, current: &GameState) -> bool {
     history_covers(prior, current)
+}
+
+/// CR 500.1 + CR 504.1 + CR 732.2a: `current` covers `prior` once the caster's own turns between
+/// them are equalized. The caster is active in both frames; the turn count and the caster's turns
+/// taken grew alike; no other player took a turn or changed hand or library; the caster's only
+/// library-to-hand moves are at most one draw per turn, off the library's top; and each object keeps
+/// its turn stamps' relation to its frame's turn and its summoning sickness (CR 302.6). Then no live
+/// surface may read a grown turn member, and the equalized copy must pass the comparand or the
+/// history cover.
+pub(crate) fn turn_cycle_covers(prior: &GameState, current: &GameState, caster: PlayerId) -> bool {
+    use strum::IntoEnumIterator;
+    let Some(turns) = current
+        .turn_number
+        .checked_sub(prior.turn_number)
+        .filter(|turns| *turns > 0)
+    else {
+        return false;
+    };
+    let seat = |state: &GameState| state.players.iter().position(|p| p.id == caster);
+    let (Some(before_at), Some(after_at)) = (seat(prior), seat(current)) else {
+        return false;
+    };
+    let (before, after) = (&prior.players[before_at], &current.players[after_at]);
+    let others_still = prior.players.len() == current.players.len()
+        && prior.players.iter().zip(&current.players).all(|(p, c)| {
+            p.id == c.id
+                && (p.id == caster
+                    || (p.turns_taken == c.turns_taken
+                        && p.hand == c.hand
+                        && p.library == c.library))
+        });
+    let drawn: Vec<ObjectId> = after
+        .hand
+        .iter()
+        .filter(|id| before.library.contains(id))
+        .copied()
+        .collect();
+    if prior.active_player != caster
+        || current.active_player != caster
+        || after.turns_taken.checked_sub(before.turns_taken) != Some(turns)
+        || !others_still
+        || drawn.len() > turns as usize
+        || !before
+            .library
+            .iter()
+            .take(drawn.len())
+            .all(|id| drawn.contains(id))
+        || !turn_stamps_keep_their_relation(prior, current)
+    {
+        return false;
+    }
+    let mut copy = current.clone();
+    let player = &mut copy.players[after_at];
+    player.hand.retain(|id| !drawn.contains(id));
+    let mut library: im::Vector<ObjectId> = drawn.iter().copied().collect();
+    library.append(player.library.clone());
+    player.library = library;
+    for id in &drawn {
+        if let Some(object) = copy.objects.get_mut(id) {
+            object.zone = Zone::Library;
+        }
+    }
+    let grown: Vec<HistoryMember> = HistoryMember::iter()
+        .filter(|member| member.turn_cycle() && member.equalize(&mut copy, prior))
+        .collect();
+    let reads = frame_history_reads(prior, current);
+    if grown.iter().any(|member| reads.reads(*member)) {
+        return false;
+    }
+    covers_modulo_resources(prior, &copy) || history_covers_reading(prior, &copy, reads)
+}
+
+/// CR 302.6: each object in both frames keeps whether each turn stamp the comparand omits names
+/// its frame's turn, and keeps its summoning sickness.
+fn turn_stamps_keep_their_relation(prior: &GameState, current: &GameState) -> bool {
+    let relation = |state: &GameState, object: &GameObject| {
+        let this_turn = |stamp: Option<u32>| stamp.map(|turn| turn == state.turn_number);
+        (
+            this_turn(object.entered_battlefield_turn),
+            this_turn(object.discarded_turn),
+            this_turn(object.cast_variant_paid.map(|(_, turn)| turn)),
+            this_turn(object.cast_timing_permission.map(|(_, turn)| turn)),
+            object.summoning_sick,
+        )
+    };
+    prior.objects.iter().all(|(id, before)| {
+        current
+            .objects
+            .get(id)
+            .is_none_or(|after| relation(prior, before) == relation(current, after))
+    })
 }
 
 /// CR 608.2c: the period only appended tracked sets, and the latest non-empty set, which the
@@ -15761,6 +15937,7 @@ mod tests {
             victim_slot: vec![(slot.clone(), 2)],
             declarable_victims: SlotCharge::declarable_victims(&charges),
             seat_life_charge: published,
+            cleanup: None,
         };
         let points = [seat_point(&slot, &[0, 1])];
         let observed = seat_schedule_declaration(&[(&slot, &[1])]);
@@ -15840,6 +16017,7 @@ mod tests {
             declarable_victims: SlotCharge::declarable_victims(&dipping_charges),
             seat_life_charge: life_loss_delta(&[(0, 4), (1, 4)])
                 .seat_life_charges(&dipping_charges),
+            cleanup: None,
         };
         assert_eq!(
             dipping.seat_life_charge,
@@ -15938,6 +16116,7 @@ mod tests {
             victim_slot: vec![(s1.clone(), 3), (s2.clone(), 3)],
             declarable_victims: SlotCharge::declarable_victims(&swap_charges),
             seat_life_charge: swap_published,
+            cleanup: None,
         };
         let swap_points = [seat_point(&s1, &[0, 1]), seat_point(&s2, &[0, 1])];
         let swap_observed = seat_schedule_declaration(&[(&s1, &[0]), (&s2, &[1])]);
@@ -15998,6 +16177,7 @@ mod tests {
             victim_slot: vec![(g.clone(), 2)],
             declarable_victims: SlotCharge::declarable_victims(&gain_charges),
             seat_life_charge: life_loss_delta(&[(0, 2), (1, 2)]).seat_life_charges(&gain_charges),
+            cleanup: None,
         };
         let away = seat_schedule_declaration(&[(&g, &[1])]);
         let kept = seat_schedule_declaration(&[(&g, &[0])]);
@@ -16039,6 +16219,7 @@ mod tests {
             victim_slot: Vec::new(),
             declarable_victims: Vec::new(),
             seat_life_charge: vec![(p0, 1)],
+            cleanup: None,
         };
         assert_eq!(
             nth_charge(&even, p0, None, None, &[], 0, &board, ChargeBound::Ceiling),
@@ -16095,6 +16276,7 @@ mod tests {
             victim_slot: vec![(s1.clone(), 2), (s2.clone(), 2)],
             declarable_victims: SlotCharge::declarable_victims(&two_slots),
             seat_life_charge: frame_wise.seat_life_charges(&two_slots),
+            cleanup: None,
         };
         let landing_points = [seat_point(&s1, &[0, 1]), seat_point(&s2, &[1])];
         let both_on_p1 = seat_schedule_declaration(&[(&s1, &[1]), (&s2, &[1])]);
@@ -16141,6 +16323,7 @@ mod tests {
             victim_slot: vec![(s.clone(), 2)],
             declarable_victims: SlotCharge::declarable_victims(&one_slot),
             seat_life_charge: frame_wise.seat_life_charges(&one_slot),
+            cleanup: None,
         };
         assert_eq!(
             leaving.declarable_victims,
@@ -18681,6 +18864,7 @@ mod tests {
             victim_slot: vec![(slot.clone(), 1)],
             declarable_victims: vec![PlayerId(1)],
             seat_life_charge: vec![(PlayerId(1), 3)],
+            cleanup: None,
         };
         let json = serde_json::to_string(&populated)
             .expect("a populated PeriodicDelta must serialize (engine-wasm PANICS otherwise)");
@@ -18868,6 +19052,7 @@ mod tests {
                 victim_slot: vec![],
                 declarable_victims: vec![],
                 seat_life_charge: vec![],
+                cleanup: None,
             }),
             shortened_by: None,
             published_declaration: None,
@@ -25020,6 +25205,7 @@ mod tests {
             victim_slot: victim_slot.to_vec(),
             declarable_victims: domain.iter().copied().map(PlayerId).collect(),
             seat_life_charge: Vec::new(),
+            cleanup: None,
         }
     }
 
@@ -25528,6 +25714,68 @@ mod tests {
             "with the proposer surviving, the walk reaches every opponent's crossing and names \
              the proposer in none of them; got {:?}",
             survives.entries
+        );
+    }
+
+    /// CR 514.1 + CR 121.4: a turn-cycle period's count is the smaller of its library crossing and
+    /// the most repetitions after which no cleanup discards; when the hand binds first the cascade
+    /// names no departure.
+    #[test]
+    fn a_cleanup_pair_bounds_the_count_by_the_hand_before_the_library() {
+        let count = |hand: u64, library: u64, cleanup: Option<CleanupPair>| {
+            let mut state = GameState::new_two_player(42);
+            state.players[0].hand = (0..hand).map(|n| ObjectId(1_000 + n)).collect();
+            state.players[0].library = (0..library).map(|n| ObjectId(2_000 + n)).collect();
+            let mut delta = ResourceVector::default();
+            delta.library_delta.insert(PlayerId(0), -1);
+            let period = PeriodicDelta {
+                delta,
+                cleanup,
+                ..PeriodicDelta::default()
+            };
+            period
+                .elimination_cascade(
+                    &state,
+                    PlayerId(0),
+                    None,
+                    None,
+                    &[],
+                    ChargeBound::Ceiling,
+                    AnnouncedLead::None,
+                )
+                .map(|cascade| (cascade.count, cascade.entries.len()))
+        };
+        let drawing = Some(CleanupPair {
+            to_cleanup: 0,
+            growth: 1,
+        });
+        assert_eq!(
+            count(3, 24, None),
+            Some((25, 1)),
+            "the library crossing alone"
+        );
+        assert_eq!(count(3, 24, drawing), Some((5, 0)), "the hand binds first");
+        assert_eq!(
+            count(3, 3, drawing),
+            Some((4, 1)),
+            "the library binds first"
+        );
+        assert_eq!(
+            count(
+                3,
+                24,
+                Some(CleanupPair {
+                    to_cleanup: 1,
+                    growth: 1,
+                })
+            ),
+            Some((4, 0)),
+            "a card gained before the cleanup spends one repetition"
+        );
+        assert_eq!(
+            count(8, 24, drawing),
+            Some((0, 0)),
+            "an over-full hand allows none"
         );
     }
 

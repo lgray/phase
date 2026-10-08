@@ -3215,6 +3215,7 @@ fn preview_offer_with_points(
                 declarable_victims: Vec::new(),
                 victim_slot,
                 seat_life_charge: Vec::new(),
+                cleanup: None,
             }),
         },
         schema: ShortcutDecisionSchema {
@@ -4027,6 +4028,7 @@ fn respond_period(
         declarable_victims: Vec::new(),
         victim_slot,
         seat_life_charge: Vec::new(),
+        cleanup: None,
     }
 }
 
