@@ -12,14 +12,15 @@ use engine::game::combat::AttackTarget;
 use engine::game::effects::attach::{attach_to, attach_to_player};
 use engine::game::engine::certify_object_growth_frames_for_tests;
 use engine::game::functioning_abilities::active_trigger_definitions;
+use engine::game::keywords::effective_foretell_cost;
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::game::zones::add_to_zone;
+use engine::game::zones::{add_to_zone, remove_from_zone};
 use engine::game::{play_trace_view, NamedSpan, NamingCause, PeriodReach, SpanSource};
 use engine::types::ability::{
-    AbilityKind, DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
+    AbilityKind, CastingPermission, DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
 };
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
@@ -3467,6 +3468,46 @@ fn the_turn_cycle_cover_refuses_a_turn_stamp_whose_relation_moved() {
         .entered_battlefield_turn = Some(turn);
     let verdict = warp_verdict(&frames);
     assert!(!verdict.certifies(), "{verdict:?}");
+}
+
+/// CR 702.143a + CR 732.2a: Cosmic Intervention foretold during the first frame's turn becomes
+/// castable by the next frame's, so the turn-cycle cover refuses the frames; foretold a turn
+/// earlier, it is castable in every frame and the frames are admitted.
+#[test]
+fn the_turn_cycle_cover_refuses_a_foretold_card_whose_castability_moved() {
+    let db = shared_card_db().expect("card db");
+    let verdict = |turns_before_first_frame: u32| {
+        let mut frames = warp_frames(&["Cosmic Intervention"], db);
+        let turn_foretold = frames[0].turn_number - turns_before_first_frame;
+        let card = frames[0]
+            .objects
+            .iter()
+            .find(|(_, object)| object.name == "Cosmic Intervention")
+            .map(|(id, _)| *id)
+            .expect("Cosmic Intervention");
+        let cost = effective_foretell_cost(&frames[0], card).expect("foretell cost");
+        for frame in &mut frames {
+            remove_from_zone(frame, card, Zone::Battlefield, P0);
+            add_to_zone(frame, card, Zone::Exile, P0);
+            let object = frame.objects.get_mut(&card).expect("Cosmic Intervention");
+            object.zone = Zone::Exile;
+            object.entered_battlefield_turn = None;
+            object.foretold = true;
+            object.face_down = true;
+            object.casting_permissions = vec![CastingPermission::Foretold {
+                cost: cost.clone(),
+                turn_foretold,
+            }];
+        }
+        warp_verdict(&frames)
+    };
+    assert_eq!(
+        verdict(1),
+        ObjectGrowthVerdict::ResourceRecurrence(Some(RecurrenceCover::TurnCycle)),
+        "reach: an unmoved castability is admitted"
+    );
+    let moved = verdict(0);
+    assert!(!moved.certifies(), "{moved:?}");
 }
 
 /// CR 732.2a: Walking Ballista pinging P1 by removing its own +1/+1 counters spends a resource the

@@ -3395,13 +3395,12 @@ fn bounded_offer_tail(
     // own on the board the drive actually runs against.
     //
     // ONE conjunct at ONE site, over the reduction's own answer: the ABSENCE means no living seat
-    // is consumed, so this producer measured nothing and belongs to another seam. A cascade cannot
-    // publish `0` — its entries are repetitions and a repetition is counted from 1 — so the
-    // `count >= 1` filter below NO LONGER DISCRIMINATES and is a fail-closed guard on an authority
-    // value rather than a live gate; it is kept, and said, because a later reader must not mistake
-    // it for one. This is also what makes `schema.is_bounded()` true BY CONSTRUCTION for every
-    // offer this function mints. NO UPPER END: a threshold above the engine's repetition budget is
-    // still a measured threshold, and the budget is the schema constructor's to apply.
+    // is consumed, so this producer measured nothing and belongs to another seam. A cascade
+    // publishes `0` only when a turn-cycle period's cleanup bound allows no repetition
+    // (CR 514.1), and the `count >= 1` filter below refuses that offer. This is also what makes
+    // `schema.is_bounded()` true BY CONSTRUCTION for every offer this function mints. NO UPPER
+    // END: a threshold above the engine's repetition budget is still a measured threshold, and the
+    // budget is the schema constructor's to apply.
     //
     // BOTH cascades below are read at `ChargeBound::Ceiling`, which is the question this seam
     // asks: what SOME conforming declaration may take from a seat. An over-charge there only

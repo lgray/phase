@@ -24,7 +24,7 @@ use crate::analysis::decision_template::{
 };
 use crate::game::game_object::GameObject;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, AbilityUseTally, ActivationRestriction,
+    AbilityCondition, AbilityDefinition, AbilityUseTally, ActivationRestriction, CastingPermission,
     DamageModification, TargetRef,
 };
 use crate::types::card_type::{CoreType, Supertype};
@@ -1412,9 +1412,9 @@ impl PeriodicDelta {
     /// this period produces under `declaration`, in departure order — the ordered cascade an
     /// accepted count carries the game through.
     ///
-    /// `None` when no living seat is consumed on any axis, which keeps
-    /// [`ResourceVector::elimination_bounds`]' own spelling of that absence: this reduction
-    /// measured no threshold, which is a different answer from every count it can return.
+    /// `None` when no living seat is consumed on any axis and no cleanup pair bounds the count,
+    /// which keeps [`ResourceVector::elimination_bounds`]' own spelling of that absence: this
+    /// reduction measured no threshold, which is a different answer from every count it can return.
     ///
     /// # The population, and why the proposer is in it but bounds it
     ///
@@ -2054,7 +2054,8 @@ impl PredictedDeparture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EliminationCascade {
     /// CR 732.2a: the largest count this declaration may legally be repeated — the last entry's
-    /// own repetition, because CR 704.3's sweep at that crossing is itself a place a player has
+    /// own repetition, or the lower cleanup hand bound of a turn-cycle period (CR 514.1),
+    /// because CR 704.3's sweep at that crossing is itself a place a player has
     /// priority and therefore an ending point CR 732.2a admits.
     pub(crate) count: u32,
     /// Every crossing, in departure order. Empty only when the cleanup's hand bound ends the
@@ -5154,8 +5155,22 @@ pub(crate) fn turn_cycle_covers(prior: &GameState, current: &GameState, caster: 
 }
 
 /// CR 302.6: each object in both frames keeps whether each turn stamp the comparand omits names
-/// its frame's turn, and keeps its summoning sickness.
+/// its frame's turn, whether each casting permission's turn precedes it, and its summoning
+/// sickness.
 fn turn_stamps_keep_their_relation(prior: &GameState, current: &GameState) -> bool {
+    // CR 702.143a + CR 702.170d + CR 702.185a: such a card is castable only after its stamped turn.
+    let permission_turn = |permission: &CastingPermission| match permission {
+        CastingPermission::Foretold { turn_foretold, .. } => Some(*turn_foretold),
+        CastingPermission::Plotted { turn_plotted } => Some(*turn_plotted),
+        CastingPermission::WarpExile {
+            castable_after_turn,
+        } => Some(*castable_after_turn),
+        CastingPermission::AdventureCreature
+        | CastingPermission::ExileWithAltCost { .. }
+        | CastingPermission::PlayFromExile { .. }
+        | CastingPermission::ExileWithEnergyCost
+        | CastingPermission::ExileWithAltAbilityCost { .. } => None,
+    };
     let relation = |state: &GameState, object: &GameObject| {
         let this_turn = |stamp: Option<u32>| stamp.map(|turn| turn == state.turn_number);
         (
@@ -5164,6 +5179,12 @@ fn turn_stamps_keep_their_relation(prior: &GameState, current: &GameState) -> bo
             this_turn(object.cast_variant_paid.map(|(_, turn)| turn)),
             this_turn(object.cast_timing_permission.map(|(_, turn)| turn)),
             object.summoning_sick,
+            object
+                .casting_permissions
+                .iter()
+                .filter_map(permission_turn)
+                .map(|turn| state.turn_number > turn)
+                .collect::<Vec<_>>(),
         )
     };
     prior.objects.iter().all(|(id, before)| {
