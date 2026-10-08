@@ -61,7 +61,7 @@ fn card_db() -> &'static CardDatabase {
 /// fails loudly: the row total, the card-gated rows, and their testable complement.
 #[test]
 fn corpus_table_shape_is_locked() {
-    assert_eq!(corpus::corpus_len(), 57, "corpus must hold all 57 rows");
+    assert_eq!(corpus::corpus_len(), 58, "corpus must hold all 58 rows");
     let gated = (0..corpus::corpus_len())
         .filter(|&i| corpus::row(i).gated_on.is_some())
         .count();
@@ -85,7 +85,7 @@ fn corpus_table_shape_is_locked() {
     }
     // The testable rows are the complement of the gated rows.
     let testable = corpus::corpus_len() - gated;
-    assert_eq!(testable, 53, "53 corpus combos are testable once driven");
+    assert_eq!(testable, 54, "54 corpus combos are testable once driven");
 }
 
 /// META-TEST: the corpus is a clean partition — every row is exactly one of
@@ -104,7 +104,7 @@ fn corpus_partition_is_locked() {
         .filter(|&i| corpus::row(i).deferral.is_some())
         .collect();
 
-    assert_eq!(driven.len(), 18, "18 driven rows");
+    assert_eq!(driven.len(), 19, "19 driven rows");
     assert_eq!(gated.len(), 4, "4 gated rows");
     assert_eq!(deferred.len(), 35, "35 deferred rows");
 
@@ -127,7 +127,7 @@ fn corpus_partition_is_locked() {
         n,
         "driven ∪ gated ∪ deferred must cover every one of the {n} rows"
     );
-    assert_eq!(n, 57);
+    assert_eq!(n, 58);
 
     // Exclusivity: a driven or gated row must not also declare a deferral bucket.
     for &i in driven.iter().chain(gated.iter()) {
@@ -304,8 +304,8 @@ fn drive_row_classifies_corpus_via_shared_pipeline() {
         other => panic!("idx 55 (Altar of the Brood) must be Confirmed, got {other:?}"),
     }
 
-    // Confirmed (offer): each Altar drain member is offered bounded at the opponents' crossings.
-    for (idx, drained) in [(45usize, 1..2), (56, 1..4)] {
+    // Confirmed (offer): each drain member is offered bounded at the opponents' crossings.
+    for (idx, drained) in [(45usize, 1..2), (56, 1..4), (57, 1..4)] {
         match corpus::drive_row(db, idx).status {
             corpus::RowStatus::Confirmed {
                 unbounded,
@@ -319,7 +319,7 @@ fn drive_row_classifies_corpus_via_shared_pipeline() {
                     );
                 }
             }
-            other => panic!("idx {idx} (Altar drain) must be Confirmed, got {other:?}"),
+            other => panic!("idx {idx} (drain) must be Confirmed, got {other:?}"),
         }
     }
 

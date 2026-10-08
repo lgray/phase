@@ -2215,3 +2215,144 @@ fn a_replay_take_stops_before_a_departure_its_signature_did_not_predict() {
     assert_eq!(lives(state)[1..], [1, p2 - 5]);
     assert_eq!(state.waiting_for, WaitingFor::Priority { player: P0 });
 }
+
+/// Marvin, Murderous Mimic, Pili-Pala, Grove of the Burnwillows, Tainted Remedy, a Mountain and,
+/// when `revolt`, Nature's Revolt, under P0 on `lives.len()` seats at `lives`, with ten Mountains
+/// in every library; Marvin and the Mountain.
+fn grove_board(lives: &[i32], revolt: bool, db: &CardDatabase) -> (GameRunner, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(lives.len() as u8, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    for (seat, life) in lives.iter().enumerate() {
+        scenario.with_life(PlayerId(seat as u8), *life);
+    }
+    let marvin = scenario.add_real_card(P0, "Marvin, Murderous Mimic", Zone::Battlefield, db);
+    let pili_pala = scenario.add_real_card(P0, "Pili-Pala", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Grove of the Burnwillows", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Tainted Remedy", Zone::Battlefield, db);
+    if revolt {
+        scenario.add_real_card(P0, "Nature's Revolt", Zone::Battlefield, db);
+    }
+    let mountain = scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db);
+    for seat in 0..lives.len() {
+        for _ in 0..10 {
+            scenario.add_real_card(PlayerId(seat as u8), "Mountain", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    // CR 302.6 + CR 107.6: Marvin and Pili-Pala have been under P0's control since P0's turn began.
+    let turn = runner.state().turn_number;
+    for creature in [marvin, pili_pala] {
+        let object = runner
+            .state_mut()
+            .objects
+            .get_mut(&creature)
+            .expect("on the battlefield");
+        object.summoning_sick = false;
+        object.entered_battlefield_turn = Some(turn.saturating_sub(1));
+    }
+    (runner, marvin, mountain)
+}
+
+/// The index of `source`'s activated ability whose text contains `text`.
+fn described(state: &GameState, source: ObjectId, text: &str) -> Option<usize> {
+    state.objects[&source]
+        .abilities
+        .iter()
+        .position(|a| a.description.as_deref().is_some_and(|d| d.contains(text)))
+}
+
+/// Floats the Mountain's {R}, then activates Marvin's Grove ability and its Pili-Pala ability, up
+/// to three cycles, until the engine offers the loop; each seat in `drained` loses exactly 1 life
+/// per Grove activation.
+fn grove_to_offer(
+    runner: &mut GameRunner,
+    marvin: ObjectId,
+    mountain: ObjectId,
+    drained: &[PlayerId],
+) {
+    let score = chooses_color(ManaType::Red);
+    let index = ability(runner.state(), mountain, true);
+    activate(runner, mountain, index);
+    settle(runner, &score);
+    let tap =
+        described(runner.state(), marvin, "Add {R} or {G}").expect("reach: the Grove ability");
+    let untap =
+        described(runner.state(), marvin, "{2}, {Q}").expect("reach: the Pili-Pala ability");
+    for cycle in 0..3 {
+        let before = lives(runner.state());
+        activate(runner, marvin, tap);
+        settle(runner, &score);
+        let after = lives(runner.state());
+        for seat in drained {
+            let seat = usize::from(seat.0);
+            assert_eq!(after[seat], before[seat] - 1, "reach: cycle {cycle}");
+        }
+        if is_offer(runner.state()) {
+            return;
+        }
+        activate(runner, marvin, untap);
+        settle(runner, &score);
+        if is_offer(runner.state()) {
+            return;
+        }
+    }
+}
+
+/// CR 605.1a + CR 605.3b + CR 614.1a + CR 704.5a: with Nature's Revolt making Grove of the
+/// Burnwillows a creature (CR 613.1d), Marvin, Murderous Mimic has its "{T}: Add {R} or {G}. Each
+/// opponent gains 1 life." and Pili-Pala's "{2}, {Q}: Add one mana of any color." (CR 613.1f), and
+/// Tainted Remedy turns each gain into a loss: a period of mana abilities alone is offered as many
+/// repetitions as P1 has life, and a take performs the count it declares.
+#[test]
+fn a_grove_marvin_period_is_offered_a_bounded_shortcut_and_taken() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, marvin, mountain) = grove_board(&[20, 20], true, db);
+    grove_to_offer(&mut runner, marvin, mountain, &[P1]);
+    let offered = runner.state().clone();
+    let life = offered.players[1].life;
+    let l = life as u32;
+    let certificate = bounded_recorded_offer(&offered, l);
+    assert_eq!(
+        certificate.per_cycle.as_ref().map(|p| p.frames_per_period),
+        Some(2)
+    );
+    assert!(offered.stack.is_empty());
+
+    let three = taken(&offered, 3);
+    assert_eq!(three.players[1].life, life - 3);
+    assert_eq!(three.waiting_for, WaitingFor::Priority { player: P0 });
+
+    let all = taken(&offered, l);
+    assert_eq!(all.waiting_for, WaitingFor::GameOver { winner: Some(P0) });
+    assert_eq!(eliminated(&all), [P1]);
+
+    assert_declaration_refused(&offered, l + 1);
+
+    let (mut runner, marvin, mountain) = grove_board(&[20, 7, 9], true, db);
+    grove_to_offer(&mut runner, marvin, mountain, &[P1, P2]);
+    let offered = runner.state().clone();
+    bounded_recorded_offer(&offered, 8);
+    assert_eq!(eliminated(&taken(&offered, 6)), [P1]);
+    assert_eq!(
+        taken(&offered, 8).waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) }
+    );
+}
+
+/// CR 613.1f: without Nature's Revolt the Grove is no creature, so Marvin has only Pili-Pala's
+/// ability, no cycle exists, and nothing is offered.
+#[test]
+fn a_grove_marvin_board_without_natures_revolt_has_no_cycle() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, marvin, mountain) = grove_board(&[20, 20], false, db);
+    let index = ability(runner.state(), mountain, true);
+    activate(&mut runner, mountain, index);
+    settle(&mut runner, &chooses_color(ManaType::Red));
+    assert!(
+        described(runner.state(), marvin, "{2}, {Q}").is_some(),
+        "reach: Marvin reads Pili-Pala"
+    );
+    assert_eq!(described(runner.state(), marvin, "Add {R} or {G}"), None);
+    assert!(!is_offer(runner.state()));
+}

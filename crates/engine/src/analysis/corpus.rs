@@ -593,6 +593,20 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         gated_on: None,
         deferral: None,
     },
+    ComboRow {
+        name: "Grove of the Burnwillows + Tainted Remedy + Marvin, Murderous Mimic + Pili-Pala + Nature's Revolt",
+        cards: &[
+            "Grove of the Burnwillows",
+            "Tainted Remedy",
+            "Marvin, Murderous Mimic",
+            "Pili-Pala",
+            "Nature's Revolt",
+        ],
+        family: ResourceFamily::Drain,
+        win_kind: WinKind::LethalDamage,
+        gated_on: None,
+        deferral: None,
+    },
 ];
 
 #[cfg(test)]
@@ -727,6 +741,7 @@ pub(crate) const DRIVERS: &[(usize, ComboDriver)] = &[
     (54, ComboDriver::Offline(drive_food_chain_squee_offer)),
     (55, ComboDriver::Offline(drive_altar_brood_offer)),
     (56, ComboDriver::Offline(drive_altar_zulaport_offer)),
+    (57, ComboDriver::Offline(drive_grove_marvin_offer)),
 ];
 
 /// Number of rows in the corpus.
@@ -2410,6 +2425,76 @@ pub(crate) fn drive_altar_zulaport_offer(db: &CardDatabase) -> Option<LoopCertif
         ManaType::Black,
         None,
     )
+}
+
+/// Grove of the Burnwillows ("{T}: Add {R} or {G}. Each opponent gains 1 life.") is a creature
+/// under Nature's Revolt ("All lands are 2/2 creatures that are still lands."), so Marvin,
+/// Murderous Mimic ("Marvin has all activated abilities of creatures you control that don't have
+/// the same name as this creature.") has its abilities and Pili-Pala's ("{2}, {Q}: Add one mana of
+/// any color."), while Tainted Remedy ("If an opponent would gain life, that player loses that
+/// much life instead.") turns each opponent's gain into a loss: one Mountain's {R} floats, then
+/// Marvin taps and untaps, cycle by cycle on a four-seat board, until the engine offers the loop.
+pub(crate) fn drive_grove_marvin_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let marvin = scenario.add_real_card(P0, "Marvin, Murderous Mimic", Zone::Battlefield, db);
+    let pili_pala = scenario.add_real_card(P0, "Pili-Pala", Zone::Battlefield, db);
+    for card in [
+        "Grove of the Burnwillows",
+        "Tainted Remedy",
+        "Nature's Revolt",
+    ] {
+        scenario.add_real_card(P0, card, Zone::Battlefield, db);
+    }
+    let mountain = scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db);
+    for seat in 0..4 {
+        for _ in 0..8 {
+            scenario.add_real_card(PlayerId(seat), "Mountain", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = crate::types::game_state::LoopDetectionMode::Interactive;
+    // CR 302.6 + CR 107.6: Marvin and Pili-Pala have been under P0's control since P0's turn began.
+    let turn = runner.state().turn_number;
+    for creature in [marvin, pili_pala] {
+        let object = runner.state_mut().objects.get_mut(&creature)?;
+        object.summoning_sick = false;
+        object.entered_battlefield_turn = Some(turn.saturating_sub(1));
+    }
+    let described = |runner: &GameRunner, text: &str| {
+        runner.state().objects[&marvin]
+            .abilities
+            .iter()
+            .position(|a| a.description.as_deref().is_some_and(|d| d.contains(text)))
+    };
+    let activate = |runner: &mut GameRunner, source_id: ObjectId, ability_index: usize| {
+        runner.act(GameAction::ActivateAbility {
+            source_id,
+            ability_index,
+        })?;
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::ChooseManaColor { .. }
+        ) {
+            runner.act(GameAction::ChooseManaColor {
+                choice: crate::types::game_state::ManaChoice::SingleColor(ManaType::Red),
+                count: 1,
+            })?;
+        }
+        Ok::<_, crate::game::engine::EngineError>(offered_certificate(runner))
+    };
+    activate(&mut runner, mountain, 0).ok()?;
+    // CR 613.1f: Marvin has the abilities it copies once the continuous effects are applied.
+    let tap = described(&runner, "Add {R} or {G}")?;
+    let untap = described(&runner, "{2}, {Q}")?;
+    for _ in 0..5 {
+        for ability in [tap, untap] {
+            if let Some(certificate) = activate(&mut runner, marvin, ability).ok()? {
+                return Some(certificate);
+            }
+        }
+    }
+    None
 }
 
 /// Drive one live drain cascade (idx 17 / idx 18) to its first `GameOver`. The two
