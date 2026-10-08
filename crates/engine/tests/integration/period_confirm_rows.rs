@@ -4,7 +4,8 @@ use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::{LoopCertificate, OfferRoad, ShortcutResponse, WinKind};
 use engine::analysis::loop_states_equal_modulo_resources;
 use engine::analysis::resource::{
-    history_covers_for_tests, FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis,
+    history_covers_for_tests, FodderCoverRefusal, ObjectGrowthVerdict, RecurrenceCover,
+    ResourceAxis,
 };
 use engine::database::card_db::CardDatabase;
 use engine::game::combat::AttackTarget;
@@ -15,11 +16,14 @@ use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::game::{play_trace_view, NamingCause, PeriodReach};
+use engine::game::zones::add_to_zone;
+use engine::game::{play_trace_view, NamedSpan, NamingCause, PeriodReach, SpanSource};
 use engine::types::ability::{
     AbilityKind, DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
 };
 use engine::types::actions::GameAction;
+use engine::types::counter::CounterType;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{
     CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, StackEntryKind, WaitingFor,
 };
@@ -37,10 +41,15 @@ use crate::play_trace::{
 use crate::support::shared_card_db;
 
 fn act(runner: &mut GameRunner, action: GameAction) {
+    act_events(runner, action);
+}
+
+fn act_events(runner: &mut GameRunner, action: GameAction) -> Vec<GameEvent> {
     let shown = format!("{action:?}");
     runner
         .act(action)
-        .unwrap_or_else(|error| panic!("{shown} rejected: {error:?}"));
+        .unwrap_or_else(|error| panic!("{shown} rejected: {error:?}"))
+        .events
 }
 
 fn activated_index(state: &GameState, id: ObjectId) -> usize {
@@ -575,9 +584,9 @@ fn a_period_paying_a_random_discard_cost_is_refused_as_random() {
     assert!(!is_offer(state), "no offer");
 }
 
-/// Declares the standing offer at `count`, and every seat asked accepts it.
-fn take(runner: &mut GameRunner, count: u32) {
-    act(
+/// Declares the standing offer at `count`, and every seat asked accepts it; the events emitted.
+fn take(runner: &mut GameRunner, count: u32) -> Vec<GameEvent> {
+    let mut events = act_events(
         runner,
         GameAction::DeclareShortcut {
             count: IterationCount::Fixed(count),
@@ -588,13 +597,14 @@ fn take(runner: &mut GameRunner, count: u32) {
         runner.state().waiting_for,
         WaitingFor::RespondToShortcut { .. }
     ) {
-        act(
+        events.extend(act_events(
             runner,
             GameAction::RespondToShortcut {
                 response: ShortcutResponse::Accept,
             },
-        );
+        ));
     }
+    events
 }
 
 /// [`take`], then the passes to the step end.
@@ -2139,13 +2149,19 @@ fn an_altar_zulaport_period_is_offered_a_bounded_shortcut_and_taken() {
         assert_eq!(three.waiting_for, WaitingFor::Priority { player: P0 });
         assert!(eliminated(&three).is_empty(), "{payoff}");
 
-        let all = taken(&offered, l);
+        let mut runner = GameRunner::from_state(offered.clone());
+        let events = take(&mut runner, l);
+        let all = runner.state();
         assert_eq!(
             all.waiting_for,
             WaitingFor::GameOver { winner: Some(P0) },
             "{payoff}"
         );
-        assert_eq!(eliminated(&all), [P1], "{payoff}");
+        assert!(
+            events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+            "{payoff}"
+        );
+        assert_eq!(eliminated(all), [P1], "{payoff}");
 
         assert_declaration_refused(&offered, l + 1);
     }
@@ -2673,4 +2689,829 @@ fn a_carried_extra_turn_span_does_not_outlive_its_controllers_turn() {
         state.active_player == P1 && matches!(state.waiting_for, WaitingFor::Priority { .. })
     });
     assert_eq!(carried(runner.state()), []);
+}
+
+/// The offered span and the count the offer suggests.
+fn offer_of(state: &GameState) -> (NamedSpan, IterationCount) {
+    let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for else {
+        panic!("no offer at {:?}", state.waiting_for);
+    };
+    let span = play_trace_view(state)
+        .and_then(|view| view.offered)
+        .expect("the offered span");
+    (span, schema.iteration_count.clone())
+}
+
+fn fixed(count: &IterationCount) -> u32 {
+    match count {
+        IterationCount::Fixed(n) => *n,
+        other => panic!("a fixed count, not {other:?}"),
+    }
+}
+
+/// The confirmer's verdicts on the carried spans the trace names at `state`.
+fn carried_verdicts(state: &GameState) -> Vec<Result<Vec<String>, OfferRefusal>> {
+    confirm_for_tests(state)
+        .into_iter()
+        .filter(|(span, _)| matches!(span.source, SpanSource::Carried(_)))
+        .map(|(_, verdict)| verdict)
+        .collect()
+}
+
+/// `name` placed on every frame's battlefield under P0 as the same object, there since before
+/// the first frame's turn began.
+fn place_on_all(frames: &mut [GameState], name: &str, db: &CardDatabase) {
+    let before = frames[0].turn_number.saturating_sub(1);
+    let (earlier, last) = frames.split_at_mut(frames.len() - 1);
+    let last = &mut last[0];
+    let id = place(last, P0, name, db);
+    for frame in earlier.iter_mut() {
+        assert!(
+            !frame.objects.contains_key(&id),
+            "reach: {name}'s id is free in every earlier frame"
+        );
+        frame.objects.insert(id, last.objects[&id].clone());
+        add_to_zone(frame, id, Zone::Battlefield, P0);
+    }
+    for frame in frames.iter_mut() {
+        let object = frame.objects.get_mut(&id).expect("placed");
+        object.entered_battlefield_turn = Some(before);
+        object.summoning_sick = false;
+    }
+}
+
+fn charger_trigger_top(state: &GameState) -> bool {
+    matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+        && state.phase == Phase::DeclareAttackers
+        && state.stack.len() == 1
+}
+
+/// CR 500.8 + CR 732.2a: Hellkite Charger ("Whenever this creature attacks, you may pay
+/// {5}{R}{R}. If you do, untap all attacking creatures and after this phase, there is an
+/// additional combat phase.") wearing Bear Umbra, whose granted attack trigger untaps the Mountains
+/// that pay it, is offered its carried combat span at the next combat's trigger, counted to P1's
+/// lethal crossing, and a take ends the game.
+#[test]
+fn a_hellkite_charger_period_is_offered_at_its_next_combat_and_taken() {
+    let db = shared_card_db().expect("card db");
+    for mode in [LoopDetectionMode::Interactive, LoopDetectionMode::On] {
+        let (mut runner, charger) = charger_board(7, true, &[], mode, db);
+        charger_until(
+            &mut runner,
+            charger,
+            |_| true,
+            |state| is_offer(state) || combats_begun(state) > 6,
+        );
+        let state = runner.state();
+        let (span, count) = offer_of(state);
+        assert_eq!(
+            (span.source, span.reach, span.cause),
+            (
+                SpanSource::Carried(0),
+                PeriodReach::Combat,
+                NamingCause::TriggerTop
+            ),
+            "{mode:?}"
+        );
+        assert_eq!(combats_begun(state), 2, "{mode:?}");
+        let power = state.objects[&charger].power.expect("the Charger's power");
+        let life = state.players[1].life;
+        let n = fixed(&count);
+        assert_eq!(n, ((life + power - 1) / power) as u32, "{mode:?}");
+
+        let events = take(&mut runner, n);
+        assert_eq!(
+            runner.state().waiting_for,
+            WaitingFor::GameOver { winner: Some(P0) },
+            "{mode:?}"
+        );
+        assert!(
+            events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+            "{mode:?}"
+        );
+    }
+}
+
+/// CR 732.2a: without Bear Umbra the Charger's carried span spends Mountains nothing untaps, and
+/// beside Moraug, Fury of Akoum ("Each creature you control gets +1/+0 for each time it has
+/// attacked this turn.") each attack grows the trigger's source; neither is offered.
+#[test]
+fn hellkite_charger_boards_whose_period_does_not_recur_are_not_offered() {
+    let db = shared_card_db().expect("card db");
+    for (mountains, umbra, others) in [
+        (14, false, &[][..]),
+        (7, true, &["Moraug, Fury of Akoum"][..]),
+    ] {
+        let (mut runner, charger) =
+            charger_board(mountains, umbra, others, LoopDetectionMode::Interactive, db);
+        let mut verdicts = Vec::new();
+        for combat in 2..=3 {
+            charger_until(
+                &mut runner,
+                charger,
+                |_| true,
+                |state| {
+                    is_offer(state)
+                        || (combats_begun(state) == combat && charger_trigger_top(state))
+                },
+            );
+            assert!(!is_offer(runner.state()), "{others:?}");
+            verdicts.extend(carried_verdicts(runner.state()));
+        }
+        assert!(!verdicts.is_empty(), "reach: {others:?} carries the span");
+        assert!(
+            verdicts.iter().all(Result::is_err),
+            "{others:?}: {verdicts:?}"
+        );
+        if !umbra {
+            assert!(
+                verdicts
+                    .iter()
+                    .all(|verdict| *verdict == Err(OfferRefusal::NoRecurrence)),
+                "{verdicts:?}"
+            );
+        }
+    }
+}
+
+/// Row 1's trigger-top frames at its second and third combats, with `other` on both battlefields.
+fn charger_frames(other: &str, db: &CardDatabase) -> [GameState; 2] {
+    let (mut runner, charger) = charger_board(7, true, &[], LoopDetectionMode::Off, db);
+    let mut frame = |combat: u32| {
+        charger_until(
+            &mut runner,
+            charger,
+            |_| true,
+            |state| combats_begun(state) == combat && charger_trigger_top(state),
+        );
+        runner.state().clone()
+    };
+    let mut frames = [frame(2), frame(3)];
+    place_on_all(&mut frames, other, db);
+    frames
+}
+
+/// CR 732.2a: the Charger's second combat grows the attack history Moraug's static reads, so the
+/// history cover refuses that pair beside Moraug and admits it beside Grizzly Bears.
+#[test]
+fn the_history_cover_refuses_a_grown_attack_history_a_live_static_reads() {
+    let db = shared_card_db().expect("card db");
+    let [prior, current] = charger_frames("Grizzly Bears", db);
+    assert!(
+        !loop_states_equal_modulo_resources(&prior, &current),
+        "reach: the comparand refuses the grown history"
+    );
+    assert!(history_covers_for_tests(&prior, &current));
+    let [prior, current] = charger_frames("Moraug, Fury of Akoum", db);
+    assert!(!history_covers_for_tests(&prior, &current));
+}
+
+const MYR: [&str; 5] = [
+    "Gold Myr",
+    "Silver Myr",
+    "Leaden Myr",
+    "Iron Myr",
+    "Copper Myr",
+];
+
+/// P0's precombat main with Najeela, the Blade-Blossom, Sinister Monolith, the five Myr that tap
+/// for Najeela's five colors and, when `urtet`, Urtet, Remnant of Memnarch; P1 at 20 life.
+fn najeela_board(urtet: bool, mode: LoopDetectionMode, db: &CardDatabase) -> GameRunner {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P1, 20);
+    scenario.with_library_top(P0, &["Island"; 10]);
+    scenario.with_library_top(P1, &["Island"; 10]);
+    scenario.add_real_card(P0, "Najeela, the Blade-Blossom", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Sinister Monolith", Zone::Battlefield, db);
+    if urtet {
+        scenario.add_real_card(P0, "Urtet, Remnant of Memnarch", Zone::Battlefield, db);
+    }
+    let myr: Vec<ObjectId> = MYR
+        .iter()
+        .map(|name| scenario.add_real_card(P0, name, Zone::Battlefield, db))
+        .collect();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    // CR 302.6: the Myr have been under P0's control since P0's turn began.
+    let turn = runner.state().turn_number;
+    for id in myr {
+        let object = runner.state_mut().objects.get_mut(&id).expect("a Myr");
+        object.summoning_sick = false;
+        object.entered_battlefield_turn = Some(turn.saturating_sub(1));
+    }
+    runner
+}
+
+/// Najeela's period at each beginning of combat: tap the five Myr, then activate Najeela's
+/// "{W}{U}{B}{R}{G}: Untap all attacking creatures. ... After this phase, there is an additional
+/// combat phase."; no attack, and every other priority passed.
+fn najeela_step(runner: &mut GameRunner) {
+    let state = runner.state();
+    let action = match &state.waiting_for {
+        WaitingFor::Priority { player }
+            if *player == P0 && state.phase == Phase::BeginCombat && state.stack.is_empty() =>
+        {
+            let untapped = state.battlefield.iter().copied().find(|id| {
+                let object = &state.objects[id];
+                MYR.contains(&object.name.as_str()) && !object.tapped
+            });
+            let najeela =
+                in_zone(state, &state.battlefield, "Najeela, the Blade-Blossom").expect("Najeela");
+            match untapped {
+                Some(myr) => GameAction::ActivateAbility {
+                    source_id: myr,
+                    ability_index: ability(state, myr, true),
+                },
+                None if state.players[0].mana_pool.total() >= 5 => GameAction::ActivateAbility {
+                    source_id: najeela,
+                    ability_index: ability(state, najeela, false),
+                },
+                None => GameAction::PassPriority,
+            }
+        }
+        WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+            attacks: vec![],
+            bands: vec![],
+        },
+        WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+            assignments: vec![],
+        },
+        WaitingFor::ManaPayment { .. } | WaitingFor::Priority { .. } => GameAction::PassPriority,
+        WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+            order: (0..triggers.len()).collect(),
+        },
+        other => panic!("the Najeela drive has no answer to {other:?}"),
+    };
+    act(runner, action);
+}
+
+fn najeela_until(runner: &mut GameRunner, until: impl Fn(&GameState) -> bool) {
+    for _ in 0..4000 {
+        if until(runner.state()) {
+            return;
+        }
+        najeela_step(runner);
+    }
+    panic!("the Najeela drive did not reach its stop");
+}
+
+/// CR 500.8 + CR 732.2a: Najeela's activation, paid by five Myr that Urtet ("At the beginning of
+/// combat on your turn, untap each Myr you control.") untaps, repeats its combat while Sinister
+/// Monolith drains P1 at each; the next beginning of combat offers the carried span and a take
+/// ends the game.
+#[test]
+fn a_najeela_urtet_period_is_offered_at_its_next_combat_and_taken() {
+    let db = shared_card_db().expect("card db");
+    for mode in [LoopDetectionMode::Interactive, LoopDetectionMode::On] {
+        let mut runner = najeela_board(true, mode, db);
+        najeela_until(&mut runner, |state| {
+            is_offer(state) || combats_begun(state) > 6
+        });
+        let state = runner.state();
+        let (span, count) = offer_of(state);
+        assert_eq!(
+            (span.source, span.reach, span.cause),
+            (
+                SpanSource::Carried(0),
+                PeriodReach::Combat,
+                NamingCause::LegalNow
+            ),
+            "{mode:?}"
+        );
+        assert_eq!(
+            (state.phase, combats_begun(state)),
+            (Phase::BeginCombat, 2),
+            "{mode:?}"
+        );
+        let n = fixed(&count);
+        assert_eq!(n, state.players[1].life as u32, "{mode:?}");
+        take(&mut runner, n);
+        assert_eq!(
+            runner.state().waiting_for,
+            WaitingFor::GameOver { winner: Some(P0) },
+            "{mode:?}"
+        );
+    }
+}
+
+/// CR 302.6: without Urtet the Myr stay tapped after the first activation, so Najeela cannot be
+/// activated at the second combat and nothing is offered.
+#[test]
+fn a_najeela_board_without_urtet_is_not_offered() {
+    let db = shared_card_db().expect("card db");
+    let mut runner = najeela_board(false, LoopDetectionMode::Interactive, db);
+    najeela_until(&mut runner, |state| {
+        is_offer(state) || state.phase == Phase::End
+    });
+    assert_eq!(
+        combats_begun(runner.state()),
+        2,
+        "reach: Najeela was activated once"
+    );
+    assert!(!is_offer(runner.state()));
+}
+
+/// P0's precombat main with Archaeomancer ("When this creature enters, return target instant or
+/// sorcery card from your graveyard to your hand."), Mnemonic Wall, eight Islands and `others` on
+/// P0's battlefield, Time Warp and Ghostly Flicker in hand, and `library` Islands in P0's library.
+fn warp_board(
+    library: usize,
+    others: &[&str],
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> GameRunner {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    // Real Islands: a drawn card is a face Engine B reads.
+    for _ in 0..library {
+        scenario.add_real_card(P0, "Island", Zone::Library, db);
+    }
+    scenario.with_library_top(P1, &["Island"; 25]);
+    for name in ["Archaeomancer", "Mnemonic Wall"]
+        .into_iter()
+        .chain(["Island"; 8])
+        .chain(others.iter().copied())
+    {
+        scenario.add_real_card(P0, name, Zone::Battlefield, db);
+    }
+    scenario.add_real_card(P0, "Time Warp", Zone::Hand, db);
+    scenario.add_real_card(P0, "Ghostly Flicker", Zone::Hand, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    runner
+}
+
+fn in_zone(state: &GameState, ids: &im::Vector<ObjectId>, name: &str) -> Option<ObjectId> {
+    ids.iter()
+        .copied()
+        .find(|id| state.objects[id].name == name)
+}
+
+fn untapped_islands(state: &GameState) -> usize {
+    state
+        .battlefield
+        .iter()
+        .filter(|id| {
+            let object = &state.objects[id];
+            object.controller == P0 && object.name == "Island" && !object.tapped
+        })
+        .count()
+}
+
+/// The turn-cycle period at P0's precombat main: Time Warp on P0, Ghostly Flicker on
+/// Archaeomancer and Mnemonic Wall, Archaeomancer returning Time Warp and the Wall returning
+/// Flicker; a discard keeps the two spells, and every other priority passes.
+fn warp_step(runner: &mut GameRunner) {
+    let state = runner.state();
+    let hand = &state.players[0].hand;
+    let action = match &state.waiting_for {
+        WaitingFor::Priority { player }
+            if *player == P0
+                && state.active_player == P0
+                && state.phase == Phase::PreCombatMain
+                && state.stack.is_empty() =>
+        {
+            let warp = in_zone(state, hand, "Time Warp").filter(|_| untapped_islands(state) >= 8);
+            let flicker = in_zone(state, hand, "Ghostly Flicker").filter(|_| {
+                untapped_islands(state) >= 3
+                    && in_zone(state, &state.players[0].graveyard, "Time Warp").is_some()
+            });
+            match warp.or(flicker) {
+                Some(spell) => GameAction::CastSpell {
+                    object_id: spell,
+                    card_id: state.objects[&spell].card_id,
+                    targets: vec![],
+                    payment_mode: CastPaymentMode::default(),
+                },
+                None => GameAction::PassPriority,
+            }
+        }
+        WaitingFor::TargetSelection { target_slots, .. } => {
+            let mut targets: Vec<TargetRef> = Vec::new();
+            for slot in target_slots {
+                let pick = slot
+                    .legal_targets
+                    .iter()
+                    .find(|target| **target == TargetRef::Player(P0))
+                    .or_else(|| {
+                        slot.legal_targets.iter().find(|target| {
+                            matches!(target, TargetRef::Object(id)
+                                if ["Archaeomancer", "Mnemonic Wall"].contains(&state.objects[id].name.as_str()))
+                                && !targets.contains(target)
+                        })
+                    })
+                    .cloned();
+                targets.extend(pick);
+            }
+            GameAction::SelectTargets { targets }
+        }
+        WaitingFor::TriggerTargetSelection {
+            target_slots,
+            source_id,
+            ..
+        } => {
+            let wanted = match source_id.map(|id| state.objects[&id].name.as_str()) {
+                Some("Archaeomancer") => "Time Warp",
+                _ => "Ghostly Flicker",
+            };
+            GameAction::SelectTargets {
+                targets: target_slots
+                    .iter()
+                    .filter_map(|slot| {
+                        slot.legal_targets
+                            .iter()
+                            .find(|target| matches!(target, TargetRef::Object(id) if state.objects[id].name == wanted))
+                            .cloned()
+                    })
+                    .collect(),
+            }
+        }
+        WaitingFor::OptionalEffectChoice { .. } => {
+            GameAction::DecideOptionalEffect { accept: true }
+        }
+        WaitingFor::DiscardToHandSize { cards, count, .. } => GameAction::SelectCards {
+            cards: cards
+                .iter()
+                .copied()
+                .filter(|id| state.objects[id].name == "Island")
+                .take(*count)
+                .collect(),
+        },
+        WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+            attacks: vec![],
+            bands: vec![],
+        },
+        WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+            assignments: vec![],
+        },
+        WaitingFor::ManaPayment { .. } | WaitingFor::Priority { .. } => GameAction::PassPriority,
+        WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+            order: (0..triggers.len()).collect(),
+        },
+        other => panic!("the Time Warp drive has no answer to {other:?}"),
+    };
+    act(runner, action);
+}
+
+fn warp_until(runner: &mut GameRunner, until: impl Fn(&GameState) -> bool) {
+    for _ in 0..8000 {
+        if until(runner.state()) {
+            return;
+        }
+        warp_step(runner);
+    }
+    panic!("the Time Warp drive did not reach its stop");
+}
+
+/// P0's precombat-main priority with an empty stack, before any play this turn.
+fn turn_window(state: &GameState) -> bool {
+    matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+        && state.active_player == P0
+        && state.phase == Phase::PreCombatMain
+        && state.stack.is_empty()
+        && state.players[0].hand.len() >= 2
+        && in_zone(state, &state.players[0].hand, "Time Warp").is_some()
+}
+
+/// CR 402.2 + CR 514.1: the count before a repetition's cleanup would discard: each repetition
+/// draws one card, and the window's turn reaches its cleanup holding the window's hand.
+fn hand_term(state: &GameState) -> u32 {
+    (8 - state.players[0].hand.len()) as u32
+}
+
+/// CR 504.1 + CR 704.5b: one draw a repetition, and a draw from an empty library loses.
+fn library_term(state: &GameState) -> u32 {
+    state.players[0].library.len() as u32 + 1
+}
+
+/// CR 500.7 + CR 732.2a: Time Warp on its caster, returned each turn by Archaeomancer through
+/// Ghostly Flicker, is offered at the next turn's window for the carried extra-turn span, counted
+/// to the cleanup that would first discard; a take performs that many extra turns and discards
+/// nothing.
+#[test]
+fn an_archaeomancer_time_warp_period_is_offered_its_hand_bound_and_taken() {
+    let db = shared_card_db().expect("card db");
+    for mode in [LoopDetectionMode::Interactive, LoopDetectionMode::On] {
+        let mut runner = warp_board(25, &[], mode, db);
+        let turn = runner.state().turn_number;
+        warp_until(&mut runner, |state| {
+            is_offer(state) || state.turn_number > turn + 3
+        });
+        let state = runner.state().clone();
+        let (span, count) = offer_of(&state);
+        assert_eq!(
+            (span.source, span.reach, span.cause),
+            (
+                SpanSource::Carried(0),
+                PeriodReach::ExtraTurn,
+                NamingCause::LegalNow
+            ),
+            "{mode:?}"
+        );
+        assert_eq!(state.turn_number, turn + 1, "{mode:?}");
+        let n = fixed(&count);
+        assert!(
+            hand_term(&state) < library_term(&state),
+            "reach: the hand binds"
+        );
+        assert_eq!(n, hand_term(&state), "{mode:?}");
+
+        let events = take(&mut runner, n);
+        let after = runner.state();
+        assert_eq!(
+            (after.turn_number, after.active_player, after.phase),
+            (state.turn_number + n, P0, Phase::PreCombatMain),
+            "{mode:?}"
+        );
+        assert_eq!(
+            after.players[0].hand.len(),
+            state.players[0].hand.len() + n as usize
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, GameEvent::Discarded { .. })),
+            "{mode:?}"
+        );
+    }
+}
+
+/// CR 704.5b + CR 732.2a: with four cards in its library the caster's library binds the count, and
+/// a take decks the caster at its last draw step.
+#[test]
+fn an_archaeomancer_time_warp_take_decks_its_caster_when_the_library_binds() {
+    let db = shared_card_db().expect("card db");
+    let mut runner = warp_board(4, &[], LoopDetectionMode::Interactive, db);
+    let turn = runner.state().turn_number;
+    warp_until(&mut runner, |state| {
+        is_offer(state) || state.turn_number > turn + 3
+    });
+    let state = runner.state().clone();
+    let n = fixed(&offer_of(&state).1);
+    assert!(
+        library_term(&state) < hand_term(&state),
+        "reach: the library binds"
+    );
+    assert_eq!(n, library_term(&state));
+    let events = take(&mut runner, n);
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::GameOver { winner: Some(P1) }
+    );
+    assert!(events.contains(&GameEvent::GameOver { winner: Some(P1) }));
+}
+
+/// Drives the Time Warp board declining every offer until `turns` turns pass or the game ends; the
+/// window state and offered count at each of P0's turn windows.
+fn warp_windows(library: usize, turns: u32, db: &CardDatabase) -> Vec<(GameState, Option<u32>)> {
+    let mut runner = warp_board(library, &[], LoopDetectionMode::Interactive, db);
+    let start = runner.state().turn_number;
+    let mut windows: Vec<(GameState, Option<u32>)> = Vec::new();
+    for _ in 0..20_000 {
+        let state = runner.state();
+        if state.turn_number > start + turns
+            || matches!(state.waiting_for, WaitingFor::GameOver { .. })
+        {
+            return windows;
+        }
+        let seen = windows
+            .last()
+            .is_some_and(|(window, _)| window.turn_number == state.turn_number);
+        if is_offer(state) {
+            let count = fixed(&offer_of(state).1);
+            let mut window = state.clone();
+            window.waiting_for = WaitingFor::Priority { player: P0 };
+            windows.push((window, Some(count)));
+            act(&mut runner, GameAction::DeclineShortcut);
+            continue;
+        }
+        if turn_window(state) && !seen {
+            windows.push((state.clone(), None));
+        }
+        warp_step(&mut runner);
+    }
+    panic!("the Time Warp drive did not end");
+}
+
+/// CR 514.1 + CR 704.5b + CR 732.2a: at every window of both libraries' drives an offer suggests
+/// the lesser of the hand and library terms, and stands exactly where the two periods the
+/// confirmer replays both end before a discard and a draw from an empty library.
+#[test]
+fn every_archaeomancer_window_is_offered_the_lesser_of_its_hand_and_library_terms() {
+    let db = shared_card_db().expect("card db");
+    for library in [25, 4] {
+        let windows = warp_windows(library, 8, db);
+        let offered = windows.iter().filter(|(_, count)| count.is_some()).count();
+        assert!(offered >= 2, "reach: {library} offers more than once");
+        for (state, count) in &windows[1..] {
+            let replayable = hand_term(state).min(state.players[0].library.len() as u32);
+            assert_eq!(
+                *count,
+                (replayable >= 2).then(|| hand_term(state).min(library_term(state))),
+                "{library} cards, turn {}",
+                state.turn_number
+            );
+        }
+    }
+}
+
+/// A board whose turns come round naturally: Grizzly Bears and two Islands, or Time Sieve with five
+/// Islands and Thopter Assembly in hand, too few Islands to cast it.
+fn natural_board(sieve: bool, db: &CardDatabase) -> GameRunner {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    for _ in 0..25 {
+        scenario.add_real_card(P0, "Island", Zone::Library, db);
+    }
+    scenario.with_library_top(P1, &["Island"; 25]);
+    let (permanents, islands) = if sieve {
+        (["Time Sieve"].as_slice(), 5)
+    } else {
+        (["Grizzly Bears"].as_slice(), 2)
+    };
+    for name in permanents
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n("Island", islands))
+    {
+        scenario.add_real_card(P0, name, Zone::Battlefield, db);
+    }
+    if sieve {
+        scenario.add_real_card(P0, "Thopter Assembly", Zone::Hand, db);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    runner
+}
+
+/// CR 500.7 + CR 732.2a: a board whose turns come round naturally is never offered, and a triple
+/// of P0's precombat-main windows is refused by the cover, since the other player's turn and draw
+/// came between its frames.
+#[test]
+fn natural_turn_boards_are_refused_at_every_window() {
+    let db = shared_card_db().expect("card db");
+    for sieve in [false, true] {
+        let mut runner = natural_board(sieve, db);
+        let start = runner.state().turn_number;
+        let mut windows: Vec<GameState> = Vec::new();
+        while runner.state().turn_number <= start + 6 {
+            let state = runner.state();
+            assert!(
+                !is_offer(state),
+                "{sieve}: offered at turn {}",
+                state.turn_number
+            );
+            if state.active_player == P0
+                && state.phase == Phase::PreCombatMain
+                && matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+                && windows
+                    .last()
+                    .is_none_or(|seen| seen.turn_number != state.turn_number)
+            {
+                windows.push(state.clone());
+            }
+            let action = match &runner.state().waiting_for {
+                WaitingFor::DiscardToHandSize { cards, count, .. } => GameAction::SelectCards {
+                    cards: cards.iter().copied().take(*count).collect(),
+                },
+                WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+                    attacks: vec![],
+                    bands: vec![],
+                },
+                WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+                    assignments: vec![],
+                },
+                _ => GameAction::PassPriority,
+            };
+            act(&mut runner, action);
+        }
+        assert!(windows.len() >= 3, "reach: {sieve} takes its turns");
+        for frames in windows.windows(3) {
+            let verdict = certify_object_growth_frames_for_tests(
+                [&frames[0], &frames[1], &frames[2]],
+                &[],
+                P0,
+            );
+            assert!(!verdict.certifies(), "{sieve}: {verdict:?}");
+        }
+    }
+}
+
+/// The Time Warp board's turn windows after its first, with `others` on every battlefield.
+fn warp_frames(others: &[&str], db: &CardDatabase) -> [GameState; 3] {
+    let mut runner = warp_board(25, &[], LoopDetectionMode::Off, db);
+    let turn = runner.state().turn_number;
+    let mut frame = |turn: u32| {
+        warp_until(&mut runner, |state| {
+            state.turn_number == turn && turn_window(state)
+        });
+        runner.state().clone()
+    };
+    let mut frames = [frame(turn + 1), frame(turn + 2), frame(turn + 3)];
+    for name in others {
+        place_on_all(&mut frames, name, db);
+    }
+    frames
+}
+
+/// The object-growth certification of the Time Warp board's three frames, its two spells cast.
+fn warp_verdict(frames: &[GameState; 3]) -> ObjectGrowthVerdict {
+    let casts = ["Time Warp", "Ghostly Flicker"].map(|name| {
+        frames[0]
+            .objects
+            .iter()
+            .find(|(_, object)| object.name == name)
+            .map(|(id, _)| *id)
+            .expect(name)
+    });
+    certify_object_growth_frames_for_tests([&frames[0], &frames[1], &frames[2]], &casts, P0)
+}
+
+/// CR 500.7 + CR 732.2a: the turn the Time Warp period grows is read by Deathleaper, Terror
+/// Weapon's "Creatures you control that entered this turn have double strike.", so the turn-cycle
+/// cover refuses those frames beside it and admits them without.
+#[test]
+fn the_turn_cycle_cover_refuses_a_grown_turn_a_live_static_reads() {
+    let db = shared_card_db().expect("card db");
+    let frames = warp_frames(&[], db);
+    assert!(
+        !loop_states_equal_modulo_resources(&frames[0], &frames[1]),
+        "reach: the comparand refuses the grown turn"
+    );
+    assert_eq!(
+        warp_verdict(&frames),
+        ObjectGrowthVerdict::ResourceRecurrence(Some(RecurrenceCover::TurnCycle))
+    );
+    let verdict = warp_verdict(&warp_frames(&["Deathleaper, Terror Weapon"], db));
+    assert!(!verdict.certifies(), "{verdict:?}");
+}
+
+/// CR 400.7 + CR 732.2a: an object that entered during the first frame's turn and not since stands
+/// in a different relation to the next frame's turn, so the turn-cycle cover refuses the frames.
+#[test]
+fn the_turn_cycle_cover_refuses_a_turn_stamp_whose_relation_moved() {
+    let db = shared_card_db().expect("card db");
+    let mut frames = warp_frames(&[], db);
+    let turn = frames[0].turn_number;
+    let archaeomancer = frames[0]
+        .objects
+        .iter()
+        .find(|(_, object)| object.name == "Archaeomancer")
+        .map(|(id, _)| *id)
+        .expect("Archaeomancer");
+    frames[0]
+        .objects
+        .get_mut(&archaeomancer)
+        .expect("Archaeomancer")
+        .entered_battlefield_turn = Some(turn);
+    let verdict = warp_verdict(&frames);
+    assert!(!verdict.certifies(), "{verdict:?}");
+}
+
+/// CR 732.2a: Walking Ballista pinging P1 by removing its own +1/+1 counters spends a resource the
+/// period never restores, so the confirmer refuses it on its loss axis and nothing is offered.
+#[test]
+fn a_walking_ballista_spending_its_counters_is_refused_on_its_loss_axis() {
+    let db = shared_card_db().expect("card db");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let ballista = scenario.add_real_card(P0, "Walking Ballista", Zone::Battlefield, db);
+    scenario.with_counter(ballista, CounterType::Plus1Plus1, 8);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let ping = runner.state().objects[&ballista]
+        .abilities
+        .iter()
+        .position(|a| matches!(*a.effect, Effect::DealDamage { .. }))
+        .expect("the ping");
+    for _ in 0..2 {
+        if is_offer(runner.state()) {
+            break;
+        }
+        act(
+            &mut runner,
+            GameAction::ActivateAbility {
+                source_id: ballista,
+                ability_index: ping,
+            },
+        );
+        act(
+            &mut runner,
+            GameAction::SelectTargets {
+                targets: vec![TargetRef::Player(P1)],
+            },
+        );
+        while !runner.state().stack.is_empty() && !is_offer(runner.state()) {
+            act(&mut runner, GameAction::PassPriority);
+        }
+    }
+    let state = runner.state();
+    assert!(
+        play_trace_view(state).is_some_and(|view| !view.named.is_empty() || view.offered.is_some()),
+        "reach: a span is named"
+    );
+    assert!(!is_offer(state));
+    assert_eq!(state.players[1].life, 18);
+    assert_eq!(latest_verdict(state), Err(OfferRefusal::LossAxis));
 }

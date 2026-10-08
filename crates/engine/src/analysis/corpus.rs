@@ -607,6 +607,39 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         gated_on: None,
         deferral: None,
     },
+    ComboRow {
+        name: "Hellkite Charger + Bear Umbra",
+        cards: &["Hellkite Charger", "Bear Umbra"],
+        family: ResourceFamily::Drain,
+        win_kind: WinKind::LethalDamage,
+        gated_on: None,
+        deferral: None,
+    },
+    ComboRow {
+        name: "Najeela, the Blade-Blossom + Urtet, Remnant of Memnarch + Sinister Monolith",
+        cards: &[
+            "Najeela, the Blade-Blossom",
+            "Urtet, Remnant of Memnarch",
+            "Sinister Monolith",
+        ],
+        family: ResourceFamily::Drain,
+        win_kind: WinKind::LethalDamage,
+        gated_on: None,
+        deferral: None,
+    },
+    ComboRow {
+        name: "Archaeomancer + Mnemonic Wall + Time Warp + Ghostly Flicker",
+        cards: &[
+            "Archaeomancer",
+            "Mnemonic Wall",
+            "Time Warp",
+            "Ghostly Flicker",
+        ],
+        family: ResourceFamily::Turns,
+        win_kind: WinKind::Advantage,
+        gated_on: None,
+        deferral: None,
+    },
 ];
 
 #[cfg(test)]
@@ -742,6 +775,12 @@ pub(crate) const DRIVERS: &[(usize, ComboDriver)] = &[
     (55, ComboDriver::Offline(drive_altar_brood_offer)),
     (56, ComboDriver::Offline(drive_altar_zulaport_offer)),
     (57, ComboDriver::Offline(drive_grove_marvin_offer)),
+    (58, ComboDriver::Offline(drive_charger_umbra_offer)),
+    (59, ComboDriver::Offline(drive_najeela_urtet_offer)),
+    (
+        60,
+        ComboDriver::Offline(drive_archaeomancer_time_warp_offer),
+    ),
 ];
 
 /// Number of rows in the corpus.
@@ -2261,7 +2300,7 @@ pub(crate) fn first_gameover_beat(trace: &[BeatTrace]) -> Option<(usize, PlayerI
 }
 
 /// The certificate of the loop shortcut the engine offers at `runner`'s current state.
-fn offered_certificate(runner: &GameRunner) -> Option<LoopCertificate> {
+pub(crate) fn offered_certificate(runner: &GameRunner) -> Option<LoopCertificate> {
     match &runner.state().waiting_for {
         WaitingFor::LoopShortcut { certificate, .. } => Some(certificate.clone()),
         _ => None,
@@ -2495,6 +2534,229 @@ pub(crate) fn drive_grove_marvin_offer(db: &CardDatabase) -> Option<LoopCertific
         }
     }
     None
+}
+
+/// CR 732.2a: answers every prompt with `answer` until the engine offers the loop; the offer's
+/// certificate, if one stands within `beats` actions.
+fn answer_to_offer(
+    runner: &mut GameRunner,
+    beats: usize,
+    answer: impl Fn(&GameState) -> GameAction,
+) -> Option<LoopCertificate> {
+    for _ in 0..beats {
+        if let Some(certificate) = offered_certificate(runner) {
+            return Some(certificate);
+        }
+        let action = answer(runner.state());
+        runner.act(action).ok()?;
+    }
+    offered_certificate(runner)
+}
+
+/// No attack, no block, triggers in the order put, and every other priority passed.
+fn pass_or_decline(state: &GameState) -> GameAction {
+    match &state.waiting_for {
+        WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+            attacks: vec![],
+            bands: vec![],
+        },
+        WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+            assignments: vec![],
+        },
+        WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+            order: (0..triggers.len()).collect(),
+        },
+        _ => GameAction::PassPriority,
+    }
+}
+
+fn named_on(state: &GameState, ids: &im::Vector<ObjectId>, name: &str) -> Option<ObjectId> {
+    ids.iter()
+        .copied()
+        .find(|id| state.objects[id].name == name)
+}
+
+/// CR 500.8: Hellkite Charger ("Whenever this creature attacks, you may pay {5}{R}{R}. If you do,
+/// untap all attacking creatures and after this phase, there is an additional combat phase.")
+/// wearing Bear Umbra, whose granted attack trigger untaps the seven Mountains that pay it,
+/// attacks each combat until the engine offers the period.
+pub(crate) fn drive_charger_umbra_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P1, 30);
+    let charger = scenario.add_real_card(P0, "Hellkite Charger", Zone::Battlefield, db);
+    for _ in 0..7 {
+        scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = crate::types::game_state::LoopDetectionMode::Interactive;
+    let umbra = install_on_battlefield(runner.state_mut(), db, "Bear Umbra", P0)?;
+    crate::game::effects::attach::attach_to(runner.state_mut(), umbra, charger);
+    answer_to_offer(&mut runner, 2000, |state| match &state.waiting_for {
+        // The paying trigger resolves after Umbra's untap, so the untapped Mountains pay it.
+        WaitingFor::OrderTriggers { triggers, .. } => {
+            let mut order: Vec<usize> = (0..triggers.len()).collect();
+            order.sort_by_key(|&at| !triggers[at].description.contains("pay"));
+            GameAction::OrderTriggers { order }
+        }
+        WaitingFor::OptionalEffectChoice { .. } => {
+            GameAction::DecideOptionalEffect { accept: true }
+        }
+        WaitingFor::DeclareAttackers { player, .. } if *player == P0 => {
+            GameAction::DeclareAttackers {
+                attacks: vec![(charger, crate::game::combat::AttackTarget::Player(P1))],
+                bands: vec![],
+            }
+        }
+        _ => pass_or_decline(state),
+    })
+}
+
+/// CR 500.8 + CR 302.6: Najeela, the Blade-Blossom's "{W}{U}{B}{R}{G}: ... After this phase, there
+/// is an additional combat phase. Activate only during combat.", paid by five Myr that Urtet,
+/// Remnant of Memnarch untaps at each beginning of combat, while Sinister Monolith drains P1 there.
+pub(crate) fn drive_najeela_urtet_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    const MYR: [&str; 5] = [
+        "Gold Myr",
+        "Silver Myr",
+        "Leaden Myr",
+        "Iron Myr",
+        "Copper Myr",
+    ];
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P1, 20);
+    let najeela = scenario.add_real_card(P0, "Najeela, the Blade-Blossom", Zone::Battlefield, db);
+    for card in ["Urtet, Remnant of Memnarch", "Sinister Monolith"] {
+        scenario.add_real_card(P0, card, Zone::Battlefield, db);
+    }
+    let myr: Vec<ObjectId> = MYR
+        .iter()
+        .map(|name| scenario.add_real_card(P0, name, Zone::Battlefield, db))
+        .collect();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = crate::types::game_state::LoopDetectionMode::Interactive;
+    // CR 302.6: the Myr have been under P0's control since P0's turn began.
+    let turn = runner.state().turn_number;
+    for id in &myr {
+        let object = runner.state_mut().objects.get_mut(id)?;
+        object.summoning_sick = false;
+        object.entered_battlefield_turn = Some(turn.saturating_sub(1));
+    }
+    let activated = |state: &GameState, id: ObjectId, mana: bool| {
+        state.objects[&id].abilities.iter().position(|a| {
+            a.kind == crate::types::ability::AbilityKind::Activated
+                && crate::game::mana_abilities::is_mana_ability(a) == mana
+        })
+    };
+    answer_to_offer(&mut runner, 2000, |state| match &state.waiting_for {
+        WaitingFor::Priority { player }
+            if *player == P0 && state.phase == Phase::BeginCombat && state.stack.is_empty() =>
+        {
+            let untapped = myr.iter().copied().find(|id| !state.objects[id].tapped);
+            let source = untapped.or((state.players[0].mana_pool.total() >= 5).then_some(najeela));
+            source
+                .and_then(|source| {
+                    Some(GameAction::ActivateAbility {
+                        source_id: source,
+                        ability_index: activated(state, source, untapped.is_some())?,
+                    })
+                })
+                .unwrap_or(GameAction::PassPriority)
+        }
+        _ => pass_or_decline(state),
+    })
+}
+
+/// CR 500.7: Time Warp on its caster each precombat main, with Ghostly Flicker blinking
+/// Archaeomancer (returning Time Warp) and Mnemonic Wall (returning Flicker), on eight Islands.
+pub(crate) fn drive_archaeomancer_time_warp_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["Island"; 25]);
+    scenario.with_library_top(P1, &["Island"; 25]);
+    for card in ["Archaeomancer", "Mnemonic Wall"]
+        .into_iter()
+        .chain(["Island"; 8])
+    {
+        scenario.add_real_card(P0, card, Zone::Battlefield, db);
+    }
+    scenario.add_real_card(P0, "Time Warp", Zone::Hand, db);
+    scenario.add_real_card(P0, "Ghostly Flicker", Zone::Hand, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = crate::types::game_state::LoopDetectionMode::Interactive;
+    answer_to_offer(&mut runner, 4000, |state| {
+        let player = &state.players[0];
+        let islands = state
+            .battlefield
+            .iter()
+            .filter(|id| state.objects[id].name == "Island" && !state.objects[id].tapped)
+            .count();
+        let named = |ids: &im::Vector<ObjectId>, name: &str| named_on(state, ids, name);
+        match &state.waiting_for {
+            WaitingFor::Priority { player: seat }
+                if *seat == P0
+                    && state.active_player == P0
+                    && state.phase == Phase::PreCombatMain
+                    && state.stack.is_empty() =>
+            {
+                let warp = named(&player.hand, "Time Warp").filter(|_| islands >= 8);
+                let flicker = named(&player.hand, "Ghostly Flicker")
+                    .filter(|_| islands >= 3 && named(&player.graveyard, "Time Warp").is_some());
+                warp.or(flicker)
+                    .map_or(GameAction::PassPriority, |spell| GameAction::CastSpell {
+                        object_id: spell,
+                        card_id: state.objects[&spell].card_id,
+                        targets: vec![],
+                        payment_mode: Default::default(),
+                    })
+            }
+            WaitingFor::TargetSelection { target_slots, .. } => {
+                let mut targets: Vec<TargetRef> = Vec::new();
+                for slot in target_slots {
+                    let pick = slot
+                        .legal_targets
+                        .iter()
+                        .find(|target| **target == TargetRef::Player(P0))
+                        .or_else(|| {
+                            slot.legal_targets.iter().find(|target| {
+                                matches!(target, TargetRef::Object(id)
+                                    if matches!(state.objects[id].name.as_str(), "Archaeomancer" | "Mnemonic Wall"))
+                                    && !targets.contains(target)
+                            })
+                        })
+                        .cloned();
+                    targets.extend(pick);
+                }
+                GameAction::SelectTargets { targets }
+            }
+            WaitingFor::TriggerTargetSelection {
+                target_slots,
+                source_id,
+                ..
+            } => {
+                let wanted = match source_id.map(|id| state.objects[&id].name.as_str()) {
+                    Some("Archaeomancer") => "Time Warp",
+                    _ => "Ghostly Flicker",
+                };
+                GameAction::SelectTargets {
+                    targets: target_slots
+                        .iter()
+                        .filter_map(|slot| {
+                            slot.legal_targets
+                                .iter()
+                                .find(|target| matches!(target, TargetRef::Object(id) if state.objects[id].name == wanted))
+                                .cloned()
+                        })
+                        .collect(),
+                }
+            }
+            WaitingFor::OptionalEffectChoice { .. } => {
+                GameAction::DecideOptionalEffect { accept: true }
+            }
+            _ => pass_or_decline(state),
+        }
+    })
 }
 
 /// Drive one live drain cascade (idx 17 / idx 18) to its first `GameOver`. The two
