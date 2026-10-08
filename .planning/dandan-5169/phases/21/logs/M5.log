@@ -1,0 +1,67 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+warning: unused variable: `pile`
+   --> crates/engine/src/game/deck_loading.rs:543:9
+    |
+543 |     let pile = if submitted_pile.is_empty() {
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_pile`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `phase-engine` (lib) generated 1 warning (run `cargo fix --lib -p phase-engine` to apply 1 suggestion)
+warning: `phase-engine` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 41s
+────────────
+ Nextest run ID 8d1bfb0f-f76f-4829-954f-6c99b14e4541 with nextest profile: default
+    Starting 8 tests across 8 binaries (33427 tests skipped)
+        PASS [   3.038s] (1/8) phase-engine::integration dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library
+        PASS [   3.057s] (2/8) phase-engine::integration dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission
+        PASS [   3.072s] (3/8) phase-engine::integration dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission
+        PASS [   3.115s] (4/8) phase-engine::integration dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis
+        FAIL [   3.116s] (5/8) phase-engine::integration dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 3.09s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list' (1463441) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:124:5:
+    assertion `left == right` failed
+      left: {}
+     right: {"Accumulated Knowledge": 4, "Brainstorm": 2, "Capture of Jingzhou": 2, "Chart a Course": 2, "Control Magic": 2, "Crystal Spray": 2, "Dandân": 10, "Day's Undoing": 2, "Halimar Depths": 2, "Haunted Fengraf": 2, "Island": 20, "Lonely Sandbar": 2, "Magical Hack": 2, "Memory Lapse": 8, "Mental Note": 2, "Metamorphose": 2, "Mystic Sanctuary": 2, "Predict": 2, "Remote Isle": 2, "Svyelunite Temple": 2, "Telling Time": 2, "The Surgical Bay": 2, "Unsubstantiate": 2}
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   3.164s] (6/8) phase-engine::integration dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list
+        PASS [   3.231s] (7/8) phase-engine::integration dandan_custom_pile::e4a_a_started_game_plays_only_the_pile
+        FAIL [   3.261s] (8/8) phase-engine::integration dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 3.24s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads' (1463434) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:150:5:
+    assertion failed: state.deck_pools[0].current_commander.is_empty()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   3.288s] 8 tests run: 6 passed, 2 failed, 33427 skipped
+        FAIL [   3.116s] (5/8) phase-engine::integration dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list
+        FAIL [   3.261s] (8/8) phase-engine::integration dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+error: test run failed

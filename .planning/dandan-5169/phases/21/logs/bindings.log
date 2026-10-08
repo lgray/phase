@@ -1,0 +1,4 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 41s
+     Running `/home/lgray/vibe-coding/dandan-run/target-dandan/debug/interaction-bindings --check`
+done rc=0

@@ -1,0 +1,71 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling seat-reducer v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+   Compiling phase-llm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+   Compiling engine-wasm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7m 55s
+────────────
+ Nextest run ID a4838757-bb6f-45e7-afb0-3850ce6ed42a with nextest profile: default
+    Starting 16 tests across 9 binaries (33475 tests skipped)
+        FAIL [   0.046s] ( 1/16) engine-wasm deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built
+  stdout ───
+
+    running 1 test
+    test deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built ... FAILED
+
+    failures:
+
+    failures:
+        deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built' (1458435) panicked at crates/engine-wasm/src/lib.rs:7146:9:
+    assertion `left == right` failed
+      left: EngineFixed
+     right: HostPile
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.048s] ( 2/16) phase-engine::integration format_axis_census::supplies_fixed_deck_is_derived_from_the_deck_supply_axis
+        PASS [   0.057s] ( 3/16) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS [   0.065s] ( 4/16) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS [   0.074s] ( 5/16) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        FAIL [   0.076s] ( 6/16) phase-engine::integration format_axis_census::engine_supplied_deck_declarations_match_the_committed_list
+  stdout ───
+
+    running 1 test
+    test format_axis_census::engine_supplied_deck_declarations_match_the_committed_list ... FAILED
+
+    failures:
+
+    failures:
+        format_axis_census::engine_supplied_deck_declarations_match_the_committed_list
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'format_axis_census::engine_supplied_deck_declarations_match_the_committed_list' (1458452) panicked at crates/engine/tests/integration/format_axis_census.rs:281:5:
+    assertion `left == right` failed
+      left: [(Momir, EngineFixed), (Dandan, EngineFixed)]
+     right: [(Momir, EngineFixed), (Dandan, HostPile)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.088s] ( 7/16) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+        PASS [   0.093s] ( 8/16) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS [   0.100s] ( 9/16) engine-wasm deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+        PASS [   0.100s] (10/16) engine-wasm deck_list_seat_validation_tests::limited_initializer_seat_validation_accepts_known_short_decks_and_rejects_unresolved
+        PASS [   0.100s] (11/16) engine-wasm deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+        PASS [   0.101s] (12/16) engine-wasm deck_list_seat_validation_tests::freeform_commander_is_refused_a_land_commander_through_the_seat_validation_loop
+        PASS [   0.102s] (13/16) engine-wasm deck_list_seat_validation_tests::every_seat_gets_the_draft_set_codes_not_just_the_first_two
+        PASS [   0.109s] (14/16) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS [   0.115s] (15/16) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS [   2.316s] (16/16) phase-engine::integration format_axis_census::every_engine_supplied_format_loads_a_library_from_an_empty_submission
+────────────
+     Summary [   2.348s] 16 tests run: 14 passed, 2 failed, 33475 skipped
+        FAIL [   0.046s] ( 1/16) engine-wasm deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built
+        FAIL [   0.076s] ( 6/16) phase-engine::integration format_axis_census::engine_supplied_deck_declarations_match_the_committed_list
+error: test run failed

@@ -1,0 +1,71 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/engine)
+    Finished `tool` profile [optimized + debuginfo] target(s) in 16m 08s
+     Running `/home/lgray/vibe-coding/dandan-run/target-complete/tool/coverage-report data/`
+Coverage: 31975/35879 cards supported (89.1%)
+  brawl legal: 15641/16709 fully supported (93.6%)
+  commander legal: 30552/32951 fully supported (92.7%)
+  duel legal: 30424/32755 fully supported (92.9%)
+  historic legal: 15593/16661 fully supported (93.6%)
+  legacy legal: 30459/32794 fully supported (92.9%)
+  modern legal: 22271/23473 fully supported (94.9%)
+  oathbreaker legal: 30492/32824 fully supported (92.9%)
+  pauper legal: 10715/11017 fully supported (97.3%)
+  paupercommander legal: 10695/11047 fully supported (96.8%)
+  pioneer legal: 15002/15747 fully supported (95.3%)
+  premodern legal: 4921/5383 fully supported (91.4%)
+  standard legal: 5289/5429 fully supported (97.4%)
+  standardbrawl legal: 5303/5444 fully supported (97.4%)
+  timeless legal: 15673/16742 fully supported (93.6%)
+  vintage legal: 30475/32812 fully supported (92.9%)
+
+Parse warnings: 714 warnings across 3 categories
+  ignored-remainder — 2 warnings (2 cards)
+  swallowed-clause — 655 warnings (597 cards)
+  target-fallback — 57 warnings (51 cards)
+
+Top parser warning patterns by otherwise-supported cards:
+  Replacement_Instead: instead — 15 warnings, 15 cards, 15 otherwise-supported, 11 single-gap
+  Condition_If: you do — 13 warnings, 13 cards, 11 otherwise-supported, 7 single-gap
+  DynamicQty: of them — 8 warnings, 8 cards, 8 otherwise-supported, 8 single-gap
+  DynamicQty: player — 8 warnings, 8 cards, 6 otherwise-supported, 6 single-gap
+  Condition_If: that card has the chosen name — 6 warnings, 6 cards, 6 otherwise-supported, 5 single-gap
+  Run with --write-warning-patterns <path> for the full parser warning pattern report.
+
+Top gaps by single-gap card unlock potential:
+  Effect:unrecognized_clause_head — 840 total, 563 single-gap (ind: 67%) [sta:6 mod:146 pio:91 pau:35 com:309]
+    «the» ×83 (e.g. Vitality Salve)
+    «when» ×41 (e.g. Havengul Lich)
+    «conjure» ×33 (e.g. Darigaaz, Shivan Champion)
+  Effect:unparsed_verb_arguments — 614 total, 380 single-gap (ind: 62%) [sta:6 mod:103 pio:67 pau:36 com:217]
+    «another player» ×7 (e.g. Discerning Financier)
+    «an additional card from the top of the horde's library» ×5 (e.g. Vitality Salve)
+    «two dN and choose one result» ×5 (e.g. Reckless Endeavor)
+  Effect:unknown — 416 total, 277 single-gap (ind: 67%) [sta:6 mod:46 pio:24 pau:15 com:133]
+    «{tk}{tk} — N/N» ×18 (e.g. Night Brushwagg Ringmaster)
+    «starting intensity N» ×12 (e.g. Teysa of the Ghost Council)
+    «ready to run» ×8 (e.g. The Wheeling Runner)
+  Swallow:Condition_If — 262 total, 204 single-gap (ind: 78%) [sta:4 mod:92 pio:49 pau:18 com:163]
+    «you do» ×13 (e.g. Devouring Hellion)
+    «that card has the chosen name» ×6 (e.g. Magus of the Scroll)
+    «planeswalk gets more votes» ×5 (e.g. Path of the Pyromancer)
+  Effect:unparsed_quantity — 229 total, 157 single-gap (ind: 69%) [sta:11 mod:59 pio:36 pau:7 com:121]
+    «player» ×7 (e.g. Mythos of Snapdax)
+    «of those creatures» ×6 (e.g. Winter's Chill)
+    «the difference» ×5 (e.g. Skull Raid)
+  Swallow:DynamicQty — 214 total, 162 single-gap (ind: 76%) [sta:13 mod:64 pio:42 pau:8 com:135]
+  Effect:unparsed_condition — 213 total, 163 single-gap (ind: 77%) [sta:13 mod:68 pio:52 pau:18 com:132]
+  Effect:static_structure — 209 total, 144 single-gap (ind: 69%) [sta:3 mod:40 pio:29 pau:6 com:76]
+  Effect:unbound_subject — 140 total, 94 single-gap (ind: 67%) [sta:1 mod:10 pio:6 com:34]
+  Effect:effect_structure — 117 total, 83 single-gap (ind: 71%) [sta:1 mod:26 pio:16 pau:3 com:50]
+  Effect:where_x_binding — 72 total, 59 single-gap (ind: 82%) [sta:5 mod:24 pio:18 pau:4 com:42]
+  Effect:put_counter_tail — 61 total, 41 single-gap (ind: 67%) [sta:7 mod:22 pio:12 pau:5 com:39]
+  Effect:unparsed_replacement — 59 total, 47 single-gap (ind: 80%) [sta:3 mod:20 pio:13 pau:4 com:40]
+  ResolverFeature:structural:inert_protection_quality_grant — 51 total, 39 single-gap (ind: 76%) [mod:16 pio:5 pau:4 com:28]
+  ParseWarning:target-fallback — 49 total, 28 single-gap (ind: 57%) [sta:1 mod:4 pio:3 pau:1 com:8]
+
+Top 2-gap bundles (implementing both unlocks cards):
+  [Effect:unparsed_verb_arguments + Effect:unrecognized_clause_head] — 85 cards
+  [Effect:unknown + Effect:unparsed_verb_arguments] — 25 cards
+  [Effect:static_structure + Effect:unknown] — 25 cards
+  [Effect:unparsed_quantity + Effect:unparsed_verb_arguments] — 18 cards
+  [Effect:unbound_subject + Effect:unrecognized_clause_head] — 17 cards

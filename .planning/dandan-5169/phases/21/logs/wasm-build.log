@@ -1,0 +1,7 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling seat-reducer v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+   Compiling phase-llm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+   Compiling engine-wasm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Finished `wasm-dev` profile [optimized + debuginfo] target(s) in 12m 43s

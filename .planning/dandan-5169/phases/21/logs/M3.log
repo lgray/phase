@@ -1,0 +1,59 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling phase-llm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+   Compiling seat-reducer v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+   Compiling engine-wasm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 52s
+────────────
+ Nextest run ID 96a51a70-fce4-498c-b81e-bfeceaf3d4e2 with nextest profile: default
+    Starting 6 tests across 9 binaries (33485 tests skipped)
+        PASS [   0.009s] (1/6) engine-wasm deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built
+        FAIL [   0.010s] (2/6) engine-wasm deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+  stdout ───
+
+    running 1 test
+    test deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck ... FAILED
+
+    failures:
+
+    failures:
+        deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck' (1469491) panicked at crates/engine-wasm/src/lib.rs:7124:18:
+    a non-snow Momir deck is refused
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (3/6) engine-wasm deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+  stdout ───
+
+    running 1 test
+    test deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats ... FAILED
+
+    failures:
+
+    failures:
+        deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats' (1469494) panicked at crates/engine-wasm/src/lib.rs:7093:13:
+    assertion `left == right` failed
+      left: None
+     right: Some(["Player deck: Dandân deck must have exactly 80 cards (found 79)"])
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.011s] (4/6) engine-wasm deck_list_seat_validation_tests::freeform_commander_is_refused_a_land_commander_through_the_seat_validation_loop
+        PASS [   0.012s] (5/6) engine-wasm deck_list_seat_validation_tests::every_seat_gets_the_draft_set_codes_not_just_the_first_two
+        PASS [   0.012s] (6/6) engine-wasm deck_list_seat_validation_tests::limited_initializer_seat_validation_accepts_known_short_decks_and_rejects_unresolved
+────────────
+     Summary [   0.050s] 6 tests run: 4 passed, 2 failed, 33485 skipped
+        FAIL [   0.010s] (2/6) engine-wasm deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+        FAIL [   0.011s] (3/6) engine-wasm deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+error: test run failed

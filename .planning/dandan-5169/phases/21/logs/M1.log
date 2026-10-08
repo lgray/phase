@@ -1,0 +1,102 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 57s
+────────────
+ Nextest run ID c711b679-75fa-404f-8fb4-4f2301564621 with nextest profile: default
+    Starting 9 tests across 8 binaries (33426 tests skipped)
+        FAIL [   2.427s] (1/9) phase-engine::integration dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.41s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list' (1441418) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:198:5:
+    assertion `left == right` failed
+      left: {"Accumulated Knowledge": 4, "Brainstorm": 2, "Capture of Jingzhou": 2, "Chart a Course": 2, "Control Magic": 2, "Crystal Spray": 2, "Dandân": 10, "Day's Undoing": 2, "Halimar Depths": 2, "Haunted Fengraf": 2, "Island": 20, "Lonely Sandbar": 2, "Magical Hack": 2, "Memory Lapse": 8, "Mental Note": 2, "Metamorphose": 2, "Mystic Sanctuary": 2, "Predict": 2, "Remote Isle": 2, "Svyelunite Temple": 2, "Telling Time": 2, "The Surgical Bay": 2, "Unsubstantiate": 2}
+     right: {"Bloodbraid Elf": 12, "Forest": 14, "Hymn to Tourach": 12, "Lightning Bolt": 16, "Mountain": 12, "Swamp": 14}
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   2.445s] (2/9) phase-engine::integration format_axis_census::every_engine_supplied_format_loads_a_library_from_an_empty_submission
+        PASS [   2.461s] (3/9) phase-engine::integration dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission
+        PASS [   2.782s] (4/9) phase-engine::integration dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis
+        PASS [   2.817s] (5/9) phase-engine::integration dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission
+        PASS [   2.836s] (6/9) phase-engine::integration dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list
+        FAIL [   2.842s] (7/9) phase-engine::integration dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.82s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads' (1441424) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:147:5:
+    assertion `left == right` failed
+      left: {"Accumulated Knowledge": 4, "Brainstorm": 2, "Capture of Jingzhou": 2, "Chart a Course": 2, "Control Magic": 2, "Crystal Spray": 2, "Dandân": 10, "Day's Undoing": 2, "Halimar Depths": 2, "Haunted Fengraf": 2, "Island": 20, "Lonely Sandbar": 2, "Magical Hack": 2, "Memory Lapse": 8, "Mental Note": 2, "Metamorphose": 2, "Mystic Sanctuary": 2, "Predict": 2, "Remote Isle": 2, "Svyelunite Temple": 2, "Telling Time": 2, "The Surgical Bay": 2, "Unsubstantiate": 2}
+     right: {"Bloodbraid Elf": 12, "Forest": 14, "Hymn to Tourach": 12, "Lightning Bolt": 16, "Mountain": 12, "Swamp": 14}
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   2.929s] (8/9) phase-engine::integration dandan_custom_pile::e4a_a_started_game_plays_only_the_pile
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e4a_a_started_game_plays_only_the_pile ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e4a_a_started_game_plays_only_the_pile
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.91s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e4a_a_started_game_plays_only_the_pile' (1441421) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:167:5:
+    assertion `left == right` failed
+      left: {"Accumulated Knowledge": 4, "Brainstorm": 2, "Capture of Jingzhou": 2, "Chart a Course": 2, "Control Magic": 2, "Crystal Spray": 2, "Dandân": 10, "Day's Undoing": 2, "Halimar Depths": 2, "Haunted Fengraf": 2, "Island": 20, "Lonely Sandbar": 2, "Magical Hack": 2, "Memory Lapse": 8, "Mental Note": 2, "Metamorphose": 2, "Mystic Sanctuary": 2, "Predict": 2, "Remote Isle": 2, "Svyelunite Temple": 2, "Telling Time": 2, "The Surgical Bay": 2, "Unsubstantiate": 2}
+     right: {"Bloodbraid Elf": 12, "Forest": 14, "Hymn to Tourach": 12, "Lightning Bolt": 16, "Mountain": 12, "Swamp": 14}
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   2.933s] (9/9) phase-engine::integration dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.91s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library' (1441425) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:108:5:
+    assertion `left == right` failed
+      left: {"Accumulated Knowledge": 4, "Brainstorm": 2, "Capture of Jingzhou": 2, "Chart a Course": 2, "Control Magic": 2, "Crystal Spray": 2, "Dandân": 10, "Day's Undoing": 2, "Halimar Depths": 2, "Haunted Fengraf": 2, "Island": 20, "Lonely Sandbar": 2, "Magical Hack": 2, "Memory Lapse": 8, "Mental Note": 2, "Metamorphose": 2, "Mystic Sanctuary": 2, "Predict": 2, "Remote Isle": 2, "Svyelunite Temple": 2, "Telling Time": 2, "The Surgical Bay": 2, "Unsubstantiate": 2}
+     right: {"Bloodbraid Elf": 12, "Forest": 14, "Hymn to Tourach": 12, "Lightning Bolt": 16, "Mountain": 12, "Swamp": 14}
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   2.959s] 9 tests run: 5 passed, 4 failed, 33426 skipped
+        FAIL [   2.427s] (1/9) phase-engine::integration dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list
+        FAIL [   2.842s] (7/9) phase-engine::integration dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+        FAIL [   2.929s] (8/9) phase-engine::integration dandan_custom_pile::e4a_a_started_game_plays_only_the_pile
+        FAIL [   2.933s] (9/9) phase-engine::integration dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library
+error: test run failed

@@ -1,0 +1,226 @@
+cargo-isolate: CARGO_HOME=/home/lgray/vibe-coding/.cargo-homes/wt-dandan
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling server-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/server-core)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling lobby-broker v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/lobby-broker)
+   Compiling draft-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-core)
+   Compiling seat-reducer v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+   Compiling phase-llm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+   Compiling phase-server v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-server)
+   Compiling engine-wasm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 14s
+────────────
+ Nextest run ID 88b05d4e-5c74-4fb6-bb13-209f7127ab9a with nextest profile: default
+    Starting 67 tests across 10 binaries (33740 tests skipped)
+        PASS [   0.019s] ( 1/67) engine-wasm deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built
+        PASS [   0.022s] ( 2/67) engine-wasm deck_list_seat_validation_tests::limited_initializer_seat_validation_accepts_known_short_decks_and_rejects_unresolved
+        PASS [   0.022s] ( 3/67) phase-server::bin/phase-server ai_seat_setup_tests::a_resolvable_ai_deck_is_set_up_with_the_choice_that_describes_it
+        PASS [   0.023s] ( 4/67) engine-wasm deck_list_seat_validation_tests::freeform_commander_is_refused_a_land_commander_through_the_seat_validation_loop
+        PASS [   0.023s] ( 5/67) engine-wasm deck_list_seat_validation_tests::every_seat_gets_the_draft_set_codes_not_just_the_first_two
+        PASS [   0.023s] ( 6/67) phase-server::bin/phase-server ai_seat_setup_tests::a_deck_name_only_request_records_the_named_deck
+        FAIL [   0.019s] ( 7/67) engine-wasm deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+  stdout ───
+
+    running 1 test
+    test deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck ... FAILED
+
+    failures:
+
+    failures:
+        deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck' (1448138) panicked at crates/engine-wasm/src/lib.rs:7112:9:
+    assertion `left == right` failed
+      left: Some(["Player deck: Momir's Madness decks must have exactly 60 cards (found 0)", "Player deck: Momir's Madness decks must contain exactly 12 copies of Snow-Covered Plains (found 0)", "Player deck: Momir's Madness decks must contain exactly 12 copies of Snow-Covered Island (found 0)", "Player deck: Momir's Madness decks must contain exactly 12 copies of Snow-Covered Swamp (found 0)", "Player deck: Momir's Madness decks must contain exactly 12 copies of Snow-Covered Mountain (found 0)", "Player deck: Momir's Madness decks must contain exactly 12 copies of Snow-Covered Forest (found 0)"])
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.022s] ( 8/67) engine-wasm deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+  stdout ───
+
+    running 1 test
+    test deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats ... FAILED
+
+    failures:
+
+    failures:
+        deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats' (1448136) panicked at crates/engine-wasm/src/lib.rs:7087:9:
+    assertion `left == right` failed
+      left: Some(["AI opponent deck: Dandân deck must have exactly 80 cards (found 0)"])
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.020s] ( 9/67) phase-server::bin/phase-server ai_seat_setup_tests::an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck
+  stdout ───
+
+    running 1 test
+    test ai_seat_setup_tests::an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck ... FAILED
+
+    failures:
+
+    failures:
+        ai_seat_setup_tests::an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 315 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'ai_seat_setup_tests::an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck' (1448158) panicked at crates/phase-server/src/main.rs:21635:17:
+    Dandan: an empty AI deck is accepted: AI deck for seat 1 not legal for Dandân: Dandân deck must have exactly 80 cards (found 0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.023s] (10/67) phase-server::bin/phase-server ai_seat_setup_tests::an_unresolvable_ai_deck_refuses_the_create
+        PASS [   0.067s] (11/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_client_close_is_answered_with_a_close_before_the_socket_ends
+        PASS [   0.068s] (12/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_client_close_ends_the_socket_before_the_disconnect_cleanup
+        PASS [   0.220s] (13/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_guest_release_queued_before_the_host_departure_is_announced_first
+        PASS [   0.243s] (14/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_hosting_reconnect_over_a_live_host_socket_restamps_the_listed_row
+        PASS [   0.305s] (15/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_host_returning_after_its_grace_expired_is_refused_and_the_room_stays_delisted
+        PASS [   0.316s] (16/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_host_socket_attaching_to_a_draft_match_delists_its_room
+        PASS [   0.360s] (17/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_draft_host_drop_delists_the_pod
+        PASS [   0.404s] (18/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_guest_seat_leaving_and_returning_keeps_the_room_listed
+        PASS [   0.183s] (19/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_into_an_unregistered_legacy_room_starts_the_game
+        PASS [   0.463s] (20/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_lapsed_draft_host_reaps_the_pod_through_the_teardown
+        PASS [   0.215s] (21/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_without_a_password_is_asked_for_one
+        PASS [   0.311s] (22/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_into_a_listed_room_is_admitted_like_a_lobby_join
+        PASS [   0.165s] (23/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_pregame_join_records_its_seats_deck_provenance
+        PASS [   0.483s] (24/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_lapsed_lobby_guest_frees_its_seat
+        PASS [   0.806s] (25/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_draft_join_is_refused_while_the_host_is_away
+        PASS [   0.328s] (26/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_private_room_announces_nothing_across_host_drop_and_return
+        PASS [   0.482s] (27/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_live_draft_pod_outlives_its_listing_ttl
+        PASS [   0.330s] (28/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_public_room_is_delisted_while_its_host_is_away_and_relisted_on_return
+        PASS [   0.296s] (29/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_relist_from_another_build_reaches_only_that_builds_subscribers
+        PASS [   0.266s] (30/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_reservation_held_across_the_host_drop_is_honoured_after_return
+        PASS [   0.634s] (31/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_queued_behind_a_room_create_takes_the_lobby_path
+        PASS [   0.336s] (32/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_restored_unstarted_room_starts_with_its_host_away
+        PASS [   0.355s] (33/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_returning_host_restamps_the_rooms_build
+        PASS [   0.383s] (34/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_returning_draft_host_relists_and_restamps
+        PASS [   0.115s] (35/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_subscription_queued_before_the_host_departure_receives_its_removal
+        PASS [   0.351s] (36/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_stale_build_draft_join_is_refused_like_a_game_join
+        PASS [   0.497s] (37/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_seat_queued_behind_a_host_return_is_admitted_on_the_returned_build
+        PASS [   0.479s] (38/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_seated_guest_keeps_its_seat_while_the_host_is_away
+        PASS [   0.106s] (39/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_ai_create_claims_a_requested_code
+        PASS [   0.101s] (40/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_ai_create_drops_residual_routes_under_its_code
+        PASS [   0.062s] (41/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_refuses_a_code_held_by_a_draft_match
+        PASS [   0.071s] (42/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_refuses_a_code_held_by_a_draft
+        PASS [   0.251s] (43/67) phase-server::bin/phase-server issue_4548_full_create_tests::an_accepted_abandon_delists_and_retires_a_public_room
+        PASS [   0.118s] (44/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_claims_a_requested_code_and_a_second_claim_is_code_in_use
+        PASS [   0.118s] (45/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_drops_residual_routes_under_its_code
+        PASS [   0.061s] (46/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_accepts_native_multi_ai_setup_larger_than_eight_kib
+        PASS [   0.062s] (47/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_refuses_a_code_held_by_an_active_persisted_row
+        FAIL [   0.056s] (48/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_accepts_an_empty_host_deck_for_dandan
+  stdout ───
+
+    running 1 test
+    test issue_4548_full_create_tests::full_mode_create_accepts_an_empty_host_deck_for_dandan ... FAILED
+
+    failures:
+
+    failures:
+        issue_4548_full_create_tests::full_mode_create_accepts_an_empty_host_deck_for_dandan
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 315 filtered out; finished in 0.05s
+
+  stderr ───
+
+    thread 'issue_4548_full_create_tests::full_mode_create_accepts_an_empty_host_deck_for_dandan' (1448265) panicked at crates/phase-server/src/main.rs:15570:9:
+    expected GameCreated, got Error { message: "Deck not legal for Dandân: Dandân deck must have exactly 80 cards (found 0)", code: Some(DeckRejected) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.059s] (49/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_rejects_format_invalid_host_deck
+        PASS [   0.057s] (50/67) phase-server::bin/phase-server issue_4548_full_create_tests::lobby_only_create_forwards_the_requested_code_to_the_broker
+        PASS [   0.104s] (51/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_sends_slots_after_game_created
+        PASS [   0.105s] (52/67) phase-server::bin/phase-server issue_4548_full_create_tests::lobby_broadcast_uses_each_clients_negotiated_frame_format
+        PASS [   0.108s] (53/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_ranked_create_refuses_a_code_with_ranked_history
+        PASS [   0.057s] (54/67) phase-server::bin/phase-server issue_4548_full_create_tests::typed_lookup_reports_draft_metadata_over_the_wire
+        PASS [   0.476s] (55/67) phase-server::bin/phase-server issue_4548_full_create_tests::every_join_entry_is_refused_while_the_host_is_away
+        PASS [   0.159s] (56/67) phase-server::bin/phase-server issue_4548_full_create_tests::negotiated_gzip_envelope_accepts_and_returns_binary_frames
+        FAIL [   2.388s] (57/67) phase-engine::integration dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.36s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission' (1448155) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:311:5:
+    assertion failed: evaluate_deck_format_gate(db,
+            &request(GameFormat::Dandan, Vec::new())).compatible
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.802s] (58/67) phase-server::bin/phase-server issue_4548_full_create_tests::lobby_rows_reach_only_build_compatible_subscribers
+        FAIL [   2.452s] (59/67) phase-engine::integration dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.42s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission' (1448147) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:264:5:
+    assertion `left == right` failed
+      left: Err(["Dandân deck must have exactly 80 cards (found 0)"])
+     right: Ok(())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   2.484s] (60/67) phase-engine::integration dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+        PASS [   2.503s] (61/67) phase-engine::integration dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list
+        PASS [   2.520s] (62/67) phase-engine::integration dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list
+        PASS [   2.680s] (63/67) phase-engine::integration dandan_custom_pile::e4a_a_started_game_plays_only_the_pile
+        PASS [   2.070s] (64/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_restored_drafting_pod_keeps_advancing_past_its_second_window
+        FAIL [   2.812s] (65/67) phase-engine::integration dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis
+  stdout ───
+
+    running 1 test
+    test dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis ... FAILED
+
+    failures:
+
+    failures:
+        dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9928 filtered out; finished in 2.78s
+
+  stderr ───
+
+    thread 'dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis' (1448149) panicked at crates/engine/tests/integration/dandan_custom_pile.rs:329:5:
+    assertion `left == right` failed
+      left: Err(["Momir's Madness decks must have exactly 60 cards (found 0)", "Momir's Madness decks must contain exactly 12 copies of Snow-Covered Plains (found 0)", "Momir's Madness decks must contain exactly 12 copies of Snow-Covered Island (found 0)", "Momir's Madness decks must contain exactly 12 copies of Snow-Covered Swamp (found 0)", "Momir's Madness decks must contain exactly 12 copies of Snow-Covered Mountain (found 0)", "Momir's Madness decks must contain exactly 12 copies of Snow-Covered Forest (found 0)"])
+     right: Ok(())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   2.826s] (66/67) phase-engine::integration dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library
+        PASS [   2.583s] (67/67) phase-server::bin/phase-server issue_4548_full_create_tests::a_restored_lobby_pod_starts_with_its_host_away
+────────────
+     Summary [   3.437s] 67 tests run: 60 passed, 7 failed, 33740 skipped
+        FAIL [   0.019s] ( 7/67) engine-wasm deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+        FAIL [   0.022s] ( 8/67) engine-wasm deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+        FAIL [   0.020s] ( 9/67) phase-server::bin/phase-server ai_seat_setup_tests::an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck
+        FAIL [   0.056s] (48/67) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_accepts_an_empty_host_deck_for_dandan
+        FAIL [   2.388s] (57/67) phase-engine::integration dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission
+        FAIL [   2.452s] (59/67) phase-engine::integration dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission
+        FAIL [   2.812s] (65/67) phase-engine::integration dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis
+error: test run failed

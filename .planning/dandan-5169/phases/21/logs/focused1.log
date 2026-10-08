@@ -1,0 +1,457 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine)
+   Compiling rustls-webpki v0.103.15
+   Compiling server-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/server-core)
+   Compiling rustls v0.23.45
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-ai)
+   Compiling draft-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/draft-core)
+   Compiling lobby-broker v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/lobby-broker)
+   Compiling seat-reducer v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/seat-reducer)
+   Compiling phase-llm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-llm)
+   Compiling engine-wasm v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine-wasm)
+   Compiling phase-server v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-dandan/crates/phase-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8m 49s
+────────────
+ Nextest run ID 4289936a-b0ed-4fc4-b162-e6c7217385d0 with nextest profile: default
+    Starting 436 tests across 10 binaries (33371 tests skipped)
+        PASS [   0.023s] (  1/436) engine-wasm deck_list_seat_validation_tests::deck_supply_reads_the_format_axis_and_fails_to_player_built
+        PASS [   0.023s] (  2/436) engine-wasm external_format_config_tests::best_of_three_ceiling_reads_the_format_axis_and_fails_closed
+        PASS [   0.015s] (  3/436) phase-engine analysis::resource::tests::a_foreign_mana_ability_reading_a_creature_census_still_vetoes
+        PASS [   0.044s] (  4/436) engine-wasm external_format_config_tests::initialize_without_a_declared_format_config_accepts_a_four_player_local_game
+        PASS [   0.051s] (  5/436) engine-wasm external_format_config_tests::malformed_initialize_format_config_returns_an_error_envelope
+        PASS [   0.051s] (  6/436) engine-wasm external_format_config_tests::external_initialization_rejects_limited_range_configuration
+        PASS [   0.053s] (  7/436) engine-wasm external_format_config_tests::initialize_with_a_declared_format_config_validates_that_config_unchanged
+        PASS [   0.053s] (  8/436) engine-wasm external_format_config_tests::external_initialization_rejects_player_count_outside_format_registry_range
+        PASS [   0.060s] (  9/436) engine-wasm external_format_config_tests::object_id_records_serialize_with_json_string_keys
+        PASS [   0.062s] ( 10/436) engine-wasm external_format_config_tests::resolve_and_validate_custom_format_config_rejects_starting_life_outside_bounds
+        PASS [   0.027s] ( 11/436) phase-engine game::ability_rw::tests::l1_zone_card_count_census_and_zone_extraction
+        PASS [   0.027s] ( 12/436) phase-engine game::ability_rw::tests::ne_iv_census_overlap
+        PASS [   0.025s] ( 13/436) phase-engine game::ability_rw::tests::zone_census_battlefield_write_vs_graveyard_read_discriminates
+        PASS [   0.023s] ( 14/436) phase-engine game::ability_scan::tests::b4_execute_census_scanned_while_matchers_stay_read_free
+        PASS [   0.089s] ( 15/436) engine-wasm deck_list_seat_validation_tests::dandan_validates_every_seat_and_admits_empty_seats
+        PASS [   0.089s] ( 16/436) engine-wasm deck_list_seat_validation_tests::momir_admits_empty_seats_and_validates_a_submitted_deck
+        PASS [   0.090s] ( 17/436) engine-wasm deck_list_seat_validation_tests::limited_initializer_seat_validation_accepts_known_short_decks_and_rejects_unresolved
+        PASS [   0.090s] ( 18/436) engine-wasm deck_list_seat_validation_tests::freeform_commander_is_refused_a_land_commander_through_the_seat_validation_loop
+        PASS [   0.091s] ( 19/436) engine-wasm deck_list_seat_validation_tests::every_seat_gets_the_draft_set_codes_not_just_the_first_two
+        PASS [   0.025s] ( 20/436) phase-engine game::ability_scan::tests::census_partition_agrees_with_effect_target_ctx
+        PASS [   0.024s] ( 21/436) phase-engine game::ability_scan::tests::census_hole_arms_are_load_bearing
+        PASS [   0.085s] ( 22/436) engine-wasm external_format_config_tests::restored_state_with_limited_range_is_rejected_before_rehydration
+        PASS [   0.109s] ( 23/436) engine-wasm external_format_config_tests::restore_refuses_only_legacy_paused_casting_variant_menu_without_face
+        PASS [   0.109s] ( 24/436) engine-wasm external_format_config_tests::legacy_scalar_range_restore_reaches_the_feature_gate
+        PASS [   0.027s] ( 25/436) phase-engine game::ability_scan::tests::obligation_ii_census_exception_is_exactly_settapstate
+        PASS [   0.030s] ( 26/436) phase-engine game::ability_scan::tests::census_tag_set_is_exactly_enumerated
+        PASS [   0.029s] ( 27/436) phase-engine game::ability_scan::tests::suspect_unsuspect_census_is_scope_sensitive
+        PASS [   0.035s] ( 28/436) phase-engine game::commander::tests::integration_deck_loading_creates_commander_in_command_zone
+        PASS [   0.035s] ( 29/436) phase-engine game::ability_scan::tests::unless_controls_subtype_reports_the_census_it_runs
+        PASS [   0.043s] ( 30/436) phase-engine game::ability_scan::tests::round2_mass_battlefield_resolvers_census_in_both_oracles
+        PASS [   0.033s] ( 31/436) phase-engine game::deck_loading::tests::create_object_from_card_face_populates_characteristics
+        PASS [   0.037s] ( 32/436) phase-engine game::deck_loading::tests::create_object_variable_pt_defaults_to_zero
+        PASS [   0.036s] ( 33/436) phase-engine game::deck_loading::tests::create_object_with_static_definitions
+        PASS [   0.047s] ( 34/436) phase-engine game::deck_loading::tests::create_object_from_card_face_color_override
+        PASS [   0.045s] ( 35/436) phase-engine game::deck_loading::tests::create_object_with_replacement_definitions
+        PASS [   0.029s] ( 36/436) phase-engine game::deck_loading::tests::derive_colors_deduplicates
+        PASS [   0.040s] ( 37/436) phase-engine game::deck_loading::tests::deck_payload_serializes_roundtrips
+        PASS [   0.043s] ( 38/436) phase-engine game::deck_loading::tests::create_object_with_trigger_definitions
+        PASS [   0.049s] ( 39/436) phase-engine game::deck_loading::tests::create_object_no_pt_stays_none
+        PASS [   0.030s] ( 40/436) phase-engine game::deck_loading::tests::derive_colors_multicolor
+        PASS [   0.113s] ( 41/436) phase-engine analysis::resource::tests::spent_self_entry_relieves_a_board_censusing_entry_condition
+        PASS [   0.071s] ( 42/436) phase-engine game::deck_loading::tests::archenemy_empty_scheme_deck_injects_valid_default_face_down
+        PASS [   0.035s] ( 43/436) phase-engine game::deck_loading::tests::derive_colors_no_cost
+        PASS [   0.050s] ( 44/436) phase-engine game::deck_loading::tests::derive_colors_hybrid
+        PASS [   0.034s] ( 45/436) phase-engine game::deck_loading::tests::load_and_hydrate_without_db_preserves_deck_only_vocabulary
+        PASS [   0.035s] ( 46/436) phase-engine game::deck_loading::tests::load_deck_creates_correct_object_count
+        PASS [   0.047s] ( 47/436) phase-engine game::deck_loading::tests::library_object_ids_do_not_encode_submitted_deck_order
+        PASS [   0.041s] ( 48/436) phase-engine game::deck_loading::tests::load_deck_drops_sideboard_for_commander_format
+        PASS [   0.034s] ( 49/436) phase-engine game::deck_loading::tests::load_deck_keeps_oathbreaker_signature_spells_in_the_command_zone
+        PASS [   0.041s] ( 50/436) phase-engine game::deck_loading::tests::load_deck_does_not_net_a_commander_slot_in_a_format_without_a_command_zone
+        PASS [   0.045s] ( 51/436) phase-engine game::deck_loading::tests::load_deck_clears_outside_game_cards_brought_in
+        PASS [   0.054s] ( 52/436) phase-engine game::deck_loading::tests::load_and_hydrate_seeds_creature_types_from_card_database
+        PASS [   0.168s] ( 53/436) phase-engine analysis::resource::tests::s4_s5_player_axis_board_census_keeps_the_veto
+        PASS [   0.055s] ( 54/436) phase-engine game::deck_loading::tests::load_deck_commander_subtypes_collected
+        PASS [   0.050s] ( 55/436) phase-engine game::deck_loading::tests::load_deck_ignores_signature_spells_outside_oathbreaker
+        PASS [   0.043s] ( 56/436) phase-engine game::deck_loading::tests::load_deck_nets_a_commander_also_listed_in_the_main_deck
+        PASS [   0.052s] ( 57/436) phase-engine game::deck_loading::tests::load_deck_neither_places_nor_nets_a_commander_slot_without_a_decklist_command_zone
+        PASS [   0.040s] ( 58/436) phase-engine game::deck_loading::tests::load_deck_nets_only_as_many_copies_as_the_command_zone_claims
+        PASS [   0.052s] ( 59/436) phase-engine game::deck_loading::tests::load_deck_places_the_oathbreaker_in_the_command_zone
+        PASS [   0.048s] ( 60/436) phase-engine game::deck_loading::tests::load_deck_places_the_tiny_leaders_commander_in_the_command_zone
+        PASS [   0.044s] ( 61/436) phase-engine game::deck_loading::tests::momir_fixed_deck_names_is_sixty_snow_basics
+        PASS [   0.052s] ( 62/436) phase-engine game::deck_loading::tests::load_deck_with_commanders_creates_command_zone_objects
+        PASS [   0.056s] ( 63/436) phase-engine game::deck_loading::tests::resolve_names_groups_mixed_spellings_of_one_card
+        PASS [   0.045s] ( 64/436) phase-engine game::deck_validation::tests::a_composite_named_commander_listed_in_the_99_counts_toward_the_100_once
+        PASS [   0.069s] ( 65/436) phase-engine game::deck_loading::tests::load_deck_shuffles_libraries
+        PASS [   0.047s] ( 66/436) phase-engine game::deck_validation::tests::a_genuine_second_copy_of_the_signature_spell_is_still_a_violation
+        PASS [   0.068s] ( 67/436) phase-engine game::deck_loading::tests::momir_auto_supplies_fixed_deck_for_every_seat
+        PASS [   0.061s] ( 68/436) phase-engine game::deck_loading::tests::resolve_names_groups_slash_spellings_of_one_card
+        PASS [   0.069s] ( 69/436) phase-engine game::deck_loading::tests::resolve_combined_face_commander_name_creates_command_zone_object
+        PASS [   0.053s] ( 70/436) phase-engine game::deck_validation::tests::a_genuine_second_copy_of_the_commander_is_still_a_violation
+        PASS [   0.063s] ( 71/436) phase-engine game::deck_validation::tests::a_commander_absent_from_the_99_still_counts_toward_the_100
+        PASS [   0.037s] ( 72/436) phase-engine game::deck_validation::tests::amy_pond_multi_keyword_pairing
+        PASS [   0.042s] ( 73/436) phase-engine game::deck_validation::tests::admission_and_max_deck_copies_agree_on_the_format_default_copy_limit
+        PASS [   0.042s] ( 74/436) phase-engine game::deck_validation::tests::an_unresolved_custom_pool_refuses_rather_than_admits
+        PASS [   0.034s] ( 75/436) phase-engine game::deck_validation::tests::ante_deck_violations_admit_the_class_when_playing_for_ante
+        PASS [   0.079s] ( 76/436) phase-engine game::deck_validation::tests::a_commander_listed_in_the_main_deck_is_counted_once
+        PASS [   0.044s] ( 77/436) phase-engine game::deck_validation::tests::archenemy_accepts_valid_twenty_card_scheme_deck
+        PASS [   0.040s] ( 78/436) phase-engine game::deck_validation::tests::archenemy_rejects_third_scheme_copy
+        PASS [   0.044s] ( 79/436) phase-engine game::deck_validation::tests::archenemy_rejects_non_scheme_in_scheme_deck
+        PASS [   0.044s] ( 80/436) phase-engine game::deck_validation::tests::archenemy_rejects_unsupported_scheme
+        PASS [   0.260s] ( 81/436) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census
+        PASS [   0.045s] ( 82/436) phase-engine game::deck_validation::tests::bo3_ready_depends_on_sideboard
+        PASS [   0.050s] ( 83/436) phase-engine game::deck_validation::tests::archenemy_rejects_short_scheme_deck
+        PASS [   0.049s] ( 84/436) phase-engine game::deck_validation::tests::both_dispatches_agree_that_an_ante_card_is_illegal
+        PASS [   0.041s] ( 85/436) phase-engine game::deck_validation::tests::brawl_rejects_non_legendary_commander
+        PASS [   0.043s] ( 86/436) phase-engine game::deck_validation::tests::brawl_rejects_partner
+        PASS [   0.052s] ( 87/436) phase-engine game::deck_validation::tests::brawl_planeswalker_commander_is_valid
+        PASS [   0.062s] ( 88/436) phase-engine game::deck_validation::tests::banned_dedicated_companion_matches_full_and_summary_validation
+        PASS [   0.046s] ( 89/436) phase-engine game::deck_validation::tests::brawl_rejects_wrong_deck_size
+        PASS [   0.043s] ( 90/436) phase-engine game::deck_validation::tests::can_pair_commanders_resolves_doctor_pairing_through_db
+        PASS [   0.034s] ( 91/436) phase-engine game::deck_validation::tests::character_select_pair_is_valid
+        PASS [   0.037s] ( 92/436) phase-engine game::deck_validation::tests::choose_a_background_pairs_with_background_subtype
+        PASS [   0.058s] ( 93/436) phase-engine game::deck_validation::tests::brawl_valid_deck_passes
+        PASS [   0.304s] ( 94/436) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census
+        PASS [   0.043s] ( 95/436) phase-engine game::deck_validation::tests::color_distribution_is_main_deck_only_and_matches_summary
+        PASS [   0.038s] ( 96/436) phase-engine game::deck_validation::tests::combined_copies_basic_lands_exempt
+        PASS [   0.039s] ( 97/436) phase-engine game::deck_validation::tests::combined_copy_counts_merge_nazgul_spelling_variants
+        PASS [   0.044s] ( 98/436) phase-engine game::deck_validation::tests::combined_copies_over_four_rejected
+        PASS [   0.050s] ( 99/436) phase-engine game::deck_validation::tests::combined_copies_case_insensitive
+        PASS [   0.039s] (100/436) phase-engine game::deck_validation::tests::commander_eligibility_accepts_legendary_spacecraft_with_pt
+        PASS [   0.049s] (101/436) phase-engine game::deck_validation::tests::commander_accepts_nine_nazgul_copies
+        PASS [   0.033s] (102/436) phase-engine game::deck_validation::tests::commander_eligibility_rejects_non_legendary_spacecraft_or_vehicle
+        PASS [   0.051s] (103/436) phase-engine game::deck_validation::tests::commander_accepts_ten_slime_against_humanity_copies
+        PASS [   0.034s] (104/436) phase-engine game::deck_validation::tests::commander_eligibility_uses_parsed_permission_text
+        PASS [   0.042s] (105/436) phase-engine game::deck_validation::tests::commander_eligibility_accepts_legendary_vehicle
+        PASS [   0.042s] (106/436) phase-engine game::deck_validation::tests::commander_eligibility_honors_precomputed_field
+        PASS [   0.037s] (107/436) phase-engine game::deck_validation::tests::commander_listed_under_two_spellings_is_not_its_own_identity_violation
+        PASS [   0.059s] (108/436) phase-engine game::deck_validation::tests::commander_color_identity_uses_explicit_card_face_identity
+        PASS [   0.046s] (109/436) phase-engine game::deck_validation::tests::commander_listed_by_composite_and_front_name_is_one_card
+        PASS [   0.042s] (110/436) phase-engine game::deck_validation::tests::commander_requires_eligible_commander_cards
+        PASS [   0.045s] (111/436) phase-engine game::deck_validation::tests::commander_rules_detect_size_singleton_and_legality_failures
+        PASS [   0.046s] (112/436) phase-engine game::deck_validation::tests::commander_partners_require_partner_keyword
+        PASS [   0.052s] (113/436) phase-engine game::deck_validation::tests::commander_sideboard_policy_accepts_maybeboard_entries
+        PASS [   0.036s] (114/436) phase-engine game::deck_validation::tests::commander_singleton_permits_wastes_duplicates
+        PASS [   0.045s] (115/436) phase-engine game::deck_validation::tests::commander_singleton_permits_mixed_basic_variants
+        PASS [   0.043s] (116/436) phase-engine game::deck_validation::tests::constructed_copy_limit_does_not_net_out_a_commander_slot_entry
+        PASS [   0.058s] (117/436) phase-engine game::deck_validation::tests::commander_singleton_exempts_deck_limit_override
+        PASS [   0.044s] (118/436) phase-engine game::deck_validation::tests::constructed_formats_still_reject_59_and_accept_60
+        PASS [   0.048s] (119/436) phase-engine game::deck_validation::tests::commander_singleton_permits_snow_covered_basic_duplicates
+        PASS [   0.057s] (120/436) phase-engine game::deck_validation::tests::commander_singleton_now_case_insensitive
+        PASS [   0.053s] (121/436) phase-engine game::deck_validation::tests::commander_singleton_rejects_non_basic_duplicates
+        PASS [   0.039s] (122/436) phase-engine game::deck_validation::tests::copy_limit_override_fires_before_commander_singleton
+        PASS [   0.049s] (123/436) phase-engine game::deck_validation::tests::constructed_sideboard_of_15_is_accepted
+        PASS [   0.045s] (124/436) phase-engine game::deck_validation::tests::constructed_sideboard_of_16_is_rejected
+        PASS [   0.038s] (125/436) phase-engine game::deck_validation::tests::copy_limit_respects_typed_overrides_constructed
+        PASS [   0.038s] (126/436) phase-engine game::deck_validation::tests::cross_group_pairings_rejected
+        PASS [   0.046s] (127/436) phase-engine game::deck_validation::tests::custom_format_deck_size_accepts_at_floor_rejects_below_it
+        PASS [   0.052s] (128/436) phase-engine game::deck_validation::tests::custom_format_copy_limit_accepts_at_n_rejects_at_n_plus_one
+        PASS [   0.048s] (129/436) phase-engine game::deck_validation::tests::custom_format_rejects_every_undeclared_legacy_axis
+        PASS [   0.050s] (130/436) phase-engine game::deck_validation::tests::dandan_deck_compatibility_reads_the_format_axes_on_both_paths
+        PASS [   0.039s] (131/436) phase-engine game::deck_validation::tests::deck_validation_resolves_a_double_slash_card_name_before_splitting_it
+        PASS [   0.040s] (132/436) phase-engine game::deck_validation::tests::deck_coverage_excludes_unresolvable_names_from_both_buckets
+        PASS [   0.038s] (133/436) phase-engine game::deck_validation::tests::declared_pool_banned_beats_restricted_and_matches_canonical_names
+        PASS [   0.036s] (134/436) phase-engine game::deck_validation::tests::declared_pool_unions_named_cards_with_the_set_check
+        PASS [   0.048s] (135/436) phase-engine game::deck_validation::tests::deck_compatibility_request_selected_format_is_wire_inert
+        PASS [   0.047s] (136/436) phase-engine game::deck_validation::tests::deck_coverage_counts_one_card_once_across_mixed_spellings
+        PASS [   0.049s] (137/436) phase-engine game::deck_validation::tests::deck_size_subject_count_reproduces_each_validators_arithmetic
+        PASS [   0.044s] (138/436) phase-engine game::deck_validation::tests::declared_pool_status_uses_real_printings_data
+        PASS [   0.044s] (139/436) phase-engine game::deck_validation::tests::declared_pool_judges_only_the_declared_lists_not_the_ante_rule
+        PASS [   0.041s] (140/436) phase-engine game::deck_validation::tests::doctors_companion_pairs_with_doctor_subtype
+        PASS [   0.042s] (141/436) phase-engine game::deck_validation::tests::doctors_companion_rejects_non_doctor_subtypes
+        PASS [   0.055s] (142/436) phase-engine game::deck_validation::tests::dedicated_companion_rejection_matches_full_and_summary_validation
+        PASS [   0.039s] (143/436) phase-engine game::deck_validation::tests::evaluate_constructed_checks_deck_size_and_commander_slot
+        PASS [   0.040s] (144/436) phase-engine game::deck_validation::tests::evaluate_deck_compatibility_summary_reports_no_opinion_for_an_otherwise_legal_custom_deck
+        PASS [   0.044s] (145/436) phase-engine game::deck_validation::tests::evaluate_deck_format_gate_rejects_custom_even_for_an_otherwise_legal_deck
+        PASS [   0.046s] (146/436) phase-engine game::deck_validation::tests::evaluate_oathbreaker_honors_a_stricter_resolved_copy_limit
+        PASS [   0.044s] (147/436) phase-engine game::deck_validation::tests::evaluate_planechase_honors_a_stricter_resolved_copy_limit
+        PASS [   0.037s] (148/436) phase-engine game::deck_validation::tests::friends_forever_pair_is_valid
+        PASS [   0.063s] (149/436) phase-engine game::deck_validation::tests::evaluate_archenemy_honors_a_stricter_resolved_copy_limit
+        PASS [   0.051s] (150/436) phase-engine game::deck_validation::tests::evaluate_deck_format_gate_passes_a_legal_built_in_format_deck
+        PASS [   0.035s] (151/436) phase-engine game::deck_validation::tests::max_deck_copies_built_in_arm_is_unchanged_by_the_discriminant_dispatch
+        PASS [   0.045s] (152/436) phase-engine game::deck_validation::tests::free_for_all_bo3_requires_sideboard_but_no_size_cap
+        PASS [   0.046s] (153/436) phase-engine game::deck_validation::tests::every_deck_admission_route_rejects_an_ante_card
+        PASS [   0.046s] (154/436) phase-engine game::deck_validation::tests::historic_brawl_uses_brawl_legality
+        PASS [   0.052s] (155/436) phase-engine game::deck_validation::tests::freeform_commander_admits_non_legendary_partner_pairs
+        PASS [   0.034s] (156/436) phase-engine game::deck_validation::tests::max_deck_copies_custom_restricted_list_matches_canonical_names
+        PASS [   0.039s] (157/436) phase-engine game::deck_validation::tests::max_deck_copies_custom_missing_rules_fails_closed_to_up_to_one
+        PASS [   0.055s] (158/436) phase-engine game::deck_validation::tests::historic_brawl_rejects_sixty_card_deck
+        PASS [   0.063s] (159/436) phase-engine game::deck_validation::tests::evaluate_tiny_leaders_honors_a_stricter_resolved_copy_limit
+        PASS [   0.038s] (160/436) phase-engine game::deck_validation::tests::max_deck_copies_custom_restricted_list_paired_with_positive
+        PASS [   0.039s] (161/436) phase-engine game::deck_validation::tests::max_deck_copies_honours_the_format_restricted_list
+        PASS [   0.040s] (162/436) phase-engine game::deck_validation::tests::max_deck_copies_resolves_format_default_and_overrides
+        PASS [   0.046s] (163/436) phase-engine game::deck_validation::tests::momir_madness_missing_type_fails
+        PASS [   0.050s] (164/436) phase-engine game::deck_validation::tests::momir_madness_count_off_total_fails
+        PASS [   0.046s] (165/436) phase-engine game::deck_validation::tests::momir_madness_non_empty_sideboard_fails
+        PASS [   0.048s] (166/436) phase-engine game::deck_validation::tests::momir_madness_regular_basics_fail
+        PASS [   0.040s] (167/436) phase-engine game::deck_validation::tests::momir_madness_wrong_per_type_count_fails
+        PASS [   0.050s] (168/436) phase-engine game::deck_validation::tests::momir_madness_snow_covered_wastes_fails
+        PASS [   0.054s] (169/436) phase-engine game::deck_validation::tests::momir_madness_non_basic_fails
+        PASS [   0.052s] (170/436) phase-engine game::deck_validation::tests::momir_madness_snow_basics_pass
+        PASS [   0.040s] (171/436) phase-engine game::deck_validation::tests::netting_never_credits_more_copies_than_the_main_deck_actually_lists
+        PASS [   0.041s] (172/436) phase-engine game::deck_validation::tests::non_oathbreaker_signature_spell_is_rejected_by_full_and_summary_validation
+        PASS [   0.049s] (173/436) phase-engine game::deck_validation::tests::momir_refuses_a_commander_without_a_signature_spell
+        PASS [   0.050s] (174/436) phase-engine game::deck_validation::tests::no_partner_keywords_rejected
+        PASS [   0.040s] (175/436) phase-engine game::deck_validation::tests::partner_generic_pair_is_valid
+        PASS [   0.060s] (176/436) phase-engine game::deck_validation::tests::oathbreaker_listed_by_composite_and_front_name_is_one_card
+        PASS [   0.032s] (177/436) phase-engine game::deck_validation::tests::partner_with_mismatched_names_rejected
+        PASS [   0.042s] (178/436) phase-engine game::deck_validation::tests::partner_with_matched_pair_is_valid
+        PASS [   0.061s] (179/436) phase-engine game::deck_validation::tests::oathbreaker_missing_commander_does_not_spam_color_identity_errors
+        PASS [   0.055s] (180/436) phase-engine game::deck_validation::tests::only_the_unresolved_sentinel_is_downgraded_to_no_opinion
+        PASS [   0.041s] (181/436) phase-engine game::deck_validation::tests::pauper_commander_rejects_rare_only_creature
+        PASS [   0.048s] (182/436) phase-engine game::deck_validation::tests::pauper_commander_rejects_uncommon_noncreature
+        PASS [   0.044s] (183/436) phase-engine game::deck_validation::tests::planechase_planar_deck_is_singleton_by_english_name
+        PASS [   0.057s] (184/436) phase-engine game::deck_validation::tests::pauper_commander_allows_nonlegendary_creature_commander_slot
+        PASS [   0.053s] (185/436) phase-engine game::deck_validation::tests::pioneer_selected_format_validates_legality
+        PASS [   0.057s] (186/436) phase-engine game::deck_validation::tests::planechase_empty_custom_planar_deck_is_allowed
+        PASS [   0.048s] (187/436) phase-engine game::deck_validation::tests::planechase_planar_minimum_scales_with_actual_player_count
+        PASS [   0.063s] (188/436) phase-engine game::deck_validation::tests::pauper_selected_format_rejects_illegal_cards
+        PASS [   0.042s] (189/436) phase-engine game::deck_validation::tests::premodern_selected_format_rejects_banned_cards
+        PASS [   0.062s] (190/436) phase-engine game::deck_validation::tests::planechase_planar_deck_rejects_non_planar_cards
+        PASS [   0.036s] (191/436) phase-engine game::deck_validation::tests::reprint_policy_has_no_effect_on_custom_format_evaluation
+        PASS [   0.036s] (192/436) phase-engine game::deck_validation::tests::relentless_rats_allows_more_than_four
+        PASS [   0.070s] (193/436) phase-engine game::deck_validation::tests::planechase_phenomenon_cap_is_player_count_scaled
+        PASS [   0.053s] (194/436) phase-engine game::deck_validation::tests::premodern_selected_format_enforces_constructed_deck_shape
+        PASS [   0.039s] (195/436) phase-engine game::deck_validation::tests::selected_format_defaults_to_true_for_ffa_and_two_headed_giant
+        PASS [   0.060s] (196/436) phase-engine game::deck_validation::tests::premodern_selected_format_rejects_missing_legality
+        PASS [   0.039s] (197/436) phase-engine game::deck_validation::tests::selected_format_resolved_prefers_its_own_threaded_value
+        PASS [   0.038s] (198/436) phase-engine game::deck_validation::tests::selected_format_tag_falls_back_to_the_bare_method_default
+        PASS [   0.056s] (199/436) phase-engine game::deck_validation::tests::premodern_selected_format_validates_legality
+        PASS [   0.041s] (200/436) phase-engine game::deck_validation::tests::signature_spell_listed_under_two_spellings_is_not_its_own_singleton_violation
+        PASS [   0.038s] (201/436) phase-engine game::deck_validation::tests::slash_spellings_are_known_and_share_one_copy_count
+        PASS [   0.050s] (202/436) phase-engine game::deck_validation::tests::selected_standard_and_commander_use_corresponding_checks
+        PASS [   0.040s] (203/436) phase-engine game::deck_validation::tests::summarize_cards_limits_output
+        PASS [   0.048s] (204/436) phase-engine game::deck_validation::tests::standard_illegal_deck_reports_reasons
+        PASS [   0.037s] (205/436) phase-engine game::deck_validation::tests::tiny_leaders_allows_legendary_planeswalker_leaders
+        PASS [   0.043s] (206/436) phase-engine game::deck_validation::tests::the_reference_columns_read_their_own_formats_pairing
+        PASS [   0.057s] (207/436) phase-engine game::deck_validation::tests::standard_legal_deck_passes
+        PASS [   0.049s] (208/436) phase-engine game::deck_validation::tests::summary_planechase_honors_a_stricter_resolved_copy_limit
+        PASS [   0.053s] (209/436) phase-engine game::deck_validation::tests::tiny_leaders_rejects_commander_only_ban
+        PASS [   0.042s] (210/436) phase-engine game::deck_validation::tests::validate_commander_rejects_non_singleton
+        PASS [   0.061s] (211/436) phase-engine game::deck_validation::tests::the_brawl_quick_path_admits_exactly_one_commander
+        PASS [   0.044s] (212/436) phase-engine game::deck_validation::tests::validate_deck_for_format_rejects_custom_independently_of_the_ui_hint
+        PASS [   0.045s] (213/436) phase-engine game::deck_validation::tests::validate_deck_for_format_rejects_ante_cards_in_deck_and_sideboard
+        PASS [   0.070s] (214/436) phase-engine game::deck_validation::tests::summary_commander_accepts_nine_nazgul_copies
+        PASS [   0.056s] (215/436) phase-engine game::deck_validation::tests::tiny_leaders_rejects_cost_identity_and_deck_ban
+        PASS [   0.057s] (216/436) phase-engine game::deck_validation::tests::unknown_cards_are_reported
+        PASS [   0.059s] (217/436) phase-engine game::deck_validation::tests::tiny_leaders_valid_deck_passes
+        PASS [   0.044s] (218/436) phase-engine game::deck_validation::tests::validate_deck_for_format_rejects_oversize_sideboard
+        PASS [   0.040s] (219/436) phase-engine game::deck_validation::tests::validate_name_deck_for_format_full_reads_resolved_format_config
+        PASS [   0.040s] (220/436) phase-engine game::deck_validation::tests::validate_name_deck_for_format_rejects_non_premodern_cards
+        PASS [   0.051s] (221/436) phase-engine game::deck_validation::tests::validate_name_deck_for_format_full_honors_a_stricter_resolved_copy_limit_on_commander
+        PASS [   0.047s] (222/436) phase-engine game::deck_validation::tests::validate_name_deck_for_format_full_honors_a_stricter_resolved_copy_limit_on_standard
+        PASS [   0.041s] (223/436) phase-engine game::deck_validation::tests::validate_name_deck_for_format_rejects_custom_with_the_shared_message
+        PASS [   0.054s] (224/436) phase-engine game::deck_validation::tests::validate_ffa_accepts_any_deck
+        PASS [   0.040s] (225/436) phase-engine game::deck_validation::tests::validate_name_deck_for_format_rejects_non_standard_cards
+        PASS [   0.038s] (226/436) phase-engine game::deck_validation::tests::validate_standard_accepts_legal_deck
+        PASS [   0.046s] (227/436) phase-engine game::deck_validation::tests::validate_no_format_accepts_any_deck
+        PASS [   0.039s] (228/436) phase-engine game::deck_validation::tests::vintage_one_copy_of_restricted_card_is_legal
+        PASS [   0.035s] (229/436) phase-engine game::deck_validation::tests::vintage_two_copies_of_restricted_card_violate_one_copy_limit
+        PASS [   0.041s] (230/436) phase-engine game::deck_validation::tests::validate_standard_rejects_non_standard_cards
+        PASS [   0.039s] (231/436) phase-engine game::engine::priority_reducer_census_tests::priority_reducer_has_the_frozen_action_family_census
+        PASS [   0.035s] (232/436) phase-engine game::engine_resolution_choices::tests::boundary_hold_census_matches_the_apply_loop
+        PASS [   0.031s] (233/436) phase-engine game::mana_sources::tests::leaf_component_census_counts_the_flattened_tree
+        PASS [   0.039s] (234/436) phase-engine game::layers::tests::incremental_flush_still_runs_the_census_of_a_dynamic_count_reaching_a_recipient
+        PASS [   0.047s] (235/436) phase-engine game::layers::tests::incremental_flush_skips_the_census_of_a_dynamic_count_reaching_no_recipient
+        PASS [   0.038s] (236/436) phase-engine game::triggers::tests::construction_finisher_rejects_a_wait_outside_the_closed_census
+        PASS [   0.035s] (237/436) phase-engine types::format::tests::client_format_registry_legality_keys_match_the_engine
+        PASS [   0.040s] (238/436) phase-engine source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   0.038s] (239/436) phase-engine types::format::tests::client_format_registry_matches_the_engine_registry
+        PASS [   0.046s] (240/436) phase-engine game::turns::tests::production_phase_assignment_census_is_frozen
+        PASS [   0.038s] (241/436) phase-engine types::format::tests::command_zone_holds_decklist_commander_sits_between_uses_commander_and_command_zone
+        PASS [   0.045s] (242/436) phase-engine types::format::tests::archenemy_registry_entry_uses_default_topology
+        PASS [   0.048s] (243/436) phase-engine types::format::tests::client_builtin_game_format_union_matches_the_engine
+        PASS [   0.035s] (244/436) phase-engine types::format::tests::commander_deck_is_exactly_100_but_commander_draft_is_min_60
+        PASS [   0.040s] (245/436) phase-engine types::format::tests::commander_draft_format_config_matches_cr
+        PASS [   0.053s] (246/436) phase-engine types::format::tests::command_zone_holds_decklist_commander_matches_the_validator_netting_set
+        PASS [   0.047s] (247/436) phase-engine types::format::tests::commander_pairing_admits_exactly_todays_counts
+        PASS [   0.028s] (248/436) phase-engine types::format::tests::deck_copy_limit_serializes_as_tagged_union
+        PASS [   0.033s] (249/436) phase-engine types::format::tests::custom_command_zone_without_a_damage_threshold_still_holds_a_decklist_commander
+        PASS [   0.024s] (250/436) phase-engine types::format::tests::deck_size_rule_serializes_as_tagged_union
+        PASS [   0.045s] (251/436) phase-engine types::format::tests::commander_pairing_agrees_with_the_command_zone_axis
+        PASS [   0.027s] (252/436) phase-engine types::format::tests::deck_size_authority_registry_completeness
+        PASS [   0.029s] (253/436) phase-engine types::format::tests::deck_size_subject_agrees_with_the_command_zone_axis
+        PASS [   0.037s] (254/436) phase-engine types::format::tests::deck_copy_limit_permits_no_more_than_is_a_sound_permissiveness_order
+        PASS [   0.036s] (255/436) phase-engine types::format::tests::default_for_player_count_is_always_valid_for_the_count_it_was_chosen_for
+        PASS [   0.049s] (256/436) phase-engine types::format::tests::dandan_config_and_registry_entry
+        PASS [   0.032s] (257/436) phase-engine types::format::tests::default_for_player_count_picks_free_for_all_above_two_seats
+        PASS [   0.099s] (258/436) phase-engine parser::oracle_quantity::tests::masters_councillors_static_gets_dynamic_power_for_graveyard_census
+        PASS [   0.040s] (259/436) phase-engine types::format::tests::default_for_player_count_picks_standard_at_or_below_two_seats
+        PASS [   0.032s] (260/436) phase-engine types::format::tests::every_legality_table_records_exactly_one_registry_format
+        PASS [   0.036s] (261/436) phase-engine types::format::tests::digital_only_admission_partitions_every_legality_format
+        PASS [   0.034s] (262/436) phase-engine types::format::tests::format_config_brawl_deck_sizes
+        PASS [   0.033s] (263/436) phase-engine types::format::tests::format_config_commander
+        PASS [   0.034s] (264/436) phase-engine types::format::tests::format_config_free_for_all
+        PASS [   0.042s] (265/436) phase-engine types::format::tests::format_axes_depart_from_the_stock_answers_only_where_declared
+        PASS [   0.048s] (266/436) phase-engine types::format::tests::deserialize_admission_and_validate_for_player_count_are_independent_layers
+        PASS [   0.039s] (267/436) phase-engine types::format::tests::format_config_field_destructure_is_exhaustive
+        PASS [   0.029s] (268/436) phase-engine types::format::tests::format_config_limited
+        PASS [   0.118s] (269/436) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+        PASS [   0.035s] (270/436) phase-engine types::format::tests::format_config_oathbreaker
+        PASS [   0.039s] (271/436) phase-engine types::format::tests::format_config_premodern
+        PASS [   0.032s] (272/436) phase-engine types::format::tests::format_registry_includes_two_headed_giant
+        PASS [   0.033s] (273/436) phase-engine types::format::tests::format_config_tiny_leaders
+        PASS [   0.038s] (274/436) phase-engine types::format::tests::format_config_standard
+        PASS [   0.033s] (275/436) phase-engine types::format::tests::format_config_two_headed_giant
+        PASS [   0.040s] (276/436) phase-engine types::format::tests::format_config_serde_roundtrip
+        PASS [   0.038s] (277/436) phase-engine types::format::tests::freeform_commander_grants_free_first_mulligan
+        PASS [   0.041s] (278/436) phase-engine types::format::tests::freeform_no_free_first_mulligan
+        PASS [   0.041s] (279/436) phase-engine types::format::tests::legacy_scalar_range_of_influence_deserializes_and_remains_rejected
+        PASS [   0.042s] (280/436) phase-engine types::format::tests::legality_format_is_the_card_pool_projection
+        PASS [   0.042s] (281/436) phase-engine types::format::tests::limited_in_registry
+        PASS [   0.048s] (282/436) phase-engine types::format::tests::limited_for_format_roundtrip
+        PASS [   0.043s] (283/436) phase-engine types::format::tests::limited_legality_format_is_none
+        PASS [   0.033s] (284/436) phase-engine types::format::tests::limited_sideboard_policy_is_unlimited
+        PASS [   0.053s] (285/436) phase-engine types::format::tests::limited_label
+        PASS [   0.033s] (286/436) phase-engine types::format::tests::premodern_uses_normal_constructed_mulligan
+        PASS [   0.041s] (287/436) phase-engine types::format::tests::limited_no_free_first_mulligan
+        PASS [   0.035s] (288/436) phase-engine types::format::tests::premodern_registry_entry_is_ordered_with_constructed_formats
+        PASS [   0.035s] (289/436) phase-engine types::format::tests::premodern_legality_format
+        PASS [   0.038s] (290/436) phase-engine types::format::tests::premodern_for_format_roundtrip
+        PASS [   0.033s] (291/436) phase-engine types::format::tests::range_of_influence_validation_uses_actual_seating
+        PASS [   0.034s] (292/436) phase-engine types::format::tests::range_of_influence_config_round_trips_with_player_overrides
+        PASS [   0.034s] (293/436) phase-engine types::format::tests::registry_constructed_formats_declare_a_deck_construction_pool
+        PASS [   0.051s] (294/436) phase-engine types::format::tests::range_of_influence_config_defaults_missing_overrides_to_empty
+        PASS [   0.035s] (295/436) phase-engine types::format::tests::registry_entries_publish_their_own_formats_legality_key
+        PASS [   0.045s] (296/436) phase-engine types::format::tests::recorded_legality_table_agrees_with_every_table_backed_card_pool
+        PASS [   0.032s] (297/436) phase-engine types::format::tests::selected_format_tag_round_trips_as_a_bare_game_format_string
+        PASS [   0.033s] (298/436) phase-engine types::format::tests::sideboard_policy_permits_no_more_than_is_a_sound_permissiveness_order
+        PASS [   0.031s] (299/436) phase-engine types::format::tests::starting_life_admission_gate_pins_both_bounds
+        PASS [   0.035s] (300/436) phase-engine types::format::tests::selected_format_resolved_serializes_to_the_bare_tag_and_returns_as_tag
+        PASS [   0.037s] (301/436) phase-engine types::format::tests::sideboard_policy_matches_format_semantics
+        PASS [   0.036s] (302/436) phase-engine types::format::tests::sideboard_policy_serializes_as_tagged_union
+        PASS [   0.041s] (303/436) phase-engine types::format::tests::selected_format_rejects_both_externally_tagged_envelopes
+        PASS [   0.048s] (304/436) phase-engine types::format::tests::registry_lists_every_builtin_format
+        PASS [   0.039s] (305/436) phase-engine types::format::tests::starting_life_admission_gate_pins_both_bounds_for_custom_format
+        PASS [   0.035s] (306/436) phase-engine types::format::tests::starting_life_total_for_player_follows_topology
+        PASS [   0.043s] (307/436) phase-engine types::format::tests::starting_life_for_seat_pins_fixed_teams_division
+        PASS [   0.041s] (308/436) phase-engine types::format::tests::starting_life_for_seat_preserves_non_team_formats
+        PASS [   0.032s] (309/436) phase-engine types::format::tests::validate_for_player_count_rejects_outside_commander_range
+        PASS [   0.029s] (310/436) phase-engine types::format::tests::validate_for_player_count_two_headed_giant_rejects_outside_its_registry_range
+        PASS [   0.038s] (311/436) phase-engine types::format::tests::validate_for_player_count_accepts_every_seat_in_the_registry_range
+        PASS [   0.035s] (312/436) phase-engine::integration battlefield_entry_authority_census::bare_trailing_fn_header_is_an_error_not_a_panic
+        PASS [   0.046s] (313/436) phase-engine types::format::tests::uses_commander_matches_default_config_and_threshold
+        PASS [   0.041s] (314/436) phase-engine::integration activation_cost_work_census::a_production_call_after_a_mid_file_test_module_is_counted
+        PASS [   0.025s] (315/436) phase-engine::integration battlefield_entry_authority_census::the_anaphora_publish_resolver_keys_on_cfg_scope_and_on_the_call_tail
+        PASS [   0.024s] (316/436) phase-engine::integration battlefield_entry_authority_census::the_token_created_resolver_keys_on_cfg_scope_and_on_field_completeness
+        PASS [   0.034s] (317/436) phase-engine::integration battlefield_entry_authority_census::the_census_resolver_keys_on_cfg_scope_and_on_the_literal_from_field
+        PASS [   0.030s] (318/436) phase-engine::integration custom_format_schema::custom_format_unlimited_sideboard_survives_deck_loading
+        PASS [   0.081s] (319/436) phase-engine::integration booster_tutor_open_pack::ordinary_deck_loading_still_stocks_and_opens_a_fourteen_card_set_pack
+        PASS [   3.060s] (320/436) phase-engine::integration dandan_custom_pile::e1d_only_the_pile_seats_main_deck_loads
+        PASS [   3.082s] (321/436) phase-engine::integration dandan_custom_pile::e2_the_validator_admits_any_resolvable_80_and_an_empty_submission
+        PASS [   0.060s] (322/436) phase-engine::integration dandan_shared_pile_storage::shuffling_the_empty_seat_consumes_no_entropy
+        PASS [   3.121s] (323/436) phase-engine::integration dandan_custom_pile::e2_the_p2p_guest_gate_admits_an_empty_dandan_submission
+        PASS [   0.017s] (324/436) phase-engine::integration dandan_shared_pile_storage::v14_wasm_boot_guard_reads_the_library_accessor
+        PASS [   3.162s] (325/436) phase-engine::integration dandan_custom_pile::e1a_e1c_the_pile_seats_submission_is_the_one_shared_library
+        PASS [   3.187s] (326/436) phase-engine::integration dandan_custom_pile::e1b_an_empty_submission_plays_the_default_list
+        PASS [   3.122s] (327/436) phase-engine::integration dandan_custom_pile::e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list
+        PASS [   3.222s] (328/436) phase-engine::integration battlefield_entry_authority_census::every_token_created_construction_lives_in_the_single_emitter
+        PASS [   3.236s] (329/436) phase-engine::integration battlefield_entry_authority_census::every_from_none_battlefield_entry_construction_lives_in_the_authority
+        PASS [   3.213s] (330/436) phase-engine::integration dandan_custom_pile::e4a_a_started_game_plays_only_the_pile
+        PASS [   3.582s] (331/436) phase-engine game::engine::stage2_injector_tests::the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event
+        PASS [   3.285s] (332/436) phase-engine::integration dandan_custom_pile::e2s_the_empty_rule_follows_the_deck_supply_axis
+        PASS [   5.140s] (333/436) phase-engine::integration activation_cost_work_census::every_activation_mana_resume_entry_is_classified
+        PASS [   5.355s] (334/436) phase-engine::integration activation_cost_work_census::every_activation_cost_payment_entry_is_classified
+        PASS [   5.713s] (335/436) phase-engine source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [   3.146s] (336/436) phase-engine::integration dandan_shared_pile_storage::v10_pool_resolver_maps_both_seats_to_the_pile_holder
+        PASS [   3.151s] (337/436) phase-engine::integration dandan_shared_pile_storage::v15_library_placement_by_the_zone_pipeline_targets_the_pile
+        PASS [   3.169s] (338/436) phase-engine::integration dandan_shared_pile_storage::v1_non_shared_formats_keep_per_seat_libraries
+        PASS [   3.171s] (339/436) phase-engine::integration dandan_shared_pile_storage::v1_pile_stays_in_the_lowest_seat_when_another_seat_starts
+        PASS [   3.256s] (340/436) phase-engine::integration dandan_shared_pile_storage::v15_dig_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   3.290s] (341/436) phase-engine::integration dandan_shared_pile_storage::v15_scry_choice_reorders_the_pile_for_the_non_canonical_seat
+        PASS [   3.234s] (342/436) phase-engine::integration dandan_shared_pile_storage::v2_fixed_list_resolves_against_the_real_database
+        PASS [   0.100s] (343/436) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS [   0.188s] (344/436) phase-engine::integration defending_player_controls_combat_anchor::hazy_homunculus_controls_census_is_battlefield_scoped
+        PASS [   0.050s] (345/436) phase-engine::integration format_axis_census::engine_supplied_deck_declarations_match_the_committed_list
+        PASS [   3.361s] (346/436) phase-engine::integration dandan_shared_pile_storage::v3_mulligan_by_either_seat_shuffles_the_pile
+        PASS [   0.021s] (347/436) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        PASS [   3.405s] (348/436) phase-engine::integration dandan_shared_pile_storage::v4_opening_deal_draws_both_hands_from_the_pile
+        PASS [   0.031s] (349/436) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+        PASS [   0.068s] (350/436) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS [   0.016s] (351/436) phase-engine::integration format_axis_census::supplies_fixed_deck_is_derived_from_the_deck_supply_axis
+        PASS [   0.150s] (352/436) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS [   0.044s] (353/436) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS [   0.024s] (354/436) phase-engine::integration loop_shortcut_offer_writer_census::the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses
+        PASS [   0.029s] (355/436) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS [   0.022s] (356/436) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_counts_occurrences_and_not_lines
+        PASS [   0.017s] (357/436) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_ignores_a_trailing_comment_mention
+        PASS [   3.674s] (358/436) phase-engine::integration dandan_shared_pile_storage::v15_surveil_keeps_cards_on_top_of_the_pile_for_the_non_canonical_seat
+        PASS [   0.018s] (359/436) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_instrument_reports_both_answers_on_planted_input
+        PASS [   0.085s] (360/436) phase-engine::integration masters_councillors::masters_councillors_pt_scales_with_graveyard_census_across_players
+        PASS [   0.031s] (361/436) phase-engine::integration source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS [   3.806s] (362/436) phase-engine::integration dandan_shared_pile_storage::v1_boot_loads_one_pile_into_the_canonical_seat
+        PASS [   7.359s] (363/436) phase-engine::integration battlefield_entry_authority_census::every_single_id_anaphora_publish_lives_in_an_authority
+        PASS [   0.014s] (364/436) phase-engine::integration waiting_for_actor_authority_census::mulligan_adapters_preserve_the_single_pending_actor_rule
+        PASS [   3.138s] (365/436) phase-engine::integration dandan_shared_pile_storage::v5_v6_either_seat_cycles_from_and_into_the_shared_zones
+        PASS [   1.471s] (366/436) phase-engine::integration waiting_for_actor_authority_census::every_waiting_for_arm_declares_its_acting_authority
+        PASS [   0.077s] (367/436) phase-engine::bin/resolution-face-census tests::export_identity_census_excludes_mixed_audited_layout_pairs
+        PASS [   0.021s] (368/436) phase-engine::bin/resolution-face-census tests::export_identity_census_reports_non_candidates_without_widening_candidates
+        PASS [   0.194s] (369/436) phase-server::bin/phase-server ai_seat_setup_tests::a_deck_name_only_request_records_the_named_deck
+        PASS [   0.013s] (370/436) phase-server::bin/phase-server ai_seat_setup_tests::a_resolvable_ai_deck_is_set_up_with_the_choice_that_describes_it
+        PASS [   3.463s] (371/436) phase-engine::integration dandan_shared_pile_storage::v5_v6_standard_format_cycles_in_the_owners_own_zones
+        PASS [   0.025s] (372/436) phase-server::bin/phase-server ai_seat_setup_tests::an_unresolvable_ai_deck_refuses_the_create
+        PASS [   0.029s] (373/436) phase-server::bin/phase-server ai_seat_setup_tests::an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck
+        PASS [   0.091s] (374/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_client_close_ends_the_socket_before_the_disconnect_cleanup
+        PASS [   0.091s] (375/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_client_close_is_answered_with_a_close_before_the_socket_ends
+        PASS [   3.456s] (376/436) phase-engine::integration dandan_shared_pile_storage::v7_conjure_into_the_library_lands_in_the_pile_only
+        PASS [   0.227s] (377/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_guest_release_queued_before_the_host_departure_is_announced_first
+        PASS [   0.391s] (378/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_draft_host_drop_delists_the_pod
+        PASS [   3.168s] (379/436) phase-engine::integration dandan_shared_pile_storage::v8_library_shuffle_acts_on_the_pile_and_replays
+        PASS [   3.196s] (380/436) phase-engine::integration dandan_shared_pile_storage::v9_library_boundary_by_either_seat_forgets_the_looked_at_pile
+        PASS [   0.427s] (381/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_guest_seat_leaving_and_returning_keeps_the_room_listed
+        PASS [   0.301s] (382/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_host_returning_after_its_grace_expired_is_refused_and_the_room_stays_delisted
+        PASS [   3.301s] (383/436) phase-engine::integration dandan_shared_pile_storage::v8_zone_change_commands_record_and_replay_pile_positions
+        PASS [   3.251s] (384/436) phase-engine::integration deterministic_game_state_serde::serde_hash_owner_census_is_exhaustive_and_every_canonical_owner_names_its_adapter
+        PASS [   0.302s] (385/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_host_socket_attaching_to_a_draft_match_delists_its_room
+        PASS [   0.837s] (386/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_draft_join_is_refused_while_the_host_is_away
+        PASS [   0.244s] (387/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_hosting_reconnect_over_a_live_host_socket_restamps_the_listed_row
+        PASS [   3.285s] (388/436) phase-engine::integration format_axis_census::every_engine_supplied_format_loads_a_library_from_an_empty_submission
+        PASS [   0.181s] (389/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_into_an_unregistered_legacy_room_starts_the_game
+        PASS [   0.294s] (390/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_into_a_listed_room_is_admitted_like_a_lobby_join
+        PASS [   3.538s] (391/436) phase-engine::integration dandan_shared_pile_storage::v9_standard_shuffle_keeps_the_other_players_library_knowledge
+        PASS [   0.211s] (392/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_without_a_password_is_asked_for_one
+        PASS [   0.153s] (393/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_pregame_join_records_its_seats_deck_provenance
+        PASS [   0.460s] (394/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_lapsed_draft_host_reaps_the_pod_through_the_teardown
+        PASS [   0.475s] (395/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_lapsed_lobby_guest_frees_its_seat
+        PASS [   0.281s] (396/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_relist_from_another_build_reaches_only_that_builds_subscribers
+        PASS [   0.255s] (397/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_reservation_held_across_the_host_drop_is_honoured_after_return
+        PASS [   0.329s] (398/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_private_room_announces_nothing_across_host_drop_and_return
+        PASS [   0.329s] (399/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_public_room_is_delisted_while_its_host_is_away_and_relisted_on_return
+        PASS [   0.469s] (400/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_live_draft_pod_outlives_its_listing_ttl
+        PASS [   0.625s] (401/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_legacy_join_queued_behind_a_room_create_takes_the_lobby_path
+        PASS [   3.518s] (402/436) phase-engine::integration source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS [   0.328s] (403/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_restored_unstarted_room_starts_with_its_host_away
+        PASS [   0.110s] (404/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_subscription_queued_before_the_host_departure_receives_its_removal
+        PASS [   0.069s] (405/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_ai_create_claims_a_requested_code
+        PASS [   0.342s] (406/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_returning_host_restamps_the_rooms_build
+        PASS [   0.375s] (407/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_returning_draft_host_relists_and_restamps
+        PASS [   0.067s] (408/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_ai_create_drops_residual_routes_under_its_code
+        PASS [   0.234s] (409/436) phase-server::bin/phase-server issue_4548_full_create_tests::an_accepted_abandon_delists_and_retires_a_public_room
+        PASS [   0.334s] (410/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_stale_build_draft_join_is_refused_like_a_game_join
+        PASS [   0.058s] (411/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_refuses_a_code_held_by_a_draft
+        PASS [   0.108s] (412/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_claims_a_requested_code_and_a_second_claim_is_code_in_use
+        PASS [   0.061s] (413/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_refuses_a_code_held_by_a_draft_match
+        PASS [   0.112s] (414/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_drops_residual_routes_under_its_code
+        PASS [   0.067s] (415/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_create_refuses_a_code_held_by_an_active_persisted_row
+        PASS [   0.479s] (416/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_seated_guest_keeps_its_seat_while_the_host_is_away
+        PASS [   0.487s] (417/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_seat_queued_behind_a_host_return_is_admitted_on_the_returned_build
+        PASS [   0.064s] (418/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_accepts_native_multi_ai_setup_larger_than_eight_kib
+        PASS [   0.068s] (419/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_accepts_an_empty_host_deck_for_dandan
+        PASS [   0.059s] (420/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_rejects_format_invalid_host_deck
+        PASS [   0.060s] (421/436) phase-server::bin/phase-server issue_4548_full_create_tests::lobby_only_create_forwards_the_requested_code_to_the_broker
+        PASS [   0.104s] (422/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_mode_create_sends_slots_after_game_created
+        PASS [   0.058s] (423/436) phase-server::bin/phase-server issue_4548_full_create_tests::typed_lookup_reports_draft_metadata_over_the_wire
+        PASS [   0.114s] (424/436) phase-server::bin/phase-server issue_4548_full_create_tests::full_ranked_create_refuses_a_code_with_ranked_history
+        PASS [   0.104s] (425/436) phase-server::bin/phase-server issue_4548_full_create_tests::lobby_broadcast_uses_each_clients_negotiated_frame_format
+        PASS [   0.457s] (426/436) phase-server::bin/phase-server issue_4548_full_create_tests::every_join_entry_is_refused_while_the_host_is_away
+        PASS [   0.160s] (427/436) phase-server::bin/phase-server issue_4548_full_create_tests::negotiated_gzip_envelope_accepts_and_returns_binary_frames
+        PASS [   4.014s] (428/436) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS [   4.679s] (429/436) phase-engine::integration loop_shortcut_seat_pin_census::no_target_class_producer_constructs_a_choice_class_player_pin
+        PASS [   0.800s] (430/436) phase-server::bin/phase-server issue_4548_full_create_tests::lobby_rows_reach_only_build_compatible_subscribers
+        PASS [   2.060s] (431/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_restored_drafting_pod_keeps_advancing_past_its_second_window
+        PASS [   2.569s] (432/436) phase-server::bin/phase-server issue_4548_full_create_tests::a_restored_lobby_pod_starts_with_its_host_away
+        PASS [   8.545s] (433/436) phase-engine::integration loop_shortcut_offer_writer_census::the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_validates_pins
+        PASS [  23.973s] (434/436) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+        PASS [  20.806s] (435/436) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+        PASS [  21.049s] (436/436) phase-engine::integration wba_loop_firewall_interposition::unactivated_ability_relief_offers_on_three_real_census_lands
+────────────
+     Summary [  30.279s] 436 tests run: 436 passed, 33371 skipped
+done rc=0
