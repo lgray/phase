@@ -361,7 +361,7 @@ pub struct ShortcutDecisionSchema {
     pub iteration_count: IterationCount,
     /// CR 732.2a: the CR 704 repetition threshold this offer's producer MEASURED — a LEGALITY
     /// CEILING, what SOME legal declaration may specify, never a count every declaration
-    /// reaches. `game::engine::certified_bounded_cycle_offer` takes the LARGER of two
+    /// reaches. `game::engine::bounded_offer_tail` takes the LARGER of two
     /// declaration-relative cascades: the last crossing under the offer's own published
     /// declaration and the last one under the re-aimed witness. CR 732.2a's "may be legally
     /// taken" quantifies existentially over declarations, so the maximum is the reduction that

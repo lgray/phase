@@ -8,15 +8,18 @@
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::decision_template::{
-    ChoicePoint, DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
+    ChoicePoint, DecisionSlot, DecisionTemplate, MayChoiceOption, PinnedDecision,
+    ShortcutDecisionSchema, TargetPin,
 };
+use crate::analysis::loop_check::LoopCertificate;
 use crate::analysis::resource::{
-    frame_without, CertifiedInstructedDeparture, CoveredGrowth, ObjectGrowthVerdict, ResourceVector,
+    driving_resources_non_decreasing, frame_without, CertifiedInstructedDeparture, CoveredGrowth,
+    ObjectGrowthVerdict, ResourceVector,
 };
 use crate::game::engine::{
     announced_target_pins, apply, certify_object_growth_frames, clear_frame_bookkeeping,
     object_decision_source, period_sign_check, pinnable_mana_color, proliferate_pins,
-    SimulationProbeGuard,
+    replay_bounded_offer, SimulationProbeGuard,
 };
 use crate::game::mana_payment::{select_convoke_taps, ConvokeTapOrder};
 use crate::game::play_trace::{
@@ -52,7 +55,8 @@ pub enum OfferRefusal {
     Cover(ObjectGrowthVerdict),
     /// The period makes no progress for its controller.
     NoAxis,
-    /// CR 704.5a: the period moves some player toward losing the game.
+    /// CR 704.5a: the period moves some player toward losing the game, and the threshold
+    /// authority refused its replayed frames.
     LossAxis,
     /// The period consumes a resource that drives it.
     DrivingResourcesDecrease,
@@ -109,7 +113,17 @@ pub(crate) struct Confirmation {
     pub(crate) performed: Vec<String>,
     /// CR 732.2a: the game choices the first replayed cycle's prompts were answered with.
     pub(crate) choices: Vec<PinnedDecision>,
+    /// CR 704.5a + CR 732.2a: a loss period's bounded offer, as the threshold authority measured
+    /// it on the replayed frames; `None` on the unbounded road.
+    pub(crate) bounded: Option<BoundedOfferParts>,
 }
+
+/// The certificate, schema and declaration a bounded offer publishes.
+pub(crate) type BoundedOfferParts = (
+    LoopCertificate,
+    ShortcutDecisionSchema,
+    Option<DecisionTemplate>,
+);
 
 /// The refusal of a span whose optional choices are not `holder`'s alone: more than one seat's
 /// is a fragmented loop (CR 732.3), and one other seat's is that seat's period.
@@ -341,12 +355,13 @@ fn rebind_convoke(replay: &mut GameState) -> Result<Option<usize>, OfferRefusal>
 }
 
 /// One replayed cycle from `replay`'s current state; the source of each triggered ability it
-/// resolved, in order.
+/// resolved, in order. `frames`, when given, collects every priority frame the cycle passes.
 fn replay_cycle(
     replay: &mut GameState,
     items: &[PeriodItem],
     end: &FrameEnd,
     choices: &mut Vec<PinnedDecision>,
+    mut frames: Option<&mut Vec<GameState>>,
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
@@ -363,6 +378,9 @@ fn replay_cycle(
                 .unwrap_or(items.len())
         });
         if let WaitingFor::Priority { player } = replay.waiting_for {
+            if let Some(frames) = frames.as_deref_mut() {
+                frames.push(replay.clone());
+            }
             if beat > 0 && end.reached(replay) && cycle_complete(items, &done) {
                 return Ok(performed);
             }
@@ -635,9 +653,9 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
-    let performed = replay_cycle(&mut replay, &items, &end, &mut choices)?;
+    let performed = replay_cycle(&mut replay, &items, &end, &mut choices, None)?;
     let s_n1 = replay.clone();
-    replay_cycle(&mut replay, &items, &end, &mut Vec::new())?;
+    replay_cycle(&mut replay, &items, &end, &mut Vec::new(), None)?;
     let s_n2 = replay;
     let casts: Vec<ObjectId> = items
         .iter()
@@ -654,7 +672,28 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     if !verdict.certifies() {
         return Err(OfferRefusal::Cover(verdict));
     }
-    let (delta, departure) = period_sign_check(&s_n1, &s_n2, holder)?;
+    let (delta, departure, bounded) = match period_sign_check(&s_n1, &s_n2, holder) {
+        Ok((delta, departure)) => (delta, departure, None),
+        // CR 704.5a + CR 732.2a: a loss period may be repeated only up to the threshold crossings
+        // the authority measures on its replayed frames, and never while it consumes what drives it.
+        Err(OfferRefusal::LossAxis) => {
+            if !driving_resources_non_decreasing(&s_n1, &s_n2, holder) {
+                return Err(OfferRefusal::LossAxis);
+            }
+            let mut frames = Vec::new();
+            replay_cycle(
+                &mut s_n1.clone(),
+                &items,
+                &end,
+                &mut Vec::new(),
+                Some(&mut frames),
+            )?;
+            let parts = replay_bounded_offer(frame, holder, &frames, &choices)
+                .map_err(|_| OfferRefusal::LossAxis)?;
+            (ResourceVector::period(&s_n1, &s_n2), None, Some(parts))
+        }
+        Err(refusal) => return Err(refusal),
+    };
     Ok(Confirmation {
         period: ConfirmedPeriod { items, growth },
         frames: Box::new([s_n1, s_n2]),
@@ -663,6 +702,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         #[cfg(any(test, feature = "test-support"))]
         performed,
         choices,
+        bounded,
     })
 }
 
@@ -674,7 +714,7 @@ pub(crate) fn perform_cycle(
     holder: PlayerId,
 ) -> Result<(), OfferRefusal> {
     let end = FrameEnd::of(state, holder);
-    replay_cycle(state, &period.items, &end, &mut Vec::new()).map(drop)
+    replay_cycle(state, &period.items, &end, &mut Vec::new(), None).map(drop)
 }
 
 /// Every span the current trace names, with the confirmer's verdict on each at `state`, which
@@ -706,5 +746,11 @@ pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, Offe
     let frame = crate::game::visibility::proposer_hidden_view(&frame, holder);
     let end = FrameEnd::of(&frame, holder);
     let mut replay = frame.clone();
-    Some(replay_cycle(&mut replay, &items, &end, &mut Vec::new()))
+    Some(replay_cycle(
+        &mut replay,
+        &items,
+        &end,
+        &mut Vec::new(),
+        None,
+    ))
 }

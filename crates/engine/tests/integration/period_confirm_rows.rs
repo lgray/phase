@@ -1240,8 +1240,7 @@ fn griffin_board_is_refused_at_its_first_window_and_offered_at_the_next() {
 /// with no payoff nothing grows; Moldervine Reclamation ("Whenever a creature you control dies,
 /// you gain 1 life and draw a card.") and Liliana the Repentant ("Whenever another creature or
 /// planeswalker you control enters, mill two cards.") deplete the caster's own library, beside
-/// Altar of the Brood's mill or alone; and Zulaport Cutthroat's "each opponent loses 1 life" moves
-/// the opponents toward losing.
+/// Altar of the Brood's mill or alone.
 #[test]
 fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
     let Some(db) = shared_card_db() else { return };
@@ -1259,7 +1258,7 @@ fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
         )
     }
     // Per cycle: P0's hand, P0's library, P1's library.
-    let refused: [(&[&str], [i64; 3], Expected); 5] = [
+    let refused: [(&[&str], [i64; 3], Expected); 4] = [
         (&[], [0, 0, 0], |v| *v == Err(OfferRefusal::NoAxis)),
         (
             &["Altar of the Brood", "Moldervine Reclamation"],
@@ -1272,9 +1271,6 @@ fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
             [0, -2, -1],
             at_cover,
         ),
-        (&["Zulaport Cutthroat"], [0, 0, 0], |v| {
-            *v == Err(OfferRefusal::LossAxis)
-        }),
     ];
     let sizes = |state: &GameState| {
         [
@@ -1968,4 +1964,254 @@ fn a_replay_refused_for_want_of_red_mana_is_asked_again_once_food_chain_makes_re
     );
     exile_for(&mut runner, ManaType::Red);
     assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+}
+
+const P2: PlayerId = PlayerId(2);
+const P3: PlayerId = PlayerId(3);
+
+/// [`altar_board`]'s cards and libraries on `lives.len()` seats, each seat at its entry of `lives`:
+/// only the seat count and the life totals differ from that board.
+fn altar_board_at(
+    payoff: &str,
+    lives: &[i32],
+    db: &CardDatabase,
+) -> (GameRunner, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(lives.len() as u8, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    for (seat, life) in lives.iter().enumerate() {
+        scenario.with_life(PlayerId(seat as u8), *life);
+    }
+    let altar = scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Walking Corpse", Zone::Battlefield, db);
+    let gravecrawler = scenario.add_real_card(P0, "Gravecrawler", Zone::Graveyard, db);
+    scenario.add_real_card(P0, "Swamp", Zone::Battlefield, db);
+    scenario.add_real_card(P0, payoff, Zone::Battlefield, db);
+    for seat in 0..lives.len() {
+        for _ in 0..10 {
+            scenario.add_real_card(PlayerId(seat as u8), "Swamp", Zone::Library, db);
+        }
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    (runner, altar, gravecrawler)
+}
+
+fn lives(state: &GameState) -> Vec<i32> {
+    state.players.iter().map(|p| p.life).collect()
+}
+
+fn eliminated(state: &GameState) -> Vec<PlayerId> {
+    state
+        .players
+        .iter()
+        .filter(|p| p.is_eliminated)
+        .map(|p| p.id)
+        .collect()
+}
+
+/// Casts Gravecrawler and sacrifices it to the Altar, up to three cycles, until the engine offers
+/// the loop; each seat in `drained` loses exactly 1 life per sacrifice, and a payoff's target
+/// prompt is answered with P1.
+fn drain_to_offer(
+    runner: &mut GameRunner,
+    altar: ObjectId,
+    gravecrawler: ObjectId,
+    drained: &[PlayerId],
+) {
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action)
+            + chooses_color(ManaType::Black)(action)
+            + i32::from(matches!(
+                action,
+                GameAction::ChooseTarget {
+                    target: Some(TargetRef::Player(P1))
+                }
+            ))
+    };
+    for cycle in 0..3 {
+        cast(runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(runner, &score);
+        let before = lives(runner.state());
+        let index = ability(runner.state(), altar, true);
+        activate(runner, altar, index);
+        settle(runner, &score);
+        let after = lives(runner.state());
+        for seat in drained {
+            let seat = usize::from(seat.0);
+            assert_eq!(after[seat], before[seat] - 1, "reach: cycle {cycle}");
+        }
+        if is_offer(runner.state()) {
+            return;
+        }
+    }
+}
+
+/// The offer standing at `state`, asserted to be a recorded period offered exactly `count`
+/// repetitions with that capacity; its certificate.
+fn bounded_recorded_offer(state: &GameState, count: u32) -> &LoopCertificate {
+    let WaitingFor::LoopShortcut {
+        certificate,
+        schema,
+        road,
+        ..
+    } = &state.waiting_for
+    else {
+        panic!("no offer: {:?}", latest_verdict(state));
+    };
+    assert_eq!(*road, OfferRoad::RecordedPeriod);
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(count));
+    assert_eq!(schema.deliverable_capacity, count);
+    assert_eq!(certificate.win_kind, WinKind::LethalDamage);
+    certificate
+}
+
+/// The board after `count` repetitions are declared and accepted on a clone of `state`.
+fn taken(state: &GameState, count: u32) -> GameState {
+    let mut runner = GameRunner::from_state(state.clone());
+    take(&mut runner, count);
+    runner.state().clone()
+}
+
+/// CR 732.2a: a count past the last predicted crossing is refused at its declaration, before any
+/// seat is asked or any cycle performed.
+fn assert_declaration_refused(state: &GameState, count: u32) {
+    let mut runner = GameRunner::from_state(state.clone());
+    act(
+        &mut runner,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(count),
+            template: None,
+        },
+    );
+    let after = runner.state();
+    assert_eq!(after.waiting_for, WaitingFor::Priority { player: P0 });
+    assert_eq!(lives(after), lives(state));
+    assert!(eliminated(after).is_empty());
+}
+
+/// CR 704.5a + CR 732.2a + CR 800.4a: Phyrexian Altar ("Sacrifice a creature: Add one mana of any
+/// color.") recurring Gravecrawler beside Zulaport Cutthroat ("Whenever this creature or another
+/// creature you control dies, each opponent loses 1 life and you gain 1 life.") or Blood Artist
+/// ("Whenever this creature or another creature dies, target player loses 1 life and you gain 1
+/// life.") is offered exactly as many repetitions as P1 has life, and a take performs the count it
+/// declares.
+#[test]
+fn an_altar_zulaport_period_is_offered_a_bounded_shortcut_and_taken() {
+    let Some(db) = shared_card_db() else { return };
+    for payoff in ["Zulaport Cutthroat", "Blood Artist"] {
+        let (mut runner, altar, gravecrawler) = altar_board(Some(payoff), db);
+        drain_to_offer(&mut runner, altar, gravecrawler, &[P1]);
+        let offered = runner.state().clone();
+        let life = offered.players[1].life;
+        let l = life as u32;
+        let certificate = bounded_recorded_offer(&offered, l);
+        let per_cycle = certificate
+            .per_cycle
+            .as_ref()
+            .unwrap_or_else(|| panic!("{payoff}: a signed offer"));
+        assert_eq!(
+            per_cycle.delta.life,
+            [(P0, 1), (P1, -1)].into_iter().collect(),
+            "{payoff}"
+        );
+        assert!(
+            engine::ai_support::candidate_actions(&offered)
+                .iter()
+                .any(|candidate| candidate.action
+                    == GameAction::DeclareShortcut {
+                        count: IterationCount::Fixed(l),
+                        template: None,
+                    }),
+            "{payoff}: the AI proposer may declare the offer"
+        );
+
+        let three = taken(&offered, 3);
+        assert_eq!(
+            lives(&three),
+            [offered.players[0].life + 3, life - 3],
+            "{payoff}"
+        );
+        assert_eq!(three.waiting_for, WaitingFor::Priority { player: P0 });
+        assert!(eliminated(&three).is_empty(), "{payoff}");
+
+        let all = taken(&offered, l);
+        assert_eq!(
+            all.waiting_for,
+            WaitingFor::GameOver { winner: Some(P0) },
+            "{payoff}"
+        );
+        assert_eq!(eliminated(&all), [P1], "{payoff}");
+
+        assert_declaration_refused(&offered, l + 1);
+    }
+}
+
+/// CR 704.5a + CR 800.4a + CR 104.2a: on four seats the Zulaport drain drops P1 and P2 together at
+/// the repetition both reach 0, and P3 at its own; a take stops at exactly what it declared.
+#[test]
+fn an_altar_zulaport_period_on_four_seats_drops_each_seat_at_its_crossing() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) =
+        altar_board_at("Zulaport Cutthroat", &[20, 6, 6, 8], db);
+    drain_to_offer(&mut runner, altar, gravecrawler, &[P1, P2, P3]);
+    let offered = runner.state().clone();
+    bounded_recorded_offer(&offered, 7);
+    assert_eq!(lives(&offered)[1..], [5, 5, 7]);
+
+    let six = taken(&offered, 6);
+    assert_eq!(eliminated(&six), [P1, P2]);
+    assert_eq!(six.players[3].life, 1);
+    assert_eq!(six.waiting_for, WaitingFor::Priority { player: P0 });
+
+    let seven = taken(&offered, 7);
+    assert_eq!(seven.waiting_for, WaitingFor::GameOver { winner: Some(P0) });
+
+    assert_declaration_refused(&offered, 8);
+}
+
+/// CR 704.3 + CR 800.4a: a take whose signature no longer charges P1 performs the repetitions
+/// before P1's departure and stops there, rather than commit a departure it did not predict.
+#[test]
+fn a_replay_take_stops_before_a_departure_its_signature_did_not_predict() {
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, altar, gravecrawler) = altar_board_at("Zulaport Cutthroat", &[20, 7, 9], db);
+    drain_to_offer(&mut runner, altar, gravecrawler, &[P1, P2]);
+    bounded_recorded_offer(runner.state(), 8);
+    let p2 = runner.state().players[2].life;
+    act(
+        &mut runner,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(8),
+            template: None,
+        },
+    );
+    let WaitingFor::RespondToShortcut { proposal, .. } = &mut runner.state_mut().waiting_for else {
+        panic!("the declaration opens the acceptance window");
+    };
+    proposal
+        .per_cycle
+        .as_mut()
+        .expect("a signed proposal")
+        .delta
+        .life
+        .remove(&P1);
+    while matches!(
+        runner.state().waiting_for,
+        WaitingFor::RespondToShortcut { .. }
+    ) {
+        act(
+            &mut runner,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+        );
+    }
+    let state = runner.state();
+    assert!(
+        state.players[2].life < p2,
+        "reach: the take performed repetitions"
+    );
+    assert!(eliminated(state).is_empty());
+    assert_eq!(lives(state)[1..], [1, p2 - 5]);
+    assert_eq!(state.waiting_for, WaitingFor::Priority { player: P0 });
 }

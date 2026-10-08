@@ -3781,9 +3781,9 @@ fn loop_shortcut_projection(
             //
             // LATENT, NOT LIVE (measured at this head): no in-tree producer can reach this
             // arm with `0`. `build_shortcut_schema` (`game/engine.rs`) has THREE call sites and
-            // derives every capacity itself: `interactive_loop_bridge` and
-            // `try_offer_object_growth_shortcut` measure no threshold, so theirs is
-            // `MAX_SHORTCUT_CYCLES`, while `certified_bounded_cycle_offer` hands it a measured
+            // derives every capacity itself: `interactive_loop_bridge` and the unbounded
+            // recorded offer measure no threshold, so theirs is
+            // `MAX_SHORTCUT_CYCLES`, while `bounded_offer_tail` hands it a measured
             // threshold that cannot be `0` — that producer refuses outright unless the reduction
             // measured one of at least 1. The per-viewer projection in
             // `game/visibility.rs` only re-projects an existing schema's pair; and
@@ -3808,8 +3808,9 @@ fn loop_shortcut_projection(
         }
     };
     // CR 732.2a: carry the measured per-period signature forward so the picker's numbers can
-    // state their consequence instead of standing alone. It is published only by the producer
-    // that measured one (`certified_bounded_cycle_offer`); every other mint carries `None`, as
+    // state their consequence instead of standing alone. It is published only by
+    // `bounded_offer_tail`, for a ring period and a recorded loss period alike; every other mint
+    // carries `None`, as
     // does every save written before the field existed. The other authority the magnitudes
     // need — a FINITE count — is `count` above, and the two coincide by construction rather
     // than by luck: that same producer mints a `Fixed` VARIANT, which is what selects the finite

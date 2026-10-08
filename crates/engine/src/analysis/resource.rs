@@ -13439,8 +13439,8 @@ mod tests {
     }
 
     /// CR 732.1b: a certifying cover reports growth only performing makes when a grown object
-    /// carries a keyword, a delayed trigger acts on a grown object alone, or another player
-    /// controls a grown object, and mintable growth otherwise.
+    /// carries a keyword, a delayed trigger acts on a grown object alone, another player controls a
+    /// grown object, or a certified departure moved one, and mintable growth otherwise.
     #[test]
     fn the_fodder_cover_reports_whether_a_mint_makes_its_growth() {
         use crate::types::ability::{

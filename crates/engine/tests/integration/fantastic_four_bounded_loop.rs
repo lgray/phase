@@ -2322,7 +2322,7 @@ fn offer_declaration(
 ///
 /// The reference must be built with `count = schema.deliverable_capacity`, NOT the `1` every other
 /// declare row in this file passes: `build_bounded_declaration` sets
-/// `replay: Scheduled { count: schema.iteration_count }`, and `certified_bounded_cycle_offer`
+/// `replay: Scheduled { count: schema.iteration_count }`, and `bounded_offer_tail`
 /// builds the schema with a suggestion narrowed to that capacity. Measured on all three boards:
 /// `REAL == f4_pin_template(count = 1)` is FALSE and `REAL == f4_pin_template(count = max)` is
 /// TRUE.

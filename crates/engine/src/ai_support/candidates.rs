@@ -3668,6 +3668,7 @@ pub fn candidate_actions_broad_with_probe(
             proposer,
             schema,
             declaration,
+            period,
             ..
         } => {
             // CR 732.2a: `UntilLethal` names no count, so it is legal ONLY against an offer
@@ -3702,14 +3703,16 @@ pub fn candidate_actions_broad_with_probe(
             // authority for "this producer narrowed the bound"; do NOT re-spell it as a
             // comparison against `MAX_SHORTCUT_CYCLES`.
             //
-            // The two admissible pin states, and nothing else: an EMPTY published point set
-            // (nothing to pin, so `template: None` is the complete answer), or a published set
-            // the offer ALREADY carries a declaration for. That `template` is the ENGINE'S OWN
-            // published declaration — the very value `handle_declare_shortcut` will validate —
-            // so there is exactly one pin authority at this node and the AI never constructs
-            // one. An offer with published points and NO declaration (a seat that never
-            // answered, or a `Conflicted` latch) still fail-closes: `declaration` is `None`,
-            // the conjunct below is false, and `DeclineShortcut` remains the only candidate.
+            // The three admissible pin states, and nothing else: an EMPTY published point set
+            // (nothing to pin, so `template: None` is the complete answer), a published set
+            // the offer ALREADY carries a declaration for, or a recorded period the take replays,
+            // whose recorded answers `handle_declare_shortcut` admits with `template: None`. That
+            // `template` is the ENGINE'S OWN published declaration — the very value
+            // `handle_declare_shortcut` will validate — so there is exactly one pin authority at
+            // this node and the AI never constructs one. An offer with an empty period,
+            // published points and NO declaration (a seat that never answered, or a `Conflicted`
+            // latch) still fail-closes: the conjunct below is false, and `DeclineShortcut`
+            // remains the only candidate.
             // CR 732.2a: THE SUGGESTION, not the capacity — and the two are no longer one number.
             // The capacity is the widest count SOME legal declaration may specify; the suggestion
             // is a count the offer's OWN published declaration drives, which is the declaration
@@ -3727,7 +3730,8 @@ pub fn candidate_actions_broad_with_probe(
                 crate::analysis::decision_template::IterationCount::UntilLethal => None,
             };
             if let Some(n) = suggested.filter(|_| {
-                schema.is_bounded() && (schema.points.is_empty() || declaration.is_some())
+                schema.is_bounded()
+                    && (schema.points.is_empty() || declaration.is_some() || !period.is_empty())
             }) {
                 v.push(candidate(
                     GameAction::DeclareShortcut {

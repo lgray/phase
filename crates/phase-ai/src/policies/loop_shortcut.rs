@@ -420,7 +420,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
 /// Returns the MINIMUM across axes, so the caller asks one question: `Some` refuses the declare.
 /// `None` means "no axis kills the proposer within `declared` cycles" — including the case where
 /// this offer carries no certified period at all. That last branch is unreachable for the bounded
-/// class (`certified_bounded_cycle_offer` mints `per_cycle: Some(periodic)`), and it is written
+/// class (`bounded_offer_tail` mints `per_cycle: Some(periodic)`), and it is written
 /// as a plain `?` rather than an `expect` because a policy must never panic on a state shape;
 /// the reach-guards in `loop_shortcut_declare_that_kills_the_proposer_on_life_is_refused` and
 /// `loop_shortcut_declare_that_mills_the_proposer_to_exactly_zero_still_scores` are what prove
@@ -733,7 +733,7 @@ mod tests {
     }
 
     /// A BOUNDED offer carrying a real certified period — the shape
-    /// `certified_bounded_cycle_offer` actually mints (`per_cycle: Some(periodic)`), as opposed
+    /// `bounded_offer_tail` actually mints (`per_cycle: Some(periodic)`), as opposed
     /// to [`cert`]'s `None`.
     fn bounded_offer_with_period(bound: u32, period: PeriodicDelta) -> GameState {
         bounded_offer_declaring(

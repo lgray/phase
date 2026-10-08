@@ -495,7 +495,7 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         family: ResourceFamily::Death,
         win_kind: WinKind::LethalDamage,
         gated_on: None,
-        deferral: Some(DeferralBucket::ObjectReentry),
+        deferral: None,
     },
     ComboRow {
         name: "Karmic Guide + Reveillark + Viscera Seer",
@@ -582,6 +582,14 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         cards: &["Phyrexian Altar", "Gravecrawler", "Altar of the Brood"],
         family: ResourceFamily::Mill,
         win_kind: WinKind::Advantage,
+        gated_on: None,
+        deferral: None,
+    },
+    ComboRow {
+        name: "Phyrexian Altar + Gravecrawler + Zulaport Cutthroat",
+        cards: &["Phyrexian Altar", "Gravecrawler", "Zulaport Cutthroat"],
+        family: ResourceFamily::Drain,
+        win_kind: WinKind::LethalDamage,
         gated_on: None,
         deferral: None,
     },
@@ -714,9 +722,11 @@ pub(crate) const DRIVERS: &[(usize, ComboDriver)] = &[
     (18, ComboDriver::LiveDrain),
     (22, ComboDriver::PrecastShortcut),
     (40, ComboDriver::Offline(drive_food_chain_scourge_offer)),
+    (45, ComboDriver::Offline(drive_altar_blood_artist_offer)),
     (50, ComboDriver::Offline(drive_offline_spike_archangel)),
     (54, ComboDriver::Offline(drive_food_chain_squee_offer)),
     (55, ComboDriver::Offline(drive_altar_brood_offer)),
+    (56, ComboDriver::Offline(drive_altar_zulaport_offer)),
 ];
 
 /// Number of rows in the corpus.
@@ -2235,9 +2245,41 @@ pub(crate) fn first_gameover_beat(trace: &[BeatTrace]) -> Option<(usize, PlayerI
     })
 }
 
+/// The certificate of the loop shortcut the engine offers at `runner`'s current state.
+fn offered_certificate(runner: &GameRunner) -> Option<LoopCertificate> {
+    match &runner.state().waiting_for {
+        WaitingFor::LoopShortcut { certificate, .. } => Some(certificate.clone()),
+        _ => None,
+    }
+}
+
+/// CR 405.5: passes until the stack is empty or the engine offers the loop, answering each
+/// trigger's target prompt with `trigger_target`; the offer's certificate, if one stands.
+fn settle_to_offer(
+    runner: &mut GameRunner,
+    trigger_target: Option<&TargetRef>,
+) -> Result<Option<LoopCertificate>, crate::game::engine::EngineError> {
+    for _ in 0..16 {
+        if let Some(certificate) = offered_certificate(runner) {
+            return Ok(Some(certificate));
+        }
+        let action = match (&runner.state().waiting_for, trigger_target) {
+            (WaitingFor::TriggerTargetSelection { .. }, Some(target)) => GameAction::ChooseTarget {
+                target: Some(target.clone()),
+            },
+            _ if runner.state().stack.is_empty() => break,
+            _ => GameAction::PassPriority,
+        };
+        runner.act(action)?;
+    }
+    Ok(offered_certificate(runner))
+}
+
 /// CR 732.2a: `outlet` paying its mana-ability cost with `creature`, which its own text lets be
 /// cast from where that cost put it, then that cast, cycle by cycle through `apply()` on a
 /// four-seat board with `beside` until the engine offers the loop; the offer's certificate.
+/// `trigger_target` answers a payoff trigger's target (CR 117.1a: the cast waits for the stack
+/// to empty).
 fn drive_mana_outlet_offer(
     db: &CardDatabase,
     outlet: &str,
@@ -2245,6 +2287,7 @@ fn drive_mana_outlet_offer(
     creature: &str,
     land: &str,
     color: ManaType,
+    trigger_target: Option<TargetRef>,
 ) -> Option<LoopCertificate> {
     let mut scenario = GameScenario::new_n_player(4, 42);
     scenario.at_phase(Phase::PreCombatMain);
@@ -2260,10 +2303,6 @@ fn drive_mana_outlet_offer(
     }
     let mut runner = scenario.build();
     runner.state_mut().loop_detection = crate::types::game_state::LoopDetectionMode::Interactive;
-    let offered = |runner: &GameRunner| match &runner.state().waiting_for {
-        WaitingFor::LoopShortcut { certificate, .. } => Some(certificate.clone()),
-        _ => None,
-    };
     for _ in 0..4 {
         runner
             .act(GameAction::ActivateAbility {
@@ -2282,8 +2321,7 @@ fn drive_mana_outlet_offer(
                 count: 1,
             })
             .ok()?;
-        // The mana ability leaves an empty-stack priority frame, where an offer can stand.
-        if let Some(certificate) = offered(&runner) {
+        if let Some(certificate) = settle_to_offer(&mut runner, trigger_target.as_ref()).ok()? {
             return Some(certificate);
         }
         let card_id = runner.state().objects.get(&creature)?.card_id;
@@ -2295,16 +2333,7 @@ fn drive_mana_outlet_offer(
                 payment_mode: Default::default(),
             })
             .ok()?;
-        for _ in 0..16 {
-            if let Some(certificate) = offered(&runner) {
-                return Some(certificate);
-            }
-            if runner.state().stack.is_empty() {
-                break;
-            }
-            runner.act(GameAction::PassPriority).ok()?;
-        }
-        if let Some(certificate) = offered(&runner) {
+        if let Some(certificate) = settle_to_offer(&mut runner, trigger_target.as_ref()).ok()? {
             return Some(certificate);
         }
     }
@@ -2320,6 +2349,7 @@ pub(crate) fn drive_food_chain_scourge_offer(db: &CardDatabase) -> Option<LoopCe
         "Eternal Scourge",
         "Swamp",
         ManaType::Black,
+        None,
     )
 }
 
@@ -2332,6 +2362,7 @@ pub(crate) fn drive_food_chain_squee_offer(db: &CardDatabase) -> Option<LoopCert
         "Squee, the Immortal",
         "Mountain",
         ManaType::Red,
+        None,
     )
 }
 
@@ -2347,6 +2378,37 @@ pub(crate) fn drive_altar_brood_offer(db: &CardDatabase) -> Option<LoopCertifica
         "Gravecrawler",
         "Swamp",
         ManaType::Black,
+        None,
+    )
+}
+
+/// Phyrexian Altar sacrificing Gravecrawler beside Walking Corpse, while Blood Artist ("Whenever
+/// this creature or another creature dies, target player loses 1 life and you gain 1 life.")
+/// drains P1 once a cycle.
+pub(crate) fn drive_altar_blood_artist_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    drive_mana_outlet_offer(
+        db,
+        "Phyrexian Altar",
+        &["Blood Artist", "Walking Corpse"],
+        "Gravecrawler",
+        "Swamp",
+        ManaType::Black,
+        Some(TargetRef::Player(P1)),
+    )
+}
+
+/// Phyrexian Altar sacrificing Gravecrawler beside Walking Corpse, while Zulaport Cutthroat
+/// ("Whenever this creature or another creature you control dies, each opponent loses 1 life and
+/// you gain 1 life.") drains every opponent once a cycle.
+pub(crate) fn drive_altar_zulaport_offer(db: &CardDatabase) -> Option<LoopCertificate> {
+    drive_mana_outlet_offer(
+        db,
+        "Phyrexian Altar",
+        &["Zulaport Cutthroat", "Walking Corpse"],
+        "Gravecrawler",
+        "Swamp",
+        ManaType::Black,
+        None,
     )
 }
 

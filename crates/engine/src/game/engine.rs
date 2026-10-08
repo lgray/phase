@@ -2324,7 +2324,8 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
         && matches!(state.waiting_for, WaitingFor::Priority { .. })
         && !named.is_empty()
     {
-        if let Some((certificate, schema, period)) = try_offer_object_growth_shortcut(state, &named)
+        if let Some((certificate, schema, period, declaration)) =
+            try_offer_object_growth_shortcut(state, &named)
         {
             let WaitingFor::Priority { player: proposer } = state.waiting_for else {
                 unreachable!("guarded by matches!(Priority) above")
@@ -2334,10 +2335,7 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
                 predicted_winner: None,
                 certificate,
                 schema,
-                // CR 732.2a: the object-growth path re-derives its pins at materialize time
-                // from the carried recast template, so this offer states no engine-side
-                // declaration of its own.
-                declaration: None,
+                declaration,
                 road: crate::analysis::loop_check::OfferRoad::RecordedPeriod,
                 period,
             };
@@ -2981,8 +2979,9 @@ pub(crate) fn candidate_windows<'w, 'a>(
         .filter(|&(_, span, _)| span >= 1)
 }
 
-/// CR 732.2a: certification (step 4/4b), the choice gate and the bound — everything that can
-/// ask the verdict door, split out so its caller owns exactly one meter snapshot.
+/// CR 732.2a: certification (step 4/4b), then [`bounded_offer_tail`] over the certified ring
+/// period — everything that can ask the verdict door, split out so its caller owns exactly one
+/// meter snapshot.
 #[allow(clippy::too_many_arguments)]
 fn certified_bounded_cycle_offer<'a>(
     state: &'a GameState,
@@ -2993,7 +2992,7 @@ fn certified_bounded_cycle_offer<'a>(
     verdicts: &mut crate::analysis::resource::PeriodVerdicts<'a>,
     cert_out: &mut Option<crate::analysis::resource::PeriodCertification>,
 ) -> Result<WaitingFor, BoundedOfferRefusal> {
-    use crate::analysis::decision_template::{DecisionPoint, DecisionSlot, IterationCount};
+    use crate::analysis::decision_template::{DecisionPoint, DecisionSlot};
     use crate::analysis::resource::{
         certified_period_touch, PeriodCertification, PeriodTouch, PeriodicDelta, ResourceVector,
     };
@@ -3132,7 +3131,7 @@ fn certified_bounded_cycle_offer<'a>(
     // fixture publishes.) The only sound attribution is a discriminating probe: force
     // `ring_delta_signature` to return `None` (basis B's sole entry point is the `None =>`
     // arm below) — the rows that survive are basis A, the rows that fail are basis B.
-    let (cert_prior, points, touch, mut periodic, period_frames) = match basis_a {
+    let (cert_prior, points, touch, periodic, period_frames) = match basis_a {
         Some(hit) => hit,
         None => {
             let (k, delta) = crate::analysis::resource::ring_delta_signature(state)
@@ -3175,6 +3174,76 @@ fn certified_bounded_cycle_offer<'a>(
             )
         }
     };
+    bounded_offer_tail(
+        state,
+        BoundedFrames {
+            prior: cert_prior,
+            current: state,
+            frames: period_frames,
+            periodic,
+            points,
+            source: FrameSource::Ring { touch, verdicts },
+        },
+        mandatory,
+        proposer,
+    )
+    .map(
+        |(certificate, schema, declaration)| WaitingFor::LoopShortcut {
+            proposer,
+            predicted_winner: None,
+            certificate,
+            schema,
+            declaration,
+            road: crate::analysis::loop_check::OfferRoad::Ring,
+            period: Default::default(),
+        },
+    )
+}
+
+/// Where a bounded period's frames come from, which decides what the threshold authority may
+/// ask of their choices.
+enum FrameSource<'a, 'v> {
+    /// CR 732.2a: a period certified over the retained ring, whose announced choices the choice
+    /// gate checks and whose announced slots carry the charges.
+    Ring {
+        touch: crate::analysis::resource::PeriodTouch<'a>,
+        verdicts: &'v mut crate::analysis::resource::PeriodVerdicts<'a>,
+    },
+    /// CR 732.2a: a recorded period replayed by the confirmer, every choice of which is an answer
+    /// it recorded, so there is no unspecified window to gate and no announced slot to charge.
+    Replay,
+}
+
+/// One period handed to [`bounded_offer_tail`]: its certifying pair, its frames (newest last), the
+/// per-period signature, the published decision points and the frames' source.
+struct BoundedFrames<'a, 'v> {
+    prior: &'a GameState,
+    current: &'a GameState,
+    frames: Vec<&'a GameState>,
+    periodic: crate::analysis::resource::PeriodicDelta,
+    points: Vec<crate::analysis::decision_template::DecisionPoint>,
+    source: FrameSource<'a, 'v>,
+}
+
+/// CR 732.2a + CR 704.5a: the threshold authority's reduction of one certified period — the
+/// advantage refusal (5), the choice gate (6), the frame-wise charges (7), the declaration and the
+/// cascade (7b/7c), and the bounded offer's certificate, schema and declaration (8–10). Headroom,
+/// pins and the cascade read the live `state`; the gate and the certificate read the period's.
+fn bounded_offer_tail(
+    state: &GameState,
+    frames: BoundedFrames<'_, '_>,
+    mandatory: bool,
+    proposer: PlayerId,
+) -> Result<super::period_confirm::BoundedOfferParts, BoundedOfferRefusal> {
+    use crate::analysis::decision_template::{DecisionSlot, IterationCount};
+    let BoundedFrames {
+        prior: cert_prior,
+        current,
+        frames: period_frames,
+        mut periodic,
+        points,
+        source,
+    } = frames;
 
     // (5) CR 732.2a: the conjunct that proves this class is DISJOINT from Path C's
     // revocable-∞ advantage mark. An `Advantage` cycle drives nobody toward a CR 704
@@ -3208,16 +3277,22 @@ fn certified_bounded_cycle_offer<'a>(
     // population rather than overwritten with an unmeasured claim. Either way the conjunct's
     // JUSTIFICATION is unchanged: cover refuses on board facts, and this seam asks about
     // choices.
-    let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
-    if !crate::analysis::resource::stack_choices_are_all_specified(
-        state,
-        proposer,
-        &slots,
-        Some(&touch),
-        verdicts,
-    ) {
-        return Err(BoundedOfferRefusal::UnspecifiedChoiceWindow);
-    }
+    let touch = match source {
+        FrameSource::Ring { touch, verdicts } => {
+            let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
+            if !crate::analysis::resource::stack_choices_are_all_specified(
+                current,
+                proposer,
+                &slots,
+                Some(&touch),
+                verdicts,
+            ) {
+                return Err(BoundedOfferRefusal::UnspecifiedChoiceWindow);
+            }
+            Some(touch)
+        }
+        FrameSource::Replay => None,
+    };
 
     // (7) THE BOUND, derived from the ANNOUNCEMENT authority — never from `points`.
     //
@@ -3270,11 +3345,9 @@ fn certified_bounded_cycle_offer<'a>(
     // `elimination_bounds` in production and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
     // re-derives the published bound from it.
     let frame_wise = periodic.delta.with_frame_wise_life_loss(&period_frames);
-    let charged = bounded_cycle_charged_targets_for_window(
-        &touch,
-        proposer,
-        frame_wise.worst_seat_life_loss(),
-    );
+    let charged = touch.as_ref().map_or_else(Vec::new, |touch| {
+        bounded_cycle_charged_targets_for_window(touch, proposer, frame_wise.worst_seat_life_loss())
+    });
     // The certificate's published magnitude per charged slot — wire shape unchanged.
     periodic.victim_slot = charged
         .iter()
@@ -3375,9 +3448,8 @@ fn certified_bounded_cycle_offer<'a>(
 
     // (8) The certificate, with the two fields the bounded class states differently from
     // Path A's spelled out at the site rather than mutated after the fact.
-    // `cert_current` is the live `state` on both bases, exactly as before: `build_cert`'s only
-    // use of the pair is `board_delta`, a comparand read.
-    let base = build_cert(cert_prior, state, &periodic.delta, proposer, None);
+    // `build_cert`'s only use of the pair is `board_delta`, a comparand read.
+    let base = build_cert(cert_prior, current, &periodic.delta, proposer, None);
     let certificate = crate::analysis::loop_check::LoopCertificate {
         per_cycle: Some(periodic),
         // CR 732.5: honest, and currently read by nothing in production — a loop nobody can
@@ -3396,9 +3468,8 @@ fn certified_bounded_cycle_offer<'a>(
     // number handed here may EXCEED the engine's repetition budget, since nothing above clamps
     // them; the constructor is the single site that applies that budget, and it narrows the
     // suggestion to the capacity it derives, so `deliverable_capacity >= iteration_count` survives
-    // the clamp. The pre-built `points` go in directly — the bounded path never calls
-    // `pinned_decisions_to_points`, whose legal sets are derived FROM the declared pins and would
-    // let a declaration ratify itself.
+    // the clamp. The points go in as the frame source built them: the ring's from its certified
+    // touch, the replay's from the choices its confirmed cycle recorded.
     let schema = build_shortcut_schema(
         points,
         IterationCount::Fixed(own.count),
@@ -3412,15 +3483,7 @@ fn certified_bounded_cycle_offer<'a>(
     // refuses them — the latent arm this function's doc already scopes.
     let declaration =
         build_bounded_declaration(state, proposer, &schema, certificate.per_cycle.as_ref());
-    Ok(WaitingFor::LoopShortcut {
-        proposer,
-        predicted_winner: None,
-        certificate,
-        schema,
-        declaration,
-        road: crate::analysis::loop_check::OfferRoad::Ring,
-        period: Default::default(),
-    })
+    Ok((certificate, schema, declaration))
 }
 
 /// CR 732.2a: a cascade cut where the declaration that produced it STOPS CHARGING WHAT IT PINNED
@@ -4724,6 +4787,18 @@ enum ConsumptionDerivation {
     Measured(ConsumptionBound),
 }
 
+impl ConsumptionDerivation {
+    /// CR 704.5a + CR 800.4a: the departures a drive may commit — no prediction to diverge from
+    /// for an unsigned proposal, and none at all where the signed reduction measured nothing.
+    fn predicted(&self) -> Option<&[crate::analysis::resource::PredictedDeparture]> {
+        match self {
+            ConsumptionDerivation::Unsigned => None,
+            ConsumptionDerivation::NoMeasurement => Some(&[]),
+            ConsumptionDerivation::Measured(bound) => Some(&bound.entries),
+        }
+    }
+}
+
 fn shortcut_consumption_bound(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
@@ -5954,8 +6029,10 @@ enum TakeRoute {
 /// reaches what the replay would: a zero or shortened count is performed as agreed (CR 732.2b),
 /// a period standing on the stack cannot be performed from the step-end collapse's empty stack,
 /// the mark would refill restricted mana without its restriction (CR 106.6), its mint makes
-/// bare tapped copies under the proposer, without a keyword, delayed trigger or other controller
-/// the cover admitted as growth, and its batched collapse must not miss what the board observes.
+/// bare tapped copies under the proposer, without a keyword, delayed trigger, other controller or
+/// certified departure the cover admitted as growth, its batched collapse must not miss what the
+/// board observes, and a signed proposal's departures are seen only as its repetitions cross them
+/// (CR 704.3).
 fn take_route(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
@@ -5968,6 +6045,7 @@ fn take_route(
         || proposal.shortened_by.is_some()
         || !state.stack.is_empty()
         || proposal.period.growth() == crate::analysis::resource::CoveredGrowth::PerformedOnly
+        || proposal.per_cycle.is_some()
     {
         return TakeRoute::Replay;
     }
@@ -6155,8 +6233,20 @@ fn materialize_fixed_shortcut(
     // is the shape being rejected here, not per-accept binding as such.)
     match take_route(state, proposal, n) {
         TakeRoute::Replay => {
-            let delivered =
-                drive_persistent_axis_collapse(state, &proposal.period, proposal.proposer, n);
+            let derivation = shortcut_consumption_bound(state, proposal, n);
+            let delivered = drive_persistent_axis_collapse(
+                state,
+                &proposal.period,
+                proposal.proposer,
+                n,
+                derivation.predicted(),
+            );
+            // CR 104.2a: a predicted crossing that ended the game ends the take with it.
+            if let WaitingFor::GameOver { winner } = state.waiting_for {
+                result.events.push(GameEvent::GameOver { winner });
+                result.waiting_for = state.waiting_for.clone();
+                return;
+            }
             end_shortcut_at_priority(state, result, proposal, delivered == n);
             return;
         }
@@ -6293,13 +6383,7 @@ fn materialize_fixed_shortcut(
                     // which is gated on a published signature, and answered rather than folded
                     // into the other absence), while a signed derivation that measured nothing on
                     // the pre-drive board states that THIS board supports no crossing at all.
-                    let predicted: Option<&[crate::analysis::resource::PredictedDeparture]> =
-                        match &derivation {
-                            ConsumptionDerivation::Unsigned => None,
-                            ConsumptionDerivation::NoMeasurement => Some(&[]),
-                            ConsumptionDerivation::Measured(bound) => Some(&bound.entries),
-                        };
-                    if let Some(entries) = predicted {
+                    if let Some(entries) = derivation.predicted() {
                         match departure_verdict(entries, &committed, &s, i + 1) {
                             DepartureVerdict::NoDeparture | DepartureVerdict::Predicted => {}
                             DepartureVerdict::Unpredicted => break 'cycles,
@@ -7107,6 +7191,7 @@ fn try_offer_object_growth_shortcut(
     crate::analysis::loop_check::LoopCertificate,
     crate::analysis::decision_template::ShortcutDecisionSchema,
     super::period_confirm::ConfirmedPeriod,
+    Option<crate::analysis::decision_template::DecisionTemplate>,
 )> {
     let _timed = crate::analysis::resource::CostTimer::start(|cost| {
         (&mut cost.object_growth_ns, &mut cost.object_growth_calls)
@@ -7121,6 +7206,11 @@ fn try_offer_object_growth_shortcut(
         let confirmation = super::period_confirm::confirm(state, span).ok()?;
         Some((span, confirmation))
     })?;
+    // CR 704.5a + CR 732.2a: a loss period is offered at the threshold authority's count.
+    if let Some((certificate, schema, declaration)) = confirmation.bounded {
+        super::play_trace::note_offered(state, span);
+        return Some((certificate, schema, confirmation.period, declaration));
+    }
     let [s_n1, s_n2] = *confirmation.frames;
     let certificate = build_cert(
         &s_n1,
@@ -7141,7 +7231,7 @@ fn try_offer_object_growth_shortcut(
     // publishes as its ceiling; stating less silently caps the controller's collapse choice. The
     // coercion below is what states it: `build_shortcut_schema` only ever NARROWS a suggestion
     // to the capacity, so deleting this as newly redundant would publish the bare win-kind seed
-    // instead. This mirrors `certified_bounded_cycle_offer`, which states its own measured
+    // instead. This mirrors `bounded_offer_tail`, which states its own measured
     // threshold as its suggestion.
     //
     // CR 704.5a / CR 704.5c: the `UntilLethal` arm is UNREACHABLE FROM THIS PRODUCER — `delta` is
@@ -7173,7 +7263,45 @@ fn try_offer_object_growth_shortcut(
         None,
     );
     super::play_trace::note_offered(state, span);
-    Some((certificate, schema, confirmation.period))
+    Some((certificate, schema, confirmation.period, None))
+}
+
+/// CR 704.5a + CR 732.2a: the threshold authority asked on one replayed cycle of a recorded loss
+/// period — `frames` its priority frames in order, `choices` the answers it recorded.
+pub(crate) fn replay_bounded_offer(
+    state: &GameState,
+    caster: PlayerId,
+    frames: &[GameState],
+    choices: &[crate::analysis::decision_template::PinnedDecision],
+) -> Result<super::period_confirm::BoundedOfferParts, BoundedOfferRefusal> {
+    let frames: Vec<&GameState> = frames.iter().collect();
+    let (&current, window) = frames
+        .split_last()
+        .ok_or(BoundedOfferRefusal::NoCertification)?;
+    let &prior = window.first().ok_or(BoundedOfferRefusal::NoCertification)?;
+    let periodic = crate::analysis::resource::PeriodicDelta {
+        frames_per_period: window.len() as u32,
+        delta: crate::analysis::resource::ResourceVector::period(prior, current),
+        victim_slot: Vec::new(),
+        declarable_victims: Vec::new(),
+        seat_life_charge: Vec::new(),
+    };
+    // CR 732.2a: the points are the game choices the replay answered.
+    let points = pinned_decisions_to_points(choices, state, caster)
+        .ok_or(BoundedOfferRefusal::UnspecifiedChoiceWindow)?;
+    bounded_offer_tail(
+        state,
+        BoundedFrames {
+            prior,
+            current,
+            frames,
+            periodic,
+            points,
+            source: FrameSource::Replay,
+        },
+        false,
+        caster,
+    )
 }
 
 /// The sign check on a period's second frame pair: net progress for the caster, no loss axis for
@@ -7356,11 +7484,16 @@ fn materialize_object_growth_shortcut(
 /// The delivered prefix is a value in `[0, n]` and is RETURNED, because a caller that cannot
 /// separate a full delivery from a truncated one cannot decide who holds the ending point
 /// (CR 732.2b/c).
+///
+/// With `predicted` departures, each cycle's departures are checked against the entry for its
+/// repetition (CR 704.3 + CR 800.4a): an unpredicted one aborts like a failed cycle, and a
+/// predicted one that ends the game is committed as the last cycle (CR 104.2a).
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     period: &super::period_confirm::ConfirmedPeriod,
     controller: PlayerId,
     n: u32,
+    predicted: Option<&[crate::analysis::resource::PredictedDeparture]>,
 ) -> u32 {
     let _guard = SimulationProbeGuard::enter(); // held across the whole drive
     #[cfg(feature = "test-support")]
@@ -7379,11 +7512,24 @@ pub(crate) fn drive_persistent_axis_collapse(
         state.waiting_for = WaitingFor::Priority { player: controller };
     };
     let mut delivered = 0;
-    for _ in 0..n {
+    for i in 0..n {
         #[cfg(feature = "test-support")]
         take_cost.begin_cycle();
         reseed(state);
-        if super::period_confirm::perform_cycle(state, period, controller).is_err() {
+        let before = predicted.map(|_| state.clone());
+        let performed = super::period_confirm::perform_cycle(state, period, controller).is_ok();
+        let verdict = before
+            .as_ref()
+            .zip(predicted)
+            .map(|(before, entries)| departure_verdict(entries, before, state, i + 1));
+        let ended = matches!(state.waiting_for, WaitingFor::GameOver { .. });
+        if !performed && ended && verdict == Some(DepartureVerdict::Predicted) {
+            delivered += 1;
+            #[cfg(feature = "test-support")]
+            take_cost.end_cycle();
+            break;
+        }
+        if !performed || verdict == Some(DepartureVerdict::Unpredicted) {
             // Commit the successful prefix; the caller hands priority back.
             *state = snapshot;
             let prefix = delivered;
@@ -22948,6 +23094,7 @@ mod kilo_interruptibility_tests {
     )> {
         let spans = crate::game::play_trace::current_named(state);
         try_offer_object_growth_shortcut(&mut state.clone(), &spans)
+            .map(|(certificate, schema, period, _)| (certificate, schema, period))
     }
 
     fn load_migrated_dump() -> GameState {
