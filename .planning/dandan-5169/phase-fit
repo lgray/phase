@@ -309,3 +309,25 @@
 [2026-10-08T14:58:11Z] Phase 21 impl review r1 @d12daf5793: 0 behavior/machinery, 1 LOW text (-> residual, Phase 22 addendum), 1 pre-existing doc (Phase 22 addendum). Awaiting cov-base for acceptance.
 [2026-10-08T14:58:33Z] Phase 22 plan loop r0: planner dispatched (base d12daf5793)
 [2026-10-08T15:03:24Z] Phase 21 ACCEPTED d12daf5793 (completion p21c all green; cov pair identical; impl review r1 clean, LOW -> Phase 22). Next: push fork branch + draft PR.
+[2026-10-08T15:29:06Z] Phase 22 plan r0 delivered (1 unit, 12 non-test paths); plan review r1 dispatched. PR #9696 draft open.
+[2026-10-08T15:41:38Z] Phase 22 plan review r1: 4 behavior (F1-F4) -> planner r2 dispatched
+[2026-10-08T15:43:37Z] USER via lead: #9696 hold — no pushes/replies/review action until #9669 MERGES; then clean rebase onto merged main (only 21-22 remain), restack protocol, gates, push (force OK on this branch after remote-head check), tell lead; lead relays go-ahead before addressing review (3 MED from matthewevans 15:35Z: cross-owner casts from shared library; shared-graveyard permissions owner-gated; AI redraw forever on homogeneous pile). Phase 22 continues locally; commits local only.
+[2026-10-08T15:45:59Z] rebase done 91c34cdc96
+[2026-10-08T15:47:05Z] USER go-ahead: address #9696 review (3 MED; saved run-level/review-9696-1.md). Charter r7 loop for Phases 23 (shared-zone cast owner + caster-relative graveyard perms) and 24 (AI redraw progress) dispatched; Phase 22 plan r2 continues. Push after each accepted phase (check remote head); PR stays draft until Phase 22 in; per-finding replies + re-request after fix phases.
+[2026-10-08T15:55:41Z] Phase 22 plan r2 delivered (12 paths, 1 unit); plan review r2 dispatched; phase-22 addendum line (scope growth)
+[2026-10-08T16:09:26Z] Phase 22 plan review r2: 1 behavior (F5 one-row) + 4 exit constraints (F1-F4 closed; behavior count 4->1) -> planner r3 dispatched; addendum scope line corrected
+[2026-10-08T16:10:43Z] Phase 22 plan r3 delivered; delta review r3 dispatched
+[2026-10-08T16:14:20Z] Phase 22 plan review r3: 1 behavior F6 (C2d mock sequencing; behavior count r2=1,r3=1 -> r4 must lower) -> planner r4
+[2026-10-08T16:38:48Z] #9696 review 2 (91c34cdc96) saved run-level/review-9696-2.md; same 3 MED + deltas (F2 wider: statics.rs OwnGraveyard, :1668 scan exit, keyword-route predicate+consumers, Mayhem gates, Disturb; membership authority = game_state.rs shared-zone storage resolution; F1 adds effects/bounce.rs; F3 native 200-action cap -> durable driver fault; prefers LOCAL AI decision, no persisted redraw budget). Handed to charter planner.
+[2026-10-08T16:41:29Z] Phase 22 plan r4 delivered (all rows driven; U1 rewritten, C2d, C3b split, C6 added); review r4 dispatched
+[2026-10-08T16:49:13Z] charter-23 (Phases 23 graveyard membership, 24 caster owns cast/played, 25 AI futile free reveal) delivered; charter review r1 dispatched; USER forks pending: near-degenerate piles (78 Islands+2) vs 'provably unimprovable'; played land owner
+[2026-10-08T16:54:15Z] Phase 22 plan CLEAN after r4 (0 findings; r4 constraints -> executor); scope.nul frozen (see file); executor dispatched at 91c34cdc96
+[2026-10-08T17:23:33Z] Phase 22 checkpoint 4b59d15411 committed locally; completion p22 + fe + cov-cand launched (base cov = completion-p21c/cov-cand, same tree as 91c34cdc96)
+[2026-10-08T17:36:23Z] Phase 22 impl review r1: 0 blocking, 1 LOW text (3 stale TS comments) -> applied verbatim as comment-only commit b892a663e9 (2 files, 3 hunks, 0 non-comment +/- lines, total +/- 8); frontend gates rerun on b892 after p22 Rust gates finish (Rust tree identical to 4b59)
+[2026-10-08T17:59:20Z] charter-23 review r1: D1 (redraw population) behavior + C1-C7; USER: fold 23+24 into one phase; charter planner r2 dispatched
+[2026-10-08T18:03:08Z] charter-23 r2 delivered (23+24 folded -> Phase 23; AI -> Phase 24; D1 population + pending-declare extra term); charter review r2 dispatched
+[2026-10-08T18:10:34Z] charter review r2: D2 (population still incomplete: declared seats' hands) -> same shape as D1; planner r3 with class-level cut (reuse engine reshuffle authority)
+[2026-10-08T18:17:42Z] charter r3 delivered (shared reshuffle authority); charter review r3 dispatched
+[2026-10-08T18:20:34Z] charter-23 review r3 CLEAN; 2 text corrections applied; charter frozen (Phases 23 shared-zone container+caster ownership; 24 AI redraw pool). Phase 22 nextest 38206/38206 on 4b59d15411.
+[2026-10-08T18:20:47Z] Phase 23 plan loop r0: planner dispatched (base b892a663e9)
+[2026-10-08T18:49:47Z] Phase 22 ACCEPTED b892a663e9
