@@ -1,0 +1,834 @@
+=== probe-base
+done rc=0
+        PASS (1/1) phase-engine::integration text_substitution_cr612::zz_probe_rows
+PROBE Forest ABC => Island {Blue}
+PROBE Forest AB => Swamp {Black}
+PROBE Forest CAB => Island {Blue}
+PROBE hollow AB => Forest
+PROBE hollow A => Swamp
+PROBE hollow BA => Forest
+PROBE hollow B => Island+Forest
+PROBE Island ABC => Forest {Green}
+PROBE Island AB => Swamp {Black}
+PROBE Island CAB => Swamp {Black}
+PROBE loop ADC => Plains {White}
+PROBE loop AD => Swamp {Black}
+PROBE loop DA => Forest {Green}
+PROBE moon AB (black,white,red) => [2, 2, 3]
+PROBE moon ABC (black,white,red) => [2, 3, 2]
+PROBE moon CAB (black,white,red) => [2, 2, 3]
+PROBE Swamp ABC => Forest {Green}
+PROBE Swamp CAB => Island {Blue}
+PROBE Swamp CB => Island {Blue}
+PROBE terror ABC => Battlefield
+PROBE terror AB => Graveyard
+PROBE terror ACB => Graveyard
+PROBE terror CAB => Graveyard
+PROBE terror none => Graveyard
+PROBE wraith ABC => ["Plains"]
+PROBE wraith AB => ["Forest"]
+PROBE wraith CAB => ["Forest"]
+     Summary 1 test run: 1 passed, 33396 skipped
+=== probe-fix
+done rc=0
+        PASS (10/33) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (11/33) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        PASS (12/33) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS (13/33) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS ( 1/33) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        PASS (14/33) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (15/33) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (16/33) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        PASS (17/33) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        PASS (18/33) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (19/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (20/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (21/33) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (22/33) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        PASS (23/33) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS ( 2/33) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (24/33) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS (25/33) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (26/33) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (27/33) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (28/33) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (29/33) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (30/33) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS (31/33) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (32/33) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        PASS (33/33) phase-engine::integration text_substitution_cr612::zz_probe_rows
+        PASS ( 3/33) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS ( 4/33) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS ( 5/33) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS ( 6/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        PASS ( 7/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS ( 8/33) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS ( 9/33) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+PROBE Forest ABC => Forest {Green}
+PROBE Forest AB => Swamp {Black}
+PROBE Forest CAB => Swamp {Black}
+PROBE hollow AB => Forest
+PROBE hollow A => Swamp
+PROBE hollow BA => Forest
+PROBE hollow B => Island+Forest
+PROBE Island ABC => Island {Blue}
+PROBE Island AB => Swamp {Black}
+PROBE Island CAB => Island {Blue}
+PROBE loop ADC => Plains {White}
+PROBE loop AD => Swamp {Black}
+PROBE loop DA => Forest {Green}
+PROBE moon AB (black,white,red) => [2, 2, 3]
+PROBE moon ABC (black,white,red) => [3, 2, 2]
+PROBE moon CAB (black,white,red) => [3, 2, 2]
+PROBE Swamp ABC => Island {Blue}
+PROBE Swamp CAB => Swamp {Black}
+PROBE Swamp CB => Island {Blue}
+PROBE terror ABC => Graveyard
+PROBE terror AB => Graveyard
+PROBE terror ACB => Graveyard
+PROBE terror CAB => Graveyard
+PROBE terror none => Graveyard
+PROBE wraith ABC => ["Swamp"]
+PROBE wraith AB => ["Forest"]
+PROBE wraith CAB => ["Swamp"]
+     Summary 33 tests run: 33 passed, 33364 skipped
+=== M1
+done rc=100
+        FAIL (11/33) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        FAIL (16/33) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        FAIL (17/33) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        PASS (10/33) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (12/33) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS (13/33) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS ( 1/33) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        PASS (14/33) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (15/33) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (18/33) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (19/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (20/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (21/33) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (22/33) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        PASS (23/33) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS ( 2/33) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (24/33) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS (25/33) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (26/33) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (27/33) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (28/33) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (29/33) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (30/33) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS (31/33) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (32/33) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        PASS (33/33) phase-engine::integration text_substitution_cr612::zz_probe_rows
+        PASS ( 3/33) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS ( 4/33) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS ( 5/33) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS ( 6/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        PASS ( 7/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS ( 8/33) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS ( 9/33) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+PROBE Forest ABC => Island {Blue}
+PROBE Forest AB => Swamp {Black}
+PROBE Forest CAB => Swamp {Black}
+PROBE hollow AB => Forest
+PROBE hollow A => Swamp
+PROBE hollow BA => Forest
+PROBE hollow B => Island+Forest
+PROBE Island ABC => Island {Blue}
+PROBE Island AB => Swamp {Black}
+PROBE Island CAB => Swamp {Black}
+PROBE loop ADC => Plains {White}
+PROBE loop AD => Swamp {Black}
+PROBE loop DA => Forest {Green}
+PROBE moon AB (black,white,red) => [2, 2, 3]
+PROBE moon ABC (black,white,red) => [3, 2, 2]
+PROBE moon CAB (black,white,red) => [2, 2, 3]
+PROBE Swamp ABC => Island {Blue}
+PROBE Swamp CAB => Swamp {Black}
+PROBE Swamp CB => Island {Blue}
+PROBE terror ABC => Graveyard
+PROBE terror AB => Graveyard
+PROBE terror ACB => Graveyard
+PROBE terror CAB => Graveyard
+PROBE terror none => Graveyard
+PROBE wraith ABC => ["Swamp"]
+PROBE wraith AB => ["Forest"]
+PROBE wraith CAB => ["Forest"]
+     Summary 33 tests run: 30 passed, 3 failed, 33364 skipped
+=== M2
+done rc=100
+        FAIL (11/33) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        FAIL (16/33) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        FAIL (17/33) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        FAIL (22/33) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        FAIL ( 6/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        FAIL ( 7/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS (10/33) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (12/33) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS (13/33) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS ( 1/33) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        PASS (14/33) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (15/33) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (18/33) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (19/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (20/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (21/33) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (23/33) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS ( 2/33) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (24/33) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS (25/33) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (26/33) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (27/33) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (28/33) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (29/33) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (30/33) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS (31/33) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (32/33) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        PASS (33/33) phase-engine::integration text_substitution_cr612::zz_probe_rows
+        PASS ( 3/33) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS ( 4/33) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS ( 5/33) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS ( 8/33) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS ( 9/33) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+PROBE Forest ABC => Forest {Green}
+PROBE Forest AB => Swamp {Black}
+PROBE Forest CAB => Swamp {Black}
+PROBE hollow AB => Forest
+PROBE hollow A => Swamp
+PROBE hollow BA => Forest
+PROBE hollow B => Island+Forest
+PROBE Island ABC => Forest {Green}
+PROBE Island AB => Swamp {Black}
+PROBE Island CAB => Island {Blue}
+PROBE loop ADC => Plains {White}
+PROBE loop AD => Swamp {Black}
+PROBE loop DA => Forest {Green}
+PROBE moon AB (black,white,red) => [2, 2, 3]
+PROBE moon ABC (black,white,red) => [2, 3, 2]
+PROBE moon CAB (black,white,red) => [3, 2, 2]
+PROBE Swamp ABC => Island {Blue}
+PROBE Swamp CAB => Island {Blue}
+PROBE Swamp CB => Island {Blue}
+PROBE terror ABC => Battlefield
+PROBE terror AB => Graveyard
+PROBE terror ACB => Graveyard
+PROBE terror CAB => Graveyard
+PROBE terror none => Graveyard
+PROBE wraith ABC => ["Plains"]
+PROBE wraith AB => ["Forest"]
+PROBE wraith CAB => ["Swamp"]
+     Summary 33 tests run: 27 passed, 6 failed, 33364 skipped
+=== M3
+done rc=100
+        FAIL (11/33) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        FAIL (16/33) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        FAIL (17/33) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        FAIL (22/33) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        FAIL (32/33) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        FAIL ( 3/33) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        FAIL ( 4/33) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        FAIL ( 6/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        FAIL ( 7/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS (10/33) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (12/33) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS (13/33) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS ( 1/33) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        PASS (14/33) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (15/33) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (18/33) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (19/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (20/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (21/33) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (23/33) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS ( 2/33) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (24/33) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS (25/33) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (26/33) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (27/33) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (28/33) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (29/33) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (30/33) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS (31/33) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (33/33) phase-engine::integration text_substitution_cr612::zz_probe_rows
+        PASS ( 5/33) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS ( 8/33) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS ( 9/33) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+PROBE Forest ABC => Island {Blue}
+PROBE Forest AB => Island {Blue}
+PROBE Forest CAB => Island {Blue}
+PROBE hollow AB => Forest
+PROBE hollow A => Swamp
+PROBE hollow BA => Swamp+Forest
+PROBE hollow B => Island+Forest
+PROBE Island ABC => Forest {Green}
+PROBE Island AB => Swamp {Black}
+PROBE Island CAB => Swamp {Black}
+PROBE loop ADC => Plains {White}
+PROBE loop AD => Swamp {Black}
+PROBE loop DA => Forest {Green}
+PROBE moon AB (black,white,red) => [2, 2, 3]
+PROBE moon ABC (black,white,red) => [2, 3, 2]
+PROBE moon CAB (black,white,red) => [2, 2, 3]
+PROBE Swamp ABC => Forest {Green}
+PROBE Swamp CAB => Island {Blue}
+PROBE Swamp CB => Island {Blue}
+PROBE terror ABC => Battlefield
+PROBE terror AB => Graveyard
+PROBE terror ACB => Graveyard
+PROBE terror CAB => Graveyard
+PROBE terror none => Graveyard
+PROBE wraith ABC => ["Plains"]
+PROBE wraith AB => ["Forest"]
+PROBE wraith CAB => ["Forest"]
+     Summary 33 tests run: 24 passed, 9 failed, 33364 skipped
+=== M4
+done rc=100
+        FAIL (32/33) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        PASS (10/33) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (11/33) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        PASS (12/33) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS (13/33) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS ( 1/33) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        PASS (14/33) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (15/33) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (16/33) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        PASS (17/33) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        PASS (18/33) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (19/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (20/33) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (21/33) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (22/33) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        PASS (23/33) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS ( 2/33) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (24/33) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS (25/33) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (26/33) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (27/33) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (28/33) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (29/33) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (30/33) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS (31/33) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (33/33) phase-engine::integration text_substitution_cr612::zz_probe_rows
+        PASS ( 3/33) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS ( 4/33) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS ( 5/33) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS ( 6/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        PASS ( 7/33) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS ( 8/33) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS ( 9/33) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+PROBE Forest ABC => Forest {Green}
+PROBE Forest AB => Swamp {Black}
+PROBE Forest CAB => Swamp {Black}
+PROBE hollow AB => Forest
+PROBE hollow A => Swamp
+PROBE hollow BA => Swamp+Forest
+PROBE hollow B => Island+Forest
+PROBE Island ABC => Island {Blue}
+PROBE Island AB => Swamp {Black}
+PROBE Island CAB => Island {Blue}
+PROBE loop ADC => Plains {White}
+PROBE loop AD => Swamp {Black}
+PROBE loop DA => Forest {Green}
+PROBE moon AB (black,white,red) => [2, 2, 3]
+PROBE moon ABC (black,white,red) => [3, 2, 2]
+PROBE moon CAB (black,white,red) => [3, 2, 2]
+PROBE Swamp ABC => Island {Blue}
+PROBE Swamp CAB => Swamp {Black}
+PROBE Swamp CB => Island {Blue}
+PROBE terror ABC => Graveyard
+PROBE terror AB => Graveyard
+PROBE terror ACB => Graveyard
+PROBE terror CAB => Graveyard
+PROBE terror none => Graveyard
+PROBE wraith ABC => ["Swamp"]
+PROBE wraith AB => ["Forest"]
+PROBE wraith CAB => ["Swamp"]
+     Summary 33 tests run: 32 passed, 1 failed, 33364 skipped
+=== M5
+done rc=100
+        FAIL (2/2) phase-engine game::layers::tests::select_next_effect_follows_the_cr_613_8b_loop_rule
+        PASS (1/2) phase-engine game::layers::tests::fixed_graph_no_longer_orders_text_word_effects
+     Summary 2 tests run: 1 passed, 1 failed, 33394 skipped
+=== M6
+done rc=100
+        FAIL (1/1) phase-engine game::layers::tests::fixed_graph_no_longer_orders_text_word_effects
+     Summary 1 test run: 0 passed, 1 failed, 33395 skipped
+=== base-red
+done rc=100
+        FAIL (12/32) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        FAIL (19/32) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        FAIL (22/32) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        FAIL ( 2/32) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        FAIL ( 3/32) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        FAIL ( 4/32) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        FAIL ( 8/32) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS (10/32) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS (11/32) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS ( 1/32) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (13/32) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (14/32) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (15/32) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (16/32) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        PASS (17/32) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (18/32) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (20/32) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (21/32) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS (23/32) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS (24/32) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (25/32) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (26/32) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (27/32) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (28/32) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (29/32) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (30/32) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (31/32) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        PASS (32/32) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS ( 5/32) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS ( 6/32) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS ( 7/32) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS ( 9/32) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+     Summary 32 tests run: 25 passed, 7 failed, 33364 skipped
+=== focused
+done rc=0
+        PASS (100/422) phase-engine game::layers::tests::dependency_order_stalls_recur_across_loops
+        PASS (101/422) phase-engine game::layers::tests::darksteel_mutation_full_layer_evaluation_e2e
+        PASS (102/422) phase-engine game::layers::tests::dependency_order_whole_loop_is_timestamp_order
+        PASS (103/422) phase-engine game::layers::tests::doctor_doom_has_indestructible_with_artifact_creature
+        PASS ( 10/422) phase-engine game::ability_scan::tests::census_partition_agrees_with_effect_target_ctx
+        PASS (104/422) phase-engine game::layers::tests::dynamic_pt_counts_recipient_mana_cost_symbols_per_creature
+        PASS (105/422) phase-engine game::layers::tests::doctor_doom_no_indestructible_without_artifact_creature_or_plan
+        PASS (106/422) phase-engine game::layers::tests::double_urborg_only_injects_one_swamp_mana_ability
+        PASS (107/422) phase-engine game::layers::tests::dragon_man_cda_power_greatest_mana_value_across_zones
+        PASS (108/422) phase-engine game::layers::tests::dynamic_pt_uses_recipient_controller_hand_size
+        PASS (109/422) phase-engine game::layers::tests::dynamic_pt_lost_game_player_count_scales_past_one_player
+        PASS (110/422) phase-engine game::layers::tests::dynamic_pt_counts_words_in_recipient_name_not_source_name
+        PASS (111/422) phase-engine game::layers::tests::dynamic_legendary_anthem_counts_and_affects_legendary_creatures_you_control
+        PASS (112/422) phase-engine game::layers::tests::effect_nodes_group_entries_by_effect_identity
+        PASS (113/422) phase-engine game::layers::tests::doctor_doom_indestructible_parsed_end_to_end_with_plan_enchantment
+        PASS ( 11/422) phase-engine game::ability_rw::tests::zone_census_battlefield_write_vs_graveyard_read_discriminates
+        PASS (114/422) phase-engine game::layers::tests::end_of_turn_prune_clears_until_end_of_turn_play_from_exile
+        PASS (115/422) phase-engine game::layers::tests::end_of_turn_prune_preserves_other_durations
+        PASS (116/422) phase-engine game::layers::tests::azure_beastbinder_attack_sets_target_base_pt_and_strips_abilities_e2e
+        PASS (117/422) phase-engine game::layers::tests::emblem_static_applies_to_matching_creatures
+        PASS (118/422) phase-engine game::layers::tests::entered_second_anthem_is_dropped_on_end_of_pass_rebuild
+        PASS (119/422) phase-engine game::layers::tests::entry_incremental_escalates_when_a_live_copy_payload_carries_a_static
+        PASS (120/422) phase-engine game::layers::tests::entered_second_anthem_applies_with_preexisting_generator
+        PASS (121/422) phase-engine game::layers::tests::conditional_grant_with_unenforceable_payment_gate_does_not_apply
+        PASS (122/422) phase-engine game::layers::tests::entry_timestamp_matches_objectid_order_when_aligned
+        PASS (123/422) phase-engine game::layers::tests::entry_incremental_stays_incremental_for_a_copy_naming_a_pre_existing_object
+        PASS ( 12/422) phase-engine game::engine::priority_reducer_census_tests::priority_reducer_has_the_frozen_action_family_census
+        PASS (124/422) phase-engine game::layers::tests::evaluate_source_in_zone_command_true_when_in_command_zone
+        PASS (125/422) phase-engine game::layers::tests::evaluate_enchanted_is_face_down_false_when_attached_face_up
+        PASS (126/422) phase-engine game::layers::tests::evaluate_enchanted_is_face_down_false_when_unattached
+        PASS (127/422) phase-engine game::layers::tests::evaluate_enchanted_is_face_down_true_when_attached_face_down
+        PASS (128/422) phase-engine game::layers::tests::evaluate_source_is_attacking_false_when_no_combat
+        PASS (129/422) phase-engine game::layers::tests::entry_timestamp_orders_same_sublayer_color_set_by_chronology
+        PASS (130/422) phase-engine game::layers::tests::evaluate_source_in_zone_or_disjunction_command_or_battlefield
+        PASS (131/422) phase-engine game::layers::tests::evaluate_source_is_blocking_false_when_not_blocking
+        PASS (132/422) phase-engine game::layers::tests::evaluate_source_is_attacking_true_when_in_attackers
+        PASS (133/422) phase-engine game::layers::tests::elenda_life_threshold_follows_current_controller_after_control_change
+        PASS ( 13/422) phase-engine game::ability_rw::tests::l1_zone_card_count_census_and_zone_extraction
+        PASS (134/422) phase-engine game::layers::tests::evaluate_source_is_attacking_false_when_not_in_attackers
+        PASS (135/422) phase-engine game::layers::tests::elenda_life_thresholds_follow_two_headed_giant_team_life
+        PASS (136/422) phase-engine game::layers::tests::evaluate_source_is_tapped_false_when_untapped
+        PASS (137/422) phase-engine game::layers::tests::evaluate_source_is_blocking_true_when_in_blocker_map
+        PASS (138/422) phase-engine game::layers::tests::evaluate_source_is_blocked_false_when_flag_unset
+        PASS (139/422) phase-engine game::layers::tests::event_deadline_permission_survives_its_hosts_phase_out
+        PASS (140/422) phase-engine game::layers::tests::evaluate_source_is_blocked_true_when_sticky_flag_set
+        PASS (141/422) phase-engine game::layers::tests::evaluate_source_is_tapped_true_when_tapped
+        PASS (  1/422) phase-engine game::ability_scan::tests::suspect_unsuspect_census_is_scope_sensitive
+        PASS (142/422) phase-engine game::layers::tests::exchange_control_sicks_both_permanents
+        PASS (143/422) phase-engine game::layers::tests::elenda_life_thresholds_follow_standard_starting_life
+        PASS ( 14/422) phase-engine game::layers::tests::a_copy_exception_stays_with_its_own_copy_effect_in_the_ordering
+        PASS (144/422) phase-engine game::layers::tests::face_down_reseed_does_not_drop_a_carried_shield
+        PASS (145/422) phase-engine game::layers::tests::false_condition_anthem_does_not_modify_power_and_toughness
+        PASS (146/422) phase-engine game::layers::tests::for_as_long_as_is_enforceable_only_on_an_exile_resident_grant
+        PASS (147/422) phase-engine game::layers::tests::filter_routed_quantity_escalates
+        PASS (148/422) phase-engine game::layers::tests::expanded_grant_provider_replacement_gets_a_distinct_occurrence
+        PASS (149/422) phase-engine game::layers::tests::gather_includes_for_as_long_as_when_condition_true
+        PASS (150/422) phase-engine game::layers::tests::frogify_aura_replaces_subtypes_color_and_type
+        PASS (151/422) phase-engine game::layers::tests::generic_control_a_commander_counts_stolen_opponent_commander
+        PASS (152/422) phase-engine game::layers::tests::elenda_life_thresholds_follow_archenemy_and_current_controller
+        PASS (153/422) phase-engine game::layers::tests::granted_activated_abilities_scan_per_distinct_controller
+        PASS ( 15/422) phase-engine game::layers::state_duration_retirement_recording_tests::empty_state_duration_selection_creates_no_journal_node_or_command
+        PASS (154/422) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census
+        PASS (155/422) phase-engine game::layers::tests::granted_fabricate_installs_etb_trigger_on_recipient
+        PASS (156/422) phase-engine game::layers::tests::gather_skips_for_as_long_as_when_condition_false
+        PASS (157/422) phase-engine game::layers::tests::fixed_graph_no_longer_orders_text_word_effects
+        PASS (158/422) phase-engine game::layers::tests::grant_occurrences_survive_full_and_incremental_flush_and_regrant_fresh
+        PASS (159/422) phase-engine game::layers::tests::granted_riot_static_derives_affected_filter_replacement_on_source
+        PASS (160/422) phase-engine game::layers::tests::granted_activated_abilities_scan_providers_once_per_controller
+        PASS (161/422) phase-engine game::layers::tests::granted_static_timestamp_is_max_of_host_and_recipient
+        PASS (162/422) phase-engine game::layers::tests::granted_static_condition_uses_its_recipient_controller_after_layer_two
+        PASS (163/422) phase-engine game::layers::tests::granted_static_ability_applies_inner_scope_to_other_objects
+        PASS ( 16/422) phase-engine game::engine_resolution_choices::tests::boundary_hold_census_matches_the_apply_loop
+        PASS (164/422) phase-engine game::layers::tests::granted_undying_with_complex_filter_installs_trigger
+        PASS (165/422) phase-engine game::layers::tests::grist_source_zone_condition_is_not_population_dependent
+        PASS (166/422) phase-engine game::layers::tests::granted_undying_with_complex_filter_fires_on_death
+        PASS (167/422) phase-engine game::layers::tests::grants_all_activated_abilities_of_cards_exiled_with_it
+        PASS (168/422) phase-engine game::layers::tests::has_counters_false_when_zero_loyalty
+        PASS (169/422) phase-engine game::layers::tests::hand_zone_static_grants_keyword_to_hand_card
+        PASS (170/422) phase-engine game::layers::tests::has_keyword_remains_discriminant_only_for_generic_presence_queries
+        PASS (171/422) phase-engine game::layers::tests::host_left_prune_revokes_only_the_departing_hosts_permissions
+        PASS (172/422) phase-engine game::layers::tests::has_counters_any_false_when_no_counters
+        PASS (173/422) phase-engine game::layers::tests::has_counters_true_when_loyalty_present
+        PASS ( 17/422) phase-engine game::layers::tests::add_all_basic_land_types_adds_five_subtypes
+        PASS (174/422) phase-engine game::layers::tests::humility_does_not_end_a_resolution_created_shield
+        PASS (175/422) phase-engine game::layers::tests::identity_affected_filter_scans_one_candidate_not_the_whole_battlefield
+        PASS (176/422) phase-engine game::layers::tests::has_counters_p1p1_ten_or_more_threshold
+        PASS (177/422) phase-engine game::layers::tests::has_counters_any_true_when_any_counter_type_present
+        PASS (178/422) phase-engine game::layers::tests::identity_affected_filter_still_respects_the_scanned_zone_population
+        PASS (179/422) phase-engine game::layers::tests::impending_not_creature_participates_in_layer_timestamp_ordering
+        PASS (180/422) phase-engine game::layers::tests::identity_shortcut_declines_for_a_predicate_and_spans_non_battlefield_zones
+        PASS (181/422) phase-engine game::layers::tests::incremental_flush_refreshes_static_mode_presence
+        PASS (182/422) phase-engine game::layers::tests::incarnation_anger_on_battlefield_does_not_grant_haste
+        PASS (183/422) phase-engine game::layers::tests::incarnation_anger_grants_haste_from_graveyard_when_mountain_controlled
+        PASS ( 18/422) phase-engine game::layers::tests::a_door_stamped_anthem_applies_only_while_its_half_is_unlocked
+        PASS (184/422) phase-engine game::layers::tests::incremental_flush_skips_the_census_of_a_dynamic_count_reaching_no_recipient
+        PASS (185/422) phase-engine game::layers::tests::incarnation_anger_without_mountain_grants_no_haste
+        PASS (186/422) phase-engine game::layers::tests::incremental_no_copy_no_sticker_reuses_prepared_shared_gather
+        PASS (187/422) phase-engine game::layers::tests::incremental_layer_pass_does_not_inherit_remove_all_abilities_suppression
+        PASS (188/422) phase-engine game::layers::tests::index_gather_matches_full_scan_set_and_order
+        PASS (189/422) phase-engine game::layers::tests::incremental_flush_still_runs_the_census_of_a_dynamic_count_reaching_a_recipient
+        PASS (190/422) phase-engine game::layers::tests::incremental_prepare_rebuilds_static_index_before_shared_gather
+        PASS (191/422) phase-engine game::layers::tests::layer_1b_overrides_copy_for_face_down_object
+        PASS (192/422) phase-engine game::layers::tests::layer_pass_collector_adds_late_granted_static_candidates_by_host_filter_reads
+        PASS (193/422) phase-engine game::layers::tests::layer_zone_cache_materializes_battlefield_once_per_pass
+        PASS ( 19/422) phase-engine game::layers::tests::a_phased_out_host_ends_the_presence_effect_and_spares_the_event_deadline
+        PASS (194/422) phase-engine game::layers::tests::lieutenant_not_satisfied_when_own_commander_controlled_by_opponent
+        PASS (195/422) phase-engine game::layers::tests::lieutenant_not_satisfied_by_stolen_opponent_commander
+        PASS (196/422) phase-engine game::layers::tests::life_above_starting_reader_escalates
+        PASS (197/422) phase-engine game::layers::tests::life_cda_escalates_and_derived_power_tracks_life
+        PASS (198/422) phase-engine game::layers::tests::lieutenant_satisfied_by_own_controlled_commander
+        PASS (199/422) phase-engine game::layers::tests::layer_zone_cache_keeps_filters_fresh_across_layers
+        PASS (200/422) phase-engine game::layers::tests::live_layer_gather_admits_characteristic_defining_static_from_hand
+        PASS (201/422) phase-engine game::layers::tests::nested_filter_and_player_surfaces_route_to_life
+        PASS (202/422) phase-engine game::layers::tests::modification_write_kinds_agree_with_their_layer
+        PASS (203/422) phase-engine game::layers::tests::mutually_copying_permanents_reach_a_layer_one_fixed_point
+        PASS ( 20/422) phase-engine game::layers::tests::a_turn_deadline_no_seam_can_key_is_refused_at_the_grant
+        PASS (204/422) phase-engine game::layers::tests::mirrorweave_onto_face_down_stays_2_2
+        PASS (205/422) phase-engine game::layers::tests::only_a_copy_layer_payload_buys_a_layer_one_discovery_generation
+        PASS (206/422) phase-engine game::layers::tests::muraganda_petroglyphs_buffs_only_abilityless_creatures_e2e
+        PASS (207/422) phase-engine game::layers::tests::issue_1593_abomination_of_llanowar_runtime_counts_elves_and_graveyard
+        PASS (208/422) phase-engine game::layers::tests::opponent_sees_hidden_2_2_not_copied_identity
+        PASS (209/422) phase-engine game::layers::tests::koth_emblem_grants_activated_ability_to_controlled_mountains
+        PASS (210/422) phase-engine game::layers::tests::locus_grants_craft_pile_activated_abilities
+        PASS (211/422) phase-engine game::layers::tests::omo_everything_counter_grants_all_land_and_creature_types
+        PASS (212/422) phase-engine game::layers::tests::off_battlefield_provider_does_not_donate_activated_abilities
+        PASS (213/422) phase-engine game::layers::tests::marvin_gains_differently_named_creature_abilities_only
+        PASS ( 21/422) phase-engine game::layers::tests::a_dynamic_object_count_escalates_only_for_an_entrant_that_perturbs_it
+        PASS (214/422) phase-engine game::layers::tests::permanent_removed_during_eval_does_not_panic
+        PASS (215/422) phase-engine game::layers::tests::granting_object_reference_decides_the_stamp
+        PASS (216/422) phase-engine game::layers::tests::per_turn_life_counter_gate_escalates
+        PASS (217/422) phase-engine game::layers::tests::player_attribute_life_filter_escalates
+        PASS (218/422) phase-engine game::layers::tests::printed_and_runtime_granted_parameterized_lki_keywords_both_trigger
+        PASS (219/422) phase-engine game::layers::tests::painters_servant_or_filter_scans_off_battlefield_in_any_zone
+        PASS (220/422) phase-engine game::layers::tests::parameterized_power_toughness_counters_apply_in_layer_7c
+        PASS (221/422) phase-engine game::layers::tests::presence_bound_permission_ends_when_its_host_phases_out
+        PASS (222/422) phase-engine game::layers::tests::player_matching_routes_its_payloads_life_reads
+        PASS (223/422) phase-engine game::layers::tests::plain_board_skips_and_stays_byte_identical
+        PASS ( 22/422) phase-engine game::layers::tests::activated_slot_provenance_tracks_layer_1_set_and_layer_6_grants
+        PASS (224/422) phase-engine game::layers::tests::pt_dependency_detects_disjunctive_pt_filter_props
+        PASS (225/422) phase-engine game::layers::tests::printed_static_condition_uses_controller_after_layer_two_in_one_pass
+        PASS (226/422) phase-engine game::layers::tests::ragost_duplicate_grant_ability_dedups_to_single_ability
+        PASS (227/422) phase-engine game::layers::tests::prototyped_permanent_keeps_secondary_characteristics_after_type_change
+        PASS (228/422) phase-engine game::layers::tests::pt_counters_apply_before_switch_in_layer_seven
+        PASS (229/422) phase-engine game::layers::tests::quantity_ref_life_family_leaves_classified_directly
+        PASS (230/422) phase-engine game::layers::tests::recipient_anchored_monarch_condition_binds_only_with_a_recipient
+        PASS (231/422) phase-engine game::layers::tests::pt_modification_dependency_overrides_timestamp_in_set_pt_layer
+        PASS (232/422) phase-engine game::layers::tests::pt_modification_dependency_overrides_timestamp_in_modify_pt_layer
+        PASS (233/422) phase-engine game::layers::tests::recipient_attacking_owner_target_owner_player_matches_owner
+        PASS ( 23/422) phase-engine game::layers::tests::add_dynamic_keyword_annihilator_installs_resolved_attack_trigger
+        PASS (234/422) phase-engine game::layers::tests::recipient_attacking_owner_target_or_planeswalker_matches_owner_controlled_pw
+        PASS (235/422) phase-engine game::layers::tests::recipient_attacking_owner_target_false_when_no_recipient
+        PASS (236/422) phase-engine game::layers::tests::recipient_attacking_owner_target_false_when_no_combat
+        PASS (237/422) phase-engine game::layers::tests::recipient_attacking_owner_target_false_when_not_attacking
+        PASS (238/422) phase-engine game::layers::tests::recipient_per_object_anthem_buffs_only_matching
+        PASS (239/422) phase-engine game::layers::tests::reconfigure_equipment_loses_creature_type_while_attached
+        PASS (240/422) phase-engine game::layers::tests::replacement_static_grant_source_gets_a_distinct_occurrence
+        PASS (241/422) phase-engine game::layers::tests::recipient_controller_monarch_anthem_applies_per_recipient_in_continuous_mode
+        PASS (  2/422) phase-engine game::ability_scan::tests::unless_controls_subtype_reports_the_census_it_runs
+        PASS (242/422) phase-engine game::layers::tests::remove_all_abilities_removes_basic_land_intrinsic_mana_ability
+        PASS (243/422) phase-engine game::layers::tests::recipient_selfref_nonwall_no_defender
+        PASS ( 24/422) phase-engine game::layers::tests::add_keyword_annihilator_installs_parameterized_attack_trigger
+        PASS (244/422) phase-engine game::layers::tests::restored_recipient_sourced_board_wide_static_escalates_incremental_flush
+        PASS (245/422) phase-engine game::layers::tests::router_arms_route_life_reading_payloads
+        PASS (246/422) phase-engine game::layers::tests::recipient_selfref_wall_keeps_defender
+        PASS (247/422) phase-engine game::layers::tests::resolution_origin_replacement_survives_the_layer_reset_with_its_runtime_state
+        PASS (248/422) phase-engine game::layers::tests::remove_keyword_undying_removes_synthesized_trigger
+        PASS (249/422) phase-engine game::layers::tests::scoped_monarch_static_condition_is_false_in_both_polarities_cr_725_5
+        PASS (250/422) phase-engine game::layers::tests::saturating_counter_conversion_keeps_creature_alive
+        PASS (251/422) phase-engine game::layers::tests::same_static_grantor_keeps_byte_identical_trigger_outputs_distinct
+        PASS (252/422) phase-engine game::layers::tests::same_static_modifications_apply_in_written_order
+        PASS (253/422) phase-engine game::layers::tests::set_card_types_land_strips_creature_and_creature_subtype
+        PASS ( 25/422) phase-engine game::layers::tests::add_keyword_preserves_distinct_protection_parameters
+        PASS (254/422) phase-engine game::layers::tests::saturating_pt_prevents_overflow_death_cascade
+        PASS (255/422) phase-engine game::layers::tests::select_next_effect_follows_the_cr_613_8b_loop_rule
+        PASS (256/422) phase-engine game::layers::tests::set_basic_land_type_replaces_rules_text_with_intrinsic_mana_ability
+        PASS (257/422) phase-engine game::layers::tests::set_basic_land_type_replaces_subtypes
+        PASS (258/422) phase-engine game::layers::tests::set_card_types_prunes_subtypes_not_matching_new_core_types
+        PASS (259/422) phase-engine game::layers::tests::set_basic_land_type_preserves_creature_subtypes
+        PASS (260/422) phase-engine game::layers::tests::secret_arcade_additive_type_static_applies_across_battlefield_and_stack
+        PASS (261/422) phase-engine game::layers::tests::set_chosen_basic_land_type_reads_source_choice
+        PASS (262/422) phase-engine game::layers::tests::set_chosen_name_renames_equipped_creature_to_source_choice
+        PASS (263/422) phase-engine game::layers::tests::song_style_aura_applies_to_host_when_attached_via_attach_to
+        PASS ( 26/422) phase-engine game::layers::tests::add_keyword_preserves_distinct_ward_parameters
+        PASS (264/422) phase-engine game::layers::tests::set_pt_layer_orders_unconditional_setters_before_pt_threshold_filters
+        PASS (265/422) phase-engine game::layers::tests::source_attached_to_creature_gates
+        PASS (266/422) phase-engine game::layers::tests::shield_of_the_oversoul_color_conditional_on_multicolor_creature
+        PASS (267/422) phase-engine game::layers::tests::song_style_set_card_types_and_basic_land_type_makes_nonland_a_forest
+        PASS (268/422) phase-engine game::layers::tests::source_is_enchanted_gates_on_attached_aura
+        PASS (269/422) phase-engine game::layers::tests::stamp_granter_fills_every_node_and_keeps_an_existing_stamp
+        PASS (270/422) phase-engine game::layers::tests::source_is_tapped_false_when_source_off_battlefield
+        PASS (271/422) phase-engine game::layers::tests::static_grant_retires_when_source_departs_through_zone_pipeline
+        PASS (272/422) phase-engine game::layers::tests::static_and_transient_color_interleave_by_true_timestamp
+        PASS (273/422) phase-engine game::layers::tests::specific_object_scan_zone_follows_the_objects_actual_zone
+        PASS ( 27/422) phase-engine game::layers::tests::add_keyword_deduplicates_identical_parameters
+        PASS (274/422) phase-engine game::layers::tests::source_is_saddled_gates_continuous_effect
+        PASS (275/422) phase-engine game::layers::tests::source_matches_filter_gates
+        PASS (276/422) phase-engine game::layers::tests::stickered_room_name_matches_between_full_and_incremental_layer_paths
+        PASS (277/422) phase-engine game::layers::tests::static_mode_presence_equals_functioning_statics_fold
+        PASS (278/422) phase-engine game::layers::tests::static_grant_retires_when_source_owner_is_eliminated
+        PASS (279/422) phase-engine game::layers::tests::test_changeling_cda_grants_all_creature_types
+        PASS (280/422) phase-engine game::layers::tests::strong_back_per_recipient_dynamic_boost_counts_only_attachments_on_recipient
+        PASS (281/422) phase-engine game::layers::tests::test_aura_static_only_affects_enchanted_creature
+        PASS (282/422) phase-engine game::layers::tests::test_chosen_creature_type_adds_subtype
+        PASS (283/422) phase-engine game::layers::tests::test_changeling_cda_sorts_before_non_cda_in_same_layer
+        PASS ( 28/422) phase-engine game::layers::tests::add_keyword_undying_installs_and_removes_synthesized_trigger
+        PASS (284/422) phase-engine game::layers::tests::test_chosen_basic_land_type_no_choice_is_noop
+        PASS (285/422) phase-engine game::layers::tests::test_chosen_basic_land_type_adds_subtype
+        PASS (286/422) phase-engine game::layers::tests::strong_back_unrelated_enchantment_does_not_inflate_boost
+        PASS (287/422) phase-engine game::layers::tests::song_of_dryads_from_oracle_strips_host_triggers_and_statics
+        PASS (288/422) phase-engine game::layers::tests::sticker_static_source_is_indexed_with_preexisting_generator
+        PASS (289/422) phase-engine game::layers::tests::test_chosen_creature_type_sets_subtype
+        PASS (290/422) phase-engine game::layers::tests::test_color_change_reverts_to_base_when_source_leaves
+        PASS (291/422) phase-engine game::layers::tests::song_of_the_dryads_suppresses_thranduil_graveyard_grant
+        PASS (292/422) phase-engine game::layers::tests::test_layer_order_type_before_pt
+        PASS (293/422) phase-engine game::layers::tests::test_counter_pt_layer_7e
+        PASS ( 29/422) phase-engine game::layers::tests::add_keyword_annihilator_preserves_printed_and_granted_instances
+        PASS (294/422) phase-engine game::layers::tests::test_dependency_ordering_overrides_timestamp
+        PASS (295/422) phase-engine game::layers::tests::test_granted_changeling_gets_all_creature_types_via_postfixup
+        PASS (296/422) phase-engine game::layers::tests::test_layers_dirty_flag_cleared
+        PASS (297/422) phase-engine game::layers::tests::test_remove_all_abilities_reverts_to_base_when_source_leaves
+        PASS (298/422) phase-engine game::layers::tests::test_remove_all_abilities_clears_all_computed_ability_buckets
+        PASS (299/422) phase-engine game::layers::tests::test_keyword_filtered_lord_uses_source_controller
+        PASS (300/422) phase-engine game::layers::tests::test_remove_chosen_keyword_without_choice_is_noop
+        PASS (301/422) phase-engine game::layers::tests::test_remove_chosen_keyword_strips_first_strike_from_target
+        PASS (302/422) phase-engine game::layers::tests::test_lord_buff_modifies_computed_not_base
+        PASS (303/422) phase-engine game::layers::tests::test_tarmogoyf_cda_counts_card_types_in_graveyards
+        PASS ( 30/422) phase-engine game::layers::state_duration_retirement_recording_tests::every_ordinary_flush_arm_records_its_exact_retirement
+        PASS (304/422) phase-engine game::layers::tests::test_multi_layer_effect_does_not_double_apply
+        PASS (305/422) phase-engine game::layers::tests::test_remove_chosen_keyword_strips_only_chosen_landwalk_variant
+        PASS (306/422) phase-engine game::layers::tests::test_source_leaves_battlefield_effect_stops
+        PASS (307/422) phase-engine game::layers::tests::top_of_library_matches_reads_controller_library_top
+        PASS (308/422) phase-engine game::layers::tests::top_of_library_static_reevaluated_after_mill_to_graveyard
+        PASS (309/422) phase-engine game::layers::tests::transient_static_condition_keeps_its_captured_controller
+        PASS (310/422) phase-engine game::layers::tests::test_type_change_reverts_to_base_when_source_leaves
+        PASS (311/422) phase-engine game::layers::tests::test_timestamp_ordering_within_layer
+        PASS (312/422) phase-engine game::layers::tests::top_of_library_static_reevaluated_after_shuffle
+        PASS (313/422) phase-engine game::layers::tests::until_end_of_next_turn_effect_armed_at_untap_expires_at_cleanup
+        PASS ( 31/422) phase-engine game::layers::tests::alpha_status_counts_other_creatures_sharing_recipient_creature_type
+        PASS (314/422) phase-engine game::layers::tests::transient_combat_rule_condition_stays_off_when_captured_controller_fails
+        PASS (315/422) phase-engine game::layers::tests::until_end_of_next_turn_permission_armed_at_untap_expires_at_cleanup
+        PASS (316/422) phase-engine game::layers::tests::until_end_of_next_turn_of_specific_player_arms_on_that_players_turn
+        PASS (317/422) phase-engine game::layers::tests::until_next_untap_step_turn_agnostic_expires_at_any_players_untap_step
+        PASS (318/422) phase-engine game::layers::tests::transient_combat_rule_filter_uses_captured_controller_after_source_is_stolen
+        PASS (319/422) phase-engine game::layers::tests::two_ragosts_grant_food_ability_only_once
+        PASS (320/422) phase-engine game::layers::tests::unconditional_aura_grant_applies_through_the_same_harness
+        PASS (321/422) phase-engine game::layers::tests::until_next_upkeep_turn_agnostic_expires_at_any_players_upkeep
+        PASS (322/422) phase-engine game::layers::tests::top_of_library_static_reevaluated_after_put_on_top
+        PASS (323/422) phase-engine game::layers::tests::until_object_controllers_next_untap_step_keys_on_the_affected_object
+        PASS ( 32/422) phase-engine game::layers::tests::an_added_untap_step_ends_only_untap_step_permissions
+        PASS (324/422) phase-engine game::layers::tests::until_next_upkeep_play_permission_expires_at_the_grantees_upkeep
+        PASS (325/422) phase-engine game::layers::tests::thranduil_gains_activated_abilities_of_elf_cards_in_your_graveyard
+        PASS (326/422) phase-engine game::layers::tests::until_next_upkeep_effect_survives_untap_and_expires_at_controllers_upkeep
+        PASS (327/422) phase-engine game::layers::tests::until_your_next_turn_prune_ignores_end_of_turn_duration
+        PASS (328/422) phase-engine game::layers::tests::until_your_next_turn_prune_expires_for_grantee_only
+        PASS (329/422) phase-engine game::layers::tests::whose_turn_leaves_read_the_ability_holder_when_bound
+        PASS (330/422) phase-engine game::layers::tests::whispersilk_compound_grants_shroud_through_layers
+        PASS (331/422) phase-engine game::layers::tests::urborg_adds_swamp_mana_ability_to_every_land
+        PASS (332/422) phase-engine game::layers::tests::urborg_does_not_inject_mana_onto_non_land
+        PASS (333/422) phase-engine game::layers::tests::you_control_creature_tied_for_greatest_toughness_condition_evaluates_table_wide
+        PASS ( 33/422) phase-engine game::layers::tests::agatha_grants_only_creature_card_abilities_to_countered_creatures
+        PASS (334/422) phase-engine game::layers::tests::vacant_monarch_static_condition_is_false_in_both_polarities_cr_725_5
+        PASS (335/422) phase-engine game::layers::tests::yavimaya_adds_forest_mana_ability_to_plains
+        PASS (336/422) phase-engine game::text_substitution::tests::land_word_rewrites_type_positions_but_not_names
+        PASS (337/422) phase-engine game::layers::tests::witness_protection_applies_all_characteristics_and_reverts_when_removed
+        PASS (338/422) phase-engine game::text_substitution::tests::nothing_to_change_and_unclassified_positions_are_left_alone
+        PASS (339/422) phase-engine game::mana_sources::tests::leaf_component_census_counts_the_flattened_tree
+        PASS (340/422) phase-engine game::text_substitution::tests::color_word_rewrites_words_but_not_mana_symbols
+        PASS (341/422) phase-engine game::turns::tests::production_phase_assignment_census_is_frozen
+        PASS (  3/422) phase-engine game::ability_scan::tests::round2_mass_battlefield_resolvers_census_in_both_oracles
+        PASS (342/422) phase-engine game::triggers::tests::construction_finisher_rejects_a_wait_outside_the_closed_census
+        PASS (343/422) phase-engine::integration activation_cost_work_census::a_production_call_after_a_mid_file_test_module_is_counted
+        PASS ( 34/422) phase-engine game::layers::tests::an_event_deadline_permission_ends_only_at_the_hosts_battlefield_exit
+        PASS (344/422) phase-engine source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS (345/422) phase-engine::integration battlefield_entry_authority_census::bare_trailing_fn_header_is_an_error_not_a_panic
+        PASS (346/422) phase-engine::integration battlefield_entry_authority_census::the_token_created_resolver_keys_on_cfg_scope_and_on_field_completeness
+        PASS (347/422) phase-engine::integration battlefield_entry_authority_census::the_anaphora_publish_resolver_keys_on_cfg_scope_and_on_the_call_tail
+        PASS (348/422) phase-engine::integration battlefield_entry_authority_census::the_census_resolver_keys_on_cfg_scope_and_on_the_literal_from_field
+        PASS (349/422) phase-engine parser::oracle::tests::render_net_effect_carrier_census
+        PASS (350/422) phase-engine parser::oracle_quantity::tests::masters_councillors_static_gets_dynamic_power_for_graveyard_census
+        PASS (351/422) phase-engine game::layers::tests::thranduil_loses_ability_of_graveyard_elf_made_a_goblin_by_conspiracy
+        PASS (352/422) phase-engine::integration format_axis_census::format_metadata_declares_exactly_its_committed_field_list
+        PASS (353/422) phase-engine::integration format_axis_census::card_pool_authority_tables_are_built_in_one_place
+        PASS ( 35/422) phase-engine game::layers::tests::arming_keys_on_the_grantee_not_on_the_granting_ability_controller
+        PASS (354/422) phase-engine::integration format_axis_census::format_axis_methods_carry_no_wildcard_arm
+        PASS (355/422) phase-engine::integration format_axis_census::no_caller_unwraps_legality_format
+        PASS (356/422) phase-engine::integration format_axis_census::no_caller_reintroduces_a_commander_count_literal
+        PASS (357/422) phase-engine::integration format_axis_census::unrestricted_card_pool_declarations_match_the_committed_list
+        PASS (358/422) phase-engine::integration format_axis_census::no_format_axis_key_reaches_the_client_mirror
+        PASS (359/422) phase-engine::integration defending_player_controls_combat_anchor::hazy_homunculus_controls_census_is_battlefield_scoped
+        PASS (360/422) phase-engine game::layers::tests::thranduil_gains_ability_of_graveyard_card_made_an_elf_by_maskwood_nexus
+        PASS (361/422) phase-engine::integration loop_shortcut_offer_writer_census::the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses
+        PASS (362/422) phase-engine::integration battlefield_entry_authority_census::every_token_created_construction_lives_in_the_single_emitter
+        PASS (363/422) phase-engine::integration battlefield_entry_authority_census::every_from_none_battlefield_entry_construction_lives_in_the_authority
+        PASS ( 36/422) phase-engine analysis::resource::tests::spent_self_entry_relieves_a_board_censusing_entry_condition
+        PASS (364/422) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_counts_occurrences_and_not_lines
+        PASS (365/422) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_ignores_a_trailing_comment_mention
+        PASS (366/422) phase-engine::integration loop_shortcut_seat_pin_census::the_seat_pin_census_instrument_reports_both_answers_on_planted_input
+        PASS (367/422) phase-engine::integration masters_councillors::masters_councillors_pt_scales_with_graveyard_census_across_players
+        PASS (368/422) phase-engine game::engine::stage2_injector_tests::the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event
+        PASS (369/422) phase-engine::integration source_census::tests::the_code_half_rule_separates_a_trailing_comment_from_the_code_beside_it
+        PASS (370/422) phase-engine::integration deterministic_game_state_serde::serde_hash_owner_census_is_exhaustive_and_every_canonical_owner_names_its_adapter
+        PASS (371/422) phase-engine::integration loop_only_dependency_fallback::curse_newer_than_the_loop_applies_after_it
+        PASS (372/422) phase-engine::integration loop_only_dependency_fallback::curse_on_another_player_leaves_the_loop_recipients_untouched
+        PASS (373/422) phase-engine::integration loop_only_dependency_fallback::curse_older_than_the_loop_still_applies_after_it
+        PASS ( 37/422) phase-engine game::layers::tests::attribution_clears_between_passes
+        PASS (374/422) phase-engine::integration loop_only_dependency_fallback::loop_alone_applies_every_member
+        PASS (375/422) phase-engine::integration loop_only_dependency_fallback::newer_independent_effect_applies_after_the_loop_members
+        PASS (376/422) phase-engine::integration activation_cost_work_census::every_activation_cost_payment_entry_is_classified
+        PASS (377/422) phase-engine source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS (378/422) phase-engine::integration activation_cost_work_census::every_activation_mana_resume_entry_is_classified
+        PASS (379/422) phase-engine::integration text_substitution_cr612::active_substitutions_are_grouped_and_ordered_per_recipient
+        PASS (380/422) phase-engine::integration loop_shortcut_seat_pin_census::no_target_class_producer_constructs_a_choice_class_player_pin
+        PASS (381/422) phase-engine::integration text_substitution_cr612::chain_plus_loop_on_one_object_and_unrelated_loop_on_another
+        PASS (382/422) phase-engine::integration source_census::tests::no_source_reading_file_carries_a_private_comment_policy
+        PASS (383/422) phase-engine game::layers::tests::jaheira_grants_mana_ability_to_noncreature_tokens_you_control
+        PASS ( 38/422) phase-engine game::layers::tests::attached_object_presence_condition_uses_source_attachment_context
+        PASS (384/422) phase-engine::integration text_substitution_cr612::color_cycle_on_a_static_orders_by_the_recipients_current_text
+        PASS (385/422) phase-engine::integration text_substitution_cr612::chain_of_text_changes_applies_dependency_order_in_both_casting_orders
+        PASS (386/422) phase-engine::integration text_substitution_cr612::color_cycle_on_a_stack_spell_orders_by_the_recipients_current_text
+        PASS (387/422) phase-engine::integration text_substitution_cr612::changed_static_ability_applies_in_the_same_layer_pass
+        PASS (388/422) phase-engine::integration text_substitution_cr612::carrier_census_classifies_every_word_position_and_round_trips
+        PASS (389/422) phase-engine::integration text_substitution_cr612::incremental_flush_matches_full_evaluation_with_a_live_substitution
+        PASS (390/422) phase-engine::integration text_substitution_cr612::crystal_spray_prompts_both_domains_then_draws
+        PASS (391/422) phase-engine::integration text_substitution_cr612::land_cycle_on_a_keyword_orders_by_the_recipients_current_text
+        PASS (392/422) phase-engine::integration battlefield_entry_authority_census::every_single_id_anaphora_publish_lives_in_an_authority
+        PASS (393/422) phase-engine::integration text_substitution_cr612::entwined_spectral_shift_latches_each_modes_own_answer
+        PASS ( 39/422) phase-engine game::layers::tests::attribution_distinguishes_modifications_within_one_source
+        PASS (394/422) phase-engine::integration text_substitution_cr612::cycle_verdict_depends_on_the_recipients_starting_land
+        PASS (395/422) phase-engine::integration text_substitution_cr612::substitution_labels_round_trip_and_reject_invalid_pairs
+        PASS (396/422) phase-engine::integration text_substitution_cr612::land_type_cycle_on_a_type_line_orders_by_the_recipients_current_text
+        PASS (397/422) phase-engine::integration text_substitution_cr612::granted_abilities_are_not_text_but_printed_statics_are
+        PASS (398/422) phase-engine::integration text_substitution_cr612::crystal_spray_change_ends_at_end_of_turn
+        PASS (399/422) phase-engine::integration text_substitution_cr612::color_word_in_keyword_changes_and_unrelated_color_is_a_no_op
+        PASS (400/422) phase-engine::integration text_substitution_cr612::loop_of_text_changes_applies_timestamp_order
+        PASS (401/422) phase-engine::integration text_substitution_cr612::text_change_on_a_permanent_spell_carries_to_the_permanent
+        PASS (402/422) phase-engine::integration text_substitution_cr612::mana_symbols_are_not_words_but_the_color_word_is
+        PASS (403/422) phase-engine::integration waiting_for_actor_authority_census::mulligan_adapters_preserve_the_single_pending_actor_rule
+        PASS ( 40/422) phase-engine game::layers::tests::attribution_layer_copy_records_source
+        PASS (404/422) phase-engine::integration text_substitution_cr612::magical_hack_changes_landwalk_indefinitely
+        PASS (405/422) phase-engine::integration text_substitution_cr612::magical_hack_changes_basic_land_subtype
+        PASS (406/422) phase-engine::bin/resolution-face-census tests::export_identity_census_excludes_mixed_audited_layout_pairs
+        PASS (407/422) phase-engine::bin/resolution-face-census tests::export_identity_census_reports_non_candidates_without_widening_candidates
+        PASS (408/422) phase-engine::integration text_substitution_cr612::indefinite_text_change_ends_when_the_permanent_leaves_and_returns
+        PASS (409/422) phase-engine::integration text_substitution_cr612::restamp_rewrites_repeat_for_and_leaves_runtime_state_alone
+        PASS (410/422) phase-engine::integration waiting_for_actor_authority_census::every_waiting_for_arm_declares_its_acting_authority
+        PASS (411/422) phase-engine::integration text_substitution_cr612::text_change_on_a_spell_changes_what_resolves
+        PASS (412/422) phase-engine::integration text_substitution_cr612::text_change_on_a_non_permanent_spell_is_gone_when_it_leaves_the_stack
+        PASS (413/422) phase-engine::integration text_substitution_cr612::same_from_changes_on_different_objects_do_not_interact
+        PASS ( 41/422) phase-engine game::layers::tests::attribution_self_grant_is_emitted_engine_side
+        PASS (414/422) phase-engine::integration text_substitution_cr612::text_change_on_acid_rain_changes_which_lands_die
+        PASS (415/422) phase-engine::integration text_substitution_cr612::restamp_applies_a_color_cycle_in_dependency_order
+        PASS (416/422) phase-engine::integration text_substitution_cr612::sleight_of_mind_offers_only_color_pairs_and_latches_nothing_for_a_bad_answer
+        PASS (417/422) phase-engine::integration text_substitution_cr612::type_line_repeats_count_until_every_change_has_applied
+        PASS (418/422) phase-engine::integration loop_shortcut_offer_writer_census::the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_validates_pins
+        PASS (419/422) phase-engine::integration text_substitution_cr612::type_line_loop_applies_in_timestamp_order
+        PASS (420/422) phase-engine::integration cr733_resolved_commands_p0::cr733_authority_matrix_covers_the_fresh_write_census
+        PASS (421/422) phase-engine::integration wba_loop_firewall_interposition::spent_self_entry_relief_offers_on_three_real_entry_census_lands
+        PASS (422/422) phase-engine::integration wba_loop_firewall_interposition::unactivated_ability_relief_offers_on_three_real_census_lands
+        PASS ( 42/422) phase-engine game::layers::tests::attached_continuous_condition_reads_recipient_power
+        PASS ( 43/422) phase-engine game::layers::tests::attribution_records_removal_modifications
+        PASS (  4/422) phase-engine game::ability_rw::tests::ne_iv_census_overlap
+        PASS ( 44/422) phase-engine game::layers::tests::attribution_transient_source_pt_grant
+        PASS ( 45/422) phase-engine game::layers::tests::attribution_static_source_keyword_grant
+        PASS ( 46/422) phase-engine game::layers::tests::attribution_multiple_sources_accumulate
+        PASS ( 47/422) phase-engine game::layers::tests::attribution_transient_snapshots_source_name
+        PASS ( 48/422) phase-engine game::layers::tests::attribution_transient_uses_lki_when_source_dead
+        PASS ( 49/422) phase-engine game::layers::tests::cant_have_keyword_denial_is_observed_by_layer7_pt
+        PASS ( 50/422) phase-engine game::layers::tests::basic_swamp_receives_no_duplicate_swamp_ability_from_urborg
+        PASS ( 51/422) phase-engine game::layers::tests::base_only_replacement_is_not_duplicated_by_the_carry_over
+        PASS ( 52/422) phase-engine game::layers::tests::cairn_graveyard_keyword_static_grants_flying_only_while_flyer_in_graveyard
+        PASS ( 53/422) phase-engine game::layers::tests::blood_moon_does_not_end_a_resolution_created_shield
+        PASS (  5/422) phase-engine game::ability_scan::tests::census_tag_set_is_exactly_enumerated
+        PASS ( 54/422) phase-engine analysis::resource::tests::s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census
+        PASS ( 55/422) phase-engine game::layers::tests::cant_have_keyword_denial_applies_to_incremental_entry
+        PASS ( 56/422) phase-engine game::layers::tests::cant_have_keyword_denial_overrides_keyword_counter
+        PASS ( 57/422) phase-engine game::layers::tests::carried_resolution_def_does_not_suppress_an_identical_derived_grant
+        PASS ( 58/422) phase-engine game::layers::tests::cant_have_keyword_denial_overrides_concurrent_grant
+        PASS ( 59/422) phase-engine game::layers::tests::carried_resolution_defs_sort_after_derived_grants
+        PASS ( 60/422) phase-engine game::layers::tests::combat_assignment_rule_effects_observe_final_layered_characteristics
+        PASS ( 61/422) phase-engine game::layers::tests::cavernous_maw_animation_retains_cave_land_through_layers
+        PASS ( 62/422) phase-engine game::layers::tests::cda_admitted_off_battlefield_via_sibling_broad_zone_static
+        PASS ( 63/422) phase-engine game::layers::tests::combat_assignment_static_condition_uses_controller_after_layer_two
+        PASS (  6/422) phase-engine analysis::resource::tests::a_foreign_mana_ability_reading_a_creature_census_still_vetoes
+        PASS ( 64/422) phase-engine game::layers::tests::codsworth_ward_grant_targets_only_commanders
+        PASS ( 65/422) phase-engine game::layers::tests::combat_assignment_rule_flags_are_post_layer_effects
+        PASS ( 66/422) phase-engine game::layers::tests::command_zone_cda_reaches_layer_pipeline
+        PASS ( 67/422) phase-engine game::layers::tests::characteristic_origin_live_only_replacement_is_still_reset_away
+        PASS ( 68/422) phase-engine game::layers::tests::commanders_you_control_static_no_op_without_commander
+        PASS ( 69/422) phase-engine game::layers::tests::cloaked_face_down_retains_ward_under_copy
+        PASS ( 70/422) phase-engine game::layers::tests::combat_assignment_rule_effects_respect_zone_of_function_active_zones
+        PASS ( 71/422) phase-engine game::layers::tests::commanders_you_control_filter_respects_per_player_scope
+        PASS ( 72/422) phase-engine game::layers::tests::compound_and_false_when_no_counters
+        PASS ( 73/422) phase-engine game::layers::tests::compound_and_false_when_not_your_turn
+        PASS (  7/422) phase-engine game::ability_scan::tests::obligation_ii_census_exception_is_exactly_settapstate
+        PASS ( 74/422) phase-engine game::layers::tests::compound_and_true_when_both_conditions_met
+        PASS ( 75/422) phase-engine game::layers::tests::compound_or_true_when_only_one_condition_met
+        PASS ( 76/422) phase-engine game::layers::tests::condition_over_life_total_escalates
+        PASS ( 77/422) phase-engine game::layers::tests::continuous_effect_scan_zones_preserves_non_or_zone_semantics
+        PASS ( 78/422) phase-engine analysis::resource::tests::s4_s5_player_axis_board_census_keeps_the_veto
+        PASS ( 79/422) phase-engine game::layers::tests::compound_condition_does_not_animate_on_opponents_turn
+        PASS ( 80/422) phase-engine game::layers::tests::conditional_life_more_than_starting_applies_only_above_threshold
+        PASS ( 81/422) phase-engine game::layers::tests::control_change_expiry_resicks_original_controller
+        PASS ( 82/422) phase-engine game::layers::tests::continuous_effect_scan_zones_recurses_through_or_nested_under_and
+        PASS ( 83/422) phase-engine game::layers::tests::azure_beastbinder_attack_artifact_target_skips_base_pt
+        PASS (  8/422) phase-engine game::ability_scan::tests::census_hole_arms_are_load_bearing
+        PASS ( 84/422) phase-engine game::layers::tests::dependency_order_chain_plus_loop_keeps_the_chain
+        PASS ( 85/422) phase-engine game::layers::tests::copy_effect_does_not_destroy_a_carried_resolution_shield
+        PASS ( 86/422) phase-engine game::layers::tests::controller_lost_life_anthem_escalates
+        PASS ( 87/422) phase-engine game::layers::tests::compound_condition_animates_planeswalker_as_creature
+        PASS ( 88/422) phase-engine game::layers::tests::control_change_sicks_new_controller
+        PASS ( 89/422) phase-engine game::layers::tests::dependency_order_acyclic_graphs_follow_plain_kahn_order
+        PASS ( 90/422) phase-engine game::layers::tests::copy_grants_continuous_static_covers_every_copy_layer_variant
+        PASS ( 91/422) phase-engine game::layers::tests::dependency_order_dependent_of_a_loop_member_applies_after_that_member
+        PASS ( 92/422) phase-engine game::layers::tests::dependency_order_dependent_on_whole_loop_waits
+        PASS ( 93/422) phase-engine game::layers::tests::dependency_order_loop_member_waiting_on_a_newer_node_keeps_its_siblings_behind
+        PASS (  9/422) phase-engine game::ability_scan::tests::b4_execute_census_scanned_while_matchers_stay_read_free
+        PASS ( 94/422) phase-engine game::layers::tests::dependency_order_cross_loop_dependency_keeps_each_loop_in_timestamp_order
+        PASS ( 95/422) phase-engine game::layers::tests::dependency_order_loop_member_waits_for_upstream_node
+        PASS ( 96/422) phase-engine game::layers::tests::dependency_order_independent_effects_keep_timestamp_order_around_a_loop
+        PASS ( 97/422) phase-engine game::layers::tests::dependency_order_loop_effect_with_older_dependent_keeps_the_dependent_at_its_rank
+        PASS ( 98/422) phase-engine game::layers::tests::doctor_doom_no_indestructible_when_opponent_controls_artifact_creature
+        PASS ( 99/422) phase-engine game::layers::tests::doctor_doom_has_indestructible_with_plan_enchantment
+     Summary 422 tests run: 422 passed, 32974 skipped
+=== sha
+cd43c5b1652b599975bcbe621c845cefa959d82b5299d60a7d54d443bc37e049  src/game/layers.rs
+c17b0fae93893ed53d4300fb978c29261c6d376f83d4923cfbd1d056b77c1138  src/game/text_substitution.rs
+6d57ad177bfae9cdafe3a342de73034b074385c6bed0c2d11f503b571d5ceba5  tests/integration/text_substitution_cr612.rs
+67511bf2cc7c82089e3c714704a4d3678f4a35b45bfc63a15ae69440c092bd45  /home/lgray/vibe-coding/dandan-run/scratch/p19/final/layers.rs
+3a3ccdafa7424310749e1cec69dcf89ddea92fa14d6cb4425d69fdb1d22966e6  /home/lgray/vibe-coding/dandan-run/scratch/p19/final/text_substitution_cr612.rs
+b01fdb6a9f265347055cbb4c7f1360143b73af36aa0302350c70bdc398b167b9  /home/lgray/vibe-coding/dandan-run/scratch/p19/final/text_substitution.rs
+4ded8fd8663039e1b9cdb3ed898db44f30eaa807bac7448f890520abf26dec9c  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+193d8658f02665be2948ca0aa10c7d0e31a9db42143dff9b8ac13d6be09388e1  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+90d4b9ad9799d5add6a073321ab6a506c9790d823ed37eaff5d5db06206f2c16  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+bddf89eaee20cf1f0205f542553c054c1487c15495d4fe94cc0f0ceacdbe3c3d  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+e4e9af760223f3e4e8e91c15e3a92f253a3b63466c20d4195b5d6f94f7f4fdc3  src/game/layers.rs
+22cb3f3933ec7e2d2a9bf3d55db45b3e012a9cdafaa079ba07b7d5ef9d9b29cc  src/game/layers.rs
+b01fdb6a9f265347055cbb4c7f1360143b73af36aa0302350c70bdc398b167b9  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+b01fdb6a9f265347055cbb4c7f1360143b73af36aa0302350c70bdc398b167b9  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+b01fdb6a9f265347055cbb4c7f1360143b73af36aa0302350c70bdc398b167b9  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+b01fdb6a9f265347055cbb4c7f1360143b73af36aa0302350c70bdc398b167b9  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/text_substitution.rs
+67511bf2cc7c82089e3c714704a4d3678f4a35b45bfc63a15ae69440c092bd45  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/layers.rs
+67511bf2cc7c82089e3c714704a4d3678f4a35b45bfc63a15ae69440c092bd45  /home/lgray/vibe-coding/dandan-run/wt-dandan/crates/engine/src/game/layers.rs

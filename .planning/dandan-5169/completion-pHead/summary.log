@@ -3,3 +3,6 @@ fmt rc=0
 protocol-gate rc=0
 clippy rc=0
 bindings rc=0
+nextest rc=0
+     Summary [ 905.645s] 38138 tests run: 38138 passed (23 slow), 51 skipped
+done rc=0
