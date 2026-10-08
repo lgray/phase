@@ -286,6 +286,9 @@ const DOCUMENTED_OVER_PROMPT: &[&str] = &[
     // -X/-X where X is the mana value of the card THIS source exiled: each member reads
     // its own exile pile and writes only to it, so the members commute.
     "cemetery desecrator",
+    // Each member counters only its own source, and its token's P/T is a CDA (CR 604.3a)
+    // reading that source's counters, so neither member writes what the other reads.
+    "gutter grime",
 ];
 
 /// Batch-depth GENUINE order-dependence (kept SEPARATE from the same-event
