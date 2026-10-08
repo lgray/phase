@@ -4621,16 +4621,16 @@ pub enum FodderCoverRefusal {
 pub enum ObjectGrowthVerdict {
     /// One homogeneous class was minted: each frame pair's fodder-cover refusals.
     FodderGrowth([Vec<FodderCoverRefusal>; 2]),
-    /// Nothing was minted: whether both pairs recur modulo resources or counter growth, each
-    /// pair's certified instructed departure stripped.
-    ResourceRecurrence(bool),
+    /// Nothing was minted: the latest arm of the no-mint cover either pair needed, or `None` when
+    /// a pair does not recur.
+    ResourceRecurrence(Option<RecurrenceCover>),
 }
 
 impl ObjectGrowthVerdict {
     pub fn certifies(&self) -> bool {
         match self {
             ObjectGrowthVerdict::FodderGrowth(pairs) => pairs.iter().all(Vec::is_empty),
-            ObjectGrowthVerdict::ResourceRecurrence(covers) => *covers,
+            ObjectGrowthVerdict::ResourceRecurrence(cover) => cover.is_some(),
         }
     }
 }
@@ -4765,34 +4765,350 @@ pub(crate) fn frame_without<'a>(
     frame
 }
 
-/// CR 732.2a: the no-mint arm's cover of one frame pair, with the growth it admits. The pair
-/// covers when it is equal modulo projected resources or covers modulo preserved-`Generic`
-/// counter growth, or does so once the ids of a certified instructed departure are stripped
-/// from both frames; the offer is declinable and never crowns a `GameOver`.
+/// CR 732.2a: which arm of the no-mint cover certified a frame pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecurrenceCover {
+    /// Equal modulo projected resources.
+    Equal,
+    /// Covered modulo preserved-`Generic` counter growth.
+    CounterGrowth,
+    /// Covered once a certified instructed departure is stripped.
+    Departure,
+    /// Covered once per-turn and per-game history no live surface reads is equalized.
+    History,
+}
+
+/// CR 732.2a: the no-mint arm's cover of one frame pair, with the growth it admits and the arm
+/// that admitted it. The pair covers when it is equal modulo projected resources or covers
+/// modulo preserved-`Generic` counter growth, or does so once the ids of a certified
+/// instructed departure are stripped from both frames, or once the history it grew that no
+/// live surface reads is equalized; the offer is declinable and never crowns a `GameOver`.
 pub(crate) fn resource_recurrence_covers(
     prior: &GameState,
     current: &GameState,
     caster: PlayerId,
-) -> Option<CoveredGrowth> {
-    let covers = |a: &GameState, b: &GameState| {
-        loop_states_equal_modulo_resources(a, b) || loop_states_cover_modulo_counter_growth(a, b)
-    };
-    if covers(prior, current) {
-        return Some(CoveredGrowth::Mintable);
+) -> Option<(CoveredGrowth, RecurrenceCover)> {
+    if loop_states_equal_modulo_resources(prior, current) {
+        return Some((CoveredGrowth::Mintable, RecurrenceCover::Equal));
+    }
+    if loop_states_cover_modulo_counter_growth(prior, current) {
+        return Some((CoveredGrowth::Mintable, RecurrenceCover::CounterGrowth));
     }
     // CR 701.17b: the fodder arm's certificate, asked on the fodder arm's frames.
     let cf = flush_clone(current);
-    let certified = certify_instructed_opponent_library_departure(
+    let departure = certify_instructed_opponent_library_departure(
         &project_out_resources(&flush_clone(prior)),
         &project_out_resources(&cf),
         caster,
-    )?;
-    (grown_objects_are_inert(&cf, &certified.departed)
-        && covers(
-            &frame_without(prior, &certified.departed),
-            &frame_without(current, &certified.departed),
-        ))
-    .then_some(CoveredGrowth::PerformedOnly)
+    )
+    .is_some_and(|certified| {
+        grown_objects_are_inert(&cf, &certified.departed)
+            && covers_modulo_resources(
+                &frame_without(prior, &certified.departed),
+                &frame_without(current, &certified.departed),
+            )
+    });
+    if departure {
+        return Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure));
+    }
+    // CR 732.2a: equalized history is not made by a mint, so only performing the period makes it.
+    history_covers(prior, current)
+        .then_some((CoveredGrowth::PerformedOnly, RecurrenceCover::History))
+}
+
+/// The equality or counter-growth disjunct of the no-mint cover.
+fn covers_modulo_resources(prior: &GameState, current: &GameState) -> bool {
+    loop_states_equal_modulo_resources(prior, current)
+        || loop_states_cover_modulo_counter_growth(prior, current)
+}
+
+macro_rules! history_members {
+    (
+        state { $($sv:ident => $sf:ident: $sa:literal),* $(,)? }
+        player { $($pv:ident => $pf:ident: $pa:literal),* $(,)? }
+    ) => {
+        /// CR 732.2a: a per-turn or per-game history record the equality comparand compares and a
+        /// period may grow. A `player` member is the field on every player.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter, strum::EnumCount)]
+        pub(crate) enum HistoryMember {
+            $($sv,)*
+            $($pv,)*
+            /// The tracked object set store (CR 608.2c), with its id counter and member causes.
+            TrackedObjectSets,
+        }
+
+        impl HistoryMember {
+            /// Copies this member from `from` into `into`; whether the two differed.
+            fn equalize(self, into: &mut GameState, from: &GameState) -> bool {
+                match self {
+                    $(HistoryMember::$sv => equalize_field(&mut into.$sf, &from.$sf),)*
+                    $(HistoryMember::$pv => into
+                        .players
+                        .iter_mut()
+                        .zip(&from.players)
+                        .fold(false, |grew, (to, from)| {
+                            equalize_field(&mut to.$pf, &from.$pf) || grew
+                        }),)*
+                    HistoryMember::TrackedObjectSets => {
+                        let sets = equalize_field(&mut into.tracked_object_sets, &from.tracked_object_sets);
+                        let causes = equalize_field(
+                            &mut into.tracked_set_member_causes,
+                            &from.tracked_set_member_causes,
+                        );
+                        equalize_field(&mut into.next_tracked_set_id, &from.next_tracked_set_id)
+                            || sets
+                            || causes
+                    }
+                }
+            }
+
+            /// Whether every read of this member is reached through an AST arm or legality gate the
+            /// scanner attributes to it; an unattributed member's growth always refuses.
+            fn is_attributed(self) -> bool {
+                match self {
+                    $(HistoryMember::$sv => $sa,)*
+                    $(HistoryMember::$pv => $pa,)*
+                    HistoryMember::TrackedObjectSets => true,
+                }
+            }
+        }
+    };
+}
+
+history_members! {
+    state {
+        AltCostGrantPermissionsUsed => alt_cost_grant_permissions_used: false,
+        AssassinOrCommanderDealtCombatDamageThisTurn => assassin_or_commander_dealt_combat_damage_this_turn: false,
+        AttackedDefendersThisTurn => attacked_defenders_this_turn: false,
+        AttackerDeclarationsThisTurn => attacker_declarations_this_turn: true,
+        AttackingCreaturesThisTurn => attacking_creatures_this_turn: true,
+        BatchedZoneChangeTriggerFired => batched_zone_change_trigger_fired: false,
+        CardsDiscardedThisTurnByPlayer => cards_discarded_this_turn_by_player: true,
+        CardsExiledWithSourceThisTurn => cards_exiled_with_source_this_turn: false,
+        CreatureAttackedDefendersThisTurn => creature_attacked_defenders_this_turn: false,
+        CreatureBlockedAttackersThisTurn => creature_blocked_attackers_this_turn: false,
+        CreatureTypesDealtCombatDamageThisTurn => creature_types_dealt_combat_damage_this_turn: false,
+        CreaturesAttackedThisTurn => creatures_attacked_this_turn: false,
+        CreaturesBlockedThisTurn => creatures_blocked_this_turn: false,
+        CrewActivatedThisTurn => crew_activated_this_turn: false,
+        CrewResolvedThisTurn => crew_resolved_this_turn: false,
+        ExileCastPermissionsUsed => exile_cast_permissions_used: false,
+        ExilePlayPermissionsUsed => exile_play_permissions_used: false,
+        GraveyardCastPermissionsUsed => graveyard_cast_permissions_used: false,
+        GraveyardCastPermissionsUsedPerType => graveyard_cast_permissions_used_per_type: false,
+        HandCastFreePermissionsUsed => hand_cast_free_permissions_used: false,
+        LandsPlayedThisTurn => lands_played_this_turn: false,
+        LandsPlayedThisTurnByPlayer => lands_played_this_turn_by_player: false,
+        LkiByIncarnation => lki_by_incarnation: false,
+        LkiCache => lki_cache: false,
+        LkiCopiableValues => lki_copiable_values: false,
+        ModalModesChosenThisTurn => modal_modes_chosen_this_turn: true,
+        PendingSpellCostReductions => pending_spell_cost_reductions: false,
+        PlayersAttackedThisTurn => players_attacked_this_turn: true,
+        PlayersWhoDiscardedCardThisTurn => players_who_discarded_card_this_turn: true,
+        PlayersWhoSearchedLibraryThisTurn => players_who_searched_library_this_turn: false,
+        TriggerFireCountsThisTurn => trigger_fire_counts_this_turn: true,
+        TriggersFiredThisTurn => triggers_fired_this_turn: true,
+        TriggersFiredThisTurnPerOpponent => triggers_fired_this_turn_per_opponent: true,
+        CityBlessing => city_blessing: false,
+        CommanderCastCount => commander_cast_count: false,
+        CommanderCastOwners => commander_cast_owners: false,
+        EliminatedPlayers => eliminated_players: false,
+        EnduringStory => enduring_story: false,
+        EpicEffects => epic_effects: false,
+        ModalModesChosenThisGame => modal_modes_chosen_this_game: true,
+        ParadigmPrimed => paradigm_primed: false,
+        PlayerActionsThisWay => player_actions_this_way: false,
+        TriggersFiredThisGame => triggers_fired_this_game: true,
+    }
+    player {
+        PlayerBendingTypesThisTurn => bending_types_this_turn: true,
+        PlayerCrimesCommittedThisTurn => crimes_committed_this_turn: false,
+        PlayerDescendedThisTurn => descended_this_turn: true,
+        PlayerHasDrawnThisTurn => has_drawn_this_turn: false,
+        PlayerLandsPlayedThisTurn => lands_played_this_turn: false,
+        PlayerLifeLostLastTurn => life_lost_last_turn: true,
+        PlayerSpeedTriggerUsedThisTurn => speed_trigger_used_this_turn: false,
+    }
+}
+
+const _: () = assert!(<HistoryMember as strum::EnumCount>::COUNT <= u64::BITS as usize);
+
+fn equalize_field<T: Clone + PartialEq>(into: &mut T, from: &T) -> bool {
+    let grew = into != from;
+    if grew {
+        into.clone_from(from);
+    }
+    grew
+}
+
+/// A set of [`HistoryMember`]s.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HistoryReads(u64);
+
+impl HistoryReads {
+    pub(crate) const NONE: HistoryReads = HistoryReads(0);
+    pub(crate) const ALL: HistoryReads = HistoryReads(u64::MAX);
+
+    pub(crate) const fn of(member: HistoryMember) -> HistoryReads {
+        HistoryReads(1 << member as u32)
+    }
+
+    pub(crate) const fn or(self, other: HistoryReads) -> HistoryReads {
+        HistoryReads(self.0 | other.0)
+    }
+
+    pub(crate) const fn reads(self, member: HistoryMember) -> bool {
+        self.0 & HistoryReads::of(member).0 != 0
+    }
+}
+
+/// CR 732.2a + CR 732.1b: `current` covers `prior` once the history members it grew are
+/// equalized, when each grown member is attributed and no live surface of either frame reads
+/// it, and the equalized copy passes the equality or counter-growth disjunct.
+pub(crate) fn history_covers(prior: &GameState, current: &GameState) -> bool {
+    use strum::IntoEnumIterator;
+    let mut copy = current.clone();
+    let grown: Vec<HistoryMember> = HistoryMember::iter()
+        .filter(|member| member.equalize(&mut copy, prior))
+        .collect();
+    let collapsed = collapse_inserted_unit_run(&mut copy, prior);
+    if grown.is_empty() && !collapsed {
+        return false;
+    }
+    let reads =
+        live_history_reads(&flush_clone(prior)).or(live_history_reads(&flush_clone(current)));
+    if grown
+        .iter()
+        .any(|member| !member.is_attributed() || reads.reads(*member))
+    {
+        return false;
+    }
+    if grown.contains(&HistoryMember::TrackedObjectSets)
+        && !tracked_sets_grow_unread(prior, current)
+    {
+        return false;
+    }
+    covers_modulo_resources(prior, &copy)
+}
+
+/// [`history_covers`] for the integration suite.
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_covers_for_tests(prior: &GameState, current: &GameState) -> bool {
+    history_covers(prior, current)
+}
+
+/// CR 608.2c: the period only appended tracked sets, and the latest non-empty set, which the
+/// sentinel's fallback reads, holds the same members for the same causes in both frames.
+fn tracked_sets_grow_unread(prior: &GameState, current: &GameState) -> bool {
+    let floor = prior.next_tracked_set_id;
+    let earlier_unchanged = current
+        .tracked_object_sets
+        .iter()
+        .filter(|(id, _)| id.0 < floor)
+        .count()
+        == prior.tracked_object_sets.len()
+        && prior
+            .tracked_object_sets
+            .iter()
+            .all(|(id, members)| current.tracked_object_sets.get(id) == Some(members))
+        && prior
+            .tracked_set_member_causes
+            .iter()
+            .all(|(id, causes)| current.tracked_set_member_causes.get(id) == Some(causes));
+    let latest = |state: &GameState| {
+        crate::game::targeting::latest_tracked_set_id(state).map(|id| {
+            (
+                state.tracked_object_sets.get(&id).cloned(),
+                state.tracked_set_member_causes.get(&id).cloned(),
+            )
+        })
+    };
+    earlier_unchanged && latest(prior) == latest(current)
+}
+
+/// CR 500.8 + CR 500.9 + CR 500.10: when `copy`'s inserted-unit records extend `prior`'s by
+/// records equal in anchor and segment to `prior`'s last, each resuming at its own final step,
+/// the run unwinds to the same step at any length, so `copy` takes `prior`'s records.
+fn collapse_inserted_unit_run(copy: &mut GameState, prior: &GameState) -> bool {
+    let (records, prior_records) = (&copy.extra_phase_resume, &prior.extra_phase_resume);
+    let Some(last) = prior_records.last() else {
+        return false;
+    };
+    let self_resuming_repeat = |record: &crate::types::game_state::InsertedPhaseResume| {
+        record.anchor == last.anchor
+            && record.segment == last.segment
+            && record.anchor == record.segment.final_step()
+    };
+    let collapses = records.len() > prior_records.len()
+        && records.starts_with(prior_records)
+        && self_resuming_repeat(last)
+        && records[prior_records.len()..]
+            .iter()
+            .all(self_resuming_repeat);
+    if collapses {
+        copy.extra_phase_resume
+            .clone_from(&prior.extra_phase_resume);
+    }
+    collapses
+}
+
+/// CR 732.2a: every history member a live surface of `state` reads — each stack entry, and off
+/// the stack every functioning definition, scanned whole.
+fn live_history_reads(state: &GameState) -> HistoryReads {
+    use crate::game::ability_scan as scan;
+    let mut reads = HistoryReads::NONE;
+    for entry in state.stack.iter() {
+        if let StackEntryKind::TriggeredAbility {
+            condition: Some(condition),
+            ..
+        } = &entry.kind
+        {
+            reads = reads.or(scan::trigger_condition_history(condition));
+        }
+        reads = reads.or(match entry.ability() {
+            Some(ability) => scan::resolved_ability_history(ability),
+            // A keyword action has no definition to scan.
+            None if matches!(entry.kind, StackEntryKind::KeywordAction { .. }) => HistoryReads::ALL,
+            None => HistoryReads::NONE,
+        });
+    }
+    for obj in state.objects.values() {
+        for active in crate::game::functioning_abilities::active_trigger_definitions(state, obj) {
+            if crate::game::triggers::trigger_definition_functions_in_zone(
+                active.definition,
+                obj.zone,
+            ) {
+                reads = reads.or(scan::trigger_definition_history(active.definition));
+            }
+        }
+        if obj.is_phased_out() {
+            continue;
+        }
+        for def in crate::game::triggers::granted_keyword_triggers_in_zone(state, obj) {
+            reads = reads.or(scan::trigger_definition_history(&def));
+        }
+        for def in obj.static_definitions.iter_all() {
+            if crate::game::functioning_abilities::static_functions_in_zone(obj, def) {
+                reads = reads.or(scan::static_definition_history(def));
+            }
+        }
+        if obj.zone == Zone::Battlefield {
+            for def in obj.abilities.iter() {
+                reads = reads.or(scan::ability_definition_history(def));
+            }
+        }
+    }
+    for (_source, _idx, def) in loop_window_replacement_defs(state) {
+        reads = reads.or(scan::replacement_definition_history(def));
+    }
+    for effect in &state.transient_continuous_effects {
+        reads = reads.or(scan::transient_effect_history(effect));
+    }
+    for trigger in &state.delayed_triggers {
+        reads = reads.or(scan::delayed_trigger_history(trigger));
+    }
+    reads
 }
 
 // ===========================================================================
@@ -24242,14 +24558,14 @@ mod tests {
         cover_library_card(&mut prior, 900, PlayerId(1));
         assert_eq!(
             resource_recurrence_covers(&prior, &prior.clone(), PlayerId(0)),
-            Some(CoveredGrowth::Mintable),
+            Some((CoveredGrowth::Mintable, RecurrenceCover::Equal)),
             "reach: the departure-free pair covers"
         );
 
         let (prior, current) = no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard);
         assert_eq!(
             resource_recurrence_covers(&prior, &current, PlayerId(0)),
-            Some(CoveredGrowth::PerformedOnly)
+            Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure))
         );
 
         let (prior, current) = no_mint_pair_with_departure(PlayerId(0), Zone::Graveyard);
@@ -24276,7 +24592,7 @@ mod tests {
         cover_library_card(&mut current, 901, PlayerId(1));
         assert_eq!(
             resource_recurrence_covers(&prior, &current, PlayerId(0)),
-            Some(CoveredGrowth::PerformedOnly),
+            Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure)),
             "reach: a second, motionless library card does not disturb the cover"
         );
         current
@@ -24290,6 +24606,75 @@ mod tests {
             None,
             "the strip relieves only the certified ids"
         );
+    }
+
+    /// CR 608.2c: an appended tracked set is equalized while the latest non-empty set, the one the
+    /// sentinel's fallback reads, keeps its members; a new member or a changed earlier set refuses.
+    #[test]
+    fn the_history_cover_admits_appended_tracked_sets_only_while_the_latest_members_stay() {
+        use crate::types::identifiers::TrackedSetId;
+        let with_sets = |sets: &[(u64, &[u64])]| {
+            let mut state = GameState::new_two_player(42);
+            for &(id, members) in sets {
+                state.tracked_object_sets.insert(
+                    TrackedSetId(id),
+                    members.iter().copied().map(ObjectId).collect(),
+                );
+            }
+            state.next_tracked_set_id = sets.iter().map(|(id, _)| id + 1).max().unwrap_or(0);
+            state
+        };
+        let prior = with_sets(&[(1, &[900])]);
+        assert!(history_covers(
+            &prior,
+            &with_sets(&[(1, &[900]), (2, &[900])])
+        ));
+        assert!(history_covers(&prior, &with_sets(&[(1, &[900]), (2, &[])])));
+        assert!(!history_covers(
+            &prior,
+            &with_sets(&[(1, &[900]), (2, &[901])])
+        ));
+        assert!(!history_covers(
+            &prior,
+            &with_sets(&[(1, &[901]), (2, &[])])
+        ));
+    }
+
+    /// CR 500.8: a run of identical self-resuming inserted units unwinds to the same step at any
+    /// depth, so the history disjunct collapses the deeper run; a unit resuming elsewhere stays.
+    #[test]
+    fn an_inserted_unit_run_collapses_only_when_each_record_resumes_at_its_own_final_step() {
+        use crate::types::game_state::InsertedPhaseResume;
+        let unit = |anchor| InsertedPhaseResume {
+            anchor,
+            segment: TurnSegment::Phase(PhaseGroup::Combat),
+            entry: Default::default(),
+        };
+        let at_end_of_combat = |records: Vec<InsertedPhaseResume>| {
+            let mut state = GameState::new_two_player(42);
+            state.phase = Phase::EndCombat;
+            state.extra_phase_resume = records;
+            state
+        };
+        let successor = |mut state: GameState| {
+            crate::game::turns::advance_phase(&mut state, &mut Vec::new());
+            (state.phase, state.extra_phase_resume.len())
+        };
+
+        let resuming = unit(Phase::EndCombat);
+        let prior = at_end_of_combat(vec![resuming]);
+        let deeper = at_end_of_combat(vec![resuming; 2]);
+        assert_eq!(successor(prior.clone()), successor(deeper.clone()));
+        assert_eq!(successor(prior.clone()), (Phase::PostCombatMain, 0));
+        let mut copy = deeper.clone();
+        assert!(collapse_inserted_unit_run(&mut copy, &prior));
+        assert_eq!(copy.extra_phase_resume, prior.extra_phase_resume);
+
+        let elsewhere = unit(Phase::PostCombatMain);
+        let prior = at_end_of_combat(vec![elsewhere]);
+        let mut copy = at_end_of_combat(vec![elsewhere; 2]);
+        assert!(!collapse_inserted_unit_run(&mut copy, &prior));
+        assert_eq!(copy.extra_phase_resume.len(), 2);
     }
 
     #[derive(Clone, Copy)]

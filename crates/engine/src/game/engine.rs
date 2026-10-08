@@ -6940,10 +6940,15 @@ pub(crate) fn certify_object_growth_frames(
                 crate::analysis::resource::resource_recurrence_covers(&cs_n1, &cs_n2, caster);
             first.zip(second).map_or(
                 (
-                    ObjectGrowthVerdict::ResourceRecurrence(false),
+                    ObjectGrowthVerdict::ResourceRecurrence(None),
                     CoveredGrowth::Mintable,
                 ),
-                |(a, b)| (ObjectGrowthVerdict::ResourceRecurrence(true), a.max(b)),
+                |((a, a_cover), (b, b_cover))| {
+                    (
+                        ObjectGrowthVerdict::ResourceRecurrence(Some(a_cover.max(b_cover))),
+                        a.max(b),
+                    )
+                },
             )
         }
     }

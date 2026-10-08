@@ -2,10 +2,14 @@
 
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::{LoopCertificate, OfferRoad, ShortcutResponse, WinKind};
-use engine::analysis::resource::{FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis};
+use engine::analysis::loop_states_equal_modulo_resources;
+use engine::analysis::resource::{
+    history_covers_for_tests, FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis,
+};
 use engine::database::card_db::CardDatabase;
-use engine::game::effects::attach::attach_to;
+use engine::game::effects::attach::{attach_to, attach_to_player};
 use engine::game::engine::certify_object_growth_frames_for_tests;
+use engine::game::functioning_abilities::active_trigger_definitions;
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
@@ -1253,7 +1257,7 @@ fn an_altar_gravecrawler_period_is_refused_at_its_payoffs_stage() {
         matches!(
             v,
             Err(OfferRefusal::Cover(
-                ObjectGrowthVerdict::ResourceRecurrence(false)
+                ObjectGrowthVerdict::ResourceRecurrence(None)
             ))
         )
     }
@@ -2355,4 +2359,93 @@ fn a_grove_marvin_board_without_natures_revolt_has_no_cycle() {
     );
     assert_eq!(described(runner.state(), marvin, "Add {R} or {G}"), None);
     assert!(!is_offer(runner.state()));
+}
+
+/// P0's precombat main with `name` on P0's battlefield.
+fn board_with(name: &str, db: &CardDatabase) -> GameState {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["Island"; 10]);
+    scenario.with_library_top(P1, &["Island"; 10]);
+    scenario.add_real_card(P0, name, Zone::Battlefield, db);
+    scenario.build().state().clone()
+}
+
+/// P1's upkeep with Paradox Haze enchanting P1, its trigger fired; or with Grizzly Bears on P0's
+/// battlefield instead.
+fn haze_upkeep(haze: bool, db: &CardDatabase) -> GameState {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["Island"; 10]);
+    scenario.with_library_top(P1, &["Island"; 10]);
+    if !haze {
+        scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    }
+    let mut runner = scenario.build();
+    if haze {
+        let aura = place(runner.state_mut(), P0, "Paradox Haze", db);
+        assert_eq!(attach_to_player(runner.state_mut(), aura, P1), None);
+    }
+    runner.advance_to_upkeep();
+    runner.state().clone()
+}
+
+/// CR 732.2a: a once-each-turn trigger's limit reads the grown fired-trigger ledger, so the
+/// history cover refuses it beside Chance-Met Elves and admits it beside a vanilla creature.
+#[test]
+fn the_history_cover_refuses_a_grown_once_each_turn_ledger_a_live_trigger_reads() {
+    let db = shared_card_db().expect("card db");
+    let elves = board_with("Chance-Met Elves", db);
+    let source = elves
+        .battlefield
+        .iter()
+        .find(|id| elves.objects[id].name == "Chance-Met Elves")
+        .expect("the Elves");
+    let key = active_trigger_definitions(&elves, &elves.objects[source])
+        .next()
+        .expect("the Elves' trigger")
+        .definition_ref;
+    let mut fired = elves.clone();
+    assert!(fired.triggers_fired_this_turn.insert(key.clone()));
+    let bears = board_with("Grizzly Bears", db);
+    let mut bears_fired = bears.clone();
+    bears_fired.triggers_fired_this_turn.insert(key);
+
+    assert!(
+        !loop_states_equal_modulo_resources(&elves, &fired),
+        "reach: the comparand refuses the grown ledger"
+    );
+    assert!(history_covers_for_tests(&bears, &bears_fired));
+    assert!(!history_covers_for_tests(&elves, &fired));
+}
+
+/// CR 732.2a: Paradox Haze's first-upkeep limit reads the fire-count ledger its own upkeep firing
+/// grew, so the history cover refuses that growth and admits it beside Grizzly Bears.
+#[test]
+fn the_history_cover_refuses_a_grown_fire_count_a_live_trigger_reads() {
+    let db = shared_card_db().expect("card db");
+    let fired = haze_upkeep(true, db);
+    assert_eq!(
+        fired.trigger_fire_counts_this_turn.len(),
+        1,
+        "reach: Haze fired"
+    );
+    let key = fired
+        .trigger_fire_counts_this_turn
+        .keys()
+        .next()
+        .expect("Haze's count")
+        .clone();
+    let mut unfired = fired.clone();
+    unfired.trigger_fire_counts_this_turn.clear();
+    let bears = haze_upkeep(false, db);
+    let mut bears_counted = bears.clone();
+    bears_counted.trigger_fire_counts_this_turn.insert(key, 1);
+
+    assert!(
+        !loop_states_equal_modulo_resources(&unfired, &fired),
+        "reach: the comparand refuses the grown count"
+    );
+    assert!(history_covers_for_tests(&bears, &bears_counted));
+    assert!(!history_covers_for_tests(&unfired, &fired));
 }
