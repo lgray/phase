@@ -23,7 +23,8 @@ use crate::game::engine::{
 };
 use crate::game::mana_payment::{select_convoke_taps, ConvokeTapOrder};
 use crate::game::play_trace::{
-    self, AnswerOptionality, CostChoices, CostMove, EntryKind, NamedSpan, PromptClass, TraceEntry,
+    self, AnswerOptionality, CostChoices, CostMove, EntryKind, NamedSpan, PeriodReach, PromptClass,
+    TraceEntry,
 };
 use crate::types::ability::TargetRef;
 use crate::types::actions::GameAction;
@@ -85,6 +86,9 @@ pub struct ConfirmedPeriod {
     /// What the cover that confirmed the period admitted as its growth.
     #[serde(default)]
     growth: CoveredGrowth,
+    /// How far past its step the period runs before it comes round again.
+    #[serde(default)]
+    reach: PeriodReach,
 }
 
 // `GameAction` derives no `Eq`, and no value an action carries is floating-point.
@@ -268,27 +272,49 @@ fn top_of_stack(state: &GameState) -> Option<TopOfStack> {
     })
 }
 
-/// Where a cycle must end: priority back with `holder`, at the frame's step, with the frame's
-/// top of stack and at least its depth (accumulation beneath is admitted).
+/// Where a cycle must end: priority back with `holder`, with the frame's top of stack and at least
+/// its depth (accumulation beneath is admitted), at a window the period's reach admits.
 struct FrameEnd {
-    window: play_trace::WindowKey,
+    reach: PeriodReach,
     depth: usize,
     holder: PlayerId,
     top: Option<TopOfStack>,
 }
 
 impl FrameEnd {
-    fn of(frame: &GameState, holder: PlayerId) -> Self {
+    fn of(frame: &GameState, holder: PlayerId, reach: PeriodReach) -> Self {
         Self {
-            window: play_trace::WindowKey::of(frame),
+            reach,
             depth: frame.stack.len(),
             holder,
             top: top_of_stack(frame),
         }
     }
 
-    fn reached(&self, state: &GameState) -> bool {
-        matches!(state.waiting_for, WaitingFor::Priority { player } if player == self.holder)
+    /// Whether the cycle begun at window `start` may still run at `state`: the same step
+    /// in-step, the same turn for a combat period (CR 500.8), and the holder's turns for an
+    /// extra-turn period (CR 500.7).
+    fn admits(&self, start: play_trace::WindowKey, state: &GameState) -> bool {
+        let now = play_trace::WindowKey::of(state);
+        match self.reach {
+            PeriodReach::InStep => now == start,
+            PeriodReach::Combat => now.turn() == start.turn(),
+            PeriodReach::ExtraTurn => state.active_player == self.holder,
+        }
+    }
+
+    /// Whether the cycle begun at window `start` has come round at `state`; a carried cycle only
+    /// at a later window of its start's step.
+    fn reached(&self, start: play_trace::WindowKey, state: &GameState) -> bool {
+        let now = play_trace::WindowKey::of(state);
+        let window = match self.reach {
+            PeriodReach::InStep => true,
+            PeriodReach::Combat | PeriodReach::ExtraTurn => {
+                now.phase() == start.phase() && now != start
+            }
+        };
+        window
+            && matches!(state.waiting_for, WaitingFor::Priority { player } if player == self.holder)
             && state.stack.len() >= self.depth
             && top_of_stack(state) == self.top
     }
@@ -365,10 +391,9 @@ fn replay_cycle(
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
+    let start = play_trace::WindowKey::of(replay);
     for beat in 0..CYCLE_BEATS {
-        if matches!(replay.waiting_for, WaitingFor::GameOver { .. })
-            || play_trace::WindowKey::of(replay) != end.window
-        {
+        if matches!(replay.waiting_for, WaitingFor::GameOver { .. }) || !end.admits(start, replay) {
             return Err(OfferRefusal::NoRecurrence);
         }
         let next = done.iter().position(|d| !d);
@@ -381,7 +406,7 @@ fn replay_cycle(
             if let Some(frames) = frames.as_deref_mut() {
                 frames.push(replay.clone());
             }
-            if beat > 0 && end.reached(replay) && cycle_complete(items, &done) {
+            if beat > 0 && end.reached(start, replay) && cycle_complete(items, &done) {
                 return Ok(performed);
             }
             let Some(at) = next else {
@@ -632,7 +657,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     let WaitingFor::Priority { player: holder } = frame.waiting_for else {
         return Err(OfferRefusal::UnanswerablePrompt);
     };
-    let Some(entries) = play_trace::current_entries(frame) else {
+    let Some(entries) = play_trace::span_entries(frame, span) else {
         return Err(OfferRefusal::NoRecurrence);
     };
     let body: Vec<TraceEntry> = entries
@@ -649,7 +674,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
     let _probe = SimulationProbeGuard::enter();
     let s_n = crate::game::visibility::proposer_hidden_view(frame, holder);
-    let end = FrameEnd::of(&s_n, holder);
+    let end = FrameEnd::of(&s_n, holder, span.reach);
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
@@ -695,7 +720,11 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         Err(refusal) => return Err(refusal),
     };
     Ok(Confirmation {
-        period: ConfirmedPeriod { items, growth },
+        period: ConfirmedPeriod {
+            items,
+            growth,
+            reach: span.reach,
+        },
         frames: Box::new([s_n1, s_n2]),
         delta,
         departure,
@@ -713,7 +742,7 @@ pub(crate) fn perform_cycle(
     period: &ConfirmedPeriod,
     holder: PlayerId,
 ) -> Result<(), OfferRefusal> {
-    let end = FrameEnd::of(state, holder);
+    let end = FrameEnd::of(state, holder, period.reach);
     replay_cycle(state, &period.items, &end, &mut Vec::new(), None).map(drop)
 }
 
@@ -739,12 +768,12 @@ pub fn confirm_for_tests(state: &GameState) -> Vec<(NamedSpan, Result<Vec<String
 pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, OfferRefusal>> {
     let span = play_trace::play_trace_view(state)?.offered?;
     let holder = state.waiting_for.acting_player()?;
-    let items = period_items(play_trace::current_entries(state)?, span);
+    let items = period_items(play_trace::span_entries(state, span)?, span);
     let mut frame = state.clone();
     frame.waiting_for = WaitingFor::Priority { player: holder };
     let _probe = SimulationProbeGuard::enter();
     let frame = crate::game::visibility::proposer_hidden_view(&frame, holder);
-    let end = FrameEnd::of(&frame, holder);
+    let end = FrameEnd::of(&frame, holder, span.reach);
     let mut replay = frame.clone();
     Some(replay_cycle(
         &mut replay,

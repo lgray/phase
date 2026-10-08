@@ -156,8 +156,9 @@ pub fn staged_payment_shadow_for_test(
 pub(crate) mod play_trace;
 #[cfg(any(test, feature = "test-support"))]
 pub use play_trace::{
-    install_plays_for_tests, play_trace_view, AnswerOptionality, CostMove, EntryKind, NamedSpan,
-    NamingCause, PlayLocus, PlayTraceView, PromptClass, TraceEntry,
+    install_plays_for_tests, play_trace_view, AnswerOptionality, CarriedView, CostMove, EntryKind,
+    NamedSpan, NamingCause, PeriodReach, PlayLocus, PlayTraceView, PromptClass, SpanSource,
+    TraceEntry,
 };
 pub mod preview;
 pub mod printed_cards;

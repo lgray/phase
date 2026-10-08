@@ -7,6 +7,7 @@ use engine::analysis::resource::{
     history_covers_for_tests, FodderCoverRefusal, ObjectGrowthVerdict, ResourceAxis,
 };
 use engine::database::card_db::CardDatabase;
+use engine::game::combat::AttackTarget;
 use engine::game::effects::attach::{attach_to, attach_to_player};
 use engine::game::engine::certify_object_growth_frames_for_tests;
 use engine::game::functioning_abilities::active_trigger_definitions;
@@ -14,7 +15,7 @@ use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::game::{play_trace_view, NamingCause};
+use engine::game::{play_trace_view, NamingCause, PeriodReach};
 use engine::types::ability::{
     AbilityKind, DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
 };
@@ -2448,4 +2449,228 @@ fn the_history_cover_refuses_a_grown_fire_count_a_live_trigger_reads() {
     );
     assert!(history_covers_for_tests(&bears, &bears_counted));
     assert!(!history_covers_for_tests(&unfired, &fired));
+}
+
+/// P0's precombat main with Hellkite Charger, `mountains` Mountains, Bear Umbra on the Charger when
+/// `umbra`, and `others` on P0's battlefield; P1 at 200 life.
+fn charger_board(
+    mountains: usize,
+    umbra: bool,
+    others: &[&str],
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P1, 200);
+    scenario.with_library_top(P0, &["Island"; 25]);
+    scenario.with_library_top(P1, &["Island"; 25]);
+    let charger = scenario.add_real_card(P0, "Hellkite Charger", Zone::Battlefield, db);
+    for _ in 0..mountains {
+        scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db);
+    }
+    for name in others {
+        scenario.add_real_card(P0, name, Zone::Battlefield, db);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    if umbra {
+        let aura = place(runner.state_mut(), P0, "Bear Umbra", db);
+        attach_to(runner.state_mut(), aura, charger);
+    }
+    (runner, charger)
+}
+
+/// Hellkite Charger's period: attack with the Charger while `attacks` holds, order the paying
+/// trigger to resolve last, pay {5}{R}{R}, and pass every priority.
+fn charger_step(runner: &mut GameRunner, charger: ObjectId, attacks: bool) {
+    let action = match &runner.state().waiting_for {
+        WaitingFor::OrderTriggers { triggers, .. } => {
+            let mut order: Vec<usize> = (0..triggers.len()).collect();
+            order.sort_by_key(|&at| !triggers[at].description.contains("pay"));
+            GameAction::OrderTriggers { order }
+        }
+        WaitingFor::OptionalEffectChoice { .. } => {
+            GameAction::DecideOptionalEffect { accept: true }
+        }
+        WaitingFor::DeclareAttackers { player, .. } if *player == P0 && attacks => {
+            GameAction::DeclareAttackers {
+                attacks: vec![(charger, AttackTarget::Player(P1))],
+                bands: vec![],
+            }
+        }
+        WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+            attacks: vec![],
+            bands: vec![],
+        },
+        WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+            assignments: vec![],
+        },
+        WaitingFor::ManaPayment { .. } | WaitingFor::Priority { .. } => GameAction::PassPriority,
+        other => panic!("the Charger drive has no answer to {other:?}"),
+    };
+    act(runner, action);
+}
+
+/// Drives Hellkite Charger's period until `until` holds.
+fn charger_until(
+    runner: &mut GameRunner,
+    charger: ObjectId,
+    attacks: impl Fn(&GameState) -> bool,
+    until: impl Fn(&GameState) -> bool,
+) {
+    for _ in 0..4000 {
+        if until(runner.state()) {
+            return;
+        }
+        let attacking = attacks(runner.state());
+        charger_step(runner, charger, attacking);
+    }
+    panic!("the Charger drive did not reach its stop");
+}
+
+fn carried(state: &GameState) -> Vec<engine::game::CarriedView> {
+    play_trace_view(state).map_or_else(Vec::new, |view| view.carried)
+}
+
+fn combats_begun(state: &GameState) -> u32 {
+    state.steps_started_this_turn.count(Phase::BeginCombat)
+}
+
+/// CR 500.8: carrying a period costs one append per live carried span per recorded entry, with no
+/// board scan, whatever else is on the battlefield; Engine B runs once for an unchanged face set.
+#[test]
+fn a_carried_combat_span_costs_one_append_per_entry_and_no_board_scan() {
+    let db = shared_card_db().expect("card db");
+    let mut runs = Vec::new();
+    for bears in [0, 3] {
+        let others = vec!["Grizzly Bears"; bears];
+        let start = play_trace_counters();
+        let (mut runner, charger) =
+            charger_board(7, true, &others, LoopDetectionMode::Interactive, db);
+        charger_until(
+            &mut runner,
+            charger,
+            |_| true,
+            |state| {
+                combats_begun(state) == 2
+                    && matches!(state.waiting_for, WaitingFor::OrderTriggers { .. })
+            },
+        );
+        let live = carried(runner.state());
+        assert_eq!(live.len(), 1, "reach: the Charger's span is carried");
+        let before = play_trace_counters();
+        charger_step(&mut runner, charger, true);
+        let entry = play_trace_counters().since(before);
+        let drive = play_trace_counters().since(start);
+        runs.push((
+            entry.carry_appends,
+            entry.face_set_scans,
+            drive.engine_b_rebuilds,
+        ));
+        assert!(
+            drive.step_end_lookups > 0,
+            "reach: step ends looked nodes up"
+        );
+    }
+    assert_eq!(runs, [(1, 0, 1), (1, 0, 1)]);
+}
+
+/// CR 500.8: a combat span ends with its turn.
+#[test]
+fn a_carried_combat_span_does_not_outlive_its_turn() {
+    let db = shared_card_db().expect("card db");
+    let (mut runner, charger) = charger_board(7, true, &[], LoopDetectionMode::Interactive, db);
+    charger_until(
+        &mut runner,
+        charger,
+        |state| combats_begun(state) == 1,
+        |state| state.phase == Phase::End && state.active_player == P0,
+    );
+    assert_eq!(
+        carried(runner.state())
+            .iter()
+            .map(|span| span.reach)
+            .collect::<Vec<_>>(),
+        [PeriodReach::Combat],
+        "reach: the span runs to the turn's end"
+    );
+    charger_until(
+        &mut runner,
+        charger,
+        |_| false,
+        |state| {
+            state.active_player == P1 && matches!(state.waiting_for, WaitingFor::Priority { .. })
+        },
+    );
+    assert_eq!(carried(runner.state()), []);
+}
+
+/// CR 500.7: an extra-turn span ends when another player's turn begins.
+#[test]
+fn a_carried_extra_turn_span_does_not_outlive_its_controllers_turn() {
+    let db = shared_card_db().expect("card db");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["Island"; 10]);
+    scenario.with_library_top(P1, &["Island"; 10]);
+    let sieve = scenario.add_real_card(P0, "Time Sieve", Zone::Battlefield, db);
+    for _ in 0..5 {
+        scenario.add_real_card(P0, "Ornithopter", Zone::Battlefield, db);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let index = ability(runner.state(), sieve, false);
+    activate(&mut runner, sieve, index);
+    let pass_until = |runner: &mut GameRunner, until: &dyn Fn(&GameState) -> bool| {
+        for _ in 0..2000 {
+            if until(runner.state()) {
+                return;
+            }
+            let action = match &runner.state().waiting_for {
+                WaitingFor::PayCost { choices, count, .. } => GameAction::SelectCards {
+                    cards: choices
+                        .iter()
+                        .copied()
+                        .filter(|&id| id != sieve)
+                        .take(*count)
+                        .collect(),
+                },
+                WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+                    attacks: vec![],
+                    bands: vec![],
+                },
+                WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+                    assignments: vec![],
+                },
+                WaitingFor::Priority { .. } => GameAction::PassPriority,
+                other => panic!("no answer to {other:?}"),
+            };
+            act(runner, action);
+        }
+        panic!("the drive did not reach its stop");
+    };
+    let turn = runner.state().turn_number;
+    pass_until(&mut runner, &|state| {
+        state.turn_number == turn + 1
+            && state.phase == Phase::Upkeep
+            && matches!(state.waiting_for, WaitingFor::Priority { .. })
+    });
+    assert_eq!(
+        runner.state().active_player,
+        P0,
+        "reach: the extra turn is P0's"
+    );
+    assert_eq!(
+        carried(runner.state())
+            .iter()
+            .map(|span| span.reach)
+            .collect::<Vec<_>>(),
+        [PeriodReach::ExtraTurn],
+        "reach: the Sieve's span is carried into the extra turn"
+    );
+    pass_until(&mut runner, &|state| {
+        state.active_player == P1 && matches!(state.waiting_for, WaitingFor::Priority { .. })
+    });
+    assert_eq!(carried(runner.state()), []);
 }

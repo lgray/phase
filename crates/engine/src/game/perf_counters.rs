@@ -227,6 +227,14 @@ pub struct PlayTraceCounters {
     pub legality_read_copies: u64,
     pub confirm_asks: u64,
     pub confirm_drives: u64,
+    /// Entries appended to carried spans.
+    pub carry_appends: u64,
+    /// Old-window nodes looked up in the carrying index at a step's end.
+    pub step_end_lookups: u64,
+    /// Engine B runs that rebuilt a seat's carrying index.
+    pub engine_b_rebuilds: u64,
+    /// Objects visited by the face-set scans that fingerprint a seat's printed faces.
+    pub face_set_scans: u64,
 }
 
 #[cfg(feature = "test-support")]
@@ -250,6 +258,10 @@ impl PlayTraceCounters {
             legality_read_copies: self.legality_read_copies - earlier.legality_read_copies,
             confirm_asks: self.confirm_asks - earlier.confirm_asks,
             confirm_drives: self.confirm_drives - earlier.confirm_drives,
+            carry_appends: self.carry_appends - earlier.carry_appends,
+            step_end_lookups: self.step_end_lookups - earlier.step_end_lookups,
+            engine_b_rebuilds: self.engine_b_rebuilds - earlier.engine_b_rebuilds,
+            face_set_scans: self.face_set_scans - earlier.face_set_scans,
         }
     }
 }
@@ -450,6 +462,10 @@ thread_local! {
             legality_read_copies: 0,
             confirm_asks: 0,
             confirm_drives: 0,
+            carry_appends: 0,
+            step_end_lookups: 0,
+            engine_b_rebuilds: 0,
+            face_set_scans: 0,
         })
     };
     static LEGALITY_CLONE_PHASE: Cell<Option<LegalityClonePhase>> = const { Cell::new(None) };

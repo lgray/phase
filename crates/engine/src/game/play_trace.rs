@@ -7,10 +7,13 @@
 
 use std::cell::Cell;
 
+use crate::analysis::ability_graph::{candidate_cycles_from_sources, AbilitySlot, AbilitySource};
+use crate::analysis::resource::ResourceAxis;
 use crate::game::engine::in_simulation_probe;
+use crate::game::game_object::GameObject;
 use crate::types::ability::{
-    AbilityDefinition, DelayedAbilityOrigin, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
-    TriggerPrintedOrigin,
+    AbilityDefinition, AbilityKind, DelayedAbilityOrigin, TriggerDefinitionOccurrenceRef,
+    TriggerDefinitionRef, TriggerPrintedOrigin,
 };
 use crate::types::actions::GameAction;
 use crate::types::card::PrintedCardRef;
@@ -90,6 +93,97 @@ impl WindowKey {
             phase: state.phase,
             step_start: state.steps_started_this_turn.count(state.phase),
         }
+    }
+
+    pub(crate) fn turn(self) -> u32 {
+        self.turn
+    }
+
+    pub(crate) fn phase(self) -> Phase {
+        self.phase
+    }
+}
+
+/// How far past its step a period may run before it comes round again.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum PeriodReach {
+    /// CR 500.2: within the step it began in.
+    #[default]
+    InStep,
+    /// CR 500.8: into a later combat phase of the same turn.
+    Combat,
+    /// CR 500.7: into a later turn its controller takes.
+    ExtraTurn,
+}
+
+impl PeriodReach {
+    /// The reach of an Engine B candidate pumping `unbounded`; `None` for one that stays in a step.
+    fn of_axes(unbounded: &[ResourceAxis]) -> Option<Self> {
+        if unbounded.contains(&ResourceAxis::ExtraTurns) {
+            Some(Self::ExtraTurn)
+        } else if unbounded.contains(&ResourceAxis::CombatPhases) {
+            Some(Self::Combat)
+        } else {
+            None
+        }
+    }
+
+    /// Whether a span carried from a window of `from` still runs at `state`'s window `to`: a
+    /// combat span within its turn (CR 500.8), an extra-turn span unless another player's turn
+    /// began (CR 500.7).
+    fn survives(self, seat: PlayerId, from: WindowKey, to: WindowKey, state: &GameState) -> bool {
+        match self {
+            Self::InStep => false,
+            Self::Combat => to.turn == from.turn,
+            Self::ExtraTurn => to.turn == from.turn || state.active_player == seat,
+        }
+    }
+}
+
+/// Where a named span's entries live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpanSource {
+    /// The current window's trace.
+    Window,
+    /// The current window's named carried span at this index.
+    Carried(usize),
+}
+
+/// A period begun in an earlier window: the entries from its key's last occurrence there on.
+#[derive(Clone, Debug)]
+struct CarriedSpan {
+    key: NodeKey,
+    seat: PlayerId,
+    reach: PeriodReach,
+    trace: PlayTrace,
+}
+
+/// A seat's printed faces outside its library, and the keys of the Engine B candidates over them
+/// that run past a step, with each one's reach.
+#[derive(Clone, Debug, Default)]
+struct CarryingIndex {
+    faces: Vec<String>,
+    keys: Vec<(NodeKey, PeriodReach)>,
+}
+
+impl CarryingIndex {
+    fn reach(&self, key: &NodeKey) -> Option<PeriodReach> {
+        self.keys
+            .iter()
+            .filter(|(carried, _)| carried == key)
+            .map(|(_, reach)| *reach)
+            .max()
     }
 }
 
@@ -273,12 +367,26 @@ pub enum NamingCause {
     LegalNow,
 }
 
-/// A candidate period: the entries `start..end` as they stood when it was named.
+/// A candidate period: the entries `start..end` of its source as they stood when it was named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NamedSpan {
     pub start: usize,
     pub end: usize,
     pub cause: NamingCause,
+    pub source: SpanSource,
+    pub reach: PeriodReach,
+}
+
+impl NamedSpan {
+    fn in_window(start: usize, end: usize, cause: NamingCause) -> Self {
+        Self {
+            start,
+            end,
+            cause,
+            source: SpanSource::Window,
+            reach: PeriodReach::InStep,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,6 +435,12 @@ pub(crate) struct PlayTrace {
     undo: im::Vector<UndoPoint>,
     /// Entries that activate a mana ability or answer one of its choices (CR 605.3b).
     mana_ability_entries: im::HashSet<usize>,
+    /// Spans carried from earlier windows, in the order their keys last occurred.
+    carried: im::Vector<CarriedSpan>,
+    /// Carried spans this window named, which a named span's `SpanSource::Carried` indexes.
+    carried_named: im::Vector<CarriedSpan>,
+    /// Each seat's carrying index, kept across windows.
+    carrying: im::HashMap<PlayerId, CarryingIndex>,
 }
 
 impl PlayTrace {
@@ -347,6 +461,9 @@ impl PlayTrace {
             offered: None,
             undo: im::Vector::new(),
             mana_ability_entries: im::HashSet::new(),
+            carried: im::Vector::new(),
+            carried_named: im::Vector::new(),
+            carrying: im::HashMap::new(),
         }
     }
 
@@ -377,11 +494,8 @@ impl PlayTrace {
                     .is_some_and(|optional| optional >= previous)
             {
                 self.repeated.insert(node);
-                self.named.push_back(NamedSpan {
-                    start: previous,
-                    end: at,
-                    cause: NamingCause::Repeat,
-                });
+                self.named
+                    .push_back(NamedSpan::in_window(previous, at, NamingCause::Repeat));
             }
         }
         self.last.insert(node, at);
@@ -403,6 +517,48 @@ impl PlayTrace {
     /// Appends an entry whose nodes this trace has interned, keeping `prior`, this trace before
     /// anything of the entry was recorded, as where an untap of its mana source returns it.
     fn record(&mut self, prior: &PlayTrace, entry: TraceEntry, continues_mana_ability: bool) {
+        self.carry(&entry, continues_mana_ability);
+        self.append(Some(prior), entry, continues_mana_ability);
+    }
+
+    /// Appends `entry`, whose nodes are this trace's, to every live carried span.
+    fn carry(&mut self, entry: &TraceEntry, continues_mana_ability: bool) {
+        let nodes = &self.nodes;
+        for span in self.carried.iter_mut() {
+            meter!(carry_appends += 1);
+            let entry = span.trace.reinterned(nodes, entry.clone());
+            span.trace.append(None, entry, continues_mana_ability);
+        }
+    }
+
+    /// `entry` with each node of `nodes` it names interned here.
+    fn reinterned(&mut self, nodes: &im::Vector<NodeKey>, mut entry: TraceEntry) -> TraceEntry {
+        let reintern = |trace: &mut Self, node: usize| {
+            let key = match &nodes[node] {
+                NodeKey::Unkeyed(_) => NodeKey::Unkeyed(trace.entries.len()),
+                key => key.clone(),
+            };
+            trace.intern(key)
+        };
+        match &mut entry.kind {
+            EntryKind::Play { node, .. } | EntryKind::Resolution { node } => {
+                *node = reintern(self, *node);
+            }
+            EntryKind::Answer { asked_by, .. } => {
+                *asked_by = asked_by.map(|node| reintern(self, node));
+            }
+        }
+        entry
+    }
+
+    /// Appends an entry whose nodes this trace has interned; `prior`, when given, is kept as where
+    /// an untap of its mana source returns the trace.
+    fn append(
+        &mut self,
+        prior: Option<&PlayTrace>,
+        entry: TraceEntry,
+        continues_mana_ability: bool,
+    ) {
         let mana_source = match entry.kind {
             EntryKind::Play {
                 locus: PlayLocus::Mana(source, _),
@@ -413,7 +569,7 @@ impl PlayTrace {
         if mana_source.is_some() || continues_mana_ability {
             self.mana_ability_entries.insert(self.entries.len());
         }
-        let undo = mana_source.map(|source| UndoPoint {
+        let undo = mana_source.zip(prior).map(|(source, prior)| UndoPoint {
             undoes: Reversal::ManaSource(source),
             before: Box::new(prior.clone()),
         });
@@ -450,23 +606,9 @@ impl PlayTrace {
     }
 
     /// Records the entry at `at` of the trace `from` again, re-interning its nodes here.
-    fn rerecord(&mut self, from: &PlayTrace, at: usize, mut entry: TraceEntry, begins_play: bool) {
+    fn rerecord(&mut self, from: &PlayTrace, at: usize, entry: TraceEntry, begins_play: bool) {
         let prior = self.clone();
-        let reintern = |trace: &mut Self, node: usize| {
-            let key = match &from.nodes[node] {
-                NodeKey::Unkeyed(_) => NodeKey::Unkeyed(trace.entries.len()),
-                key => key.clone(),
-            };
-            trace.intern(key)
-        };
-        match &mut entry.kind {
-            EntryKind::Play { node, .. } | EntryKind::Resolution { node } => {
-                *node = reintern(self, *node);
-            }
-            EntryKind::Answer { asked_by, .. } => {
-                *asked_by = asked_by.map(|node| reintern(self, node));
-            }
-        }
+        let entry = self.reinterned(&from.nodes, entry);
         self.record(&prior, entry, from.mana_ability_entries.contains(&at));
         if begins_play {
             self.begin_play(Box::new(prior));
@@ -475,14 +617,150 @@ impl PlayTrace {
 }
 
 fn trace_mut(state: &mut GameState) -> &mut PlayTrace {
+    roll(state);
     let window = WindowKey::of(state);
-    let trace = state
+    state
         .play_trace
-        .get_or_insert_with(|| Box::new(PlayTrace::new(window)));
-    if trace.window != window {
-        **trace = PlayTrace::new(window);
+        .get_or_insert_with(|| Box::new(PlayTrace::new(window)))
+}
+
+/// CR 500.2: the first touch of a new window ends the old one's trace. Each node of the old
+/// window whose key its seat's carrying index carries begins a carried span from its last
+/// occurrence there, and a carried span runs on while its reach admits the new window and its key
+/// is still carried.
+fn roll(state: &mut GameState) {
+    let window = WindowKey::of(state);
+    let Some(old) = state
+        .play_trace
+        .take_if(|trace| trace.window != window)
+        .map(|trace| *trace)
+    else {
+        return;
+    };
+    let mut next = PlayTrace::new(window);
+    next.carrying = old.carrying.clone();
+    let mut seats: Vec<PlayerId> = old
+        .last
+        .values()
+        .map(|&at| old.entries[at].seat)
+        .chain(old.carried.iter().map(|span| span.seat))
+        .collect();
+    seats.sort_unstable();
+    seats.dedup();
+    for seat in seats {
+        refresh_carrying(state, &mut next.carrying, seat);
     }
-    trace
+    let runs = |span: &CarriedSpan, carrying: &im::HashMap<PlayerId, CarryingIndex>| {
+        span.reach.survives(span.seat, old.window, window, state)
+            && carrying
+                .get(&span.seat)
+                .and_then(|index| index.reach(&span.key))
+                .is_some()
+    };
+    next.carried = old
+        .carried
+        .iter()
+        .filter(|span| runs(span, &next.carrying))
+        .cloned()
+        .collect();
+    let mut last: Vec<(usize, usize)> = old.last.iter().map(|(&node, &at)| (at, node)).collect();
+    last.sort_unstable();
+    for (at, node) in last {
+        meter!(step_end_lookups += 1);
+        let seat = old.entries[at].seat;
+        let key = &old.nodes[node];
+        let Some(reach) = next.carrying.get(&seat).and_then(|index| index.reach(key)) else {
+            continue;
+        };
+        let mut trace = PlayTrace::new(old.window);
+        for (from, entry) in old.entries.iter().enumerate().skip(at) {
+            trace.rerecord(&old, from, entry.clone(), false);
+        }
+        let span = CarriedSpan {
+            key: key.clone(),
+            seat,
+            reach,
+            trace,
+        };
+        next.carried
+            .retain(|carried| carried.seat != seat || carried.key != *key);
+        if runs(&span, &next.carrying) {
+            next.carried.push_back(span);
+        }
+    }
+    if !next.carried.is_empty() || !next.carrying.is_empty() {
+        state.play_trace = Some(Box::new(next));
+    }
+}
+
+/// Rebuilds `seat`'s carrying index with one Engine B run when its printed faces outside its
+/// library changed.
+fn refresh_carrying(
+    state: &GameState,
+    carrying: &mut im::HashMap<PlayerId, CarryingIndex>,
+    seat: PlayerId,
+) {
+    let mut faces: std::collections::BTreeMap<&str, &GameObject> =
+        std::collections::BTreeMap::new();
+    for object in state.objects.values() {
+        meter!(face_set_scans += 1);
+        if (object.owner == seat || object.controller == seat) && object.zone != Zone::Library {
+            faces.entry(object.base_name.as_str()).or_insert(object);
+        }
+    }
+    let names: Vec<String> = faces.keys().map(|name| (*name).to_string()).collect();
+    if carrying
+        .get(&seat)
+        .is_some_and(|index| index.faces == names)
+    {
+        return;
+    }
+    meter!(engine_b_rebuilds += 1);
+    let objects: Vec<&GameObject> = faces.into_values().collect();
+    let sources: Vec<AbilitySource<'_>> = objects
+        .iter()
+        .map(|object| AbilitySource {
+            name: &object.base_name,
+            mana_cost: &object.base_mana_cost,
+            card_type: &object.base_card_types,
+            abilities: &object.base_abilities,
+            triggers: &object.base_trigger_definitions,
+            replacements: &object.base_replacement_definitions,
+            statics: &object.base_static_definitions,
+        })
+        .collect();
+    let mut keys = Vec::new();
+    for cycle in candidate_cycles_from_sources(&sources) {
+        let Some(reach) = PeriodReach::of_axes(&cycle.unbounded) else {
+            continue;
+        };
+        keys.extend(
+            cycle
+                .members
+                .iter()
+                .filter_map(|origin| origin_key(objects[origin.source], origin.slot))
+                .map(|key| (key, reach)),
+        );
+    }
+    carrying.insert(seat, CarryingIndex { faces: names, keys });
+}
+
+/// The trace's key for an Engine B node: a spell's cast, an activated ability's definition, or a
+/// printed trigger; a replacement or a granted ability keys nothing the trace records.
+fn origin_key(object: &GameObject, slot: AbilitySlot) -> Option<NodeKey> {
+    match slot {
+        AbilitySlot::Ability(index) => {
+            let def = object.base_abilities.get(index)?;
+            match def.kind {
+                AbilityKind::Spell => object.base_printed_ref.clone().map(NodeKey::Cast),
+                _ => Some(NodeKey::Activated(Box::new(def.clone()))),
+            }
+        }
+        AbilitySlot::Trigger(index) => {
+            printed_trigger_origin(object, index).map(NodeKey::Triggered)
+        }
+        AbilitySlot::Replacement(_) | AbilitySlot::Granted { .. } => None,
+    }
 }
 
 /// Whether a play is in progress: the engine withholds priority for it (CR 601.2 + CR 602.2b +
@@ -1222,13 +1500,8 @@ pub(crate) fn name_window(state: &mut GameState) -> Vec<NamedSpan> {
     let WaitingFor::Priority { player: holder } = state.waiting_for else {
         return Vec::new();
     };
-    let window = WindowKey::of(state);
-    let Some(mut trace) = state
-        .play_trace
-        .as_deref()
-        .filter(|trace| trace.window == window)
-        .cloned()
-    else {
+    roll(state);
+    let Some(mut trace) = state.play_trace.as_deref().cloned() else {
         return Vec::new();
     };
     metered(|| {
@@ -1273,11 +1546,11 @@ pub(crate) fn name_window(state: &mut GameState) -> Vec<NamedSpan> {
                             && !trace.last_play.is_some_and(|play| play >= start)
                             && recurs_inside())
                     {
-                        trace.named.push_back(NamedSpan {
+                        trace.named.push_back(NamedSpan::in_window(
                             start,
                             end,
-                            cause: NamingCause::TriggerTop,
-                        });
+                            NamingCause::TriggerTop,
+                        ));
                     }
                 }
             }
@@ -1309,15 +1582,81 @@ pub(crate) fn name_window(state: &mut GameState) -> Vec<NamedSpan> {
                     continue;
                 }
                 if read_legality(state, holder, &locus) == Some(true) {
-                    trace.named.push_back(NamedSpan { start, end, cause });
+                    trace
+                        .named
+                        .push_back(NamedSpan::in_window(start, end, cause));
                 }
             }
         }
+        name_carried(state, holder, &mut trace);
     });
     let unread = trace.named.iter().skip(trace.unread).copied().collect();
     trace.unread = trace.named.len();
     state.play_trace = Some(Box::new(trace));
     unread
+}
+
+/// Names `holder`'s carried spans, in the order their keys last occurred, once each comes round:
+/// with a trigger on top, when it is the carried trigger and its resolution asked an optional
+/// answer in the span; with an empty stack, when the carried play is legal now. Nothing is asked
+/// while a play of the span is on the stack. A named carried span ends.
+fn name_carried(state: &GameState, holder: PlayerId, trace: &mut PlayTrace) {
+    let mut kept = im::Vector::new();
+    for span in std::mem::take(&mut trace.carried) {
+        let cause = (span.seat == holder && !play_on_stack(state, &span.trace))
+            .then(|| carried_cause(state, holder, &span))
+            .flatten();
+        let Some(cause) = cause else {
+            kept.push_back(span);
+            continue;
+        };
+        trace.named.push_back(NamedSpan {
+            start: 0,
+            end: span.trace.entries.len(),
+            cause,
+            source: SpanSource::Carried(trace.carried_named.len()),
+            reach: span.reach,
+        });
+        trace.carried_named.push_back(span);
+    }
+    trace.carried = kept;
+}
+
+fn carried_cause(state: &GameState, holder: PlayerId, span: &CarriedSpan) -> Option<NamingCause> {
+    let node = span.trace.find(&span.key)?;
+    match state.stack.back() {
+        Some(top) => (trigger_node(state, top, 0).as_ref() == Some(&span.key)
+            && span.trace.optional_triggers.contains(&node))
+        .then_some(NamingCause::TriggerTop),
+        None => {
+            let &at = span.trace.last.get(&node)?;
+            let EntryKind::Play { locus, .. } = span.trace.entries.get(at)?.kind else {
+                return None;
+            };
+            (read_legality(state, holder, &locus) == Some(true)).then_some(NamingCause::LegalNow)
+        }
+    }
+}
+
+/// Whether a spell or ability a play of `trace` made is on the stack.
+fn play_on_stack(state: &GameState, trace: &PlayTrace) -> bool {
+    let sources: Vec<ObjectId> = trace
+        .entries
+        .iter()
+        .filter_map(|entry| match entry.kind {
+            EntryKind::Play {
+                locus: PlayLocus::Cast(id) | PlayLocus::Activate(id, _),
+                ..
+            } => Some(id),
+            _ => None,
+        })
+        .collect();
+    state.stack.iter().any(|entry| {
+        matches!(
+            entry.kind,
+            StackEntryKind::Spell { .. } | StackEntryKind::ActivatedAbility { .. }
+        ) && sources.contains(&entry.source_id)
+    })
 }
 
 /// Notes the span an offer was made for.
@@ -1367,6 +1706,7 @@ pub(crate) fn discard_seat(state: &mut GameState, holder: PlayerId) {
         return;
     };
     let mut kept = PlayTrace::new(trace.window);
+    kept.carrying = trace.carrying.clone();
     let mut owner = None;
     for (at, entry) in trace.entries.iter().enumerate() {
         if matches!(
@@ -1379,12 +1719,31 @@ pub(crate) fn discard_seat(state: &mut GameState, holder: PlayerId) {
             kept.rerecord(trace, at, entry.clone(), false);
         }
     }
-    state.play_trace = (!kept.entries.is_empty()).then(|| Box::new(kept));
+    kept.carried = trace
+        .carried
+        .iter()
+        .filter(|span| span.seat != holder)
+        .cloned()
+        .collect();
+    state.play_trace =
+        (!kept.entries.is_empty() || !kept.carried.is_empty()).then(|| Box::new(kept));
 }
 
 /// The current window's entries.
 pub(crate) fn current_entries(state: &GameState) -> Option<&im::Vector<TraceEntry>> {
     current(state).map(|trace| &trace.entries)
+}
+
+/// The entries a span the current window named reads.
+pub(crate) fn span_entries(state: &GameState, span: NamedSpan) -> Option<&im::Vector<TraceEntry>> {
+    let trace = current(state)?;
+    match span.source {
+        SpanSource::Window => Some(&trace.entries),
+        SpanSource::Carried(index) => trace
+            .carried_named
+            .get(index)
+            .map(|span| &span.trace.entries),
+    }
 }
 
 /// Installs a trace of `plays` for the current window, each a priority play at depth 0.
@@ -1458,6 +1817,19 @@ pub struct PlayTraceView {
     pub named: Vec<NamedSpan>,
     pub node_count: usize,
     pub offered: Option<NamedSpan>,
+    /// The live carried spans, in order.
+    pub carried: Vec<CarriedView>,
+}
+
+/// A live carried span as a test reads it: its seat, reach, entry count, and its key's face.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarriedView {
+    pub seat: PlayerId,
+    pub reach: PeriodReach,
+    pub entries: usize,
+    /// The printed face of a cast or a trigger key; `None` for any other key.
+    pub face: Option<String>,
 }
 
 /// The current window's trace; `None` when none was recorded or it belongs to an ended step.
@@ -1469,6 +1841,20 @@ pub fn play_trace_view(state: &GameState) -> Option<PlayTraceView> {
         named: trace.named.iter().copied().collect(),
         node_count: trace.nodes.len(),
         offered: trace.offered,
+        carried: trace
+            .carried
+            .iter()
+            .map(|span| CarriedView {
+                seat: span.seat,
+                reach: span.reach,
+                entries: span.trace.entries.len(),
+                face: match &span.key {
+                    NodeKey::Cast(printed) => Some(printed.face_name.clone()),
+                    NodeKey::Triggered(origin) => Some(origin.printed_ref.face_name.clone()),
+                    _ => None,
+                },
+            })
+            .collect(),
     })
 }
 
