@@ -402,9 +402,7 @@ function pickOpponentDeck(
   }) ?? catalog[0];
 }
 
-// Placeholder decklist for fixed-deck formats (Momir's Madness): the player
-// builds nothing, and the engine synthesizes the real deck for every seat. The
-// builders below ignore its contents for such formats.
+// The empty decklist a seat submits when it has no deck to send.
 const EMPTY_PARSED_DECK: ParsedDeck = { main: [], sideboard: [] };
 
 function emptySeat(): ExpandedDeckWithTier {

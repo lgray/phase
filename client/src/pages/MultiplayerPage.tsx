@@ -573,7 +573,7 @@ function MultiplayerPageContent({
     [navigateDirectP2PJoin, resolveP2PDialTarget],
   );
 
-  // Execute a pending action (host or join) with the currently active deck.
+  // Execute a pending action (host or join) with the active deck, or with none for a supplied-deck format.
   //
   // Before routing, we validate the active deck against the chosen format
   // via the engine's `evaluateDeckCompatibility` (the only authority on
@@ -777,7 +777,7 @@ function MultiplayerPageContent({
     [hostDeck, startHosting, startP2PHostingSession, navigate, navigateDirectP2PJoin, showToast, joinP2PRoom, t],
   );
 
-  // Host setup complete → execute immediately if deck exists, otherwise prompt
+  // Host setup complete → execute immediately if a deck exists or the format supplies it, otherwise prompt
   const handleHostSetupComplete = useCallback(
     async (settings: HostSettings, serverUrl: string | null): Promise<boolean> => {
       const action: PendingAction = {
