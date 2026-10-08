@@ -1,0 +1,12 @@
+    Finished `tool` profile [optimized + debuginfo] target(s) in 0.19s
+     Running `/home/lgray/vibe-coding/dandan-run/target-complete/tool/oracle-gen semantic-audit`
+Loading card database from client/public/card-data.json...
+Running semantic audit...
+Audit complete: 32648 cards audited, 207 with findings
+JSON written to data/semantic-audit.json
+Markdown written to data/semantic-audit.md
+  WrongParameter: 6
+  DroppedCondition: 29
+  DroppedDuration: 24
+  SilentDrop: 156
+  UnimplementedSubEffect: 1

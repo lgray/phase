@@ -1,0 +1,8 @@
+   Compiling phase-engine v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/engine)
+   Compiling server-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/server-core)
+   Compiling phase-ai v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/phase-ai)
+   Compiling draft-core v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/draft-core)
+   Compiling lobby-broker v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/lobby-broker)
+   Compiling manabrew-compat v0.103.0 (/home/lgray/vibe-coding/dandan-run/wt-complete/crates/manabrew-compat)
+error: Broken pipe (os error 32)
+warning: build failed, waiting for other jobs to finish...

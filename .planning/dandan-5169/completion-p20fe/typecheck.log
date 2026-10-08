@@ -1,0 +1,8 @@
+
+> phase-rs-client@0.103.0 type-check /home/lgray/vibe-coding/dandan-run/wt-complete/client
+> pnpm run protocol:check && tsc -b --noEmit
+
+
+> phase-rs-client@0.103.0 protocol:check /home/lgray/vibe-coding/dandan-run/wt-complete/client
+> node ../scripts/check-protocol-version.mjs
+

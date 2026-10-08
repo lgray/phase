@@ -70,3 +70,5 @@
 2026-10-07T20:30:11Z USER: PR #9669 scope = phases 18-20 + merge; 21-22 follow-up PR after merge
 2026-10-07T21:36:57Z USER reversal: 21-22 back in #9669
 2026-10-08T04:08:20Z Phase 19 accepted 1cf3bd4c85
+2026-10-08T04:37:16Z review 4 + Superagent: Phase 20 -> discriminator design
+2026-10-08T10:47:14Z Phase 20 accepted a10c2316dd

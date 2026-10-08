@@ -1,0 +1,26 @@
+**Changes requested at `1cf3bd4c85b73b898b92923ff7c3df87f8bc2faa`: one MED structural mana-spend provenance defect remains.**
+
+## 🔴 Blocker
+
+**[MED / structural] Preserve printed mana symbols separately from color words.** The shared carrier table classifies every `ManaColorSpent.color` as a word at [`text_substitution.rs:87`](https://github.com/phase-rs/phase/blob/1cf3bd4c85b73b898b92923ff7c3df87f8bc2faa/crates/engine/src/game/text_substitution.rs#L87). The live symbolic parser emits that condition at [`conditions.rs:5102–5124`](https://github.com/phase-rs/phase/blob/1cf3bd4c85b73b898b92923ff7c3df87f8bc2faa/crates/engine/src/parser/oracle_effect/conditions.rs#L5102); its non-shadowed production role is explicitly documented at `:5141–5143`. Spell restamping at [`stack.rs:1659`](https://github.com/phase-rs/phase/blob/1cf3bd4c85b73b898b92923ff7c3df87f8bc2faa/crates/engine/src/game/stack.rs#L1659) rewrites that color before the unchanged paid-color comparison at [`effects/mod.rs:19901–19904`](https://github.com/phase-rs/phase/blob/1cf3bd4c85b73b898b92923ff7c3df87f8bc2faa/crates/engine/src/game/effects/mod.rs#L19901).
+
+Verified local `data/mtgjson/AtomicCards.json` Oracle witness: Firespout uses the printed clause “{R} was spent to cast this spell”; Sleight of Mind selects “one color word”. Cast Firespout with red and no blue mana, respond with Sleight of Mind changing Red → Blue, then resolve both. The inspected path predicts a rewritten Blue spend condition, no matching blue payment and a skipped nonflying damage instruction. The printed `{R}` must remain intact. Batwing Brume provides symbolic siblings; Slaying Fire provides a genuine word-form control. This is a deterministic source trace, not an executed runtime failure.
+
+CR 612.1 and CR 612.2 were read in local `docs/MagicCompRules.txt`; CR 612.2 says a text-changing effect “changes only those words that are used in the correct way”. Preserve lexical provenance at the existing typed condition/parser/rewriter authority. A blanket SYMBOL classification is insufficient: `oracle_trigger.rs:9918` and `:9967` still emit the shared trigger condition from word and symbol forms. The canonical word-form spell condition also uses `QuantityCheck / ManaSpentToCast / OfColor`; the shadowed legacy word parser is not claimed as a live producer.
+
+Add Oracle-backed production cast/payment/response/choice/resolution controls for printed-symbol and genuine word-form spend conditions, with a differently chosen unpaid color. This consumed-contract correction requires the reviewed implementation workflow; it exceeds an obvious local maintainer fixup.
+
+## ✅ Clean and prior findings
+
+Fresh independent review covered the complete 199-path cumulative diff, with both scout halves, production consumers and an adversarial pass. The previous recipient-dependent ordering blocker is corrected: selection uses the current recipient and reevaluates after each application. The new real-card cycle controls are credited as inspected source. The earlier Predict/determinization candidate-domain finding remains corrected. The existing `feature` label is appropriate for the shared-pile mechanic across engine, transport, frontend and AI.
+
+The new [current-head Superagent P2 comment](https://github.com/phase-rs/phase/pull/9669#discussion_r4214527120) independently identifies the same word/symbol carrier, symbolic producer, live restamp and paid-color comparison. Its claim was reconciled against the inspected source and matches the single material finding above; it introduces no additional finding.
+
+## 🟡 Verification condition
+
+At the latest exact-head check, required frontend and Card Bot checks are successful; the required Rust aggregate remains pending, with no terminal required-check failure identified. The newly published complete immutable [parse artifact 11528003413](https://github.com/phase-rs/phase/actions/runs/37726054390/artifacts/11528003413) from [run 37726054390](https://github.com/phase-rs/phase/actions/runs/37726054390) binds this head and base `3cfdd64a2af8ed50267370abeb708b36764c2df0`. Full JSON/Markdown and PR number reconcile to precisely the nine claimed normalized card names, six signatures, zero Oracle changes and no added/removed cards. Every cluster count matches its complete card list. This current immutable receipt supersedes the older sticky as parse-scope evidence; it does not validate the symbol/word runtime semantics. These observations supply no new source-fault attribution. No direct builds, tests, runtime reproduction, or production revert experiment ran in this sweep. Artifact admission remains audit-only.
+
+**Recommendation: keep this PR open with changes requested, preserve symbol/word provenance at the shared authority, add discriminating production controls, then obtain matching resulting-head review and execution evidence before approval or queue admission.**
+
+Confidence: high for source, Oracle/CR and public-state evidence; runtime/revert behavior remains unexecuted. Assumption: the parsed Firespout spend condition reaches the inspected stack-restamp/evaluator path. Preserved lexical provenance at that boundary would contradict the finding; it is absent in the inspected source.
+
