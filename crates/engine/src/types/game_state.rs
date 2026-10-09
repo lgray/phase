@@ -4209,7 +4209,8 @@ pub enum PersistentAxisMaterialization {
 ///   • `game::casting::handle_cancel_cast` — the same synthetic prepare-copy, rolled back on
 ///     cancel.
 /// Two further removes operate on DISCARDED COMPARISON CLONES, never live state
-/// (`game::period_confirm::normalize_cast_frame`, `analysis::resource::frame_without`).
+/// (`analysis::resource::frame_without`, which `game::period_confirm::normalize_cast_frame` calls,
+/// and `analysis::resource::eq_except_growable`).
 ///
 /// REACHABILITY BY CONSUMER — with the pill projection still not mapping to an axis, all THREE
 /// remaining consumers are LIVE, and byte-identical to the pre-extraction nested

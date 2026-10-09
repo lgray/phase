@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stamps `DecisionSlot.point` and `PinnedDecision::Order`'s slot onto ALREADY-COMMITTED
-# dump fixtures, in place, in two passes: first each slot gains its typed CR choice point,
-# then `Order` gains the slot every other pin variant carries.
+# dump fixtures, in place, in two passes, M1 (each slot gains its typed CR choice point) then
+# M2 (`Order` gains the slot every other pin variant carries).
 #
 # WHY IN PLACE AND NOT A PRISTINE REGENERATION. Same ground `stamp-fixture-firing.sh`
 # states: a committed fixture can carry a LATER parser state than any pristine capture, and
