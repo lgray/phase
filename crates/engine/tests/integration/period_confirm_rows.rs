@@ -3311,8 +3311,8 @@ fn an_archaeomancer_time_warp_take_decks_its_caster_when_the_library_binds() {
     assert!(events.contains(&GameEvent::GameOver { winner: Some(P1) }));
 }
 
-/// CR 704.5b + CR 800.4: on three seats the same take decks its caster at its last draw step, and
-/// the game goes on for the other two.
+/// CR 704.5b + CR 800.4a: on three seats the same take decks its caster at its last draw step and
+/// ends there, and the game goes on for the other two.
 #[test]
 fn an_archaeomancer_time_warp_take_on_three_seats_decks_its_caster_and_the_game_goes_on() {
     let db = shared_card_db().expect("card db");
@@ -3334,6 +3334,28 @@ fn an_archaeomancer_time_warp_take_on_three_seats_decks_its_caster_and_the_game_
     let after = runner.state();
     assert_eq!(eliminated(after), [P0]);
     assert_eq!(eliminations(&events), [P0]);
+    let departure = events
+        .iter()
+        .position(|event| matches!(event, GameEvent::PlayerEliminated { .. }))
+        .expect("reach: the take emits the elimination");
+    let departure_turn = events[..departure]
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            GameEvent::TurnStarted {
+                player_id,
+                turn_number,
+            } => Some((*player_id, *turn_number)),
+            _ => None,
+        });
+    assert_eq!(departure_turn.map(|(seat, _)| seat), Some(P0));
+    assert_eq!(
+        (Some(after.turn_number), after.phase),
+        (departure_turn.map(|(_, turn)| turn), Phase::Draw)
+    );
+    assert!(!events[departure..]
+        .iter()
+        .any(|event| matches!(event, GameEvent::PriorityPassed { .. })));
     assert_eq!(
         after.players[0].turns_taken,
         state.players[0].turns_taken + n

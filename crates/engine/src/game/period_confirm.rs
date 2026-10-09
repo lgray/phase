@@ -294,8 +294,12 @@ impl FrameEnd {
 
     /// Whether the cycle begun at window `start` may still run at `state`: the same step
     /// in-step, the same turn for a combat period (CR 500.8), and the holder's turns for an
-    /// extra-turn period (CR 500.7).
+    /// extra-turn period (CR 500.7). Nothing once the holder has left the game, whose turn goes on
+    /// without it (CR 800.4a + CR 800.4j).
     fn admits(&self, start: play_trace::WindowKey, state: &GameState) -> bool {
+        if !crate::game::players::is_alive(state, self.holder) {
+            return false;
+        }
         let now = play_trace::WindowKey::of(state);
         match self.reach {
             PeriodReach::InStep => now == start,

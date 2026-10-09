@@ -7581,8 +7581,8 @@ pub(crate) fn drive_persistent_axis_collapse(
             .as_ref()
             .zip(predicted)
             .map(|(before, entries)| departure_verdict(entries, before, state, i + 1));
-        // CR 800.4: a multiplayer game continues past the controller's departure, so that
-        // departure, not only the game's end, is what ends the predicted crossing's cycle.
+        // CR 800.4a: the controller's departure ends its cycle's frame whether or not the game
+        // ends, so a predicted departure commits the cycle it cut short.
         let departed = matches!(state.waiting_for, WaitingFor::GameOver { .. })
             || !crate::game::players::is_alive(state, controller);
         if !performed && departed && verdict == Some(DepartureVerdict::Predicted) {
