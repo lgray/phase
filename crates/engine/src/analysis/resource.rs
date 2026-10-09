@@ -5671,6 +5671,11 @@ fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bo
 /// `targeting::latest_tracked_set_id` behind `resolve_tracked_set_sentinel`'s legacy fallback — is
 /// not confined to the resolution that produced the set by this code; CR 608.2c confines it.
 fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>) -> bool {
+    // CR 104.4b: the restricted normalization contract — a state holding an
+    // unsettled delivery carrier is never loop-comparable.
+    if !pa.is_loop_comparable() || !pb.is_loop_comparable() {
+        return false;
+    }
     let mut a = pa.clone();
     let mut b = pb.clone();
     // CR 400.1: each grown id must also leave the per-player zone COLLECTION its own `zone`
@@ -5702,6 +5707,8 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     b.retain_carrier_referenced_lki();
     a.retain_trigger_referenced_departed_spells();
     b.retain_trigger_referenced_departed_spells();
+    a.canonicalize_loop_identities();
+    b.canonicalize_loop_identities();
     // AFTER the battlefield/stack clears, which makes those two arms no-ops by construction —
     // the fodder half of `grown` lives there and needs nothing further. `zones::remove_from_zone`
     // is the shipped single authority for the operation and is exhaustive over `Zone`, so no
@@ -25070,7 +25077,16 @@ mod tests {
         let entrant = ObjectId(50);
         let normalized_pair = |carrier| {
             let pa = accumulated_entry_frame(7, Some(carrier)).normalize_for_loop();
-            let pb = accumulated_entry_frame(9, Some(carrier)).normalize_for_loop();
+            // Incarnation numerals canonicalize away (CR 104.4b), so the frames differ in the
+            // snapshot's content instead.
+            let mut b = accumulated_entry_frame(9, Some(carrier));
+            b.lki_by_incarnation
+                .get_mut(&entrant)
+                .unwrap()
+                .get_mut(&9)
+                .unwrap()
+                .power = Some(3);
+            let pb = b.normalize_for_loop();
             assert!(
                 pa.lki_by_incarnation.contains_key(&entrant)
                     && pb.lki_by_incarnation.contains_key(&entrant)

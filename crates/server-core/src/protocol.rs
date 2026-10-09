@@ -3347,11 +3347,15 @@ mod tests {
     }
 
     /// The bump this number is at: `WaitingFor::LoopShortcut` and
-    /// `ShortcutProposal` gained a required `road: OfferRoad`. A v118 peer drops
+    /// `ShortcutProposal` gained a required `road: OfferRoad`. A v120 peer drops
     /// the key from every frame it re-encodes, so the handshake refuses the
     /// pairing rather than leave the road to the legacy-offer migration's
     /// inference.
     ///
+    /// The CR 601.2a spell announcement adds `GameObject::spell_announcement`,
+    /// `GameState::next_spell_announcement` and `GameEvent::BecomesTarget.targeter`;
+    /// a v119 peer cannot decode v120 state, so it must be refused before state
+    /// delivery. (v119 is reserved for the Legends of Jidoor PR.)
     /// `ManaColorSpent` on `AbilityCondition` and `TriggerCondition` retypes `color`
     /// to `SpentColor` (word versus symbol provenance, CR 612.2); a v117 peer cannot
     /// deserialize the tagged color, so it must be refused before it receives v118
@@ -3467,8 +3471,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_119_for_period_reach_and_cleanup() {
-        assert_eq!(PROTOCOL_VERSION, 119);
+    fn protocol_version_is_121_for_period_reach_and_cleanup() {
+        assert_eq!(PROTOCOL_VERSION, 121);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3479,7 +3483,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_119_for_period_reach_and_cleanup` stays
+    /// `protocol_version_is_121_for_period_reach_and_cleanup` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
