@@ -39401,6 +39401,101 @@ mod tests {
         );
     }
 
+    /// CR 104.4b + CR 605.3a: an unless-payment's trigger event under a mana ability parked behind
+    /// another keeps the tapped incarnation it names, and positions minted at incarnation 3 vs 91
+    /// normalize equal; a snapshot nothing names is pruned.
+    #[test]
+    fn normalize_for_loop_reaches_a_parked_outer_mana_abilitys_trigger_event() {
+        let pyromancer = ObjectId(50);
+        let snapshot = LKISnapshot {
+            name: "Prodigal Pyromancer".to_string(),
+            token_image_ref: None,
+            power: Some(1),
+            toughness: Some(1),
+            base_power: Some(1),
+            base_toughness: Some(1),
+            mana_value: 3,
+            controller: PlayerId(1),
+            owner: PlayerId(0),
+            card_types: vec![CoreType::Creature],
+            subtypes: Vec::new(),
+            supertypes: Vec::new(),
+            keywords: Vec::new(),
+            colors: vec![ManaColor::Red],
+            chosen_attributes: Vec::new(),
+            counters: HashMap::new(),
+            tapped: true,
+            is_suspected: false,
+            attachments: Vec::new(),
+        };
+        let position = |incarnation: u64| {
+            let parked = PendingManaAbility {
+                player: PlayerId(0),
+                source_id: ObjectId(1),
+                ability_index: Some(0),
+                rules_execution_node: None,
+                ability_snapshot: None,
+                color_override: None,
+                resume: ManaAbilityResume::UnlessPayment {
+                    outer_player: None,
+                    cost: Box::new(crate::types::ability::AbilityCost::Blight { count: 1 }),
+                    pending_effect: Box::new(ResolvedAbility::new(
+                        Effect::NoOp,
+                        vec![],
+                        ObjectId(5),
+                        PlayerId(0),
+                    )),
+                    trigger_event: Some(GameEvent::PermanentTapped {
+                        object_id: pyromancer,
+                        caused_by: None,
+                        incarnation: Some(incarnation),
+                    }),
+                    effect_description: None,
+                    remaining: Vec::new(),
+                },
+                cost_move_resume: None,
+                chosen_tappers: None,
+                chosen_discards: Vec::new(),
+                chosen_mana_payment: None,
+                chosen_counter_counts: Vec::new(),
+                chosen_x: None,
+                collected_evidence: Vec::new(),
+                chosen_exiled: Vec::new(),
+                chosen_sacrificed_battlefield: Vec::new(),
+                cost_paid_object: None,
+                batch_siblings: Vec::new(),
+            };
+            let mut state = GameState::new_two_player(7);
+            state.pending_deferred_life_cost_resume = Some(DeferredLifeCostResume::ManaRoot {
+                player: PlayerId(0),
+                resume: Box::new(ManaAbilityResume::ManaAbilityManaPayment {
+                    pending_mana_ability: Box::new(parked),
+                }),
+                remaining_life_payments: Vec::new(),
+                resume_at_resolution_depth: 0,
+            });
+            let history = state.lki_by_incarnation.entry(pyromancer).or_default();
+            history.insert(incarnation, snapshot.clone());
+            history.insert(incarnation + 1, snapshot.clone());
+            state
+        };
+        let (early, late) = (position(3), position(91));
+        assert_ne!(early, late, "reach guard: the raw positions differ");
+        let normalized_late = late.normalize_for_loop();
+        assert_eq!(
+            normalized_late
+                .lki_by_incarnation
+                .get(&pyromancer)
+                .map(|history| history.len()),
+            Some(1),
+            "the named snapshot is retained and the unnamed one pruned"
+        );
+        assert!(
+            loop_states_equal(&early.normalize_for_loop(), &normalized_late),
+            "consistently renumbered incarnations are the same position"
+        );
+    }
+
     /// Maintainer round 4 re-check. CR 104.4b: the restricted normalization
     /// contract. A state still holding an unsettled delivery carrier (here,
     /// deferred entry events) is not loop-comparable: it never compares equal,

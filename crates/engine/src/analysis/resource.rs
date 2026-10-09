@@ -25189,6 +25189,39 @@ mod tests {
         assert!(eq_except_growable(&pa, &pb, &HashSet::new()));
     }
 
+    /// CR 104.4b: an incarnation only a stack entry named leaves `eq_except_growable`'s remainder
+    /// with the stack, so the incarnations left are re-ranked without it.
+    #[test]
+    fn eq_except_growable_reranks_incarnations_after_the_stack_leaves() {
+        use crate::types::game_state::{StackEntryKind, ZoneChangeRecord};
+        let entrant = ObjectId(50);
+        let pb = accumulated_entry_frame(9, Some(LkiCarrier::PendingTriggerEventBatch))
+            .normalize_for_loop();
+        let mut a = accumulated_entry_frame(9, Some(LkiCarrier::PendingTriggerEventBatch));
+        let mut record =
+            ZoneChangeRecord::test_minimal(entrant, Some(Zone::Exile), Zone::Battlefield);
+        record.entered_incarnation = Some(7);
+        let StackEntryKind::TriggeredAbility { trigger_event, .. } = &mut a.stack[0].kind else {
+            unreachable!("the frame's stack entry is a triggered ability");
+        };
+        *trigger_event = Some(crate::types::events::GameEvent::ZoneChanged {
+            object_id: entrant,
+            from: Some(Zone::Exile),
+            to: Zone::Battlefield,
+            record: Box::new(record),
+        });
+        let history = a.lki_by_incarnation.get_mut(&entrant).unwrap();
+        let earlier = history.get(&9).unwrap().clone();
+        history.insert(7, earlier);
+        let pa = a.normalize_for_loop();
+        assert_eq!(pa.lki_by_incarnation[&entrant].len(), 2);
+        assert_ne!(
+            pa.pending_trigger_event_batch, pb.pending_trigger_event_batch,
+            "reach guard: the stack's incarnation shifts the batch's rank"
+        );
+        assert!(eq_except_growable(&pa, &pb, &HashSet::new()));
+    }
+
     /// **`eq_except_growable` strips an accounted id from the per-player zone COLLECTION its
     /// own frame's `zone` names, not just from `objects`.**
     ///
