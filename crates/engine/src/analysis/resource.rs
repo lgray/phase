@@ -5097,18 +5097,23 @@ pub(crate) fn turn_cycle_covers(prior: &GameState, current: &GameState, caster: 
         return false;
     };
     let (before, after) = (&prior.players[before_at], &current.players[after_at]);
+    let before_library = prior.library_of(caster);
+    let caster_pile = prior.zone_storage_seat(Zone::Library, caster);
     let others_still = prior.players.len() == current.players.len()
         && prior.players.iter().zip(&current.players).all(|(p, c)| {
             p.id == c.id
                 && (p.id == caster
                     || (p.turns_taken == c.turns_taken
                         && p.hand == c.hand
-                        && p.library == c.library))
+                        // A library shared with the caster is the caster's, which the draw check
+                        // and the comparand below answer for.
+                        && (prior.zone_storage_seat(Zone::Library, p.id) == caster_pile
+                            || prior.library_of(p.id) == current.library_of(c.id))))
         });
     let drawn: Vec<ObjectId> = after
         .hand
         .iter()
-        .filter(|id| before.library.contains(id))
+        .filter(|id| before_library.contains(id))
         .copied()
         .collect();
     if prior.active_player != caster
@@ -5116,8 +5121,7 @@ pub(crate) fn turn_cycle_covers(prior: &GameState, current: &GameState, caster: 
         || after.turns_taken.checked_sub(before.turns_taken) != Some(turns)
         || !others_still
         || drawn.len() > turns as usize
-        || !before
-            .library
+        || !before_library
             .iter()
             .take(drawn.len())
             .all(|id| drawn.contains(id))
@@ -5126,13 +5130,14 @@ pub(crate) fn turn_cycle_covers(prior: &GameState, current: &GameState, caster: 
         return false;
     }
     let mut copy = current.clone();
-    let player = &mut copy.players[after_at];
-    player.hand.retain(|id| !drawn.contains(id));
+    // allow-raw-zone: equalizes the caster's draws in a discarded comparison clone, not a gameplay zone event.
+    copy.players[after_at].hand.retain(|id| !drawn.contains(id));
     let mut library: im::Vector<ObjectId> = drawn.iter().copied().collect();
-    library.append(player.library.clone());
-    player.library = library;
+    library.append(copy.library_of(caster).clone());
+    *copy.library_of_mut(caster) = library;
     for id in &drawn {
         if let Some(object) = copy.objects.get_mut(id) {
+            // allow-raw-zone: equalizes the caster's draws in a discarded comparison clone, not a gameplay zone event.
             object.zone = Zone::Library;
         }
     }
@@ -24804,6 +24809,103 @@ mod tests {
             None,
             "the strip relieves only the certified ids"
         );
+    }
+
+    /// Two frames a turn of `caster`'s apart, with `caster` drawing the library card at `drawn`.
+    fn turn_cycle_pair(
+        format: crate::types::format::FormatConfig,
+        caster: PlayerId,
+        drawn: usize,
+    ) -> (GameState, GameState) {
+        use crate::game::zones::{add_to_zone, create_object, remove_from_zone};
+        let mut prior = GameState::new(format, 2, 7);
+        prior.active_player = caster;
+        for n in 0..3 {
+            create_object(
+                &mut prior,
+                CardId(5 + n),
+                caster,
+                "Island".into(),
+                Zone::Library,
+            );
+        }
+        let mut current = prior.clone();
+        current.turn_number += 1;
+        current
+            .players
+            .iter_mut()
+            .find(|p| p.id == caster)
+            .expect("caster exists")
+            .turns_taken += 1;
+        let card = current.library_of(caster)[drawn];
+        remove_from_zone(&mut current, card, Zone::Library, caster);
+        add_to_zone(&mut current, card, Zone::Hand, caster);
+        current.objects.get_mut(&card).expect("drawn card").zone = Zone::Hand;
+        (prior, current)
+    }
+
+    /// CR 504.1 + CR 732.2a: the turn-cycle cover equalizes a non-canonical caster's draw off
+    /// the pile its library is stored in, and refuses a reordered pile or a draw from below the top.
+    #[test]
+    fn turn_cycle_cover_reads_the_shared_pile_library() {
+        use crate::types::format::FormatConfig;
+        let caster = PlayerId(1);
+        for (format, shared) in [
+            (FormatConfig::standard(), false),
+            (FormatConfig::dandan(), true),
+        ] {
+            let (prior, current) = turn_cycle_pair(format.clone(), caster, 0);
+            assert_eq!(
+                prior.zone_storage_seat(Zone::Library, caster) != caster,
+                shared,
+                "reach: the caster's library is stored at another seat only when shared"
+            );
+            assert!(
+                turn_cycle_covers(&prior, &current, caster),
+                "shared={shared}: a top draw is equalized"
+            );
+            let (prior, mut current) = turn_cycle_pair(format.clone(), caster, 0);
+            let rest = current.library_of_mut(caster);
+            rest.swap(0, 1);
+            assert!(
+                !turn_cycle_covers(&prior, &current, caster),
+                "shared={shared}: a reordered library beside the draw is refused"
+            );
+            let (prior, current) = turn_cycle_pair(format, caster, 1);
+            assert!(
+                !turn_cycle_covers(&prior, &current, caster),
+                "shared={shared}: a draw from below the top is refused"
+            );
+        }
+    }
+
+    /// CR 400.7: stripping a cast card from the confirmer's frame removes its id from the pile
+    /// that stores it.
+    #[test]
+    fn normalize_cast_frame_prunes_the_shared_pile_graveyard() {
+        use crate::game::zones::create_object;
+        use crate::types::format::FormatConfig;
+        let seat = PlayerId(1);
+        for (format, shared) in [
+            (FormatConfig::standard(), false),
+            (FormatConfig::dandan(), true),
+        ] {
+            let mut state = GameState::new(format, 2, 7);
+            let cast = create_object(&mut state, CardId(5), seat, "Cast".into(), Zone::Graveyard);
+            let kept = create_object(&mut state, CardId(6), seat, "Kept".into(), Zone::Graveyard);
+            assert_eq!(
+                state.zone_storage_seat(Zone::Graveyard, seat) != seat,
+                shared,
+                "reach: the graveyard is stored at another seat only when shared"
+            );
+            let frame = crate::game::period_confirm::normalize_cast_frame(&state, &[cast]);
+            assert!(!frame.objects.contains_key(&cast), "shared={shared}");
+            assert_eq!(
+                frame.graveyard_of(seat).iter().copied().collect::<Vec<_>>(),
+                vec![kept],
+                "shared={shared}: the pile no longer holds the stripped id"
+            );
+        }
     }
 
     /// CR 608.2c: an appended tracked set is equalized while the latest non-empty set, the one the
