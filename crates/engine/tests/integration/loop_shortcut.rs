@@ -5108,6 +5108,10 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
     // the carrier assertion below is unchanged by it.
     // 139 ⇒ 140 is ADJUDICATED: DigRestSplitChoice carries no DecisionTemplate;
     // its hidden card identities are filtered by the Dig visibility path.
+    // 140 ⇒ 141 is ADJUDICATED: CR 405.3's copy-batch order added
+    // `SpellCopyOrderChoice { player, source_id, choices }`. Its body holds no
+    // `DecisionTemplate`, and its choices are spells on the stack, which are
+    // public, so neither the carrier vec nor the redaction loop changes.
 
     let carriers = carriers_in_source(&enum_src, "WaitingFor", &corpus, &marker, true);
     assert_eq!(

@@ -15297,7 +15297,11 @@ fn evaluate_trigger_condition_with_source(
         // Reads the per-color tally recorded in casting::pay_mana_cost.
         TriggerCondition::ManaColorSpent { color, minimum } => {
             source_context.is_some_and(|source| {
-                source.source_read(state).colors_spent_to_cast().get(*color) >= *minimum
+                source
+                    .source_read(state)
+                    .colors_spent_to_cast()
+                    .get(color.color())
+                    >= *minimum
             })
         }
         // CR 601.2h: "if no mana was spent to cast it/them" — check the cast or
@@ -16834,9 +16838,9 @@ pub mod tests {
         FilterProp, GuessSubject, KickerVariant, ModalChoice, MultiTargetSpec, PlayerFilter,
         PlayerScope, PtStat, PtValue, PtValueScope, QuantityExpr, QuantityRef,
         ReplacementDefinition, ReplacementMode, ResolvedAbility, SearchSelectionConstraint,
-        SharedQuality, SharedQualityRelation, StaticCondition, StaticDefinition, TargetFilter,
-        TargetRef, TargetSelectionMode, TriggerCondition, TriggerConstraint, TriggerDefinition,
-        TriggerGrantInstanceRef, TypeFilter, TypedFilter,
+        SharedQuality, SharedQualityRelation, SpentColor, StaticCondition, StaticDefinition,
+        TargetFilter, TargetRef, TargetSelectionMode, TriggerCondition, TriggerConstraint,
+        TriggerDefinition, TriggerGrantInstanceRef, TypeFilter, TypedFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card::LayoutKind;
@@ -31791,7 +31795,9 @@ pub mod tests {
     fn test_adamant_true_when_enough_color_spent() {
         let (state, src) = setup_with_colored_cast(ManaColor::Red, 3);
         let cond = TriggerCondition::ManaColorSpent {
-            color: ManaColor::Red,
+            color: SpentColor::ColorWord {
+                color: ManaColor::Red,
+            },
             minimum: 3,
         };
         assert!(check_trigger_condition(
@@ -31807,7 +31813,9 @@ pub mod tests {
     fn test_adamant_false_when_not_enough() {
         let (state, src) = setup_with_colored_cast(ManaColor::Red, 3);
         let cond = TriggerCondition::ManaColorSpent {
-            color: ManaColor::Red,
+            color: SpentColor::ColorWord {
+                color: ManaColor::Red,
+            },
             minimum: 4,
         };
         assert!(!check_trigger_condition(
@@ -31823,7 +31831,9 @@ pub mod tests {
     fn test_adamant_false_when_wrong_color() {
         let (state, src) = setup_with_colored_cast(ManaColor::Green, 3);
         let cond = TriggerCondition::ManaColorSpent {
-            color: ManaColor::Red,
+            color: SpentColor::ColorWord {
+                color: ManaColor::Red,
+            },
             minimum: 3,
         };
         assert!(!check_trigger_condition(
@@ -31840,7 +31850,9 @@ pub mod tests {
         // minimum: 1 with one red spent → true
         let (state, src) = setup_with_colored_cast(ManaColor::Red, 1);
         let cond = TriggerCondition::ManaColorSpent {
-            color: ManaColor::Red,
+            color: SpentColor::ColorWord {
+                color: ManaColor::Red,
+            },
             minimum: 1,
         };
         assert!(check_trigger_condition(
@@ -31854,7 +31866,9 @@ pub mod tests {
         // minimum: 1 with zero red spent → false
         let (state, src) = setup_with_colored_cast(ManaColor::Green, 5);
         let cond = TriggerCondition::ManaColorSpent {
-            color: ManaColor::Red,
+            color: SpentColor::ColorWord {
+                color: ManaColor::Red,
+            },
             minimum: 1,
         };
         assert!(!check_trigger_condition(
@@ -37329,7 +37343,9 @@ pub mod tests {
         clear_post_collection_transients(&mut state);
 
         let cond = TriggerCondition::ManaColorSpent {
-            color: ManaColor::White,
+            color: SpentColor::ManaSymbol {
+                color: ManaColor::White,
+            },
             minimum: 2,
         };
         assert!(

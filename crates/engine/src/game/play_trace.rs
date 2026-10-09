@@ -1096,6 +1096,7 @@ fn answer_optionality(prompt: &WaitingFor, answer: Answer) -> AnswerOptionality 
         | WaitingFor::GameOver { .. }
         | WaitingFor::EntryControllerChoice { .. }
         | WaitingFor::OrderTriggers { .. }
+        | WaitingFor::SpellCopyOrderChoice { .. }
         | WaitingFor::CopyTargetChoice { .. }
         | WaitingFor::ReturnAsAuraTarget { .. }
         | WaitingFor::EquipTarget { .. }
@@ -1973,6 +1974,7 @@ mod tests {
                         phase: MulliganDecisionPhase::Declare,
                     }],
                     free_first_mulligan: false,
+                    declared: Vec::new(),
                 },
                 Optional,
             ),
