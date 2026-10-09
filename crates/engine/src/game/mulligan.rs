@@ -371,24 +371,63 @@ pub(crate) fn free_reveal_offered_to(state: &GameState, seat: PlayerId) -> bool 
     }
 }
 
-/// (lands, nonland cards) in `player`'s hand. CR 205.2a: land is a card type.
-fn hand_land_split(state: &GameState, player: PlayerId) -> (usize, usize) {
-    let hand = state
-        .players
+/// CR 103.5 as modified by the Dandan free-reveal rule: whether every redraw
+/// `seat` could take now would deal a hand the format offers the reveal for
+/// again; false unless `seat` is offered the reveal. The pool counts the hand
+/// of every seat still in the round (`pending` or `declared`), an upper bound
+/// on what the close returns, so `true` is a proof.
+/// After a seat keeps, the bit depends on that seat's hidden kept hand, so it
+/// feeds only the pregame choice and is never stored.
+pub fn free_reveal_futile_for(state: &GameState, seat: PlayerId) -> bool {
+    let FreeRevealMulligan::WhenHandLacks {
+        min_lands,
+        min_nonlands,
+    } = state.format_config.format.free_reveal_mulligan()
+    else {
+        return false;
+    };
+    let WaitingFor::MulliganDecision {
+        pending, declared, ..
+    } = &state.waiting_for
+    else {
+        return false;
+    };
+    if !free_reveal_offered_to(state, seat) {
+        return false;
+    }
+    let round: Vec<PlayerId> = pending
         .iter()
-        .find(|p| p.id == player)
-        .map(|p| &p.hand);
-    let lands = hand.map_or(0, |hand| {
-        hand.iter()
-            .filter(|id| {
-                state
-                    .objects
-                    .get(id)
-                    .is_some_and(|obj| obj.card_types.core_types.contains(&CoreType::Land))
-            })
-            .count()
-    });
-    (lands, hand.map_or(0, |hand| hand.len()) - lands)
+        .map(|entry| entry.player)
+        .chain(declared.iter().map(|declaration| declaration.player))
+        .collect();
+    let (lands, nonlands) = land_split(state, redraw_pool(state, seat, &round));
+    !redraw_can_clear(min_lands, min_nonlands, lands, nonlands)
+}
+
+/// Whether a seven-card draw from `lands` lands and `nonlands` nonland cards
+/// can hold at least `min_lands` lands and at least `min_nonlands` nonlands.
+fn redraw_can_clear(min_lands: u8, min_nonlands: u8, lands: usize, nonlands: usize) -> bool {
+    let (min_lands, min_nonlands) = (usize::from(min_lands), usize::from(min_nonlands));
+    lands >= min_lands && nonlands >= min_nonlands && min_lands + min_nonlands <= STARTING_HAND_SIZE
+}
+
+/// (lands, nonland cards) in `player`'s hand.
+fn hand_land_split(state: &GameState, player: PlayerId) -> (usize, usize) {
+    land_split(state, hand_ids(state, player))
+}
+
+/// (lands, nonland cards) among `cards`. CR 205.2a: land is a card type.
+fn land_split(state: &GameState, cards: Vec<ObjectId>) -> (usize, usize) {
+    let lands = cards
+        .iter()
+        .filter(|id| {
+            state
+                .objects
+                .get(id)
+                .is_some_and(|obj| obj.card_types.core_types.contains(&CoreType::Land))
+        })
+        .count();
+    (lands, cards.len() - lands)
 }
 
 /// CR 701.20a: show the hand to all players, by name only. The cards do not
@@ -615,16 +654,18 @@ fn close_declare_round(
             MulliganDeclarationKind::Regular => {}
         }
     }
-    for declaration in &redrawers {
-        return_hand_to_library(state, declaration.player, events);
-    }
+    let seats: Vec<PlayerId> = redrawers.iter().map(|d| d.player).collect();
     // CR 701.24a: one shuffle per distinct library, however many seats share it.
     let mut holders: Vec<PlayerId> = Vec::new();
-    for declaration in &redrawers {
-        let holder = state.zone_storage_seat(Zone::Library, declaration.player);
+    for &seat in &seats {
+        let holder = state.zone_storage_seat(Zone::Library, seat);
         if !holders.contains(&holder) {
             holders.push(holder);
         }
+    }
+    for &holder in &holders {
+        let cards = returning_hands(state, holder, &seats);
+        return_cards_to_library(state, cards, events);
     }
     for holder in holders {
         shuffle_library_of(state, holder);
@@ -928,16 +969,52 @@ fn shuffle_hand_into_library(state: &mut GameState, player: PlayerId, events: &m
 }
 
 fn return_hand_to_library(state: &mut GameState, player: PlayerId, events: &mut Vec<GameEvent>) {
-    let hand_ids: Vec<ObjectId> = state
+    let cards = returning_hands(state, player, &[player]);
+    return_cards_to_library(state, cards, events);
+}
+
+/// The ids of `player`'s hand; an absent seat holds none.
+fn hand_ids(state: &GameState, player: PlayerId) -> Vec<ObjectId> {
+    state
         .players
         .iter()
         .find(|p| p.id == player)
-        .expect("player exists")
-        .hand
+        .map(|p| p.hand.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// CR 103.5 + CR 400.1: the hands, in `returning` order, that go back into the
+/// library `seat` draws from when every seat in `returning` redraws; a listed
+/// seat whose library is another container contributes nothing.
+fn returning_hands(state: &GameState, seat: PlayerId, returning: &[PlayerId]) -> Vec<ObjectId> {
+    let holder = state.zone_storage_seat(Zone::Library, seat);
+    returning
+        .iter()
+        .filter(|&&p| state.zone_storage_seat(Zone::Library, p) == holder)
+        .flat_map(|&p| hand_ids(state, p))
+        .collect()
+}
+
+/// CR 103.5: every card the library `seat` draws from would hold after every
+/// seat in `returning` sent its hand back, before the shuffle.
+pub(crate) fn redraw_pool(
+    state: &GameState,
+    seat: PlayerId,
+    returning: &[PlayerId],
+) -> Vec<ObjectId> {
+    state
+        .library_of(seat)
         .iter()
         .copied()
-        .collect();
+        .chain(returning_hands(state, seat, returning))
+        .collect()
+}
 
+fn return_cards_to_library(
+    state: &mut GameState,
+    cards: Vec<ObjectId>,
+    events: &mut Vec<GameEvent>,
+) {
     // CR 103.5: pregame mulligan — return the hand to the library through the
     // pipeline under the `PregameProcedure` exempt cause; the caller shuffles
     // once afterwards.
@@ -951,7 +1028,7 @@ fn return_hand_to_library(state: &mut GameState, player: PlayerId, events: &mut 
     // consume seven extra full-library shuffles from the seeded RNG stream,
     // diverging same-seed games. Pinned by
     // `mulligan_shuffle_back_emits_no_shuffled_library_events`.
-    for card_id in hand_ids {
+    for card_id in cards {
         let req = crate::game::zone_pipeline::ZoneMoveRequest::pregame(card_id, Zone::Library)
             .at_library_position(crate::types::ability::LibraryPosition::Bottom);
         crate::game::zone_pipeline::move_object(state, req, events);
@@ -2978,5 +3055,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn redraw_pool_equals_the_library_and_the_new_hands_after_the_close() {
+        use std::collections::BTreeSet;
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let mut state = dandan_with_pile(2, 40);
+        let mut events = Vec::new();
+        state.waiting_for = start_mulligan(&mut state, &mut events);
+        decide(&mut state, p1, false, &mut events);
+
+        let pool: BTreeSet<ObjectId> = redraw_pool(&state, p0, &[p0, p1]).into_iter().collect();
+        let library_and_own_hand = state.library_of(p0).len() + state.players[0].hand.len();
+        assert!(
+            pool.len() > library_and_own_hand,
+            "reach: the declared hand is in the pool"
+        );
+
+        decide(&mut state, p0, false, &mut events);
+        let after: BTreeSet<ObjectId> = state
+            .library_of(p0)
+            .iter()
+            .chain(state.players[0].hand.iter())
+            .chain(state.players[1].hand.iter())
+            .copied()
+            .collect();
+        assert_eq!(pool, after);
+    }
+
+    #[test]
+    fn redraw_pool_of_a_per_player_library_holds_only_that_seats_cards() {
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let mut state = setup_with_libraries(20);
+        let mut events = Vec::new();
+        state.waiting_for = start_mulligan(&mut state, &mut events);
+        assert!(
+            !state.players[1].hand.is_empty(),
+            "reach: the other hand exists"
+        );
+        let library: Vec<ObjectId> = state.library_of(p0).iter().copied().collect();
+        let own_hand: Vec<ObjectId> = state.players[0].hand.iter().copied().collect();
+        assert_eq!(
+            redraw_pool(&state, p0, &[p0, p1]),
+            [library.clone(), own_hand].concat()
+        );
+        assert_eq!(redraw_pool(&state, p0, &[p1]), library);
+    }
+
+    #[test]
+    fn redraw_can_clear_is_a_count_rule_over_the_axis() {
+        assert!(redraw_can_clear(2, 2, 2, 2));
+        assert!(!redraw_can_clear(2, 2, 1, 70));
+        assert!(!redraw_can_clear(2, 2, 70, 1));
+        assert!(redraw_can_clear(2, 5, 2, 5));
+        assert!(
+            !redraw_can_clear(4, 4, 40, 40),
+            "eight required cards do not fit a seven-card hand"
+        );
+        assert!(redraw_can_clear(0, 0, 0, 0));
     }
 }

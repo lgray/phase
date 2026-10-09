@@ -858,4 +858,85 @@ mod tests {
         assert_eq!(counters.stack_inert_noop_batches, 1);
         assert_eq!(counters.stack_inert_noop_entries, 201);
     }
+
+    /// Both seats AI on Dandan piles whose every redraw is futile: the native
+    /// driver leaves the mulligan without taking a free reveal.
+    #[test]
+    fn native_ai_pair_leaves_the_mulligan_on_a_futile_dandan_pile() {
+        use engine::ai_support::legal_actions_for_viewer;
+        use engine::database::card_db::CardDatabase;
+        use engine::game::deck_loading::{
+            load_and_hydrate_decks, resolve_deck_list, DeckList, PlayerDeckList,
+        };
+        use engine::game::engine::start_game_with_starting_player;
+        use engine::game::mulligan::free_reveal_futile_for;
+        use engine::types::actions::MulliganChoice;
+        use engine::types::format::FormatConfig;
+        use rand::SeedableRng;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../engine/tests/fixtures/integration_cards.json.gz");
+        let file = std::fs::File::open(path).expect("integration fixture should open");
+        let db = CardDatabase::from_export_reader(flate2::read::GzDecoder::new(
+            std::io::BufReader::new(file),
+        ))
+        .expect("integration fixture should load");
+        let free_reveal = GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal,
+        };
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+
+        for pile in [&[("Island", 80)][..], &[("Island", 79), ("Opt", 1)][..]] {
+            let main_deck = pile
+                .iter()
+                .flat_map(|&(name, copies)| std::iter::repeat_n(name.to_string(), copies))
+                .collect();
+            let payload = resolve_deck_list(
+                &db,
+                &DeckList {
+                    player: PlayerDeckList {
+                        main_deck,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            let mut state = GameState::new(FormatConfig::dandan(), 2, 0);
+            load_and_hydrate_decks(&mut state, &payload, Some(&db));
+            start_game_with_starting_player(&mut state, p0);
+            for seat in [p0, p1] {
+                assert!(
+                    legal_actions_for_viewer(&state, seat)
+                        .0
+                        .contains(&free_reveal),
+                    "reach: {seat:?} is issued the reveal"
+                );
+                assert!(free_reveal_futile_for(&state, seat), "{pile:?} {seat:?}");
+            }
+
+            let ai_players = HashSet::from([p0, p1]);
+            let ai_configs = HashMap::from([(p0, AiConfig::default()), (p1, AiConfig::default())]);
+            let session = AiSession::arc_from_game(&state);
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+            let run = run_ai_actions_bounded(
+                &mut state,
+                &ai_players,
+                &ai_configs,
+                &mut rng,
+                &session,
+                20,
+            );
+
+            assert!(
+                run.results
+                    .iter()
+                    .any(|r| !matches!(r.state.waiting_for, WaitingFor::MulliganDecision { .. })),
+                "{pile:?}: the mulligan ends within 20 actions"
+            );
+            assert!(
+                run.results.iter().all(|r| r.action != free_reveal),
+                "{pile:?}"
+            );
+        }
+    }
 }

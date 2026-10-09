@@ -57,6 +57,12 @@ pub use spellslinger_keepables::SpellslingerKeepablesMulligan;
 pub use tokens_wide_keepables::TokensWideKeepablesMulligan;
 pub use tribal_density::TribalDensityMulligan;
 
+/// CR 103.5: whether an engine-issued `FreeReveal` can still change `seat`'s
+/// hand; false once no redraw can clear the format's condition.
+pub(crate) fn free_reveal_can_improve(state: &GameState, seat: PlayerId) -> bool {
+    !engine::game::mulligan::free_reveal_futile_for(state, seat)
+}
+
 /// Returns the alternative face only for modal double-faced cards. Other
 /// double-faced layouts cannot be played as either face from a hand (CR 712.12).
 pub(super) fn modal_back_face(

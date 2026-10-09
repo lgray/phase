@@ -268,6 +268,7 @@ mod dandan_custom_pile;
 mod dandan_declare_round;
 mod dandan_filter_owner_axis;
 mod dandan_free_reveal;
+mod dandan_free_reveal_futility;
 mod dandan_hand_entry_ownership;
 mod dandan_look_top_of_library;
 mod dandan_read_sweep;
