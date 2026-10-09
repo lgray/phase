@@ -106,7 +106,7 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
- *  103 — game_setup and state_update carry GameState, whose loop-shortcut
+ *  104 — game_setup and state_update carry GameState, whose loop-shortcut
  *       offer and period confirmation change shape: WaitingFor::LoopShortcut's
  *       schema replaced max_iterations with the pair measured_repetition_bound
  *       and deliverable_capacity (serde defaults on both sides, so that skew is
@@ -115,10 +115,13 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *       full slot (no serde default, a parse break in both directions);
  *       WaitingFor::LoopShortcut and ShortcutProposal gained a required road
  *       naming the producer that minted the offer; WaitingFor gained
- *       ManaAbilityManaPayment, a variant a v102 peer cannot parse; GameState
+ *       ManaAbilityManaPayment, a variant a v103 peer cannot parse; GameState
  *       drops the recorded loop-action sequence; ConfirmedPeriod gains its
  *       reach and PeriodicDelta its cleanup pair. First contact rejects the
- *       skew. Bumped in lockstep with full-game protocol 121.
+ *       skew. Bumped in lockstep with full-game protocol 122.
+ *  103 — game_setup and state_update carry GameState's successful-mana-history
+ *       ledger as (trigger definition, receiving player) pairs. A v102 peer
+ *       cannot decode a nonempty pair ledger. Bumped with full-game 121.
  *  102 — GameState carries the CR 601.2a spell announcement and the
  *       BecomesTarget targeter. Bumped with full-game protocol 120. (101 is
  *       reserved for the Legends of Jidoor PR.)
@@ -609,7 +612,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 103 as const;
+export const WIRE_PROTOCOL_VERSION = 104 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

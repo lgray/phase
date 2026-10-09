@@ -59,7 +59,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // v117 adds `DerivedViews.shared_piles` (the shared-pile holder seat).
 // v118 retypes the `ManaColorSpent` color of `AbilityCondition` and `TriggerCondition`
 // to `SpentColor` (word versus symbol provenance, CR 612.2).
-// v121 splits the shortcut schema's measured bound from its deliverable
+// v122 splits the shortcut schema's measured bound from its deliverable
 // capacity, stamps the minting road on shortcut offers, adds the mana ability
 // payment window, drops the recorded loop-action sequence, and adds the
 // confirmed period's reach and the periodic delta's cleanup pair.
@@ -118,10 +118,11 @@ const UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION = 71;
 // (+48, v119, is reserved for the Legends of Jidoor PR.)
 // +49: the v120 CR 601.2a spell announcement (GameObject.spell_announcement,
 // GameState.next_spell_announcement) and the BecomesTarget targeter.
-// +50: v121 carries the ShortcutDecisionSchema capacity split, the offer road
+// +50: v121 records the actual receiving player with successful trigger mana.
+// +51: v122 carries the ShortcutDecisionSchema capacity split, the offer road
 //      stamp, the mana ability payment window, the retired loop-action sequence,
 //      and the period reach and cleanup pair.
-const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 50;
+const EXPECTED_PROTOCOL_VERSION = UPSTREAM_MAIN_FULL_GAME_PROTOCOL_VERSION + 51;
 // The LOBBY message-set version, not derived from the full-game number above.
 // The classifier below refuses an expression only on the SOURCE constants; this
 // script never reads itself, so its own EXPECTED_* must stay literals.
@@ -196,10 +197,11 @@ const PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION = 54;
 // +46: wire 100 moves with full-game v118 for `SpentColor` on `ManaColorSpent`.
 // (+47, wire 101, is reserved for the Legends of Jidoor PR.)
 // +48: wire 102 moves with full-game v120 for the spell announcement and targeter.
-// +49: wire 103 moves with full-game v121 for the shortcut schema capacity split,
+// +49: wire 103 moves with full-game v121 for player-relative trigger mana.
+// +50: wire 104 moves with full-game v122 for the shortcut schema capacity split,
 //      the offer road stamp, the mana ability payment window, the retired
 //      loop-action sequence, and the period reach and cleanup pair.
-const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 49;
+const EXPECTED_WIRE_PROTOCOL_VERSION = PHASE_TWO_BASE_WIRE_PROTOCOL_VERSION + 50;
 // The P2P DRAFT wire version. A FIFTH independent surface, and the one this
 // script previously did not read at all: `DRAFT_PROTOCOL_VERSION` is an
 // EXACT-MATCH first-contact gate (p2p-draft-host.ts / p2p-draft-guest.ts refuse

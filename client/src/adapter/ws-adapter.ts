@@ -210,21 +210,25 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
- * 121 — Loop-shortcut and period-confirmation shapes, one bump over 120:
+ * 122 — Loop-shortcut and period-confirmation shapes, one bump over 121:
  *      ShortcutDecisionSchema replaced max_iterations with the pair
  *      measured_repetition_bound and deliverable_capacity, so
  *      WaitingFor.LoopShortcut publishes the threshold the reduction measured
  *      separately from the count this engine will deliver (every field
- *      involved carries a serde default, so a v120 peer reads a count neither
+ *      involved carries a serde default, so a v121 peer reads a count neither
  *      side measured, and the handshake is the only place that can be
  *      refused); WaitingFor.LoopShortcut and ShortcutProposal gained a
- *      required road naming the producer that minted the offer, which a v120
+ *      required road naming the producer that minted the offer, which a v121
  *      peer drops from every frame it re-encodes;
  *      WaitingFor.ManaAbilityManaPayment and its ManaAbilityResume root are
- *      new variants a v120 peer cannot parse, and ResolvedAbility gains the
+ *      new variants a v121 peer cannot parse, and ResolvedAbility gains the
  *      optional delayed_origin; GameState drops the recorded loop-action
  *      sequence; ConfirmedPeriod gains its reach and PeriodicDelta its
- *      cleanup pair. Wire 103 moves with it; no lobby frame names it.
+ *      cleanup pair. Wire 104 moves with it; no lobby frame names it.
+ * 121 — GameState's triggered-ability mana ledger records the actual
+ *       receiving player alongside the exact trigger definition. A v120 peer
+ *       cannot decode a nonempty pair ledger; the exact-match handshake
+ *       refuses it. P2P moves in lockstep (wire 103).
  * 120 — CR 601.2a spell announcement: GameObject gains spell_announcement,
  *      GameState gains next_spell_announcement, and GameEvent BecomesTarget
  *      gains the targeter that announced the target. A v119 peer cannot
@@ -766,7 +770,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 121;
+export const PROTOCOL_VERSION = 122;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
