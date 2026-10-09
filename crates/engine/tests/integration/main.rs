@@ -273,6 +273,7 @@ mod dandan_look_top_of_library;
 mod dandan_read_sweep;
 mod dandan_scoped_counts;
 mod dandan_scoped_pile_mass_move;
+mod dandan_shared_container_casts;
 mod dandan_shared_pile_storage;
 mod dandan_simultaneous_draw;
 mod dandan_wheel_split;

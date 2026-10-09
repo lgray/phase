@@ -8260,6 +8260,19 @@ impl GameState {
         self.shared_zone_holder(zone).unwrap_or(seat)
     }
 
+    /// CR 400.1: whether `object` sits in the `zone` container `player` reads —
+    /// the owner's own container, or the one shared pile when the format shares
+    /// `zone`.
+    pub fn object_in_players_zone(
+        &self,
+        object: &GameObject,
+        zone: Zone,
+        player: PlayerId,
+    ) -> bool {
+        object.zone == zone
+            && self.zone_storage_seat(zone, object.owner) == self.zone_storage_seat(zone, player)
+    }
+
     fn player_at_seat(&self, seat: PlayerId) -> &Player {
         self.players
             .iter()
@@ -27086,7 +27099,7 @@ impl GameState {
             && self
                 .objects
                 .get(&object_id)
-                .is_some_and(|object| object.is_delve_eligible(player))
+                .is_some_and(|object| object.is_delve_eligible(self, player))
     }
 
     /// CR 702.66a: A graveyard card the caster may still select to pay generic
@@ -27100,7 +27113,7 @@ impl GameState {
             None => self
                 .objects
                 .get(&object_id)
-                .is_some_and(|object| object.is_delve_eligible(player)),
+                .is_some_and(|object| object.is_delve_eligible(self, player)),
         }
     }
 

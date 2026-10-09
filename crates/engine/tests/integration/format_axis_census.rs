@@ -247,7 +247,7 @@ fn format_axis_methods_carry_no_wildcard_arm() {
     assert_axis_method_has_no_wildcard_arm("pub fn shared_zones(");
     assert_axis_method_has_no_wildcard_arm("pub fn deal_order(");
     assert_axis_method_has_no_wildcard_arm("pub fn free_reveal_mulligan(");
-    assert_axis_method_has_no_wildcard_arm("pub fn hand_entry_ownership(");
+    assert_axis_method_has_no_wildcard_arm("pub fn entry_ownership(");
     assert_axis_method_has_no_wildcard_arm("pub fn opening_hand_equivalence(");
     assert_axis_method_has_no_wildcard_arm("pub fn best_of_three_ceiling(");
     assert_axis_method_has_no_wildcard_arm("pub fn deck_supply(");
@@ -359,7 +359,7 @@ fn no_format_axis_key_reaches_the_client_mirror() {
             "shared_zones",
             "deal_order",
             "free_reveal_mulligan",
-            "hand_entry_ownership",
+            "entry_ownership",
             "opening_hand_equivalence",
             "best_of_three_ceiling",
             "deck_supply",

@@ -601,14 +601,14 @@ pub enum FreeRevealMulligan {
     },
 }
 
-/// CR 108.3 / CR 110.2 / CR 400.3: who owns a card that enters a hand from a
-/// shared zone.
+/// CR 108.3 / CR 110.2 / CR 400.3: who owns a card a player takes into hand
+/// from a shared zone, casts, or plays as a land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandEntryOwnership {
+pub enum EntryOwnership {
     /// CR 108.3 / CR 400.3: the card keeps its owner.
     OwnerKept,
-    /// The player whose hand the card enters becomes its owner.
-    ReceiverOwns,
+    /// The player who takes, casts, or plays the card becomes its owner.
+    ActorOwns,
 }
 
 /// Who supplies a format's deck.
@@ -2269,11 +2269,11 @@ impl GameFormat {
         }
     }
 
-    /// CR 108.3 / CR 110.2 / CR 400.3: who owns a card that enters a hand from
-    /// a shared zone.
-    pub fn hand_entry_ownership(self) -> HandEntryOwnership {
+    /// CR 108.3 / CR 110.2 / CR 400.3: who owns a card a player takes into
+    /// hand from a shared zone, casts, or plays as a land.
+    pub fn entry_ownership(self) -> EntryOwnership {
         match self {
-            GameFormat::Dandan => HandEntryOwnership::ReceiverOwns,
+            GameFormat::Dandan => EntryOwnership::ActorOwns,
             GameFormat::Standard
             | GameFormat::Limited
             | GameFormat::Commander
@@ -2299,7 +2299,7 @@ impl GameFormat {
             | GameFormat::CommanderDraft
             | GameFormat::Freeform
             | GameFormat::FreeformCommander
-            | GameFormat::Custom(_) => HandEntryOwnership::OwnerKept,
+            | GameFormat::Custom(_) => EntryOwnership::OwnerKept,
         }
     }
 
@@ -5439,16 +5439,13 @@ mod tests {
             }
         );
 
-        let (deviating, stock_count) = splits(
-            &all,
-            GameFormat::hand_entry_ownership,
-            HandEntryOwnership::OwnerKept,
-        );
+        let (deviating, stock_count) =
+            splits(&all, GameFormat::entry_ownership, EntryOwnership::OwnerKept);
         assert_eq!(deviating, only_dandan);
         assert!(stock_count > 0);
         assert_eq!(
-            GameFormat::Dandan.hand_entry_ownership(),
-            HandEntryOwnership::ReceiverOwns
+            GameFormat::Dandan.entry_ownership(),
+            EntryOwnership::ActorOwns
         );
 
         let (deviating, stock_count) = splits(

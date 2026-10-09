@@ -942,8 +942,7 @@ fn destination_position_after_removal(
 /// timestamp or a new object identity.
 ///
 /// `owner` is the object's owner before the move; `receiver` is `Some` only when
-/// the move rebinds ownership, and then names the new owner whose hand holds the
-/// card.
+/// the move rebinds ownership, and then names the new owner.
 pub fn resolve_and_apply_zone_change(
     state: &mut GameState,
     object_id: ObjectId,
@@ -1092,9 +1091,10 @@ pub(crate) fn prune_object_bound_effects_on_exit(
     super::layers::prune_affected_object_left_effects(state, object_id);
 }
 
-/// CR 108.3 as modified by a format's hand-entry ownership axis + CR 108.4a +
+/// CR 108.3 as modified by a format's entry-ownership axis + CR 108.4a +
 /// CR 109.4: the receiving player owns the card, and off the battlefield and
-/// stack its controller is its owner. `base_controller` follows because exit
+/// stack its controller is its owner; on them the receiver is the caster or the
+/// land's player, who controls it. `base_controller` follows because exit
 /// cleanup computes `controller` from it.
 fn install_rebound_owner(object: &mut crate::game::game_object::GameObject, owner: PlayerId) {
     object.owner = owner;
@@ -1323,16 +1323,16 @@ pub fn move_to_zone(
 /// is the SINGLE authoritative post-move face swap and already runs on `to == Zone::Battlefield`, so the
 /// guard here only gates eligibility — it never mutates the face.
 ///
-/// `hand_receiver` (see `zone_pipeline::hand_entry_receiver`) takes effect only
-/// in the ordinary-container branch, so a CR 717.6 redirect to Command never
-/// rebinds ownership.
+/// `receiver` (see `zone_pipeline::entry_receiver`) takes effect in the
+/// ordinary-container branch and on a Stack arrival, so a CR 717.6 redirect to
+/// Command never rebinds ownership.
 pub(crate) fn move_to_zone_with_entry_flags(
     state: &mut GameState,
     object_id: ObjectId,
     mut to: Zone,
     events: &mut Vec<GameEvent>,
     enter_transformed: bool,
-    hand_receiver: Option<PlayerId>,
+    receiver: Option<PlayerId>,
 ) {
     // CR 111.8: A token that has left the battlefield can't move to another zone
     // or come back onto the battlefield — "if such a token would change zones, it
@@ -1585,6 +1585,14 @@ pub(crate) fn move_to_zone_with_entry_flags(
                 // CR 400.7: a move between zones creates a new object.
                 obj_mut.bump_incarnation();
             }
+            // CR 601.2a: the caster's ownership is installed as the spell arrives on
+            // the stack, with the same record fields the journaled branch rebinds.
+            if let Some(new_owner) = receiver.filter(|_| to == Zone::Stack) {
+                install_rebound_owner(obj_mut, new_owner);
+                zone_change_record.owner = new_owner;
+                zone_change_record.controller = new_owner;
+                zone_change_record.sync_trigger_source_context();
+            }
             (pre_bump_incarnation, obj_mut.incarnation, false)
         } else {
             let resolved_zone_change = resolve_and_apply_zone_change(
@@ -1593,7 +1601,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
                 from,
                 to,
                 owner,
-                hand_receiver,
+                receiver,
                 zone_change_record,
             )
             .expect("ordinary zone transition must install its resolved core");
@@ -6015,6 +6023,20 @@ mod hand_entry_rebind_tests {
         assert!(
             !journal_is_accepted(journal_wire(&from_exile)),
             "a rebind out of a zone no format shares"
+        );
+
+        for from in [Zone::Library, Zone::Graveyard, Zone::Exile] {
+            let (_, played, _, _) = rebound_move(from, Zone::Battlefield);
+            assert!(
+                journal_is_accepted(journal_wire(&played)),
+                "a land-play rebind out of {from:?}"
+            );
+        }
+
+        let (_, from_hand, _, _) = rebound_move(Zone::Hand, Zone::Battlefield);
+        assert!(
+            !journal_is_accepted(journal_wire(&from_hand)),
+            "a Battlefield rebind out of Hand"
         );
     }
 
