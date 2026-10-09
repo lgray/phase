@@ -28,6 +28,7 @@ use crate::game::play_trace::{
 };
 use crate::types::ability::TargetRef;
 use crate::types::actions::GameAction;
+use crate::types::events::GameEvent;
 use crate::types::game_state::{
     CostResume, GameState, ManaChoiceContext, PayCostKind, StackEntryKind, WaitingFor, YieldTarget,
 };
@@ -56,8 +57,8 @@ pub enum OfferRefusal {
     Cover(ObjectGrowthVerdict),
     /// The period makes no progress for its controller.
     NoAxis,
-    /// CR 704.5a: the period moves some player toward losing the game, and the threshold
-    /// authority refused its replayed frames.
+    /// CR 704.5a: the period moves some player toward losing the game, and either consumes a
+    /// resource that drives it or the threshold authority refused its replayed frames.
     LossAxis,
     /// The period consumes a resource that drives it.
     DrivingResourcesDecrease,
@@ -323,15 +324,17 @@ impl FrameEnd {
 /// Upper bound on the actions one replayed cycle may take.
 const CYCLE_BEATS: usize = 512;
 
-/// Applies one action, refusing a random outcome drawn by it (CR 732.2a).
+/// Applies one action, refusing a random outcome drawn by it (CR 732.2a); its events are appended
+/// to `events`.
 fn step(
     replay: &mut GameState,
     seat: PlayerId,
     action: GameAction,
     rejected: OfferRefusal,
+    events: &mut Vec<GameEvent>,
 ) -> Result<(), OfferRefusal> {
     let outcomes = replay.rng.outcome_draws();
-    apply(replay, seat, action).map_err(|_| rejected)?;
+    events.extend(apply(replay, seat, action).map_err(|_| rejected)?.events);
     if replay.rng.outcome_draws() != outcomes {
         return Err(OfferRefusal::Randomness);
     }
@@ -341,7 +344,10 @@ fn step(
 /// CR 601.2h + CR 702.51a: pays a cast's mana payment with the convoke tap set the live board
 /// offers, in the detection replay's fodder-first order; how many creatures it tapped, or `None`
 /// when this prompt is not such a payment.
-fn rebind_convoke(replay: &mut GameState) -> Result<Option<usize>, OfferRefusal> {
+fn rebind_convoke(
+    replay: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) -> Result<Option<usize>, OfferRefusal> {
     let (WaitingFor::ManaPayment { player, .. }, Some(pending)) =
         (&replay.waiting_for, replay.pending_cast.as_ref())
     else {
@@ -357,6 +363,7 @@ fn rebind_convoke(replay: &mut GameState) -> Result<Option<usize>, OfferRefusal>
         return Ok(None);
     };
     let before = replay.clone();
+    let recorded = events.len();
     let tapped = taps.len();
     for (object_id, mana_type) in taps {
         let tapped = step(
@@ -367,11 +374,13 @@ fn rebind_convoke(replay: &mut GameState) -> Result<Option<usize>, OfferRefusal>
                 mana_type,
             },
             OfferRefusal::UnanswerablePrompt,
+            events,
         );
         match tapped {
             Ok(()) => {}
             Err(OfferRefusal::UnanswerablePrompt) => {
                 *replay = before;
+                events.truncate(recorded);
                 return Ok(None);
             }
             Err(refusal) => return Err(refusal),
@@ -381,13 +390,15 @@ fn rebind_convoke(replay: &mut GameState) -> Result<Option<usize>, OfferRefusal>
 }
 
 /// One replayed cycle from `replay`'s current state; the source of each triggered ability it
-/// resolved, in order. `frames`, when given, collects every priority frame the cycle passes.
+/// resolved, in order. `frames`, when given, collects every priority frame the cycle passes, and
+/// `events` collects every event its actions emit.
 fn replay_cycle(
     replay: &mut GameState,
     items: &[PeriodItem],
     end: &FrameEnd,
     choices: &mut Vec<PinnedDecision>,
     mut frames: Option<&mut Vec<GameState>>,
+    events: &mut Vec<GameEvent>,
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
@@ -410,17 +421,23 @@ fn replay_cycle(
                 return Ok(performed);
             }
             let Some(at) = next else {
-                pass(replay, player, &mut performed)?;
+                pass(replay, player, &mut performed, events)?;
                 continue;
             };
             let item = &items[at];
             if item.seat == player && item.play == Some((replay.stack.len(), PromptClass::Priority))
             {
                 let action = rebound(item, replay);
-                step(replay, player, action, OfferRefusal::IllegalReplayedPlay)?;
+                step(
+                    replay,
+                    player,
+                    action,
+                    OfferRefusal::IllegalReplayedPlay,
+                    events,
+                )?;
                 done[at] = true;
             } else {
-                pass(replay, player, &mut performed)?;
+                pass(replay, player, &mut performed, events)?;
             }
             continue;
         }
@@ -430,12 +447,18 @@ fn replay_cycle(
         let item = &items[at];
         if item.play == Some((replay.stack.len(), PromptClass::Other)) {
             let action = rebound(item, replay);
-            step(replay, item.seat, action, OfferRefusal::IllegalReplayedPlay)?;
+            step(
+                replay,
+                item.seat,
+                action,
+                OfferRefusal::IllegalReplayedPlay,
+                events,
+            )?;
             done[at] = true;
             continue;
         }
         let candidates = at..next_play.unwrap_or(items.len());
-        if !answer(replay, items, &mut done, candidates, choices)? {
+        if !answer(replay, items, &mut done, candidates, choices, events)? {
             return Err(OfferRefusal::UnanswerablePrompt);
         }
     }
@@ -459,6 +482,7 @@ fn pass(
     replay: &mut GameState,
     player: PlayerId,
     performed: &mut Vec<String>,
+    events: &mut Vec<GameEvent>,
 ) -> Result<(), OfferRefusal> {
     let top = replay.stack.back().and_then(|entry| {
         play_trace::resolution_identity(replay, entry).map(|identity| (entry.id, identity))
@@ -468,6 +492,7 @@ fn pass(
         player,
         GameAction::PassPriority,
         OfferRefusal::UnanswerablePrompt,
+        events,
     )?;
     if let Some((id, identity)) = top {
         if replay.stack.iter().all(|entry| entry.id != id) {
@@ -485,6 +510,7 @@ fn answer(
     done: &mut [bool],
     candidates: std::ops::Range<usize>,
     choices: &mut Vec<PinnedDecision>,
+    events: &mut Vec<GameEvent>,
 ) -> Result<bool, OfferRefusal> {
     for at in candidates.clone() {
         if done[at] {
@@ -493,7 +519,7 @@ fn answer(
         let item = &items[at];
         if matches!(item.action, GameAction::TapForConvoke { .. }) {
             let convoked = convoke_choice(replay);
-            if rebind_convoke(replay)?.is_some() {
+            if rebind_convoke(replay, events)?.is_some() {
                 choices.extend(convoked);
                 for convoke in candidates.clone() {
                     if matches!(items[convoke].action, GameAction::TapForConvoke { .. }) {
@@ -510,7 +536,13 @@ fn answer(
             .and_then(|_| CostChoices::at(replay));
         let action = rebound(item, replay);
         let choice = answered_choice(replay, &action);
-        match step(replay, item.seat, action, OfferRefusal::UnanswerablePrompt) {
+        match step(
+            replay,
+            item.seat,
+            action,
+            OfferRefusal::UnanswerablePrompt,
+            events,
+        ) {
             Ok(()) => {}
             Err(OfferRefusal::UnanswerablePrompt) => continue,
             Err(refusal) => return Err(refusal),
@@ -527,7 +559,7 @@ fn answer(
     // CR 601.2h + CR 702.51a: a recorded payment the live board cannot repeat is made with the
     // creatures it can tap instead, as a recorded convoke is.
     let convoked = convoke_choice(replay);
-    if rebind_convoke(replay)?.is_some_and(|tapped| tapped > 0) {
+    if rebind_convoke(replay, events)?.is_some_and(|tapped| tapped > 0) {
         choices.extend(convoked);
         return Ok(true);
     }
@@ -678,9 +710,23 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
-    let performed = replay_cycle(&mut replay, &items, &end, &mut choices, None)?;
+    let performed = replay_cycle(
+        &mut replay,
+        &items,
+        &end,
+        &mut choices,
+        None,
+        &mut Vec::new(),
+    )?;
     let s_n1 = replay.clone();
-    replay_cycle(&mut replay, &items, &end, &mut Vec::new(), None)?;
+    replay_cycle(
+        &mut replay,
+        &items,
+        &end,
+        &mut Vec::new(),
+        None,
+        &mut Vec::new(),
+    )?;
     let s_n2 = replay;
     let casts: Vec<ObjectId> = items
         .iter()
@@ -712,6 +758,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
                 &end,
                 &mut Vec::new(),
                 Some(&mut frames),
+                &mut Vec::new(),
             )?;
             // CR 514.1: a turn-cycle period's count is bounded by its cleanup discard.
             let cleanup = (verdict
@@ -741,14 +788,15 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
 }
 
 /// CR 732.2c: performs one cycle of `period` from `state`, a frame where `holder` has priority,
-/// ending where the cycle comes round again.
+/// ending where the cycle comes round again; the events it emits are appended to `events`.
 pub(crate) fn perform_cycle(
     state: &mut GameState,
     period: &ConfirmedPeriod,
     holder: PlayerId,
+    events: &mut Vec<GameEvent>,
 ) -> Result<(), OfferRefusal> {
     let end = FrameEnd::of(state, holder, period.reach);
-    replay_cycle(state, &period.items, &end, &mut Vec::new(), None).map(drop)
+    replay_cycle(state, &period.items, &end, &mut Vec::new(), None, events).map(drop)
 }
 
 /// Every span the current trace names, with the confirmer's verdict on each at `state`, which
@@ -786,5 +834,6 @@ pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, Offe
         &end,
         &mut Vec::new(),
         None,
+        &mut Vec::new(),
     ))
 }

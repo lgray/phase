@@ -20363,7 +20363,8 @@ declare_game_state! {
             >,
         >,
     >,
-    /// CR 732.2a: every play and answer of the current step. Live-only, like
+    /// CR 732.2a: every play and answer of the current step, and the spans carried past earlier
+    /// steps. Live-only, like
     /// `loop_answer_journal`: never persisted, compared, or shown to a viewer.
     #[serde(skip, default)]
     pub(crate) play_trace: Option<Box<crate::game::play_trace::PlayTrace>>,
@@ -29713,11 +29714,9 @@ impl GameState {
     ///    every free choice BEFORE the offer, and `DecisionTemplate`'s schedules are pure functions
     ///    of (iteration index, live legal set) — never of a prior iteration's outcome, which makes
     ///    a react-to-what-happened choice unrepresentable rather than merely unused. With the
-    ///    coin/die/random rejection at the offer gate and `elimination_bounds` admitting no
-    ///    CR 704 threshold crossing except as the sequence's FINAL iteration — where no declared
-    ///    choice remains to be made unmakeable — predictability holds BY CONSTRUCTION. The
-    ///    primary statement of that property is `elimination_bounds`' own doc; this is a
-    ///    restatement of it.
+    ///    coin/die/random rejection at the offer gate and `PeriodicDelta::elimination_cascade`
+    ///    predicting every CR 704 threshold crossing the count contains, predictability holds BY
+    ///    CONSTRUCTION.
     /// 3. THE COUNT — CR 732.2a lets a proposal be "a loop that repeats a specified number of
     ///    times", and the proposer is who specifies it. The collapse prompt (`game::turns`) is that
     ///    specification, bounded above by what the table accepted; `SubmitPayAmount` rejects any

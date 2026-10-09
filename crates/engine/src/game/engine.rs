@@ -2440,7 +2440,7 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // `GameOver` and returns), so a seam ordered after it could never be reached on a state
     // Path B accepts. The two are disjoint anyway and the ordering does not paper over an
     // overlap: Path B requires `has_no_loss_axis(&delta)`, while this seam only offers when
-    // `elimination_bounds` MEASURED a threshold at all, which happens only when the
+    // `elimination_cascade` MEASURED a threshold at all, which happens only when the
     // cycle drives some living seat toward a CR 704.5a / CR 704.5c / CR 104.3c threshold —
     // i.e. exactly a loss axis.
     if let Ok(offer) = try_offer_bounded_cycle_shortcut(state, mandatory) {
@@ -2725,9 +2725,10 @@ pub enum BoundedOfferRefusal {
     AdvantageOnlyCycle,
     /// (6) A per-iteration choice the cycle opens is not specified by a published slot.
     UnspecifiedChoiceWindow,
-    /// (7) `elimination_bounds` measured no CR 704 threshold at all, or measured one under
-    /// which no repetition is legal. Both grounds refuse here, because both leave this producer
-    /// with nothing to state: its whole claim is a threshold it measured inside the loop.
+    /// (7) `elimination_cascade` measured no CR 704 threshold at all and no cleanup bound, or
+    /// measured one under which no repetition is legal. Both grounds refuse here, because both
+    /// leave this producer with nothing to state: its whole claim is a threshold it measured
+    /// inside the loop.
     NoNarrowedLegalCount,
 }
 
@@ -3316,11 +3317,11 @@ fn bounded_offer_tail(
     // the aim subtraction removes exactly the observed loss the slot itself caused — so the
     // charged and the uncharged answer are the SAME number there. What the withhold still
     // moves is every other shape: a seat the accumulation saw lose NOTHING inside the period
-    // (uncharged, its divisor entry is 0, `elimination_bounds`' `narrow` guard (`magnitude > 0`)
-    // never fires and its life axis is DISARMED), and every seat a charged slot merely REACHES,
-    // which carries no observed loss to subtract from. A victim whose period NETS A LIFE GAIN is
-    // not that shape: `seat_life_charges` reads the accumulation's non-positive entries, so the
-    // losses its own frames carried arm its axis whether or not a slot reaches it.
+    // (uncharged, its divisor entry is 0 and its life axis is DISARMED), and every seat a
+    // charged slot merely REACHES, which carries no observed loss to subtract from. A victim
+    // whose period NETS A LIFE GAIN is not that shape: `seat_life_charges` reads the
+    // accumulation's non-positive entries, so the losses its own frames carried arm its axis
+    // whether or not a slot reaches it.
     //
     // `bounded_cycle_charged_targets_for_window` reads the SAME acceptance authority the
     // point mint does (`entry_announces`), so the charged SLOT set is a superset of the
@@ -3346,7 +3347,7 @@ fn bounded_offer_tail(
     // the entries a FORCED pre-priority window puts on the stack, and a CR 608.2b `Targets`
     // declaration is exactly the shape that resolves across one. On the F4 boards the
     // announcement carries Torch's target slot, so this value is NOT dropped — it reaches
-    // `elimination_bounds` in production and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
+    // `elimination_cascade` and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
     // re-derives the published bound from it.
     let frame_wise = periodic.delta.with_frame_wise_life_loss(&period_frames);
     let charged = touch.as_ref().map_or_else(Vec::new, |touch| {
@@ -3357,7 +3358,7 @@ fn bounded_offer_tail(
         .iter()
         .map(|charge| (charge.slot.clone(), charge.magnitude))
         .collect();
-    // CR 704.5a: the SAME seat set `elimination_bounds` reserves headroom for, folded from the
+    // CR 704.5a: the SAME seat set `elimination_cascade` reserves headroom for, folded from the
     // SAME charges by their own authority, so the per-cycle conformance check confines its
     // lift to what the bound actually reserved and the two cannot be derived apart.
     periodic.declarable_victims =
@@ -3386,8 +3387,7 @@ fn bounded_offer_tail(
     // The divisor charges every reachable seat its full magnitude in every repetition, so a
     // divisor-derived cascade names departures no repetition of THIS period can cause — and the
     // drive's discriminator compares the predicted seat set at a repetition against the observed
-    // one, so the entries must be ones a repetition can produce. The divisor keeps its own job at
-    // `ResourceVector::elimination_bounds`: the first crossing under ANY declaration.
+    // one, so the entries must be ones a repetition can produce.
     //
     // THE PREDICTION IS STILL DISCARDED HERE, deliberately rather than by omission. A cascade
     // named at the OFFER beat would have to ride the proposal to consumption, where the same
@@ -4776,9 +4776,8 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 ///
 /// DERIVED HERE, NEVER COPIED FROM THE OFFER. CR 732.2a admits only a sequence that "may be
 /// legally taken based on the current game state and the predictable results of the sequence of
-/// choices", and CR 704.3 runs the CR 704.5a check at every priority beat inside that sequence,
-/// so a count carrying a seat past a threshold before its final iteration is not a legal
-/// shortcut whatever minted it. A bound RIDING the proposal would be tampered by the same serde
+/// choices", and CR 704.3 runs the CR 704.5a check at every priority beat inside that sequence.
+/// A bound RIDING the proposal would be tampered by the same serde
 /// that tampers the count, so re-deriving is what lets this fail in the direction it guards. On
 /// the bounded-cycle producer this ceiling is the reduction's OWN answer over the same bytes as
 /// the threshold that offer published — this function applies no budget of its own, so the
@@ -5260,8 +5259,12 @@ fn apply_until_lethal_shortcut(
             w.waiting_for = WaitingFor::Priority {
                 player: proposal.proposer,
             };
-            match super::period_confirm::perform_cycle(&mut w, &proposal.period, proposal.proposer)
-            {
+            match super::period_confirm::perform_cycle(
+                &mut w,
+                &proposal.period,
+                proposal.proposer,
+                &mut Vec::new(),
+            ) {
                 Ok(()) => w,
                 Err(_) => {
                     return until_lethal_fallback(state, result, committed, proposal.proposer);
@@ -6280,10 +6283,10 @@ fn materialize_fixed_shortcut(
                 proposal.proposer,
                 n,
                 derivation.predicted(),
+                &mut result.events,
             );
             // CR 104.2a: a predicted crossing that ended the game ends the take with it.
-            if let WaitingFor::GameOver { winner } = state.waiting_for {
-                result.events.push(GameEvent::GameOver { winner });
+            if let WaitingFor::GameOver { .. } = state.waiting_for {
                 result.waiting_for = state.waiting_for.clone();
                 return;
             }
@@ -6398,8 +6401,8 @@ fn materialize_fixed_shortcut(
                 mut events,
             } => {
                 // CR 732.2a "predictable results" + CR 704.5a: the CONFORMANCE CHECK the
-                // published signature exists for. `elimination_bounds` divided the CR 704
-                // headroom by `per_cycle.delta`, so a committed cycle that moved a
+                // published signature exists for. `elimination_cascade` derived the count from
+                // `per_cycle.delta`, so a committed cycle that moved a
                 // DIFFERENT amount invalidates the very bound the table agreed to — the
                 // remaining repetitions could carry a seat past a threshold inside the
                 // proposal. Measured before commit, on the same axes the bound reads, and
@@ -7128,7 +7131,7 @@ fn drive_one_period_frames(
     priority::reset_priority(&mut before);
     before.waiting_for = WaitingFor::Priority { player: controller };
     let mut after = before.clone();
-    super::period_confirm::perform_cycle(&mut after, period, controller).ok()?;
+    super::period_confirm::perform_cycle(&mut after, period, controller, &mut Vec::new()).ok()?;
     Some((before, after))
 }
 
@@ -7201,7 +7204,7 @@ fn current_period_life_growth(before: &GameState, after: &GameState) -> Vec<(Pla
 /// repeated without having to actually perform them, and how the loop is broken". Both halves of
 /// that sentence name an instrument this engine builds, and they are the two surfaces to map:
 ///   • *how many times* — the `∞` capability marker and the certificate's bound. The loop is
-///     represented, never driven to exhaustion; `analysis::resource::elimination_bounds` supplies
+///     represented, never driven to exhaustion; `PeriodicDelta::elimination_cascade` supplies
 ///     the largest count a proposal may legally contain.
 ///   • *how the loop is broken* — the accept-or-shorten window (`WaitingFor::RespondToShortcut`)
 ///     and the finite collapse the controller names at the ending point
@@ -7535,13 +7538,17 @@ fn materialize_object_growth_shortcut(
 ///
 /// With `predicted` departures, each cycle's departures are checked against the entry for its
 /// repetition (CR 704.3 + CR 800.4a): an unpredicted one aborts like a failed cycle, and a
-/// predicted one that ends the game is committed as the last cycle (CR 104.2a).
+/// predicted one that ends the game or removes the controller is committed as the last cycle
+/// (CR 104.2a, CR 800.4).
+///
+/// The events of every committed cycle are appended to `events`; a dropped cycle's are not.
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     period: &super::period_confirm::ConfirmedPeriod,
     controller: PlayerId,
     n: u32,
     predicted: Option<&[crate::analysis::resource::PredictedDeparture]>,
+    events: &mut Vec<GameEvent>,
 ) -> u32 {
     let _guard = SimulationProbeGuard::enter(); // held across the whole drive
     #[cfg(feature = "test-support")]
@@ -7559,19 +7566,27 @@ pub(crate) fn drive_persistent_axis_collapse(
         state.priority_player = controller;
         state.waiting_for = WaitingFor::Priority { player: controller };
     };
+    let committed_events = events.len();
     let mut delivered = 0;
     for i in 0..n {
         #[cfg(feature = "test-support")]
         take_cost.begin_cycle();
         reseed(state);
         let before = predicted.map(|_| state.clone());
-        let performed = super::period_confirm::perform_cycle(state, period, controller).is_ok();
+        let mut cycle_events = Vec::new();
+        let performed =
+            super::period_confirm::perform_cycle(state, period, controller, &mut cycle_events)
+                .is_ok();
         let verdict = before
             .as_ref()
             .zip(predicted)
             .map(|(before, entries)| departure_verdict(entries, before, state, i + 1));
-        let ended = matches!(state.waiting_for, WaitingFor::GameOver { .. });
-        if !performed && ended && verdict == Some(DepartureVerdict::Predicted) {
+        // CR 800.4: a multiplayer game continues past the controller's departure, so that
+        // departure, not only the game's end, is what ends the predicted crossing's cycle.
+        let departed = matches!(state.waiting_for, WaitingFor::GameOver { .. })
+            || !crate::game::players::is_alive(state, controller);
+        if !performed && departed && verdict == Some(DepartureVerdict::Predicted) {
+            events.append(&mut cycle_events);
             delivered += 1;
             #[cfg(feature = "test-support")]
             take_cost.end_cycle();
@@ -7580,17 +7595,20 @@ pub(crate) fn drive_persistent_axis_collapse(
         if !performed || verdict == Some(DepartureVerdict::Unpredicted) {
             // Commit the successful prefix; the caller hands priority back.
             *state = snapshot;
+            events.truncate(committed_events);
             let prefix = delivered;
             delivered = 0;
             for _ in 0..prefix {
                 reseed(state);
-                if super::period_confirm::perform_cycle(state, period, controller).is_err() {
+                if super::period_confirm::perform_cycle(state, period, controller, events).is_err()
+                {
                     break;
                 }
                 delivered += 1;
             }
             break;
         }
+        events.append(&mut cycle_events);
         delivered += 1;
         #[cfg(feature = "test-support")]
         take_cost.end_cycle();

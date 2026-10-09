@@ -599,7 +599,7 @@ fn enter_phase(
 
 /// CR 732.2a: the APNAP-first player (turn order) who still holds a non-empty deferred
 /// persistent-axis materialization stash (one or more `PersistentAxisMaterialization`
-/// items — tokens, counters, life, or a drive sequence), or `None`. Filters
+/// items — tokens, counters or life), or `None`. Filters
 /// `players::apnap_order` — the same helper `enter_phase` uses to seed the mana-empty
 /// drain — so the collapse resolves in the same turn-based order and supports 2+ players
 /// (one prompt per drain iteration, each to its own controller). Guards on a NON-EMPTY
@@ -919,8 +919,8 @@ pub(super) fn drain_pending_phase_transition_progress(
             }
             // CR 732.2a: SECOND pass, after the CR 500.5 mana-empty APNAP drain
             // above — resolve any deferred persistent-axis materializations (one or
-            // more of tokens / beneficial counters / life gain / an observed-growth
-            // drive sequence) from accepted loop shortcuts, in APNAP turn order. A
+            // more of tokens / beneficial counters / life gain) from accepted loop
+            // shortcuts, in APNAP turn order. A
             // populated stash is present iff a materializable loop was accepted (§5);
             // prompt its controller for the finite count N.
             if let Some(controller) = next_apnap_player_with_pending_materialization(state) {

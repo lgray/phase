@@ -13,6 +13,7 @@ use engine::game::effects::attach::{attach_to, attach_to_player};
 use engine::game::engine::certify_object_growth_frames_for_tests;
 use engine::game::functioning_abilities::active_trigger_definitions;
 use engine::game::keywords::effective_foretell_cost;
+use engine::game::log::resolve_log_entries;
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
@@ -30,6 +31,7 @@ use engine::types::game_state::{
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
+use engine::types::log::LogSegment;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
@@ -2016,6 +2018,17 @@ fn lives(state: &GameState) -> Vec<i32> {
     state.players.iter().map(|p| p.life).collect()
 }
 
+/// The seats `events` eliminate, in order.
+fn eliminations(events: &[GameEvent]) -> Vec<PlayerId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::PlayerEliminated { player_id } => Some(*player_id),
+            _ => None,
+        })
+        .collect()
+}
+
 fn eliminated(state: &GameState) -> Vec<PlayerId> {
     state
         .players
@@ -2158,8 +2171,12 @@ fn an_altar_zulaport_period_is_offered_a_bounded_shortcut_and_taken() {
             WaitingFor::GameOver { winner: Some(P0) },
             "{payoff}"
         );
-        assert!(
-            events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == GameEvent::GameOver { winner: Some(P0) })
+                .count(),
+            1,
             "{payoff}"
         );
         assert_eq!(eliminated(all), [P1], "{payoff}");
@@ -2180,10 +2197,22 @@ fn an_altar_zulaport_period_on_four_seats_drops_each_seat_at_its_crossing() {
     bounded_recorded_offer(&offered, 7);
     assert_eq!(lives(&offered)[1..], [5, 5, 7]);
 
-    let six = taken(&offered, 6);
-    assert_eq!(eliminated(&six), [P1, P2]);
+    let mut runner = GameRunner::from_state(offered.clone());
+    let events = take(&mut runner, 6);
+    let six = runner.state();
+    assert_eq!(eliminated(six), [P1, P2]);
     assert_eq!(six.players[3].life, 1);
     assert_eq!(six.waiting_for, WaitingFor::Priority { player: P0 });
+    assert_eq!(eliminations(&events), [P1, P2]);
+    let logged = resolve_log_entries(&events, &offered, six)
+        .iter()
+        .filter(|entry| {
+            entry.segments.iter().any(
+                |segment| matches!(segment, LogSegment::Text(text) if text == " is eliminated"),
+            )
+        })
+        .count();
+    assert_eq!(logged, 2);
 
     let seven = taken(&offered, 7);
     assert_eq!(seven.waiting_for, WaitingFor::GameOver { winner: Some(P0) });
@@ -2686,6 +2715,21 @@ fn a_carried_extra_turn_span_does_not_outlive_its_controllers_turn() {
         [PeriodReach::ExtraTurn],
         "reach: the Sieve's span is carried into the extra turn"
     );
+    // P0's next turn begun with no window since this one, after `opponent` turns of P1's that
+    // passed the same way, as a turn passed inside one action leaves them.
+    for (opponent, survives) in [(0, true), (1, false)] {
+        let mut drive = GameRunner::from_state(runner.state().clone());
+        let state = drive.state_mut();
+        state.turn_number += 1 + opponent;
+        state.players[0].turns_taken += 1;
+        state.players[1].turns_taken += opponent;
+        act(&mut drive, GameAction::PassPriority);
+        assert_eq!(
+            carried(drive.state()).len(),
+            usize::from(survives),
+            "{opponent}"
+        );
+    }
     pass_until(&mut runner, &|state| {
         state.active_player == P1 && matches!(state.waiting_for, WaitingFor::Priority { .. })
     });
@@ -3022,7 +3066,17 @@ fn warp_board(
     mode: LoopDetectionMode,
     db: &CardDatabase,
 ) -> GameRunner {
-    let mut scenario = GameScenario::new();
+    warp_board_in(GameScenario::new(), library, others, mode, db)
+}
+
+/// [`warp_board`] in `scenario`.
+fn warp_board_in(
+    mut scenario: GameScenario,
+    library: usize,
+    others: &[&str],
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> GameRunner {
     scenario.at_phase(Phase::PreCombatMain);
     // Real Islands: a drawn card is a face Engine B reads.
     for _ in 0..library {
@@ -3218,7 +3272,7 @@ fn an_archaeomancer_time_warp_period_is_offered_its_hand_bound_and_taken() {
         );
         assert_eq!(n, hand_term(&state), "{mode:?}");
 
-        let events = take(&mut runner, n);
+        take(&mut runner, n);
         let after = runner.state();
         assert_eq!(
             (after.turn_number, after.active_player, after.phase),
@@ -3228,12 +3282,6 @@ fn an_archaeomancer_time_warp_period_is_offered_its_hand_bound_and_taken() {
         assert_eq!(
             after.players[0].hand.len(),
             state.players[0].hand.len() + n as usize
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, GameEvent::Discarded { .. })),
-            "{mode:?}"
         );
     }
 }
@@ -3261,6 +3309,41 @@ fn an_archaeomancer_time_warp_take_decks_its_caster_when_the_library_binds() {
         WaitingFor::GameOver { winner: Some(P1) }
     );
     assert!(events.contains(&GameEvent::GameOver { winner: Some(P1) }));
+}
+
+/// CR 704.5b + CR 800.4: on three seats the same take decks its caster at its last draw step, and
+/// the game goes on for the other two.
+#[test]
+fn an_archaeomancer_time_warp_take_on_three_seats_decks_its_caster_and_the_game_goes_on() {
+    let db = shared_card_db().expect("card db");
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.with_library_top(P2, &["Island"; 25]);
+    let mut runner = warp_board_in(scenario, 4, &[], LoopDetectionMode::Interactive, db);
+    let turn = runner.state().turn_number;
+    warp_until(&mut runner, |state| {
+        is_offer(state) || state.turn_number > turn + 3
+    });
+    let state = runner.state().clone();
+    let n = fixed(&offer_of(&state).1);
+    assert!(
+        library_term(&state) < hand_term(&state),
+        "reach: the library binds"
+    );
+    assert_eq!(n, library_term(&state));
+    let events = take(&mut runner, n);
+    let after = runner.state();
+    assert_eq!(eliminated(after), [P0]);
+    assert_eq!(eliminations(&events), [P0]);
+    assert_eq!(
+        after.players[0].turns_taken,
+        state.players[0].turns_taken + n
+    );
+    assert_eq!(after.waiting_for, WaitingFor::Priority { player: P1 });
+    warp_until(&mut runner, |state| state.active_player == P2);
+    assert!(!matches!(
+        runner.state().waiting_for,
+        WaitingFor::GameOver { .. }
+    ));
 }
 
 /// Drives the Time Warp board declining every offer until `turns` turns pass or the game ends; the

@@ -894,7 +894,7 @@ pub struct PeriodicDelta {
     /// therefore CORRECT and expected, not a schema/certificate mismatch. Deriving this from
     /// the published points instead let the withhold silently raise the bound.
     pub victim_slot: Vec<(DecisionSlot, i64)>,
-    /// CR 704.5a: the seats [`ResourceVector::elimination_bounds`] RESERVED elimination
+    /// CR 704.5a: the seats [`PeriodicDelta::elimination_cascade`] RESERVED elimination
     /// headroom for — the union of the reaches of the [`SlotCharge`]s that produced the
     /// divisor it was handed, taken by [`SlotCharge::declarable_victims`] and carried here so
     /// the two consumers of one certificate read ONE set instead of deriving two. Sorted and
@@ -904,8 +904,7 @@ pub struct PeriodicDelta {
     /// A UNION, so it is not per-slot: with two charged slots of different reaches this set
     /// still names every seat some slot can be re-aimed onto, while
     /// [`ResourceVector::seat_life_charges`] is what charges each seat only the slots whose
-    /// reach CONTAINS it — `elimination_bounds` divides by the vector that producer hands it
-    /// and performs no per-slot arithmetic of its own.
+    /// reach CONTAINS it.
     ///
     /// SNAPSHOTTED at the offer beat, deliberately not live: the bound the table accepted was
     /// computed against this set, and a later board is not what was agreed.
@@ -917,8 +916,8 @@ pub struct PeriodicDelta {
     #[serde(default)]
     pub declarable_victims: Vec<PlayerId>,
     /// CR 119.3 + CR 704.5a: per seat, the life magnitude
-    /// [`ResourceVector::elimination_bounds`] reserved that seat's elimination headroom
-    /// against — the very slice the mint's own bound was divided by, produced by
+    /// [`PeriodicDelta::elimination_cascade`] reserved that seat's elimination headroom
+    /// against, produced by
     /// [`ResourceVector::seat_life_charges`] from the period's frame-wise accumulation and the
     /// charges it was handed.
     ///
@@ -1033,7 +1032,7 @@ impl PeriodicDelta {
     ///
     /// * MAGNITUDE. Every [`PeriodicDelta::victim_slot`] entry carries the same magnitude
     ///   ([`ResourceVector::worst_seat_life_loss`]). CR 704.5a: a player at 0 or less life
-    ///   loses the game, so [`ResourceVector::elimination_bounds`] RESERVED, PER SEAT, what
+    ///   loses the game, so [`PeriodicDelta::elimination_cascade`] RESERVED, PER SEAT, what
     ///   [`ResourceVector::seat_life_charges`] totalled from that maximum over the charged
     ///   slots whose REACH contains that seat — not a flat `victim_slot.len()` multiple on
     ///   every declarable victim, which is the same
@@ -1049,7 +1048,7 @@ impl PeriodicDelta {
     ///   onto a seat outside its published set, hence none onto a seat outside its reach. The
     ///   conclusion stops where the reservation does: a seat no charge reaches has both of
     ///   [`ResourceVector::seat_life_charges`]' sums at zero, so that producer measures no
-    ///   magnitude for it, `elimination_bounds` reserves nothing, and this conjunct says
+    ///   magnitude for it, `elimination_cascade` reserves nothing, and this conjunct says
     ///   nothing about it — which is why the lift is confined to the domain.
     /// * SEAT. Sized by `pins`, not by `victim_slot.len()`. CR 732.2a specifies a sequence of
     ///   CHOICES, and `victim_slot` is ANNOUNCED rather than published — a CR 601.2c target
@@ -1412,9 +1411,9 @@ impl PeriodicDelta {
     /// this period produces under `declaration`, in departure order — the ordered cascade an
     /// accepted count carries the game through.
     ///
-    /// `None` when no living seat is consumed on any axis and no cleanup pair bounds the count,
-    /// which keeps [`ResourceVector::elimination_bounds`]' own spelling of that absence: this
-    /// reduction measured no threshold, which is a different answer from every count it can return.
+    /// `None` when no living seat is consumed on any axis and no cleanup pair bounds the count:
+    /// this reduction measured no threshold, which is a different answer from every count it can
+    /// return.
     ///
     /// # The population, and why the proposer is in it but bounds it
     ///
@@ -2003,8 +2002,7 @@ impl SlotCharge {
 ///
 /// PAIRED RATHER THAN TWO PARALLEL LISTS, for the reason
 /// [`EliminationBound::predicted_departure`] gives: a caller holding a seat set beside a loose
-/// index can compare the wrong one. [`ResourceVector::elimination_bounds`] keeps its own job —
-/// the first crossing under ANY declaration — and answers with that pair.
+/// index can compare the wrong one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PredictedDeparture {
     /// CR 732.2a: which repetition of the period this crossing falls on, counted from 1 — the
@@ -2034,7 +2032,8 @@ impl PredictedDeparture {
 ///
 /// `entries` is ordered by `repetition`, those repetitions STRICTLY INCREASE, and every seat set
 /// is non-empty ([`PredictedDeparture::new`] refuses the empty one). `count` is the LAST entry's
-/// repetition. The ordering is load-bearing at two seams: the drive looks an entry up by the
+/// repetition, or a turn-cycle period's lower cleanup hand bound (CR 514.1), which no kept entry
+/// exceeds. The ordering is load-bearing at two seams: the drive looks an entry up by the
 /// repetition it is on, so two entries sharing one repetition would make that lookup ambiguous;
 /// and CR 800.4a takes a departed seat's objects out of the game with them, so a seat that left
 /// on an earlier entry cannot appear in a later one.
@@ -2044,13 +2043,6 @@ impl PredictedDeparture {
 /// removes both at the same beat, and a drive comparing what actually left against a lone seat
 /// would refuse the cycle it was accepted to deliver.
 ///
-/// # Why this is not [`EliminationBound`], which keeps its own job
-///
-/// Two functions, two QUANTIFIERS. [`ResourceVector::elimination_bounds`] answers the first
-/// crossing under ANY declaration — the published divisor's question. This answers every crossing
-/// under the ONE declaration in hand. The arithmetic is shared
-/// ([`ResourceVector::narrowed_repetitions`] and [`PeriodicDelta::first_life_crossing`]), so the
-/// two cannot drift on the division while answering different questions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EliminationCascade {
     /// CR 732.2a: the largest count this declaration may legally be repeated — the last entry's
@@ -2424,8 +2416,8 @@ impl ResourceVector {
 
     /// CR 119.3: the per-period life loss ONE published pin slot may charge to whichever
     /// seat its declaration names — the [`SlotCharge::magnitude`] term
-    /// [`ResourceVector::seat_life_charges`] folds into the divisor
-    /// [`ResourceVector::elimination_bounds`] divides the headroom by.
+    /// [`ResourceVector::seat_life_charges`] folds into the charge
+    /// [`PeriodicDelta::elimination_cascade`] reserves the headroom against.
     ///
     /// **MAX over seats, not SUM, and not the observed spread.** A pin is a
     /// STATE-INDEPENDENT designation (CR 732.2a), so a declaration may aim *every*
@@ -2442,7 +2434,7 @@ impl ResourceVector {
     }
 
     /// CR 119.3 + CR 704.5a: the per-seat life magnitude one repetition may adjust each seat's
-    /// total by — the divisor [`ResourceVector::elimination_bounds`] reserves elimination
+    /// total by — the charge [`PeriodicDelta::elimination_cascade`] reserves elimination
     /// headroom against. The seat population is THIS function's own union of the vector's life
     /// keys with every charge's reach; the reduction that consumes the result walks living
     /// seats and re-derives none of it.
@@ -2689,14 +2681,6 @@ impl ResourceVector {
         })
     }
 
-    /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: ONE seat's strict headroom in whole
-    /// repetitions — the largest count after which this seat has crossed no threshold.
-    ///
-    /// `None` when no axis consumes the seat, which is what the `filter_map` in
-    /// [`ResourceVector::elimination_bounds`] reads as "not in the reduction". No numeric
-    /// stand-in works here, whatever value it picked: every number this returns enters that
-    /// caller's `min` and can bind it, so a seat nothing consumes would narrow a bound it
-    /// contributes nothing to.
     /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: `headroom ÷ per-period magnitude`, narrowed
     /// over the CR 704 axes — the largest count after which no axis in `axes` has crossed.
     ///
@@ -2719,6 +2703,14 @@ impl ResourceVector {
             .min()
     }
 
+    /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: ONE seat's strict headroom in whole
+    /// repetitions — the largest count after which this seat has crossed no threshold.
+    ///
+    /// `None` when no axis consumes the seat, which is what the `filter_map` in
+    /// [`ResourceVector::elimination_bounds`] reads as "not in the reduction". No numeric
+    /// stand-in works here, whatever value it picked: every number this returns enters that
+    /// caller's `min` and can bind it, so a seat nothing consumes would narrow a bound it
+    /// contributes nothing to.
     #[cfg(test)]
     fn seat_headroom_bound(
         &self,
@@ -4200,7 +4192,6 @@ fn flush_clone(state: &GameState) -> GameState {
 ///     in `prior`, object resource axes strict-match, and the non-object GameState remainder
 ///     covers ([`eq_except_growable`]);
 /// 2″. every grown object is churn-inert ([`grown_objects_are_inert`]);
-/// 3″. no live fire-time observer reads the growing class (the off-stack firewall);
 /// 4″. no cost surface references the growing class (CR 732.2a — the EXHAUSTIVE cost scan
 ///     plus the cost-keyword keystone rejectors).
 pub(crate) fn loop_states_cover_modulo_object_growth(
@@ -25578,7 +25569,8 @@ mod tests {
 
     /// **THE CASCADE'S INVARIANTS, at its own walk.** `entries` is ordered by `repetition`, those
     /// repetitions STRICTLY INCREASE, every seat set is non-empty, and `count` is the last entry's
-    /// repetition. The drive looks an entry up BY its repetition, so a duplicate would make that
+    /// repetition, or a turn-cycle period's lower cleanup hand bound (CR 514.1), which no kept
+    /// entry exceeds. The drive looks an entry up BY its repetition, so a duplicate would make that
     /// lookup ambiguous; CR 800.4a is why a seat that left on an earlier entry cannot reappear.
     ///
     /// Driven through the walk rather than asserted on a hand-built value, because the invariants

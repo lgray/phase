@@ -3764,7 +3764,7 @@ fn loop_shortcut_projection(
             // capacity at `MAX_SHORTCUT_CYCLES`; one that measured a smaller threshold carries
             // less.
             //
-            // CR 704.5a: `elimination_bounds` returns `0` to mean "no legal repetition exists and
+            // CR 704.5a: `elimination_cascade` returns `0` to mean "no legal repetition exists and
             // the caller must not offer". A published offer carrying `0` is an authority
             // violation, not a number to repair — clamping it to `1` renders a one-iteration
             // offer whose single iteration eliminates a player mid-proposal. Reject it in EVERY

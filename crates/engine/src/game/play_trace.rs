@@ -1,5 +1,6 @@
-//! CR 732.2a: the play trace — every play and answer every player makes in the current step,
-//! keyed by the ability made, which names the candidate periods a shortcut may repeat.
+//! CR 732.2a: the play trace — every play and answer every player makes in the current step, and
+//! the spans it carries past that step (CR 500.7, CR 500.8), keyed by the ability made, which
+//! names the candidate periods a shortcut may repeat.
 //!
 //! The trace records at the outermost `apply()` boundary, a triggered ability's resolution at
 //! the priority pass that resolves it, and names candidates at the base's priority window
@@ -84,6 +85,8 @@ pub(crate) struct WindowKey {
     turn: u32,
     phase: Phase,
     step_start: u32,
+    /// How many turns have begun in the game; a skipped turn never begins.
+    turns_begun: u32,
 }
 
 impl WindowKey {
@@ -92,6 +95,7 @@ impl WindowKey {
             turn: state.turn_number,
             phase: state.phase,
             step_start: state.steps_started_this_turn.count(state.phase),
+            turns_begun: state.players.iter().map(|p| p.turns_taken).sum(),
         }
     }
 
@@ -146,7 +150,12 @@ impl PeriodReach {
         match self {
             Self::InStep => false,
             Self::Combat => to.turn == from.turn,
-            Self::ExtraTurn => to.turn == from.turn || state.active_player == seat,
+            // Counted, not read off the active player, because a turn can pass with no window
+            // between `from` and `to`.
+            Self::ExtraTurn => {
+                to.turns_begun == from.turns_begun
+                    || (state.active_player == seat && to.turns_begun == from.turns_begun + 1)
+            }
         }
     }
 }

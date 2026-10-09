@@ -359,10 +359,11 @@ pub struct ShortcutDecisionSchema {
     /// CR 732.1b: the proposed repeat mode. `UntilLethal` for a determinate CR 704.5a /
     /// CR 704.5c drain; `Fixed(n)` seeds the frontend count picker for an optional loop.
     pub iteration_count: IterationCount,
-    /// CR 732.2a: the CR 704 repetition threshold this offer's producer MEASURED — a LEGALITY
+    /// CR 732.2a: the repetition bound this offer's producer MEASURED — the CR 704 threshold
+    /// crossing or, for a turn-cycle period, the cleanup hand bound (CR 514.1) — a LEGALITY
     /// CEILING, what SOME legal declaration may specify, never a count every declaration
     /// reaches. `game::engine::bounded_offer_tail` takes the LARGER of two
-    /// declaration-relative cascades: the last crossing under the offer's own published
+    /// declaration-relative cascades: the cascade's count under the offer's own published
     /// declaration and the last one under the re-aimed witness. CR 732.2a's "may be legally
     /// taken" quantifies existentially over declarations, so the maximum is the reduction that
     /// answers it. `None` means the producer measured none: no axis of the period consumes any
@@ -1194,9 +1195,8 @@ fn schedule_announces_every_declared_subject(schedule: &TargetSchedule) -> bool 
 /// determines the next action a player takes". Pins fix every free choice BEFORE the offer is made,
 /// so the sequence the table accepts is the sequence that runs. The two companion gates are
 /// `game::period_confirm`'s refusal of a replayed random outcome at its draw, and
-/// `analysis::resource::elimination_bounds` admitting no CR 704 threshold crossing except as the
-/// sequence's FINAL iteration — a MID-sequence death is what makes the
-/// remaining declared choices unmakeable, and a final-iteration crossing has none. "No conditional
+/// `analysis::resource::PeriodicDelta::elimination_cascade` predicting every CR 704 threshold
+/// crossing the count contains. "No conditional
 /// on a prior
 /// iteration's outcome" needs NO runtime check — it is unrepresentable in
 /// [`TargetSchedule`] by construction (see the type doc); a choice a player could only

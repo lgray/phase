@@ -248,10 +248,10 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // rejects, and this arm is still neutral on it. On a BOUNDED offer that hazard is
             // discharged by the `loop_shortcut_declare_eliminates_proposer` arm BELOW, which asks
             // `cycles_to_proposer_elimination` of the proposer alone. It is NOT discharged by
-            // `elimination_bounds`' contract: that bound admits a crossing as the sequence's
-            // FINAL iteration, so the published capacity can equal the proposer's own fatal count
-            // and a capacity-valued `Fixed` — the AI's only bounded candidate — can name it. That
-            // arm's remaining limit is stated where it sits, not assumed away here.
+            // `PeriodicDelta::elimination_cascade`'s contract: that cascade admits the proposer's
+            // own crossing as its last entry, so the published capacity can equal the proposer's
+            // own fatal count and a capacity-valued `Fixed` — the AI's only bounded candidate — can
+            // name it. That arm's remaining limit is stated where it sits, not assumed away here.
             //
             // ⚠ AN EARLIER FORM OF THIS ARM ALSO RESTED ON A DRIVE THAT DID NOT HONOUR THE
             // PUBLISHED BOUND, which is why the delimiter's history is kept here. At `c6d834040`
@@ -290,9 +290,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
             }
 
             // CR 732.2a: within the offered bound on a bounded offer ⇒ committed board
-            // progress that eliminates at most the binding seat, and only on the sequence's
-            // FINAL iteration. Never the proposer — the `Some(fatal)` branch below is what
-            // refuses that. Game-deciding ⇒ critical band, via the
+            // progress whose eliminations the cascade predicted. Never the proposer — the
+            // `Some(fatal)` branch below is what refuses that. Game-deciding ⇒ critical band, via the
             // auto-banding `PolicyVerdict::score` (NEVER `preference`, whose `debug_assert!`
             // band domain panics on this field's default). Both declare kinds route through
             // the one reused config field on purpose: the winning arm above and this one are
@@ -302,8 +301,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // arm cannot be reached). With no ordering to distort, a second tuned field would
             // buy nothing and cost the full `UNTUNED_POLICY_PENALTY_FIELDS` protocol.
             // CR 704.5a / CR 704.5c / CR 104.3c: the offered bound is derived from EVERY living
-            // seat, and `ResourceVector::elimination_bounds` deliberately lets the PROPOSER be
-            // the binding one — CR 732.2a's shortcut proposer "need not be the player proposing
+            // seat, and `PeriodicDelta::elimination_cascade` deliberately lets the PROPOSER's
+            // crossing bound it — CR 732.2a's shortcut proposer "need not be the player proposing
             // the shortcut" who benefits, so the producer is right not to gate on proposer
             // benefit (engine `game/engine.rs`, `bounded_cycle_offer` doc). That makes it the
             // DECIDING side's job, and nothing was doing it: a bounded offer always carries
@@ -362,9 +361,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
 /// survives all `declared` of them. `observed` is the declaration the offer published, the
 /// allocation the period was measured under.
 ///
-/// This is the inverse of `ResourceVector::elimination_bounds` (engine `analysis/resource.rs`),
-/// asked of ONE seat under ONE declaration instead of narrowed over all seats and every
-/// declaration:
+/// This is the inverse of `PeriodicDelta::elimination_cascade` (engine `analysis/resource.rs`),
+/// asked of ONE seat instead of walked over every living seat:
 ///
 /// - **life**, CR 704.5a — reaching **0 or less** is the threshold, and CR 704.3 checks it at
 ///   every priority beat, inside a repetition as well as between two. Repetition `k` is fatal
@@ -384,7 +382,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
 /// not to the library reaching zero — a player with an empty library and no draw ahead of them
 /// has not lost and may still win. Milling yourself to exactly zero is a legal, sometimes
 /// winning line (self-mill payoffs; `loop_check` classifies such a period as `Advantage`, and
-/// `elimination_bounds` intentionally permits the exactly-zero terminal value), so vetoing it
+/// `elimination_cascade` intentionally permits the exactly-zero terminal value), so vetoing it
 /// would refuse a real strategy class. A certified period records per-cycle resource deltas; it
 /// cannot express "and then the proposer is forced to draw", so on today's evidence no
 /// library-based veto is sound. **Extension point:** if a future certificate can prove a forced
