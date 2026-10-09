@@ -768,9 +768,6 @@ pub enum PublicFinalizeMode {
     DeferredDisplay,
 }
 
-/// CR 601.2h + CR 702.132a: Assist remains cancellable while it is only a
-/// selected contribution. Once helper payment has started or completed, its
-/// resources may have changed and cancellation cannot roll that prefix back.
 /// CR 605.3a + CR 117.1d: the payment window a mana ability activated at it
 /// returns to, with the player who pays there.
 fn payment_window_resume(waiting_for: &WaitingFor) -> Option<(PlayerId, ManaAbilityResume)> {
@@ -798,6 +795,9 @@ fn payment_window_resume(waiting_for: &WaitingFor) -> Option<(PlayerId, ManaAbil
     }
 }
 
+/// CR 601.2h + CR 702.132a: Assist remains cancellable while it is only a
+/// selected contribution. Once helper payment has started or completed, its
+/// resources may have changed and cancellation cannot roll that prefix back.
 fn ensure_assist_cancellation_is_allowed(state: &GameState) -> Result<(), EngineError> {
     let pending = state
         .pending_cast

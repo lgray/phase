@@ -14335,7 +14335,7 @@ mod tests {
     /// CR 732.2a: the cover judges the board, not the plays that made it — the period comes from
     /// the confirmer — so two frames whose traces record different casts still cover.
     #[test]
-    fn fodder_cover_last_loop_action_sequence_two_sided() {
+    fn fodder_cover_ignores_play_traces() {
         use crate::game::play_trace::PlayLocus::Cast;
         let (mut prior, mut current) = fodder_cover_base();
         assert!(
@@ -14356,7 +14356,7 @@ mod tests {
 
     /// CR 732.2a: the equality gate likewise ignores the recorded plays.
     #[test]
-    fn loop_states_equal_last_loop_action_sequence_two_sided() {
+    fn loop_states_equal_ignores_play_traces() {
         use crate::game::play_trace::PlayLocus::Cast;
         let mut a = GameState::new_two_player(7);
         inert_token(&mut a, 900, 0, "Engine");
@@ -14374,7 +14374,7 @@ mod tests {
 
     /// CR 732.2a: two frames whose traces record different abilities of one source still cover.
     #[test]
-    fn fodder_cover_heterogeneous_activation_context_rejects() {
+    fn fodder_cover_ignores_heterogeneous_activation_traces() {
         use crate::game::play_trace::PlayLocus::Activate;
         let (mut prior, mut current) = fodder_cover_base();
         assert!(

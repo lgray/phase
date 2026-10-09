@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stamps `DecisionSlot.point` and `PinnedDecision::Order`'s slot onto ALREADY-COMMITTED
-# dump fixtures, in place, in two passes: M1's (the slot gains its typed CR choice point)
-# then M2's (`Order` gains the slot every other pin variant carries).
+# dump fixtures, in place, in two passes: first each slot gains its typed CR choice point,
+# then `Order` gains the slot every other pin variant carries.
 #
 # WHY IN PLACE AND NOT A PRISTINE REGENERATION. Same ground `stamp-fixture-firing.sh`
 # states: a committed fixture can carry a LATER parser state than any pristine capture, and
@@ -19,8 +19,8 @@
 # derivation does not resolve ABORTS THE WHOLE RUN AND WRITES NOTHING.
 #
 # The derivation is NOT re-spelled here. It is loaded from
-# scripts/lib/decision-slot-point.jq, the single definition the migration, every control
-# below and arm 1's blind all run through, so no control can certify its own copy.
+# scripts/lib/decision-slot-point.jq, the single definition the migration and every control
+# below all run through, so no control can certify its own copy.
 #
 # Usage:
 #   scripts/stamp-decision-slot-point.sh crates/engine/tests/fixtures/name.json.gz [...]
