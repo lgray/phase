@@ -5609,6 +5609,7 @@ fn object_is_inert_except_triggers(o: &GameObject) -> bool {
             .abilities
             .iter()
             .any(|a| a.kind == crate::types::ability::AbilityKind::Activated)
+        // allow-raw-authority: enumerates the battlefield object's whole keyword list, which no presence helper expresses
         && o.keywords.iter().all(keyword_is_inert_on_the_battlefield)
         && o.counters.is_empty()
         && !o.card_types.supertypes.contains(&Supertype::Legendary)
