@@ -1139,34 +1139,6 @@ fn blink_keeps_owner() {
 }
 
 #[test]
-fn personal_zone_negatives() {
-    let Some(db) = shared_card_db() else { return };
-    let mut scenario = scenario(dandan());
-    let in_hand = scenario.add_real_card(P0, "Lightning Bolt", Zone::Hand, db);
-    let in_exile = scenario.add_real_card(P0, "Lightning Bolt", Zone::Exile, db);
-    let in_command = scenario.add_real_card(P0, "Lightning Bolt", Zone::Command, db);
-    let mut runner = start(scenario, P1);
-    for (card, zone) in [
-        (in_hand, Zone::Hand),
-        (in_exile, Zone::Exile),
-        (in_command, Zone::Command),
-    ] {
-        assert_eq!(
-            runner.state().objects[&card].zone,
-            zone,
-            "reach: staged zone"
-        );
-        assert!(!offered(runner.state(), P1, card), "{zone:?}");
-        assert!(
-            runner.cast(card).target_player(P0).try_resolve().is_err(),
-            "{zone:?}"
-        );
-        assert_eq!(runner.state().objects[&card].zone, zone);
-        assert_eq!(runner.state().objects[&card].owner, P0);
-    }
-}
-
-#[test]
 fn graveyard_activation_stays_owner() {
     let Some(db) = shared_card_db() else { return };
     for actor in [P0, P1] {

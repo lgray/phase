@@ -316,11 +316,18 @@ impl GraveyardPermissionPool {
         matches!(self, GraveyardPermissionPool::OwnGraveyard)
     }
 
-    /// Whether a graveyard card is in this pool, given whether it sits in the
-    /// graveyard the caster reads (CR 400.1).
-    pub fn admits(self, in_callers_graveyard: bool) -> bool {
+    /// Whether `card` is in this pool for `caster`: "your graveyard" is the
+    /// graveyard container the caster reads (CR 400.1 + CR 109.5).
+    pub fn admits(
+        self,
+        state: &crate::types::game_state::GameState,
+        card: &crate::game::game_object::GameObject,
+        caster: PlayerId,
+    ) -> bool {
         match self {
-            GraveyardPermissionPool::OwnGraveyard => in_callers_graveyard,
+            GraveyardPermissionPool::OwnGraveyard => {
+                state.object_in_players_zone(card, Zone::Graveyard, caster)
+            }
             GraveyardPermissionPool::AnyGraveyard => true,
         }
     }

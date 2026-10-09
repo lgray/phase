@@ -5090,10 +5090,7 @@ impl GraveyardPermissionSource<'_> {
         let Some(obj) = state.objects.get(&obj_id) else {
             return false;
         };
-        if !self
-            .pool
-            .admits(state.object_in_players_zone(obj, Zone::Graveyard, player))
-        {
+        if !self.pool.admits(state, obj, player) {
             return false;
         }
         let ctx = super::filter::FilterContext::from_source_with_controller(self.source_id, player);
