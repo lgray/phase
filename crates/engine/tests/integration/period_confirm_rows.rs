@@ -27,7 +27,8 @@ use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, StackEntryKind, WaitingFor,
+    CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, PersistedGameState, StackEntryKind,
+    WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
@@ -596,6 +597,13 @@ fn take(runner: &mut GameRunner, count: u32) -> Vec<GameEvent> {
             template: None,
         },
     );
+    events.extend(accept(runner));
+    events
+}
+
+/// Every seat asked accepts the standing proposal; the events emitted.
+fn accept(runner: &mut GameRunner) -> Vec<GameEvent> {
+    let mut events = Vec::new();
     while matches!(
         runner.state().waiting_for,
         WaitingFor::RespondToShortcut { .. }
@@ -2183,6 +2191,113 @@ fn an_altar_zulaport_period_is_offered_a_bounded_shortcut_and_taken() {
 
         assert_declaration_refused(&offered, l + 1);
     }
+}
+
+/// `state` reloaded through the persisted codec the WASM restore and server persistence use, then
+/// through bare `GameState` serde.
+fn reload_both(state: &GameState) -> [Result<GameState, String>; 2] {
+    let saved = serde_json::to_value(PersistedGameState::capture(state.clone())).expect("saves");
+    let persisted = serde_json::from_value::<PersistedGameState>(saved)
+        .map_err(|error| error.to_string())
+        .and_then(|saved| saved.into_game_state().map_err(|error| error.to_string()));
+    let bare = serde_json::from_value::<GameState>(serde_json::to_value(state).expect("saves"))
+        .map_err(|error| error.to_string());
+    [persisted, bare]
+}
+
+/// `state` reloaded through both ingresses, each asserted to restore the same decision.
+fn reloaded(state: &GameState) -> [GameState; 2] {
+    reload_both(state).map(|restored| {
+        let restored = restored.expect("an engine-minted state reloads");
+        assert_eq!(restored.waiting_for, state.waiting_for);
+        restored
+    })
+}
+
+/// Each ingress refuses `state` for carrying a confirmed period on the ring road.
+fn assert_refused_on_reload(state: &GameState) {
+    for restored in reload_both(state) {
+        let message = restored.expect_err("a ring-road period is refused");
+        assert!(message.contains("confirmed period"), "{message}");
+    }
+}
+
+/// `state` with its offer's or proposal's road set to the ring road.
+fn on_the_ring_road(state: &GameState) -> GameState {
+    let mut state = state.clone();
+    match &mut state.waiting_for {
+        WaitingFor::LoopShortcut { road, .. } => *road = OfferRoad::Ring,
+        WaitingFor::RespondToShortcut { proposal, .. } => proposal.road = OfferRoad::Ring,
+        other => panic!("no offer or proposal: {other:?}"),
+    }
+    state
+}
+
+/// The Altar–Zulaport board standing on its bounded recorded-period offer, which carries its period.
+fn bounded_recorded_offer_with_period(db: &CardDatabase) -> GameState {
+    let (mut runner, altar, gravecrawler) = altar_board(Some("Zulaport Cutthroat"), db);
+    drain_to_offer(&mut runner, altar, gravecrawler, &[P1]);
+    let offered = runner.state().clone();
+    bounded_recorded_offer(&offered, offered.players[1].life as u32);
+    let WaitingFor::LoopShortcut { period, .. } = &offered.waiting_for else {
+        unreachable!("asserted above")
+    };
+    assert!(!period.is_empty(), "the bounded offer carries its period");
+    offered
+}
+
+/// `state` after the standing offer is declared at `count`, asserted to carry the offer's road and
+/// period onto the proposal.
+fn proposed(state: GameState, count: u32) -> GameState {
+    let mut runner = GameRunner::from_state(state);
+    act(
+        &mut runner,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(count),
+            template: None,
+        },
+    );
+    let WaitingFor::RespondToShortcut { proposal, .. } = &runner.state().waiting_for else {
+        panic!("no proposal: {:?}", runner.state().waiting_for);
+    };
+    assert_eq!(proposal.road, OfferRoad::RecordedPeriod);
+    assert!(
+        !proposal.period.is_empty(),
+        "the proposal carries the period"
+    );
+    runner.state().clone()
+}
+
+/// CR 732.2a + CR 732.2c: a bounded recorded-period offer and the proposal declared against it
+/// survive a save and reload, and the take after both reloads is the take without them.
+#[test]
+fn a_bounded_recorded_offer_and_its_proposal_survive_a_reload() {
+    let Some(db) = shared_card_db() else { return };
+    let offered = bounded_recorded_offer_with_period(db);
+    let l = offered.players[1].life as u32;
+    let expected = serde_json::to_value(taken(&offered, 3)).expect("saves");
+
+    for offer in reloaded(&offered) {
+        bounded_recorded_offer(&offer, l);
+        for proposal in reloaded(&proposed(offer, 3)) {
+            let mut runner = GameRunner::from_state(proposal);
+            accept(&mut runner);
+            assert_eq!(
+                serde_json::to_value(runner.state()).expect("saves"),
+                expected
+            );
+        }
+    }
+}
+
+/// The same bounded offer, and the proposal declared against it, on the ring road: its take is the
+/// ring drain, so the period it carries is refused at both ingresses.
+#[test]
+fn a_bounded_offer_or_proposal_on_the_ring_road_with_a_period_is_refused_on_reload() {
+    let Some(db) = shared_card_db() else { return };
+    let offered = bounded_recorded_offer_with_period(db);
+    assert_refused_on_reload(&on_the_ring_road(&offered));
+    assert_refused_on_reload(&on_the_ring_road(&proposed(offered, 3)));
 }
 
 /// CR 704.5a + CR 800.4a + CR 104.2a: on four seats the Zulaport drain drops P1 and P2 together at

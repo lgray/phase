@@ -13278,10 +13278,29 @@ fn reject_zero_frames_per_period(
     Ok(())
 }
 
+/// A ring-road offer or proposal carries no confirmed period, because its take is the ring drain
+/// and `take_route` routes a carried period to the mark or the replay instead; a recorded-road
+/// offer, bounded or not, carries the period it confirmed. Shared so the offer and the proposal
+/// declared against it refuse the same pair.
+fn reject_period_on_the_ring_road(
+    road: crate::analysis::loop_check::OfferRoad,
+    period: &crate::game::period_confirm::ConfirmedPeriod,
+    host: &str,
+) -> Result<(), String> {
+    if road == crate::analysis::loop_check::OfferRoad::Ring && !period.is_empty() {
+        return Err(format!(
+            "persisted {host} minted on the ring road carries a confirmed period, which routes \
+             the agreed cycles away from the ring drain"
+        ));
+    }
+    Ok(())
+}
+
 fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
     if let WaitingFor::LoopShortcut {
         schema,
         certificate,
+        road,
         period,
         ..
     } = &state.waiting_for
@@ -13293,32 +13312,9 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
                     .to_string(),
             );
         }
-        // THE PAIR NO PRODUCER MINTS. Only the bounded mint is `is_bounded()`, and it carries no
-        // confirmed period, so its take is the ring drain; a persisted bounded offer carrying a
-        // period would route the agreed cycles to the mark or the replay instead. No CR
-        // annotation: CR 732.2a's own Example is a bounded repetition of the proposer's own
-        // activation, so the pair is legal at the table and what this refuses is a pair this
-        // engine never mints.
-        //
-        // ⚠ AFTER THE ZERO-CAPACITY CHECK, DELIBERATELY: a wire carrying a MEASURED threshold of
-        // zero is `is_bounded()` and re-encodes to a zero capacity — a pre-split save spelling the
-        // legacy zero is exactly that shape after migration — so the two blocks are not disjoint
-        // and hoisting this one would relabel a corrupt zero with the wrong invariant. Observed,
-        // not assumed — see the zero-plus-own-period arm of
-        // `a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load`.
-        //
-        // ⚠ THIS BLOCK COVERS ONE OF THE HARM'S TWO WIRE HOSTS. A persisted
-        // `WaitingFor::RespondToShortcut { proposal }` carrying a period and a bounded
-        // `per_cycle` reaches the same misroute through `apply_confirmed_shortcut`, and
-        // `ShortcutProposal` carries no `schema` for this conjunct to read.
-        if schema.is_bounded() && !period.is_empty() {
-            return Err(
-                "persisted LoopShortcut offer narrows its repetition bound while carrying a \
-                 confirmed period; no producer mints that pair, and accepting it routes the \
-                 agreed cycles away from the ring drain"
-                    .to_string(),
-            );
-        }
+        // After the zero-capacity check, so a corrupt zero bound carrying a period is refused as
+        // the zero it is.
+        reject_period_on_the_ring_road(*road, period, "LoopShortcut offer")?;
         // The SIBLING wire zero. `deliverable_capacity` says how many repetitions there are;
         // `frames_per_period` says what one repetition IS, and a wire-supplied 0 corrupts the
         // second question exactly as a 0 capacity corrupts the first.
@@ -13350,6 +13346,11 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
     // reached without ever re-entering `LoopShortcut`.
     if let WaitingFor::RespondToShortcut { proposal, .. } = &state.waiting_for {
         reject_zero_frames_per_period(&proposal.per_cycle, "RespondToShortcut proposal")?;
+        reject_period_on_the_ring_road(
+            proposal.road,
+            &proposal.period,
+            "RespondToShortcut proposal",
+        )?;
     }
     Ok(())
 }

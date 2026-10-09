@@ -6492,26 +6492,12 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
     assert_eq!(schema.deliverable_capacity, 5);
 }
 
-/// R0e — the wire pair NO PRODUCER MINTS: a persisted `LoopShortcut` offer that NARROWS its
-/// repetition bound (`schema.is_bounded()`) while carrying a confirmed period must fail the load.
-///
-/// Only the bounded mint is `is_bounded()`, and it carries no period, so its take is the ring
-/// drain; the pair would route the agreed cycles to the mark or the replay instead.
-///
-/// ⚠ NOT A CR REFUSAL, and the row asserts on the engine-invariant message accordingly. CR 732.2a's
-/// Example is a proposer repeating THEIR OWN activation a specified 999,999 more times, so this
-/// state class is legal at the table; what it violates is producer reachability in this engine.
-///
-/// THE PERIOD IS A PRODUCTION-SERIALIZED VALUE taken from a live offer, never hand-authored JSON.
-///
-/// | mutation to `reject_zero_bound_shortcut_offer` | flips | stays green |
-/// |---|---|---|
-/// | delete the whole period `if` block | A1, A4, A5 → `Ok` | A2, A3, A6 |
-/// | delete `schema.is_bounded() &&` | A3 → `Err` | A1, A2, A4, A5, A6 |
-/// | delete `&& !period.is_empty()` | A2 → `Err` | A1, A3, A4, A5, A6 |
-/// | hoist the block ABOVE the zero-capacity block | A6's message | A1–A5 |
+/// R0e — a persisted `LoopShortcut` offer on the ring road carrying a confirmed period fails the
+/// load whatever its bound, because its take is the ring drain; the recorded road's offer carrying
+/// its period loads, bounded or not. The period is a production-serialized value taken from a live
+/// offer.
 #[test]
-fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
+fn a_wire_ring_road_offer_carrying_a_period_fails_the_load() {
     let Some(db) = super::support::shared_card_db() else {
         return;
     };
@@ -6559,52 +6545,67 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
         "the fixture carries neither key, so each splice CREATES the key it tests"
     );
 
-    let spliced =
-        |mut v: serde_json::Value, bound: Option<u64>, period: Option<&serde_json::Value>| {
-            if let Some(n) = bound {
-                v["waiting_for"]["data"]["schema"]["max_iterations"] = serde_json::json!(n);
-            }
-            if let Some(period) = period {
-                v["waiting_for"]["data"]["period"] = period.clone();
-            }
-            v
-        };
+    let spliced = |mut v: serde_json::Value,
+                   road: &str,
+                   bound: Option<u64>,
+                   period: Option<&serde_json::Value>| {
+        v["waiting_for"]["data"]["road"] = serde_json::json!(road);
+        if let Some(n) = bound {
+            v["waiting_for"]["data"]["schema"]["max_iterations"] = serde_json::json!(n);
+        }
+        if let Some(period) = period {
+            v["waiting_for"]["data"]["period"] = period.clone();
+        }
+        v
+    };
     let decode_persisted = |value: serde_json::Value| {
         serde_json::from_value::<engine::types::game_state::PersistedGameState>(value)
     };
 
-    // ── A1 — THE GUARD FIRES.
-    let message = decode_persisted(spliced(base.clone(), Some(5), Some(&donor_period)))
-        .expect_err("a narrowed bound carrying a confirmed period must fail the load")
+    // ── A1 — THE GUARD FIRES on a bounded ring offer.
+    let message = decode_persisted(spliced(base.clone(), "Ring", Some(5), Some(&donor_period)))
+        .expect_err("a ring offer carrying a confirmed period must fail the load")
         .to_string();
     assert!(
-        message.contains("narrows its repetition bound"),
+        message.contains("ring road carries a confirmed period"),
         "the rejection must NAME the invariant it enforces and must not be either sibling zero \
          guard firing instead, got: {message}"
     );
 
     // ── A6 — ORDERING PROBE: a legacy zero migrates to a measured zero, so the zero check must
     // keep answering first.
-    let message = decode_persisted(spliced(base.clone(), Some(0), Some(&donor_period)))
+    let message = decode_persisted(spliced(base.clone(), "Ring", Some(0), Some(&donor_period)))
         .expect_err("a zero bound must still fail the load when a period rides with it")
         .to_string();
     assert!(
         message.contains("deliverable_capacity 0"),
-        "ORDERING: hoisting the period block above the zero-bound block relabels a corrupt zero \
+        "ORDERING: hoisting the period check above the zero-bound check relabels a corrupt zero \
          with the wrong invariant, got: {message}"
     );
 
-    // ── A2 — THE PERIOD CONJUNCT: a narrowed bound alone is the ordinary bounded offer.
+    // ── A2 — THE PERIOD CONJUNCT: a bounded ring offer with no period is the bounded mint.
     assert!(
-        decode_persisted(spliced(base.clone(), Some(5), None)).is_ok(),
+        decode_persisted(spliced(base.clone(), "Ring", Some(5), None)).is_ok(),
         "a narrowed bound with no period is exactly what the bounded mint publishes"
     );
 
-    // ── A3 — THE `is_bounded()` CONJUNCT: a period alone is the recorded road's offer.
+    // ── A3 — THE ROAD, NOT THE BOUND, keys the refusal.
     assert!(
-        decode_persisted(spliced(base.clone(), None, Some(&donor_period))).is_ok(),
-        "an unnarrowed offer carrying its period is the recorded road's shape and must load"
+        decode_persisted(spliced(base.clone(), "Ring", None, Some(&donor_period))).is_err(),
+        "an unbounded ring offer carrying a period routes away from the drain too"
     );
+    for bound in [None, Some(5)] {
+        assert!(
+            decode_persisted(spliced(
+                base.clone(),
+                "RecordedPeriod",
+                bound,
+                Some(&donor_period)
+            ))
+            .is_ok(),
+            "a recorded offer carrying its period must load, bound {bound:?}"
+        );
+    }
 
     // ── A4 — ANY SEAT: the take routes on the period whoever made its plays.
     let foreign_period = {
@@ -6618,7 +6619,13 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
         period
     };
     assert!(
-        decode_persisted(spliced(base.clone(), Some(5), Some(&foreign_period))).is_err(),
+        decode_persisted(spliced(
+            base.clone(),
+            "Ring",
+            Some(5),
+            Some(&foreign_period)
+        ))
+        .is_err(),
         "a period of another seat routes the agreed cycles away from the drain too"
     );
 
@@ -6629,13 +6636,24 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
     )))
     .expect("the combo dump parses as JSON");
     assert!(
-        serde_json::from_value::<GameState>(spliced(combo.clone(), Some(5), Some(&donor_period)))
-            .is_err(),
+        serde_json::from_value::<GameState>(spliced(
+            combo.clone(),
+            "Ring",
+            Some(5),
+            Some(&donor_period)
+        ))
+        .is_err(),
         "the bare ingress refuses the pair too"
     );
     assert!(
-        serde_json::from_value::<GameState>(spliced(combo, None, Some(&donor_period))).is_ok(),
-        "and loads the unnarrowed offer carrying its period"
+        serde_json::from_value::<GameState>(spliced(
+            combo,
+            "RecordedPeriod",
+            Some(5),
+            Some(&donor_period)
+        ))
+        .is_ok(),
+        "and loads the bounded recorded offer carrying its period"
     );
 }
 
