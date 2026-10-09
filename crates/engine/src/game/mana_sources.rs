@@ -2135,88 +2135,87 @@ pub(crate) fn auto_tap_mana_options_gated(
     )
 }
 
-// Commented out: no production caller; kept for reference.
-// /// CR 107.1b + CR 601.2f: Maximum *net* mana a single battlefield object can
-// /// contribute to a cast — the largest net output of any one of its activatable
-// /// `{T}` mana abilities (only one can be activated per tap), where net output
-// /// is gross production minus the mana paid to activate.
-// ///
-// /// Lets `max_x_value` count multi-mana producers (Sol Ring, Ravnica bounce
-// /// lands, `{T}: Add {C} for each ~`) at their full output instead of a flat
-// /// one-mana-per-producer, which capped the X chooser below what the caster
-// /// could actually pay. Netting the activation cost keeps cost-bearing sources
-// /// (filter lands' `{1}, {T}: Add two mana`) from overstating affordable X.
-// pub fn max_mana_yield(state: &GameState, object_id: ObjectId, controller: PlayerId) -> u32 {
-//     let Some(obj) = state.objects.get(&object_id) else {
-//         return 0;
-//     };
-//     if obj.zone != Zone::Battlefield || obj.controller != controller || obj.tapped {
-//         return 0;
-//     }
-//     // CR 602.5a + CR 302.6: Summoning-sick mana-creatures cannot tap for mana,
-//     // unless a CanActivateAbilitiesAsThoughHaste static (Tyvar) lifts the gate.
-//     if restrictions::summoning_sick_for_tap_ability(state, obj) {
-//         return 0;
-//     }
-//
-//     let explicit_max = obj
-//         .abilities
-//         .iter()
-//         .enumerate()
-//         .filter(|(idx, ability)| {
-//             is_active_tap_mana_ability(
-//                 state,
-//                 object_id,
-//                 controller,
-//                 *idx,
-//                 ability,
-//                 ManaPayabilityMode::Current,
-//                 None,
-//             )
-//         })
-//         .filter_map(|(_, ability)| match &*ability.effect {
-//             Effect::Mana { produced, .. } => {
-//                 let gross =
-//                     largest_sizing_resolution(state, produced, ability, object_id, controller)
-//                         .map_or(0, |(_, gross)| gross);
-//                 // CR 605.3b: Net the mana paid to activate this ability —
-//                 // gross output overstates what a filter land actually adds.
-//                 let activation_cost = mana_abilities::mana_sub_cost_of(&ability.cost)
-//                     .map_or(0, |cost| cost.mana_value());
-//                 Some(gross.saturating_sub(activation_cost))
-//             }
-//             _ => None,
-//         })
-//         .max();
-//
-//     // CR 605.1b + CR 106.12a: add aura TapsForMana bonus to the land's yield
-//     // so X-value choosers and castability gates account for Wild Growth etc.
-//     // Each outer element of `taps_for_mana_aura_bonus` is one aura that adds
-//     // exactly one mana unit; the inner vec holds the color alternatives (1 for
-//     // Fixed, N for AnyOneColor) — only the count of auras matters here.
-//     let aura_bonus = if obj.card_types.core_types.contains(&CoreType::Land) {
-//         taps_for_mana_aura_bonus(state, object_id, controller).len() as u32
-//     } else {
-//         0
-//     };
-//
-//     match explicit_max {
-//         Some(amount) => amount + aura_bonus,
-//         // CR 305.1: Subtype-only basic lands carry no explicit mana ability;
-//         // `land_mana_options` synthesizes a single one-mana option for them.
-//         None if !activatable_mana_options(state, object_id, controller).is_empty() => {
-//             1 + aura_bonus
-//         }
-//         None => aura_bonus,
-//     }
-// }
+/// CR 107.1b + CR 601.2f: Maximum *net* mana a single battlefield object can
+/// contribute to a cast — the largest net output of any one of its activatable
+/// `{T}` mana abilities (only one can be activated per tap), where net output
+/// is gross production minus the mana paid to activate.
+///
+/// Lets `max_x_value` count multi-mana producers (Sol Ring, Ravnica bounce
+/// lands, `{T}: Add {C} for each ~`) at their full output instead of a flat
+/// one-mana-per-producer, which capped the X chooser below what the caster
+/// could actually pay. Netting the activation cost keeps cost-bearing sources
+/// (filter lands' `{1}, {T}: Add two mana`) from overstating affordable X.
+pub fn max_mana_yield(state: &GameState, object_id: ObjectId, controller: PlayerId) -> u32 {
+    let Some(obj) = state.objects.get(&object_id) else {
+        return 0;
+    };
+    if obj.zone != Zone::Battlefield || obj.controller != controller || obj.tapped {
+        return 0;
+    }
+    // CR 602.5a + CR 302.6: Summoning-sick mana-creatures cannot tap for mana,
+    // unless a CanActivateAbilitiesAsThoughHaste static (Tyvar) lifts the gate.
+    if restrictions::summoning_sick_for_tap_ability(state, obj) {
+        return 0;
+    }
+
+    let explicit_max = obj
+        .abilities
+        .iter()
+        .enumerate()
+        .filter(|(idx, ability)| {
+            is_active_tap_mana_ability(
+                state,
+                object_id,
+                controller,
+                *idx,
+                ability,
+                ManaPayabilityMode::Current,
+                None,
+            )
+        })
+        .filter_map(|(_, ability)| match &*ability.effect {
+            Effect::Mana { produced, .. } => {
+                let gross =
+                    largest_sizing_resolution(state, produced, ability, object_id, controller)
+                        .map_or(0, |(_, gross)| gross);
+                // CR 605.3b: Net the mana paid to activate this ability —
+                // gross output overstates what a filter land actually adds.
+                let activation_cost = mana_abilities::mana_sub_cost_of(&ability.cost)
+                    .map_or(0, |cost| cost.mana_value());
+                Some(gross.saturating_sub(activation_cost))
+            }
+            _ => None,
+        })
+        .max();
+
+    // CR 605.1b + CR 106.12a: add aura TapsForMana bonus to the land's yield
+    // so X-value choosers and castability gates account for Wild Growth etc.
+    // Each outer element of `taps_for_mana_aura_bonus` is one aura that adds
+    // exactly one mana unit; the inner vec holds the color alternatives (1 for
+    // Fixed, N for AnyOneColor) — only the count of auras matters here.
+    let aura_bonus = if obj.card_types.core_types.contains(&CoreType::Land) {
+        taps_for_mana_aura_bonus(state, object_id, controller).len() as u32
+    } else {
+        0
+    };
+
+    match explicit_max {
+        Some(amount) => amount + aura_bonus,
+        // CR 305.1: Subtype-only basic lands carry no explicit mana ability;
+        // `land_mana_options` synthesizes a single one-mana option for them.
+        None if !activatable_mana_options(state, object_id, controller).is_empty() => {
+            1 + aura_bonus
+        }
+        None => aura_bonus,
+    }
+}
 
 /// CR 117.1d + CR 601.2g: Maximum net mana this permanent could contribute via
 /// **any** mana ability the controller could currently activate, including
 /// non-tap-cost mana abilities (Sacrifice — KCI, Phyrexian Altar, Ashnod's
 /// Altar; unrestricted discard costs; Pay Life; etc.).
 ///
-/// Unlike `max_mana_yield`, this is NOT restricted to abilities that include
+/// Unlike [`max_mana_yield`], this is NOT restricted to abilities that include
 /// `{T}` in their cost. It exists so the castability gate
 /// ([`super::casting::can_feasibly_pay_mana_cost`]) and X-spell maximum
 /// ([`super::casting_costs::max_x_value`]) can answer the question
@@ -2992,8 +2991,9 @@ fn land_mana_options(
 /// among candidates to activate, so auto-tap can select either one exactly
 /// as it does a `{T}` cost (Gold's "Sacrifice this token: Add one mana of
 /// any color" sits alongside Treasure's `{T}, Sacrifice this artifact`).
-/// Single authority `scan_mana_abilities` uses (to build per-color
-/// `ManaSourceOption` rows) for which abilities count as mana sources.
+/// Single authority shared by `scan_mana_abilities` (which builds per-color
+/// `ManaSourceOption` rows) and `max_mana_yield` so the two never diverge on
+/// which abilities count as mana sources.
 fn is_active_tap_mana_ability(
     state: &GameState,
     object_id: ObjectId,
@@ -3561,7 +3561,8 @@ pub(crate) fn opponent_land_color_options(
 /// Callers use this to fan out `land_mana_options` into one
 /// `ManaSourceOption` per reachable combination, preserving choice semantics
 /// so a Forest + Fertile Ground correctly covers `{W}`, `{U}`, `{B}`, `{R}`,
-/// or `{G}` as the bonus color.
+/// or `{G}` as the bonus color.  `max_mana_yield` just takes `.len()` on the
+/// outer vec (one bonus unit per aura regardless of color count).
 ///
 /// Reuses the card and player matching predicates from the trigger resolver so
 /// planning and firing cannot drift.
@@ -3967,158 +3968,157 @@ mod tests {
         display_land_mana_pips(&state, id, PlayerId(0))
     }
 
-    // Commented out: no production caller; kept for reference.
-    // /// Build a single-ability `{T}`-cost producer with a given `ManaProduction`
-    // /// and return its `max_mana_yield`.
-    // fn yield_for_production(production: ManaProduction) -> u32 {
-    //     let mut state = GameState::new_two_player(42);
-    //     let id = create_object(
-    //         &mut state,
-    //         CardId(900),
-    //         PlayerId(0),
-    //         "Test Producer".to_string(),
-    //         Zone::Battlefield,
-    //     );
-    //     let obj = state.objects.get_mut(&id).unwrap();
-    //     obj.card_types.core_types.push(CoreType::Artifact);
-    //     let ability = AbilityDefinition::new(
-    //         AbilityKind::Activated,
-    //         Effect::Mana {
-    //             produced: production,
-    //             restrictions: vec![],
-    //             grants: vec![],
-    //             expiry: None,
-    //             target: None,
-    //         },
-    //     )
-    //     .cost(AbilityCost::Tap);
-    //     Arc::make_mut(&mut obj.abilities).push(ability);
-    //     max_mana_yield(&state, id, PlayerId(0))
-    // }
-    //
-    // /// CR 107.1b: `max_mana_yield` reports a producer's full mana output, not a
-    // /// flat 1 — so the `max_x_value` X-chooser bound reflects multi-mana
-    // /// sources (Sol Ring, bounce lands) instead of capping below affordability.
-    // #[test]
-    // fn max_mana_yield_counts_full_output_of_multi_mana_producers() {
-    //     // Basic-land shape: one colored mana.
-    //     assert_eq!(
-    //         yield_for_production(ManaProduction::Fixed {
-    //             colors: vec![ManaColor::Green],
-    //             contribution: ManaContribution::Base,
-    //         }),
-    //         1,
-    //     );
-    //     // Sol Ring shape: one activation yields two colorless.
-    //     assert_eq!(
-    //         yield_for_production(ManaProduction::Colorless {
-    //             count: QuantityExpr::Fixed { value: 2 },
-    //         }),
-    //         2,
-    //     );
-    //     // Multi-color fixed sequence (e.g. a {W}{U} bounce-land output).
-    //     assert_eq!(
-    //         yield_for_production(ManaProduction::Fixed {
-    //             colors: vec![ManaColor::White, ManaColor::Blue],
-    //             contribution: ManaContribution::Base,
-    //         }),
-    //         2,
-    //     );
-    // }
-    //
-    // /// CR 605.3a: A single `{T}` pays for only one mana ability — an object
-    // /// with several mana abilities yields the largest, never their sum. A
-    // /// tapped object can activate none of them.
-    // #[test]
-    // fn max_mana_yield_takes_best_ability_and_respects_tapped() {
-    //     let mut state = GameState::new_two_player(42);
-    //     let id = create_object(
-    //         &mut state,
-    //         CardId(901),
-    //         PlayerId(0),
-    //         "Multi-Mode Rock".to_string(),
-    //         Zone::Battlefield,
-    //     );
-    //     {
-    //         let obj = state.objects.get_mut(&id).unwrap();
-    //         obj.card_types.core_types.push(CoreType::Artifact);
-    //         for count in [2, 3] {
-    //             Arc::make_mut(&mut obj.abilities).push(
-    //                 AbilityDefinition::new(
-    //                     AbilityKind::Activated,
-    //                     Effect::Mana {
-    //                         produced: ManaProduction::Colorless {
-    //                             count: QuantityExpr::Fixed { value: count },
-    //                         },
-    //                         restrictions: vec![],
-    //                         grants: vec![],
-    //                         expiry: None,
-    //                         target: None,
-    //                     },
-    //                 )
-    //                 .cost(AbilityCost::Tap),
-    //             );
-    //         }
-    //     }
-    //     // Best single ability is the count-3 mode — not 2 + 3 = 5.
-    //     assert_eq!(max_mana_yield(&state, id, PlayerId(0)), 3);
-    //
-    //     state.objects.get_mut(&id).unwrap().tapped = true;
-    //     assert_eq!(max_mana_yield(&state, id, PlayerId(0)), 0);
-    // }
-    //
-    // /// CR 605.3b: A filter land (`{1}, {T}: Add two mana`) nets one mana — its
-    // /// gross output of two must not overstate the X a caster can afford.
-    // #[test]
-    // fn max_mana_yield_nets_out_activation_cost() {
-    //     use crate::types::mana::{ManaCost, ManaUnit};
-    //
-    //     let mut state = GameState::new_two_player(42);
-    //     // Prime the pool so the `{1}` activation cost is currently payable —
-    //     // otherwise `can_activate_mana_ability_now` rejects the ability.
-    //     state.players[0]
-    //         .mana_pool
-    //         .add(ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]));
-    //
-    //     let id = create_object(
-    //         &mut state,
-    //         CardId(902),
-    //         PlayerId(0),
-    //         "Filter Land".to_string(),
-    //         Zone::Battlefield,
-    //     );
-    //     {
-    //         let obj = state.objects.get_mut(&id).unwrap();
-    //         obj.card_types.core_types.push(CoreType::Land);
-    //         Arc::make_mut(&mut obj.abilities).push(
-    //             AbilityDefinition::new(
-    //                 AbilityKind::Activated,
-    //                 Effect::Mana {
-    //                     produced: ManaProduction::Colorless {
-    //                         count: QuantityExpr::Fixed { value: 2 },
-    //                     },
-    //                     restrictions: vec![],
-    //                     grants: vec![],
-    //                     expiry: None,
-    //                     target: None,
-    //                 },
-    //             )
-    //             .cost(AbilityCost::Composite {
-    //                 costs: vec![
-    //                     AbilityCost::Mana {
-    //                         cost: ManaCost::Cost {
-    //                             shards: vec![],
-    //                             generic: 1,
-    //                         },
-    //                     },
-    //                     AbilityCost::Tap,
-    //                 ],
-    //             }),
-    //         );
-    //     }
-    //     // Gross output 2, minus the `{1}` activation cost → net 1.
-    //     assert_eq!(max_mana_yield(&state, id, PlayerId(0)), 1);
-    // }
+    /// Build a single-ability `{T}`-cost producer with a given `ManaProduction`
+    /// and return its `max_mana_yield`.
+    fn yield_for_production(production: ManaProduction) -> u32 {
+        let mut state = GameState::new_two_player(42);
+        let id = create_object(
+            &mut state,
+            CardId(900),
+            PlayerId(0),
+            "Test Producer".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        let ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: production,
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+                target: None,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        Arc::make_mut(&mut obj.abilities).push(ability);
+        max_mana_yield(&state, id, PlayerId(0))
+    }
+
+    /// CR 107.1b: `max_mana_yield` reports a producer's full mana output, not a
+    /// flat 1 — so the `max_x_value` X-chooser bound reflects multi-mana
+    /// sources (Sol Ring, bounce lands) instead of capping below affordability.
+    #[test]
+    fn max_mana_yield_counts_full_output_of_multi_mana_producers() {
+        // Basic-land shape: one colored mana.
+        assert_eq!(
+            yield_for_production(ManaProduction::Fixed {
+                colors: vec![ManaColor::Green],
+                contribution: ManaContribution::Base,
+            }),
+            1,
+        );
+        // Sol Ring shape: one activation yields two colorless.
+        assert_eq!(
+            yield_for_production(ManaProduction::Colorless {
+                count: QuantityExpr::Fixed { value: 2 },
+            }),
+            2,
+        );
+        // Multi-color fixed sequence (e.g. a {W}{U} bounce-land output).
+        assert_eq!(
+            yield_for_production(ManaProduction::Fixed {
+                colors: vec![ManaColor::White, ManaColor::Blue],
+                contribution: ManaContribution::Base,
+            }),
+            2,
+        );
+    }
+
+    /// CR 605.3a: A single `{T}` pays for only one mana ability — an object
+    /// with several mana abilities yields the largest, never their sum. A
+    /// tapped object can activate none of them.
+    #[test]
+    fn max_mana_yield_takes_best_ability_and_respects_tapped() {
+        let mut state = GameState::new_two_player(42);
+        let id = create_object(
+            &mut state,
+            CardId(901),
+            PlayerId(0),
+            "Multi-Mode Rock".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            for count in [2, 3] {
+                Arc::make_mut(&mut obj.abilities).push(
+                    AbilityDefinition::new(
+                        AbilityKind::Activated,
+                        Effect::Mana {
+                            produced: ManaProduction::Colorless {
+                                count: QuantityExpr::Fixed { value: count },
+                            },
+                            restrictions: vec![],
+                            grants: vec![],
+                            expiry: None,
+                            target: None,
+                        },
+                    )
+                    .cost(AbilityCost::Tap),
+                );
+            }
+        }
+        // Best single ability is the count-3 mode — not 2 + 3 = 5.
+        assert_eq!(max_mana_yield(&state, id, PlayerId(0)), 3);
+
+        state.objects.get_mut(&id).unwrap().tapped = true;
+        assert_eq!(max_mana_yield(&state, id, PlayerId(0)), 0);
+    }
+
+    /// CR 605.3b: A filter land (`{1}, {T}: Add two mana`) nets one mana — its
+    /// gross output of two must not overstate the X a caster can afford.
+    #[test]
+    fn max_mana_yield_nets_out_activation_cost() {
+        use crate::types::mana::{ManaCost, ManaUnit};
+
+        let mut state = GameState::new_two_player(42);
+        // Prime the pool so the `{1}` activation cost is currently payable —
+        // otherwise `can_activate_mana_ability_now` rejects the ability.
+        state.players[0]
+            .mana_pool
+            .add(ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]));
+
+        let id = create_object(
+            &mut state,
+            CardId(902),
+            PlayerId(0),
+            "Filter Land".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            Arc::make_mut(&mut obj.abilities).push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Mana {
+                        produced: ManaProduction::Colorless {
+                            count: QuantityExpr::Fixed { value: 2 },
+                        },
+                        restrictions: vec![],
+                        grants: vec![],
+                        expiry: None,
+                        target: None,
+                    },
+                )
+                .cost(AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Mana {
+                            cost: ManaCost::Cost {
+                                shards: vec![],
+                                generic: 1,
+                            },
+                        },
+                        AbilityCost::Tap,
+                    ],
+                }),
+            );
+        }
+        // Gross output 2, minus the `{1}` activation cost → net 1.
+        assert_eq!(max_mana_yield(&state, id, PlayerId(0)), 1);
+    }
 
     /// Parametric coverage of every `ManaProduction` variant — each row asserts
     /// the projection a typical card of that shape produces. War Room
@@ -5870,42 +5870,41 @@ mod tests {
         );
     }
 
-    // Commented out: no production caller; kept for reference.
-    // /// Issue #4265: `max_mana_yield` counts the aura bonus so X-value
-    // /// choosers know the enchanted land produces 2, not 1.
-    // ///
-    // /// `max_mana_yield` uses `activatable_mana_options` for its subtype-only
-    // /// fallback, which does NOT include the basic-subtype synthesised option
-    // /// that `land_mana_options` adds. Production Forests always carry an
-    // /// explicit `{T}: Add {G}` ability from the parser, so the test mirrors
-    // /// that by adding `verge_ability(Green)` (a plain `{T}: Add {G}`).
-    // #[test]
-    // fn max_mana_yield_counts_wild_growth_aura_bonus() {
-    //     let mut state = GameState::new_two_player(42);
-    //     let forest = create_object(
-    //         &mut state,
-    //         CardId(1),
-    //         PlayerId(0),
-    //         "Forest".to_string(),
-    //         Zone::Battlefield,
-    //     );
-    //     {
-    //         let obj = state.objects.get_mut(&forest).unwrap();
-    //         obj.card_types.core_types.push(CoreType::Land);
-    //         obj.card_types.subtypes.push("Forest".to_string());
-    //         obj.entered_battlefield_turn = Some(1);
-    //         // Mirror production: real Forests carry an explicit {T}: Add {G}.
-    //         Arc::make_mut(&mut obj.abilities).push(verge_ability(ManaColor::Green));
-    //     }
-    //
-    //     assert_eq!(max_mana_yield(&state, forest, PlayerId(0)), 1, "baseline");
-    //     attach_taps_for_mana_aura(&mut state, forest, PlayerId(0), ManaColor::Green);
-    //     assert_eq!(
-    //         max_mana_yield(&state, forest, PlayerId(0)),
-    //         2,
-    //         "Wild Growth adds 1 more mana"
-    //     );
-    // }
+    /// Issue #4265: `max_mana_yield` counts the aura bonus so X-value
+    /// choosers know the enchanted land produces 2, not 1.
+    ///
+    /// `max_mana_yield` uses `activatable_mana_options` for its subtype-only
+    /// fallback, which does NOT include the basic-subtype synthesised option
+    /// that `land_mana_options` adds. Production Forests always carry an
+    /// explicit `{T}: Add {G}` ability from the parser, so the test mirrors
+    /// that by adding `verge_ability(Green)` (a plain `{T}: Add {G}`).
+    #[test]
+    fn max_mana_yield_counts_wild_growth_aura_bonus() {
+        let mut state = GameState::new_two_player(42);
+        let forest = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&forest).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.card_types.subtypes.push("Forest".to_string());
+            obj.entered_battlefield_turn = Some(1);
+            // Mirror production: real Forests carry an explicit {T}: Add {G}.
+            Arc::make_mut(&mut obj.abilities).push(verge_ability(ManaColor::Green));
+        }
+
+        assert_eq!(max_mana_yield(&state, forest, PlayerId(0)), 1, "baseline");
+        attach_taps_for_mana_aura(&mut state, forest, PlayerId(0), ManaColor::Green);
+        assert_eq!(
+            max_mana_yield(&state, forest, PlayerId(0)),
+            2,
+            "Wild Growth adds 1 more mana"
+        );
+    }
 
     /// Issue #4265: `display_land_mana_pips` shows two green pips for a
     /// Forest enchanted by Wild Growth.
