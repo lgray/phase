@@ -115,7 +115,7 @@ describe("HostSetup — host-supplied pile", () => {
     vi.restoreAllMocks();
   });
 
-  it("C3: hosts Dandan AI seats with an empty deck and the default pile though the AI catalog is empty", async () => {
+  it("hosts Dandan AI seats with an empty deck and the default pile though the AI catalog is empty", async () => {
     rememberWithAiSeat("Dandan");
     const onHost = renderHostSetup();
     await settled("Dandan");
@@ -131,7 +131,7 @@ describe("HostSetup — host-supplied pile", () => {
     );
   });
 
-  it("C3: a named pile the engine refuses blocks hosting", async () => {
+  it("a named pile the engine refuses blocks hosting", async () => {
     rememberWithAiSeat("Dandan");
     compat.evaluateDeckCompatibility.mockResolvedValue({ selected_format_compatible: false, selected_format_reasons: ["Too many Islands"] });
     renderHostSetup();
@@ -141,7 +141,7 @@ describe("HostSetup — host-supplied pile", () => {
     expect(screen.getByRole("button", { name: "Host Game" })).toBeDisabled();
   });
 
-  it("C3: a named pile the engine accepts rides the settings", async () => {
+  it("a named pile the engine accepts rides the settings", async () => {
     rememberWithAiSeat("Dandan");
     compat.evaluateDeckCompatibility.mockResolvedValue({ selected_format_compatible: true, selected_format_reasons: [] });
     const onHost = renderHostSetup();
@@ -156,7 +156,23 @@ describe("HostSetup — host-supplied pile", () => {
     );
   });
 
-  it("C3: a player-built format with AI seats and an empty catalog stays blocked", async () => {
+  it("changing format drops a named pile", async () => {
+    rememberWithAiSeat("Dandan");
+    compat.evaluateDeckCompatibility.mockResolvedValue({ selected_format_compatible: true, selected_format_reasons: [] });
+    const onHost = renderHostSetup();
+    await settled("Dandan");
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Pile" }), "Pile A");
+    expect(screen.getByRole("combobox", { name: "Pile" })).toHaveValue("Pile A");
+    await user.click(screen.getByRole("button", { name: "Format" }));
+    await user.click(screen.getByRole("option", { name: "Standard" }));
+    await user.click(screen.getByRole("button", { name: "Format" }));
+    await user.click(screen.getByRole("option", { name: "Dandân" }));
+    expect(await screen.findByRole("combobox", { name: "Pile" })).toHaveValue("");
+    expect(onHost).not.toHaveBeenCalled();
+  });
+
+  it("a player-built format with AI seats and an empty catalog stays blocked", async () => {
     rememberWithAiSeat("Standard");
     renderHostSetup();
     await settled("Standard");

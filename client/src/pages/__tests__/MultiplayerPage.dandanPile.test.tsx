@@ -188,7 +188,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("MultiplayerPage — host-supplied pile, hosting (C2a)", () => {
+describe("MultiplayerPage — host-supplied pile, hosting", () => {
   it("hosts Dandan's default pile on a server with no active deck", async () => {
     renderPage();
     await submitHostSetup(URL_B);
@@ -280,7 +280,7 @@ describe("MultiplayerPage — host-supplied pile, hosting (C2a)", () => {
   });
 });
 
-describe("MultiplayerPage — host-supplied pile, vanished pile (C2d)", () => {
+describe("MultiplayerPage — host-supplied pile, vanished pile", () => {
   it("reports an unreadable pile at the host-deck read and starts nothing", async () => {
     pile.pileSeatDeck.mockResolvedValueOnce(null);
     renderPage();
@@ -314,7 +314,7 @@ describe("MultiplayerPage — host-supplied pile, vanished pile (C2d)", () => {
   });
 });
 
-describe("MultiplayerPage — host-supplied pile, joining (C2b)", () => {
+describe("MultiplayerPage — host-supplied pile, joining", () => {
   const origin = () => adHocLobbySource(URL_A);
 
   async function joinFromLobby(code: string, format?: string) {
@@ -391,7 +391,7 @@ describe("MultiplayerPage — host-supplied pile, joining (C2b)", () => {
   });
 });
 
-describe("MultiplayerPage — host-supplied pile, host-setup chrome (C2c)", () => {
+describe("MultiplayerPage — host-supplied pile, host-setup chrome", () => {
   async function renderHostSetupFor(format: string) {
     useMultiplayerStore.setState({ formatConfig: { format, min_players: 2 } as never });
     renderPage();

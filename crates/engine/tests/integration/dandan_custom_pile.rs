@@ -87,7 +87,7 @@ fn object_names(state: &GameState) -> BTreeMap<String, usize> {
 }
 
 #[test]
-fn e1a_e1c_the_pile_seats_submission_is_the_one_shared_library() {
+fn the_pile_seats_submission_is_the_one_shared_library() {
     let Some(db) = shared_card_db() else { return };
     let mut payload = resolve_deck_list(db, &jund_list(Some(vec!["Island".to_string(); 80])));
     // A card split across two entries still loads as one card's copies.
@@ -118,14 +118,14 @@ fn e1a_e1c_the_pile_seats_submission_is_the_one_shared_library() {
 }
 
 #[test]
-fn e1b_an_empty_submission_plays_the_default_list() {
+fn an_empty_submission_plays_the_default_list() {
     let Some(db) = shared_card_db() else { return };
     let state = loaded(db, &resolve_deck_list(db, &DeckList::default()));
     assert_eq!(multiset(library_names(&state)), expected_decklist());
 }
 
 #[test]
-fn e1d_only_the_pile_seats_main_deck_loads() {
+fn only_the_pile_seats_main_deck_loads() {
     let Some(db) = shared_card_db() else { return };
     let mut list = jund_list(None);
     list.player.sideboard = vec!["Black Lotus".to_string()];
@@ -152,7 +152,7 @@ fn e1d_only_the_pile_seats_main_deck_loads() {
 }
 
 #[test]
-fn e4a_a_started_game_plays_only_the_pile() {
+fn a_started_game_plays_only_the_pile() {
     let Some(db) = shared_card_db() else { return };
     let mut state = loaded(db, &resolve_deck_list(db, &jund_list(None)));
     let _ = start_game_with_starting_player(&mut state, P0);
@@ -189,7 +189,7 @@ fn header(deck_data: DeckList) -> ReplayHeader {
 }
 
 #[test]
-fn e4b_a_replay_reloads_the_pile_from_the_recorded_deck_list() {
+fn a_replay_reloads_the_pile_from_the_recorded_deck_list() {
     let db = owned_db();
     let header = header(jund_list(None));
 
@@ -256,7 +256,7 @@ fn with_tail(base: &[String], card: &str, n: usize) -> Vec<String> {
 }
 
 #[test]
-fn e2_the_validator_admits_any_resolvable_80_and_an_empty_submission() {
+fn the_validator_admits_any_resolvable_80_and_an_empty_submission() {
     if shared_card_db().is_none() {
         return;
     }
@@ -300,7 +300,7 @@ fn e2_the_validator_admits_any_resolvable_80_and_an_empty_submission() {
 }
 
 #[test]
-fn e2_the_p2p_guest_gate_admits_an_empty_dandan_submission() {
+fn the_p2p_guest_gate_admits_an_empty_dandan_submission() {
     let Some(db) = shared_card_db() else { return };
     let request = |format: GameFormat, main_deck: Vec<String>| DeckCompatibilityRequest {
         main_deck,
@@ -321,7 +321,7 @@ fn e2_the_p2p_guest_gate_admits_an_empty_dandan_submission() {
 }
 
 #[test]
-fn e2s_the_empty_rule_follows_the_deck_supply_axis() {
+fn the_empty_rule_follows_the_deck_supply_axis() {
     if shared_card_db().is_none() {
         return;
     }

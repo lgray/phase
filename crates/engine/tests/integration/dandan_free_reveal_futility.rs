@@ -136,7 +136,7 @@ fn orientations() -> impl Iterator<Item = (PlayerId, PlayerId)> {
 }
 
 #[test]
-fn v1_a_declared_seats_hand_counts_toward_the_pool() {
+fn a_declared_seats_hand_counts_toward_the_pool() {
     let Some(db) = shared_card_db() else { return };
     let pile = payload(db, &TWO_OPTS);
     for (starting, seat) in orientations() {
@@ -159,7 +159,7 @@ fn v1_a_declared_seats_hand_counts_toward_the_pool() {
 }
 
 #[test]
-fn v2_and_v3_a_pending_seats_hand_counts_until_it_keeps() {
+fn a_pending_seats_hand_counts_until_it_keeps() {
     let Some(db) = shared_card_db() else { return };
     let pile = payload(db, &TWO_OPTS);
     for (starting, seat) in orientations() {
@@ -192,7 +192,7 @@ fn v2_and_v3_a_pending_seats_hand_counts_until_it_keeps() {
 }
 
 #[test]
-fn v4_the_deal_is_futile_only_when_the_whole_pile_cannot_clear() {
+fn the_deal_is_futile_only_when_the_whole_pile_cannot_clear() {
     let Some(db) = shared_card_db() else { return };
     for (pile, futile) in [
         (&[("Island", 80)][..], true),
@@ -223,7 +223,7 @@ fn v4_the_deal_is_futile_only_when_the_whole_pile_cannot_clear() {
 }
 
 #[test]
-fn v5_a_seat_not_offered_the_reveal_is_never_futile() {
+fn a_seat_not_offered_the_reveal_is_never_futile() {
     let Some(db) = shared_card_db() else { return };
     let mut state = dealt(db, &payload(db, &[("Island", 80)]), 1, P0);
     assert!(
@@ -250,7 +250,7 @@ fn v5_a_seat_not_offered_the_reveal_is_never_futile() {
 }
 
 #[test]
-fn v6_the_default_list_is_never_futile_at_the_deal() {
+fn the_default_list_is_never_futile_at_the_deal() {
     let Some(db) = shared_card_db() else { return };
     let mut offered_hands = 0;
     for seed in 0..60 {

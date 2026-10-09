@@ -322,7 +322,7 @@ describe("GameSetupPage — cEDH bracket warning chip", () => {
       seedDeck("Pile A");
     });
 
-    it("C1: the default pile starts Dandan with no saved deck and no pile on the URL", async () => {
+    it("the default pile starts Dandan with no saved deck and no pile on the URL", async () => {
       localStorage.removeItem(STORAGE_KEY_PREFIX + "Pile A");
       renderGameSetupPage("/game-setup?format=Dandan");
       expect(await screen.findByRole("combobox", { name: "Pile" })).toHaveValue("");
@@ -332,7 +332,7 @@ describe("GameSetupPage — cEDH bracket warning chip", () => {
       expect(search).not.toContain("pile=");
     });
 
-    it("C1: a named pile the engine refuses blocks Start", async () => {
+    it("a named pile the engine refuses blocks Start", async () => {
       compat.evaluateDeckCompatibility.mockResolvedValue({
         selected_format_compatible: false,
         selected_format_reasons: ["Dandân deck must have exactly 80 cards (found 100)"],
@@ -343,7 +343,7 @@ describe("GameSetupPage — cEDH bracket warning chip", () => {
       expect(screen.getByRole("button", { name: /^Start Match/ })).toBeDisabled();
     });
 
-    it("C1: a named pile the engine accepts rides the URL", async () => {
+    it("a named pile the engine accepts rides the URL", async () => {
       compat.evaluateDeckCompatibility.mockResolvedValue({ selected_format_compatible: true, selected_format_reasons: [] });
       renderGameSetupPage("/game-setup?format=Dandan");
       await userEvent.setup().selectOptions(await screen.findByRole("combobox", { name: "Pile" }), "Pile A");
@@ -351,7 +351,7 @@ describe("GameSetupPage — cEDH bracket warning chip", () => {
       expect(await start()).toContain("pile=Pile%20A");
     });
 
-    it("C1: changing format drops a named pile", async () => {
+    it("changing format drops a named pile", async () => {
       compat.evaluateDeckCompatibility.mockResolvedValue({ selected_format_compatible: true, selected_format_reasons: [] });
       renderGameSetupPage("/game-setup?format=Dandan");
       await userEvent.setup().selectOptions(await screen.findByRole("combobox", { name: "Pile" }), "Pile A");
@@ -362,7 +362,7 @@ describe("GameSetupPage — cEDH bracket warning chip", () => {
       expect(await start()).not.toContain("pile=");
     });
 
-    it("C1: Momir offers no pile and starts without one", async () => {
+    it("Momir offers no pile and starts without one", async () => {
       renderGameSetupPage("/game-setup?format=Momir");
       await waitFor(() => expect(deckSupplyForFormat).toHaveBeenCalledWith("Momir"));
       await act(async () => {});
@@ -372,7 +372,7 @@ describe("GameSetupPage — cEDH bracket warning chip", () => {
       expect(search).not.toContain("pile=");
     });
 
-    it("C1: Standard offers no pile", async () => {
+    it("Standard offers no pile", async () => {
       setActiveDeck("Pile A");
       renderGameSetupPage("/game-setup?format=Standard");
       await waitFor(() => expect(deckSupplyForFormat).toHaveBeenCalledWith("Standard"));

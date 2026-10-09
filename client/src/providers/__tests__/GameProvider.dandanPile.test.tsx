@@ -224,24 +224,24 @@ describe("GameProvider host-supplied pile routes", () => {
   afterEach(cleanup);
 
   describe("supplied format", () => {
-    it("C4: local AI puts the named pile on the player seat and nothing elsewhere", async () => {
+    it("local AI puts the named pile on the player seat and nothing elsewhere", async () => {
       renderRoute({ mode: "ai", formatConfig: config("Dandan"), pile: "Pile A" });
       const deckList = await localAiDeckList();
       expect(deckList.player.main_deck).toEqual(PILE);
       expect(deckList.opponent.main_deck).toEqual([]);
     });
 
-    it("C4: local AI submits empty for the default pile", async () => {
+    it("local AI submits empty for the default pile", async () => {
       renderRoute({ mode: "ai", formatConfig: config("Dandan") });
       expect((await localAiDeckList()).player.main_deck).toEqual([]);
     });
 
-    it("C4: local AI submits empty for an engine-fixed format with a named pile", async () => {
+    it("local AI submits empty for an engine-fixed format with a named pile", async () => {
       renderRoute({ mode: "ai", formatConfig: config("Momir"), pile: "Pile A" });
       expect((await localAiDeckList()).player.main_deck).toEqual([]);
     });
 
-    it("C4: native AI carries the named pile on the player seat and empty AI seats", async () => {
+    it("native AI carries the named pile on the player seat and empty AI seats", async () => {
       native.enabled = true;
       renderRoute({ mode: "ai", formatConfig: config("Dandan"), pile: "Pile A" });
       await waitFor(() => expect(recorded.ws).toHaveLength(1));
@@ -249,25 +249,25 @@ describe("GameProvider host-supplied pile routes", () => {
       expect(recorded.ws[0].opts?.nativeAi?.aiSeats.map(({ deck }) => deck.main_deck)).toEqual([[]]);
     });
 
-    it("C4: a vanished named pile reports the deck could not load", async () => {
+    it("a vanished named pile reports the deck could not load", async () => {
       const onNoDeck = renderRoute({ mode: "ai", formatConfig: config("Dandan"), pile: "Gone" });
       await waitFor(() => expect(onNoDeck).toHaveBeenCalledWith(NOT_LOADED));
       expect(gameStoreState.initGame).not.toHaveBeenCalled();
     });
 
-    it("C4: a fresh P2P host submits the pile, not the active deck", async () => {
+    it("a fresh P2P host submits the pile, not the active deck", async () => {
       renderRoute({ mode: "p2p-host", formatConfig: config("Dandan"), pile: "Pile A" });
       await waitFor(() => expect(recorded.p2pHost).toHaveLength(1));
       expect(recorded.p2pHost[0].player.main_deck).toEqual(PILE);
     });
 
-    it("C4: a P2P guest submits empty although an active deck exists", async () => {
+    it("a P2P guest submits empty although an active deck exists", async () => {
       renderRoute({ mode: "p2p-join", joinCode: "ABCDE", formatConfig: config("Dandan") });
       await waitFor(() => expect(recorded.p2pGuest).toHaveLength(1));
       expect(recorded.p2pGuest[0].player.main_deck).toEqual([]);
     });
 
-    it("C4: an online guest submits empty although an active deck exists", async () => {
+    it("an online guest submits empty although an active deck exists", async () => {
       renderRoute({ mode: "online", joinCode: "ABC123", formatConfig: config("Dandan") });
       await waitFor(() => expect(recorded.ws).toHaveLength(1));
       expect(recorded.ws[0].mode).toBe("join");
@@ -275,7 +275,7 @@ describe("GameProvider host-supplied pile routes", () => {
     });
   });
 
-  it("C4: a deckless P2P guest with no format dials with an empty deck", async () => {
+  it("a deckless P2P guest with no format dials with an empty deck", async () => {
     localStorage.removeItem(ACTIVE_DECK_KEY);
     const onNoDeck = renderRoute({ mode: "p2p-join", joinCode: "ABCDE" });
     await waitFor(() => expect(recorded.p2pGuest).toHaveLength(1));
@@ -284,25 +284,25 @@ describe("GameProvider host-supplied pile routes", () => {
   });
 
   describe("player-built format", () => {
-    it("C4: a P2P guest submits its active deck", async () => {
+    it("a P2P guest submits its active deck", async () => {
       renderRoute({ mode: "p2p-join", joinCode: "ABCDE", formatConfig: config("Standard") });
       await waitFor(() => expect(recorded.p2pGuest).toHaveLength(1));
       expect(recorded.p2pGuest[0].player.main_deck).toEqual(ACTIVE);
     });
 
-    it("C4: an online guest submits its active deck", async () => {
+    it("an online guest submits its active deck", async () => {
       renderRoute({ mode: "online", joinCode: "ABC123", formatConfig: config("Standard") });
       await waitFor(() => expect(recorded.ws).toHaveLength(1));
       expect(recorded.ws[0].deck.main_deck).toEqual(ACTIVE);
     });
 
-    it("C4: a fresh P2P host submits its active deck", async () => {
+    it("a fresh P2P host submits its active deck", async () => {
       renderRoute({ mode: "p2p-host", formatConfig: config("Standard"), pile: "Pile A" });
       await waitFor(() => expect(recorded.p2pHost).toHaveLength(1));
       expect(recorded.p2pHost[0].player.main_deck).toEqual(ACTIVE);
     });
 
-    it("C4: a P2P host with no active deck is told it has none", async () => {
+    it("a P2P host with no active deck is told it has none", async () => {
       localStorage.removeItem(ACTIVE_DECK_KEY);
       const onNoDeck = renderRoute({ mode: "p2p-host", formatConfig: config("Standard") });
       await waitFor(() => expect(onNoDeck).toHaveBeenCalled());

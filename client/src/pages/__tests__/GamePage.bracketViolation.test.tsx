@@ -523,7 +523,7 @@ describe("GamePage — cEDH bracket-violation blocking modal", () => {
     expect(capturedFormatConfig?.format).toBe("TwoHeadedGiant");
   });
 
-  it("C6: hands the URL's pile to GameProvider", () => {
+  it("hands the URL's pile to GameProvider", () => {
     renderGamePage("/game/test-game-123?mode=ai&format=Dandan&pile=Pile%20A");
     expect(capturedPile).toBe("Pile A");
     cleanup();

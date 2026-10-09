@@ -293,7 +293,7 @@ function MultiplayerPageContent({
         ?? hostingLobbySource(useMultiplayerStore.getState()),
     };
     navigate(location.pathname, { replace: true, state: null });
-    // A supplied-deck room admits the empty submission its join URL now asks for, so it re-dials once.
+    // A supplied-deck format takes the empty submission, so a rejected join re-dials once with it.
     if (isSuppliedFormat(action.format)) {
       void executeAction(action);
       return;

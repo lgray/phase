@@ -253,37 +253,37 @@ describe("HostControlTile", () => {
       data: { seatIndex: 1, kind: { type: "Ai", data: { difficulty: "Medium", deck } } },
     });
 
-    it("C3b: Add AI seats an empty deck for Dandan with an empty catalog", () => {
+    it("Add AI seats an empty deck for Dandan with an empty catalog", () => {
       const { seatMutate } = renderSeats("Dandan", waiting);
       fireEvent.click(screen.getByRole("button", { name: "Add AI" }));
       expect(seatMutate).toHaveBeenCalledWith(setAi(EMPTY));
     });
 
-    it("C3b: Replace AI seats an empty deck for Dandan with an empty catalog", () => {
+    it("Replace AI seats an empty deck for Dandan with an empty catalog", () => {
       vi.stubGlobal("confirm", vi.fn(() => true));
       const { seatMutate } = renderSeats("Dandan", joined);
       fireEvent.click(screen.getByRole("button", { name: "Replace AI" }));
       expect(seatMutate).toHaveBeenCalledWith(setAi(EMPTY));
     });
 
-    it("C3b: Fill With AI seats an empty deck and starts for Dandan with an empty catalog", async () => {
+    it("Fill With AI seats an empty deck and starts for Dandan with an empty catalog", async () => {
       const { seatMutateAsync } = renderSeats("Dandan", waiting);
       fireEvent.click(screen.getByRole("button", { name: "Fill With AI" }));
       await vi.waitFor(() => expect(seatMutateAsync).toHaveBeenCalledWith({ type: "Start" }));
       expect(seatMutateAsync).toHaveBeenNthCalledWith(1, setAi(EMPTY));
     });
 
-    it("C3b: an AI seat holding Random is promoted to the empty deck for Dandan", () => {
+    it("an AI seat holding Random is promoted to the empty deck for Dandan", () => {
       const { seatMutate } = renderSeats("Dandan", aiWith({ type: "Random" }));
       expect(seatMutate).toHaveBeenCalledWith(setAi(EMPTY));
     });
 
-    it("C3b: a Dandan AI row offers no deck dropdown", () => {
+    it("a Dandan AI row offers no deck dropdown", () => {
       renderSeats("Dandan", aiWith(EMPTY));
       expect(screen.getAllByRole("combobox")).toHaveLength(1);
     });
 
-    it("C3b: Standard with an empty catalog disables every AI deck consumer", () => {
+    it("Standard with an empty catalog disables every AI deck consumer", () => {
       vi.stubGlobal("confirm", vi.fn(() => true));
       const waitingRender = renderSeats("Standard", waiting);
       expect(screen.getByRole("button", { name: "Add AI" })).toBeDisabled();
@@ -297,7 +297,7 @@ describe("HostControlTile", () => {
       expect(random.seatMutate).not.toHaveBeenCalled();
     });
 
-    it("C3b: Standard with a catalog deck shows the dropdown and promotes Random", () => {
+    it("Standard with a catalog deck shows the dropdown and promotes Random", () => {
       catalogMocks.candidates = [CATALOG_DECK];
       const { seatMutate } = renderSeats("Standard", aiWith({ type: "Random" }));
       expect(screen.getAllByRole("combobox")).toHaveLength(2);

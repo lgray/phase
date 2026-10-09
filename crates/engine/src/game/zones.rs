@@ -985,7 +985,7 @@ pub fn resolve_and_apply_zone_change(
     zone_change_record.turn_zone_change_index = turn_zone_change_index;
     zone_change_record.recorded_turn_number = state.turn_number;
     if rebound_from.is_some() {
-        // CR 108.4a + CR 109.4: off the battlefield and stack a card's controller is its owner.
+        // CR 108.3 as modified by the entry-ownership axis: the receiver becomes owner and controller; on the battlefield or stack that receiver is the player who played or cast it.
         zone_change_record.owner = installed_owner;
         zone_change_record.controller = installed_owner;
         zone_change_record.sync_trigger_source_context();
