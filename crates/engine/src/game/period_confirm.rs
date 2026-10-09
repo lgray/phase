@@ -90,6 +90,10 @@ pub struct ConfirmedPeriod {
     /// How far past its step the period runs before it comes round again.
     #[serde(default)]
     reach: PeriodReach,
+    /// CR 732.2a: the game choices the first replayed cycle's prompts were answered with, which a
+    /// recorded take performs.
+    #[serde(default)]
+    choices: Vec<PinnedDecision>,
 }
 
 // `GameAction` derives no `Eq`, and no value an action carries is floating-point.
@@ -102,6 +106,16 @@ impl ConfirmedPeriod {
 
     pub(crate) fn growth(&self) -> CoveredGrowth {
         self.growth
+    }
+
+    pub fn choices(&self) -> &[PinnedDecision] {
+        &self.choices
+    }
+
+    /// CR 732.2a: the answers a take of this period performs, which a declaration must agree
+    /// with; `None` when no period was confirmed.
+    pub fn recorded_answers(&self) -> Option<&[PinnedDecision]> {
+        (!self.is_empty()).then_some(self.choices.as_slice())
     }
 }
 
@@ -116,8 +130,6 @@ pub(crate) struct Confirmation {
     /// The printed identity of each triggered ability the first replayed cycle resolved, in order.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) performed: Vec<String>,
-    /// CR 732.2a: the game choices the first replayed cycle's prompts were answered with.
-    pub(crate) choices: Vec<PinnedDecision>,
     /// CR 704.5a + CR 732.2a: a loss period's bounded offer, as the threshold authority measured
     /// it on the replayed frames; `None` on the unbounded road.
     pub(crate) bounded: Option<BoundedOfferParts>,
@@ -780,13 +792,13 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
             items,
             growth,
             reach: span.reach,
+            choices,
         },
         frames: Box::new([s_n1, s_n2]),
         delta,
         departure,
         #[cfg(any(test, feature = "test-support"))]
         performed,
-        choices,
         bounded,
     })
 }

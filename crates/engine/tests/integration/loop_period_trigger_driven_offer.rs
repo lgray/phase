@@ -9,7 +9,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use engine::analysis::decision_template::{ChoicePoint, IterationCount};
+use engine::analysis::decision_template::{
+    declaration_conforms, validate_recorded_answers, AimContext, ChoicePoint, DecisionSlot,
+    DecisionTemplate, IterationCount, MayChoiceOption, PinValidation, PinnedDecision, TargetPin,
+};
 use engine::analysis::loop_check::{OfferRoad, ShortcutResponse};
 use engine::analysis::resource::{loop_detect_cost, reset_loop_detect_cost, LoopDetectCost};
 use engine::game::scenario::{GameRunner, P0};
@@ -17,7 +20,7 @@ use engine::game::NamingCause;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor,
+    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor, YieldTarget,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::zones::Zone;
@@ -34,6 +37,8 @@ const ACCEPTS: usize = 8;
 enum Board {
     A,
     B,
+    /// Board B with Soul's Attendant beside it, whose "may" every drive takes.
+    BAttendant,
 }
 
 const BOARDS: [Board; 2] = [Board::A, Board::B];
@@ -118,8 +123,17 @@ fn start_ordered(board: Board, order: Ordering) -> Option<Drive> {
                 }),
             })
         }
-        Board::B => {
-            let built = crate::loop_period_trigger_driven_arming::build_board_b()?;
+        Board::B | Board::BAttendant => {
+            let (built, attendant) = match board {
+                Board::BAttendant => {
+                    let (built, attendant) = build_board_b_with_attendant()?;
+                    (built, Some(attendant))
+                }
+                _ => (
+                    crate::loop_period_trigger_driven_arming::build_board_b()?,
+                    None,
+                ),
+            };
             let mut runner = built.runner;
             cast_animate_dead(&mut runner, built.animate_dead, built.felidar);
             let felidar = built.felidar;
@@ -129,6 +143,11 @@ fn start_ordered(board: Board, order: Ordering) -> Option<Drive> {
                 minting: built.preston,
                 order,
                 policy: Box::new(move |state| {
+                    if matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { source_id, .. }
+                        if Some(source_id) == attendant)
+                    {
+                        return Some(GameAction::DecideOptionalEffect { accept: true });
+                    }
                     let legal = engine::ai_support::legal_actions(state);
                     if left > 0 {
                         if let Some(aimed) = legal.iter().find(|action| {
@@ -269,10 +288,16 @@ impl Drive {
 
     /// Declare `count` with no template and accept from every responder.
     fn take(&mut self, count: IterationCount) -> Vec<Apply> {
-        let mut applies = vec![self.apply(GameAction::DeclareShortcut {
-            count,
-            template: None,
-        })];
+        self.take_declared(count, None)
+    }
+
+    /// Declare `count` with `template` and accept from every responder.
+    fn take_declared(
+        &mut self,
+        count: IterationCount,
+        template: Option<DecisionTemplate>,
+    ) -> Vec<Apply> {
+        let mut applies = vec![self.apply(GameAction::DeclareShortcut { count, template })];
         assert!(
             matches!(
                 self.state().waiting_for,
@@ -296,7 +321,16 @@ impl Drive {
 /// Each board driven to the first window `apply()` returns at, which must be its offer.
 fn offered(board: Board) -> Option<(Drive, Vec<Apply>)> {
     let mut drive = start(board)?;
-    let applies = drive.drive_to_window();
+    let mut applies = drive.drive_to_window();
+    // Soul's Attendant's trigger lands above Preston's, so that board passes one recurrence window
+    // before its offer stands.
+    if let Board::BAttendant = board {
+        if !is_offer(drive.state()) {
+            let action = drive.next_action();
+            applies.push(drive.apply(action));
+            applies.extend(drive.drive_to_window());
+        }
+    }
     let state = drive.state();
     assert!(
         matches!(
@@ -326,6 +360,7 @@ fn offered(board: Board) -> Option<(Drive, Vec<Apply>)> {
                 "A: the offer stands before the minting trigger's recurrence window"
             );
         }
+        Board::BAttendant => {}
         Board::B => assert_eq!(
             top_trigger_source(state),
             Some(drive.minting),
@@ -709,5 +744,420 @@ fn trigger_driven_take_history_work_is_flat_per_cycle_b() {
         ],
         &[TakeHistoryMap::AbilityResolutions],
         |n| metered_take(Board::B, n),
+    );
+}
+
+/// Board B with Soul's Attendant on P0's battlefield: "Whenever another creature enters, you may
+/// gain 1 life." Its "may" gains life and never drives the recurrence.
+fn build_board_b_with_attendant() -> Option<(
+    crate::loop_period_trigger_driven_arming::PrestonBoard,
+    ObjectId,
+)> {
+    use engine::game::scenario::GameScenario;
+    use engine::game::scenario_db::GameScenarioDbExt;
+    use engine::types::mana::{ManaType, ManaUnit};
+    use engine::types::phase::Phase;
+    use engine::types::player::PlayerId;
+
+    let db = crate::support::shared_card_db()?;
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let preston = scenario.add_real_card(P0, "Preston, the Vanisher", Zone::Battlefield, db);
+    let altar = scenario.add_real_card(P0, "Altar of the Brood", Zone::Battlefield, db);
+    let attendant = scenario.add_real_card(P0, "Soul's Attendant", Zone::Battlefield, db);
+    let felidar = scenario.add_real_card(P0, "Felidar Guardian", Zone::Graveyard, db);
+    let animate_dead = scenario.add_real_card(P0, "Animate Dead", Zone::Hand, db);
+    for _ in 0..2 {
+        scenario.add_real_card(P0, "Swamp", Zone::Battlefield, db);
+    }
+    for seat in (0..4).map(PlayerId) {
+        for _ in 0..40 {
+            scenario.add_real_card(seat, "Swamp", Zone::Library, db);
+        }
+    }
+    scenario.with_mana_pool(
+        P0,
+        vec![
+            ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![]),
+            ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![]),
+        ],
+    );
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    Some((
+        crate::loop_period_trigger_driven_arming::PrestonBoard {
+            runner,
+            felidar,
+            animate_dead,
+            preston,
+            altar,
+        },
+        attendant,
+    ))
+}
+
+/// The offer standing in `state` declared with every published point pinned the way its confirmed
+/// period answered it, except each "may" `flip` names, which is answered the other way.
+fn recorded_declaration(
+    state: &GameState,
+    flip: impl Fn(&DecisionSlot) -> bool,
+) -> DecisionTemplate {
+    let WaitingFor::LoopShortcut {
+        proposer,
+        schema,
+        period,
+        ..
+    } = &state.waiting_for
+    else {
+        panic!("an offer stands");
+    };
+    let decisions: Vec<PinnedDecision> = schema
+        .points
+        .iter()
+        .map(|point| {
+            let recorded = period
+                .choices()
+                .iter()
+                .find(|pin| pin.slot() == &point.slot)
+                .expect("every published point is a recorded answer")
+                .clone();
+            match recorded {
+                PinnedDecision::MayChoice { slot, take } if flip(&slot) => {
+                    let take = match take {
+                        MayChoiceOption::Take => MayChoiceOption::Decline,
+                        MayChoiceOption::Decline => MayChoiceOption::Take,
+                    };
+                    PinnedDecision::MayChoice { slot, take }
+                }
+                // CR 400.7: the declaration names each target at its live incarnation.
+                PinnedDecision::Targets { slot, targets } => PinnedDecision::Targets {
+                    slot,
+                    targets: targets
+                        .into_iter()
+                        .map(|pin| match pin {
+                            TargetPin::ByIdentity(YieldTarget::ThisObject {
+                                source_id,
+                                trigger_description,
+                                ..
+                            }) => TargetPin::ByIdentity(YieldTarget::ThisObject {
+                                source_id,
+                                incarnation: None,
+                                trigger_description,
+                            }),
+                            other => other,
+                        })
+                        .collect(),
+                },
+                other => other,
+            }
+        })
+        .collect();
+    DecisionTemplate {
+        owner: *proposer,
+        key: engine::analysis::decision_template::DecisionGroupKey::from_sources(
+            &decisions
+                .iter()
+                .map(|pin| pin.slot().source.clone())
+                .collect::<Vec<_>>(),
+            engine::analysis::decision_template::DecisionKind::LoopChoice,
+        ),
+        decisions,
+        replay: engine::analysis::decision_template::ReplayMode::Static,
+    }
+}
+
+/// CR 732.2a + CR 603.5: on `board`'s recorded-period offer, a declaration answering a "may"
+/// `flip` names otherwise than the confirmed period did is refused into the manual-play handback,
+/// and the declaration of the recorded answers is admitted and taken. `taken` is asserted of the
+/// state after the take.
+fn assert_the_declared_may_answer_must_be_the_recorded_one(
+    board: Board,
+    flip: impl Fn(&GameState, &DecisionSlot) -> bool,
+    taken: impl Fn(&GameState, &GameState),
+) {
+    const COUNT: u32 = 3;
+    let Some((mut drive, _)) = offered(board) else {
+        return;
+    };
+    let offer = drive.state().clone();
+    let WaitingFor::LoopShortcut {
+        proposer,
+        schema,
+        certificate,
+        declaration,
+        period,
+        ..
+    } = &offer.waiting_for
+    else {
+        unreachable!("offered() asserted the offer");
+    };
+    let flipped: Vec<&PinnedDecision> = period
+        .choices()
+        .iter()
+        .filter(|pin| matches!(pin, PinnedDecision::MayChoice { slot, take: MayChoiceOption::Take } if flip(&offer, slot)))
+        .collect();
+    assert!(
+        !flipped.is_empty(),
+        "{board:?}: reach guard: the period recorded a taken \"may\" the row flips; {:?}",
+        period.choices()
+    );
+    let declined = recorded_declaration(&offer, |slot| flip(&offer, slot));
+    let recorded = recorded_declaration(&offer, |_| false);
+    let conforms = |template: &DecisionTemplate, recorded: Option<&[PinnedDecision]>| {
+        declaration_conforms(
+            schema,
+            template,
+            COUNT,
+            AimContext {
+                proposer: *proposer,
+                per_cycle: certificate.per_cycle.as_ref(),
+                published: declaration.as_ref(),
+            },
+            recorded,
+            &offer,
+        )
+    };
+    assert!(
+        conforms(&declined, None),
+        "{board:?}: reach guard: the declined declaration answers every published point legally"
+    );
+    assert!(
+        !conforms(&declined, period.recorded_answers()),
+        "{board:?}: the shared authority refuses an answer the confirmed period did not record"
+    );
+    assert!(
+        conforms(&recorded, period.recorded_answers()),
+        "{board:?}: the shared authority admits the confirmed period's own answers"
+    );
+    assert_eq!(
+        validate_recorded_answers(&declined, period.choices(), COUNT, &offer),
+        Err(PinValidation::DivergesFromRecordedPeriod {
+            slot: flipped[0].slot().clone()
+        }),
+        "{board:?}: the refusal names the slot answered otherwise than the period"
+    );
+    assert_eq!(
+        validate_recorded_answers(&recorded, period.choices(), COUNT, &offer),
+        Ok(())
+    );
+
+    let mut refused = GameRunner::from_state(offer.clone());
+    refused
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(COUNT),
+            template: Some(declined),
+        })
+        .expect("a refused declaration hands back rather than erroring");
+    assert!(
+        matches!(refused.state().waiting_for, WaitingFor::Priority { player } if player == P0),
+        "{board:?}: the declined declaration is handed back to manual play; got {}",
+        refused.state().waiting_for.variant_name()
+    );
+    assert_eq!(
+        token_count(refused.state()),
+        token_count(&offer),
+        "{board:?}: nothing was taken"
+    );
+
+    drive.take_declared(IterationCount::Fixed(COUNT), Some(recorded));
+    let state = drive.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "{board:?}: the recorded declaration is taken and ends at priority; got {}",
+        state.waiting_for.variant_name()
+    );
+    assert!(
+        token_count(state) > token_count(&offer),
+        "{board:?}: the take replayed the period"
+    );
+    taken(&offer, state);
+}
+
+/// CR 732.2a + CR 603.5: Felidar Guardian's "you may exile another target permanent you control"
+/// drives Board B's recurrence; declaring it declined is refused, declaring it taken is admitted.
+#[test]
+fn a_declared_recurrence_may_must_be_the_confirmed_periods_answer() {
+    assert_the_declared_may_answer_must_be_the_recorded_one(
+        Board::B,
+        |_, slot| slot.point == ChoicePoint::MayGate,
+        |_, _| {},
+    );
+}
+
+/// CR 732.2a + CR 603.5: Soul's Attendant's "you may gain 1 life" does not drive the recurrence;
+/// declaring it declined is still refused, and the take of the recorded answer gains the life.
+#[test]
+fn a_declared_optional_may_outside_the_recurrence_must_be_the_confirmed_periods_answer() {
+    let attendant_slot = |state: &GameState, slot: &DecisionSlot| {
+        slot.point == ChoicePoint::MayGate
+            && match &slot.source {
+                YieldTarget::ThisObject { source_id, .. } => state
+                    .objects
+                    .get(source_id)
+                    .is_some_and(|object| object.name == "Soul's Attendant"),
+                YieldTarget::AllCopies { .. } => false,
+            }
+    };
+    assert_the_declared_may_answer_must_be_the_recorded_one(
+        Board::BAttendant,
+        attendant_slot,
+        |offer, state| {
+            assert!(
+                state.players[0].life > offer.players[0].life,
+                "the take replayed Soul's Attendant's recorded life gain ({} -> {})",
+                offer.players[0].life,
+                state.players[0].life
+            );
+        },
+    );
+}
+
+/// CR 732.2a + CR 603.5: Board B's recorded offer states each "may" as fixed. A response pinning
+/// one is refused and the offer stands; a response pinning none declares the confirmed period's
+/// own answers, and its take replays the period.
+#[test]
+fn a_recorded_offers_may_is_fixed_at_the_interaction_ingress() {
+    use engine::game::interaction::{
+        bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
+        submit_interaction,
+    };
+    use engine::game::visibility::filter_state_for_viewer;
+    use engine::types::interaction::{
+        InteractionOpportunityResponse, InteractionReasonCode, InteractionResponse,
+        InteractionResponseSpec, InteractionSessionId, InteractionShortcutDecision,
+        InteractionShortcutPin, InteractionShortcutPointKind, InteractionSubmission,
+    };
+
+    let Some((mut drive, _)) = offered(Board::B) else {
+        return;
+    };
+    let mut offer = drive.state().clone();
+    let WaitingFor::LoopShortcut { period, .. } = &offer.waiting_for else {
+        unreachable!("offered() asserted the offer");
+    };
+    let recorded_mays: Vec<PinnedDecision> = period
+        .choices()
+        .iter()
+        .filter(|pin| matches!(pin, PinnedDecision::MayChoice { .. }))
+        .cloned()
+        .collect();
+    bind_interaction_authority(&mut offer, InteractionSessionId("recorded-may".into()))
+        .expect("valid interaction authority binding");
+    let filtered = filter_state_for_viewer(&offer, P0);
+    let view = derive_viewer_interaction(&offer, &filtered, P0);
+    let opportunity = view
+        .opportunities
+        .iter()
+        .find(|opportunity| {
+            matches!(
+                &opportunity.response,
+                InteractionOpportunityResponse::Schema {
+                    spec: InteractionResponseSpec::Shortcut { .. },
+                    ..
+                }
+            )
+        })
+        .expect("reach guard: the offer is published as a shortcut schema");
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { points, .. },
+        ..
+    } = &opportunity.response
+    else {
+        unreachable!("the find above selected a shortcut schema");
+    };
+    let mays: Vec<_> = points
+        .iter()
+        .filter(|point| point.kind == InteractionShortcutPointKind::MayChoice)
+        .collect();
+    assert_eq!(
+        mays.len(),
+        recorded_mays.len(),
+        "reach guard: every recorded \"may\" is a published point"
+    );
+    assert!(
+        !mays.is_empty(),
+        "reach guard: the period recorded a \"may\""
+    );
+    for may in &mays {
+        assert!(
+            may.read_only && may.candidate_ids.is_empty() && (may.min, may.max) == (0, 0),
+            "a recorded offer's \"may\" offers no answer; got read_only={} candidates={} min={} \
+             max={}",
+            may.read_only,
+            may.candidate_ids.len(),
+            may.min,
+            may.max
+        );
+    }
+
+    // One pin per answerable point, each by its only candidate.
+    let answerable: Vec<InteractionShortcutPin> = points
+        .iter()
+        .filter(|point| !point.read_only)
+        .map(|point| InteractionShortcutPin {
+            group: point.group,
+            choice_ids: vec![point.candidate_ids[0].clone()],
+            amounts: Vec::new(),
+        })
+        .collect();
+    assert!(
+        !answerable.is_empty(),
+        "reach guard: the response reaches the pin decoder"
+    );
+    let submission = |pins: Vec<InteractionShortcutPin>| InteractionSubmission {
+        interaction_id: opportunity.interaction_id.clone(),
+        response: InteractionResponse::Shortcut {
+            decision: InteractionShortcutDecision::Fixed { iterations: 3 },
+            pins,
+        },
+    };
+
+    let mut pinned = answerable.clone();
+    pinned.push(InteractionShortcutPin {
+        group: mays[0].group,
+        choice_ids: vec![answerable[0].choice_ids[0].clone()],
+        amounts: Vec::new(),
+    });
+    let mut refused = offer.clone();
+    assert_eq!(
+        submit_interaction(&mut refused, P0, submission(pinned))
+            .map(|_| ())
+            .map_err(|error| error.code),
+        Err(InteractionReasonCode::ConstraintUnsatisfied),
+        "a response pinning a fixed \"may\" is refused by reason"
+    );
+    assert!(
+        is_offer(&refused),
+        "the refused response leaves the offer standing; got {}",
+        refused.waiting_for.variant_name()
+    );
+
+    let (count, template) = match resolve_interaction_response(&offer, P0, &submission(answerable))
+    {
+        Ok(GameAction::DeclareShortcut {
+            count,
+            template: Some(template),
+        }) => (count, template),
+        other => panic!(
+            "a response pinning no \"may\" mints a declaration; got {:?}",
+            other.map_err(|error| error.code)
+        ),
+    };
+    for recorded in &recorded_mays {
+        assert!(
+            template.decisions.contains(recorded),
+            "the declaration carries the confirmed period's own \"may\" answers"
+        );
+    }
+    let tokens = token_count(drive.state());
+    drive.take_declared(count, Some(template));
+    assert!(
+        matches!(drive.state().waiting_for, WaitingFor::Priority { .. }),
+        "the declaration is taken and ends at priority; got {}",
+        drive.state().waiting_for.variant_name()
+    );
+    assert!(
+        token_count(drive.state()) > tokens,
+        "the take replayed the period"
     );
 }

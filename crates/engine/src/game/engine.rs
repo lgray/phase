@@ -3221,7 +3221,9 @@ enum FrameSource<'a, 'v> {
     },
     /// CR 732.2a: a recorded period replayed by the confirmer, every choice of which is an answer
     /// it recorded, so there is no unspecified window to gate and no announced slot to charge.
-    Replay,
+    Replay {
+        answers: &'a [crate::analysis::decision_template::PinnedDecision],
+    },
 }
 
 /// One period handed to [`bounded_offer_tail`]: its certifying pair, its frames (newest last), the
@@ -3289,7 +3291,7 @@ fn bounded_offer_tail(
     // population rather than overwritten with an unmeasured claim. Either way the conjunct's
     // JUSTIFICATION is unchanged: cover refuses on board facts, and this seam asks about
     // choices.
-    let touch = match source {
+    let (touch, recorded) = match source {
         FrameSource::Ring { touch, verdicts } => {
             let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
             if !crate::analysis::resource::stack_choices_are_all_specified(
@@ -3301,9 +3303,9 @@ fn bounded_offer_tail(
             ) {
                 return Err(BoundedOfferRefusal::UnspecifiedChoiceWindow);
             }
-            Some(touch)
+            (Some(touch), None)
         }
-        FrameSource::Replay => None,
+        FrameSource::Replay { answers } => (None, Some(answers)),
     };
 
     // (7) THE BOUND, derived from the ANNOUNCEMENT authority — never from `points`.
@@ -3499,8 +3501,13 @@ fn bounded_offer_tail(
     // publication is the half that needs a schema, and the journal read is deterministic: this
     // returns `Some` over exactly the pins (7b) charged, or `None` where the publisher's own gate
     // refuses them — the latent arm this function's doc already scopes.
-    let declaration =
-        build_bounded_declaration(state, proposer, &schema, certificate.per_cycle.as_ref());
+    let declaration = build_bounded_declaration(
+        state,
+        proposer,
+        &schema,
+        certificate.per_cycle.as_ref(),
+        recorded,
+    );
     Ok((certificate, schema, declaration))
 }
 
@@ -3633,6 +3640,7 @@ fn build_bounded_declaration(
     proposer: PlayerId,
     schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
     per_cycle: Option<&crate::analysis::resource::PeriodicDelta>,
+    recorded: Option<&[crate::analysis::decision_template::PinnedDecision]>,
 ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
     use crate::analysis::decision_template::ReplayMode;
     let mut template = pin_journalled_declaration(state, proposer, &schema.points)?;
@@ -3656,6 +3664,7 @@ fn build_bounded_declaration(
             per_cycle,
             published: Some(&template),
         },
+        recorded,
         state,
     )
     .then_some(template)
@@ -7320,7 +7329,7 @@ fn try_offer_object_growth_shortcut(
         // CR 732.2a: the points are the game choices the replay answered; an unresolvable one
         // WITHDRAWS the offer rather than publishing an undeclarable point — see
         // `pinned_decisions_to_points`.
-        pinned_decisions_to_points(&confirmation.choices, state, caster)?,
+        pinned_decisions_to_points(confirmation.period.choices(), state, caster)?,
         iteration_count,
         None,
     );
@@ -7362,7 +7371,7 @@ pub(crate) fn replay_bounded_offer(
             frames,
             periodic,
             points,
-            source: FrameSource::Replay,
+            source: FrameSource::Replay { answers: choices },
         },
         false,
         caster,
@@ -7726,8 +7735,7 @@ struct LoopShortcutOffer<'a> {
 /// CR 732.2a: reject a
 /// shortcut declaration and hand priority back to the next living seat — the manual-play
 /// handback every reject path in `handle_declare_shortcut` lands on. Single
-/// authority: a SEVENTH reject path added later cannot forget to sync
-/// `result.waiting_for` — six exist today (the sixth is the `template.owner` firewall).
+/// authority: a reject path added later cannot forget to sync `result.waiting_for`.
 /// Cited by CR number, not by `MagicCompRules.txt` line: that file is gitignored and
 /// re-fetched, so its line coordinates rot on every rules release.
 fn reject_shortcut_declaration(state: &mut GameState, result: &mut ActionResult) {
@@ -7771,7 +7779,7 @@ fn handle_declare_shortcut(
     // `shortcut_validated_range` derives the validated range FROM the declared count and so
     // must not be handed an unchecked one — a `Fixed(4_000_000_000)` would otherwise become
     // a four-billion-iteration validation loop. Observation-equivalence of the reorder is
-    // structural: all six refusal arms across the three blocks (this match, the CR 732.2a +
+    // structural: all refusal arms across the three blocks (this match, the CR 732.2a +
     // CR 603.5 `template.owner` firewall between them, and the pin-validation block) land on
     // the same single authority (`reject_shortcut_declaration`), and
     // `handle_declare_shortcut` pushes NO events at all, so no row can observe which block
@@ -7928,6 +7936,7 @@ fn handle_declare_shortcut(
                     per_cycle: offer.certificate.per_cycle.as_ref(),
                     published: offer.declaration,
                 },
+                offer.period.recorded_answers(),
                 state,
             ) {
                 reject_shortcut_declaration(state, &mut result);
@@ -19830,7 +19839,7 @@ mod bounded_declaration_tests {
                 "reach-guard: the CR 603.5 answer must be journalled before the consumer runs"
             );
 
-            let declaration = build_bounded_declaration(&state, PROPOSER, &schema, None)
+            let declaration = build_bounded_declaration(&state, PROPOSER, &schema, None, None)
                 .expect("both published points are answered, so the declaration is complete");
             assert_eq!(
                 declaration.decisions[0],
@@ -19921,7 +19930,7 @@ mod bounded_declaration_tests {
             LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(AIMED)])),
         );
         assert!(
-            build_bounded_declaration(&control, PROPOSER, &control_schema, None).is_some(),
+            build_bounded_declaration(&control, PROPOSER, &control_schema, None, None).is_some(),
             "CONTROL: a fully-answered two-kind schema DOES publish a declaration — without this \
              a consumer that refused everything would pass all four cases below"
         );
@@ -19968,7 +19977,7 @@ mod bounded_declaration_tests {
             );
 
             assert!(
-                build_bounded_declaration(&state, PROPOSER, &schema, None).is_none(),
+                build_bounded_declaration(&state, PROPOSER, &schema, None, None).is_none(),
                 "CR 732.2a: {kind:?} has no `LoopAnswerValue` shape, so the declaration must \
                  refuse rather than pin a guess or silently drop the point"
             );
@@ -20011,7 +20020,7 @@ mod bounded_declaration_tests {
             "reach-guard: the journal is NON-empty, so the refusal below is the point set's"
         );
         assert!(
-            build_bounded_declaration(&state, PROPOSER, &empty, None).is_none(),
+            build_bounded_declaration(&state, PROPOSER, &empty, None, None).is_none(),
             "CR 732.2a: an offer that publishes no choice states no declaration"
         );
     }
@@ -20148,6 +20157,7 @@ mod bounded_declaration_tests {
                         per_cycle: None,
                         published: Some(&as_published),
                     },
+                    None,
                     &state
                 ),
                 handler_accepts,
@@ -20157,13 +20167,62 @@ mod bounded_declaration_tests {
 
             // ── HALF 2: the PUBLISHER's verdict must be the same one ──
             assert_eq!(
-                build_bounded_declaration(&state, PROPOSER, &schema, None).is_some(),
+                build_bounded_declaration(&state, PROPOSER, &schema, None, None).is_some(),
                 handler_accepts,
                 "[{label}] CR 732.2a: `declaration.is_some()` is read as 'the declare handler \
                  will accept this'. A template the handler refuses must NOT be published, and a \
                  template it accepts must be"
             );
         }
+    }
+
+    /// CR 732.2a: over a recorded period the publisher states only the period's own answers, so a
+    /// journalled "may" the period answered otherwise publishes no declaration. Fixture-made: no
+    /// tracked board journals an answer its confirmed period did not record.
+    #[test]
+    fn the_publisher_refuses_a_declaration_the_recorded_period_did_not_answer() {
+        let schema = may_and_target_schema();
+        let [may_point, target_point] = &schema.points[..] else {
+            panic!("the fixture publishes exactly two points");
+        };
+        let mut state = recording_state();
+        state.record_loop_answer(
+            may_point.slot.clone(),
+            PROPOSER,
+            LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+        );
+        state.record_loop_answer(
+            target_point.slot.clone(),
+            PROPOSER,
+            LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(AIMED)])),
+        );
+        let recorded = |take| {
+            vec![
+                PinnedDecision::MayChoice {
+                    slot: may_point.slot.clone(),
+                    take,
+                },
+                PinnedDecision::Targets {
+                    slot: target_point.slot.clone(),
+                    targets: vec![TargetPin::Player(AIMED)],
+                },
+            ]
+        };
+        let published = |recorded: Option<&[PinnedDecision]>| {
+            build_bounded_declaration(&state, PROPOSER, &schema, None, recorded).is_some()
+        };
+        assert!(
+            published(None),
+            "reach guard: the journalled declaration is published where no period recorded answers"
+        );
+        assert!(
+            published(Some(&recorded(MayChoiceOption::Take))),
+            "the journalled answers are the recorded period's, so the declaration is published"
+        );
+        assert!(
+            !published(Some(&recorded(MayChoiceOption::Decline))),
+            "a journalled \"may\" the recorded period answered otherwise publishes nothing"
+        );
     }
 }
 

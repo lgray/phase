@@ -3728,6 +3728,7 @@ fn loop_shortcut_projection(
     let WaitingFor::LoopShortcut {
         schema,
         certificate,
+        road,
         ..
     } = waiting_for
     else {
@@ -3908,21 +3909,27 @@ fn loop_shortcut_projection(
                 )
             }
             DecisionPointKind::MayChoice => {
-                candidates.extend([
-                    LoopShortcutCandidateValue::May(
-                        crate::analysis::decision_template::MayChoiceOption::Take,
-                    ),
-                    LoopShortcutCandidateValue::May(
-                        crate::analysis::decision_template::MayChoiceOption::Decline,
-                    ),
-                ]);
+                // CR 732.2a: a recorded take performs the confirmed period's own answer, so its
+                // "may" is stated as fixed and neither answer is offered.
+                let fixed = *road == crate::analysis::loop_check::OfferRoad::RecordedPeriod;
+                if !fixed {
+                    candidates.extend([
+                        LoopShortcutCandidateValue::May(
+                            crate::analysis::decision_template::MayChoiceOption::Take,
+                        ),
+                        LoopShortcutCandidateValue::May(
+                            crate::analysis::decision_template::MayChoiceOption::Decline,
+                        ),
+                    ]);
+                }
+                let answers = u32::from(!fixed);
                 (
                     InteractionShortcutPointKind::MayChoice,
-                    1,
-                    1,
+                    answers,
+                    answers,
                     true,
                     false,
-                    false,
+                    fixed,
                 )
             }
             DecisionPointKind::UnlessBreak => {
@@ -10532,6 +10539,8 @@ fn materialize_loop_shortcut_response(
     // carried as ONE value because the seat the minted template is OWNED by and the seat the aim
     // walk measures against must be the same one.
     aim: crate::analysis::decision_template::AimContext<'_>,
+    // CR 732.2a: the answers the offer's confirmed period recorded; `None` off a recorded offer.
+    recorded: Option<&[PinnedDecision]>,
     authoritative_schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
     authoritative_state: &GameState,
     response: &InteractionResponse,
@@ -10607,9 +10616,19 @@ fn materialize_loop_shortcut_response(
                         color: *color,
                     });
                 }
+                // CR 732.2a: the confirmed period's own answer is the one its take performs.
+                InteractionShortcutPointKind::MayChoice => {
+                    let answer = recorded
+                        .into_iter()
+                        .flatten()
+                        .find(|pin| {
+                            matches!(pin, PinnedDecision::MayChoice { slot, .. } if *slot == point.slot)
+                        })
+                        .ok_or(InteractionReasonCode::InvalidAuthorityState)?;
+                    decisions.push(answer.clone());
+                }
                 InteractionShortcutPointKind::Targets
                 | InteractionShortcutPointKind::Mode
-                | InteractionShortcutPointKind::MayChoice
                 | InteractionShortcutPointKind::UnlessBreak => {
                     return Err(InteractionReasonCode::InvalidAuthorityState);
                 }
@@ -10799,6 +10818,7 @@ fn materialize_loop_shortcut_response(
             template,
             crate::game::engine::shortcut_validated_range(&count, Some(template)),
             aim.clone(),
+            recorded,
             authoritative_state,
         ) {
             return Err(InteractionReasonCode::ConstraintUnsatisfied);
@@ -11228,6 +11248,7 @@ fn materialize_response(
                 schema,
                 certificate,
                 declaration,
+                period,
                 ..
             } = &authoritative_state.waiting_for
             else {
@@ -11248,6 +11269,7 @@ fn materialize_response(
                     per_cycle: certificate.per_cycle.as_ref(),
                     published: declaration.as_ref(),
                 },
+                period.recorded_answers(),
                 schema,
                 authoritative_state,
                 completed.as_ref().unwrap_or(response),
