@@ -1464,7 +1464,7 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
     // The provenance journal contains exact source identities, restrictions,
     // and cost-recipient relationships. It is server authority and must not
     // expose one player's mana history to another viewer.
-    filtered.resolved_rules_journal = Default::default();
+    filtered.reset_resolved_rules_journal();
     // Delayed-trigger allocation and firing receipts are server authority.
     // Server transport serializes this filtered state directly, so clear every
     // root carrier here as well as in the dedicated WASM client projection.

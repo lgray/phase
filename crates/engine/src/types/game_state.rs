@@ -29488,7 +29488,7 @@ impl GameState {
         // P1 provenance is append-only historical evidence, not live rules
         // state. Clear it with the other monotonic identity carriers so it
         // cannot hide a genuine CR 104.4b repeated position.
-        clone.resolved_rules_journal = ResolvedRulesJournal::default();
+        clone.reset_resolved_rules_journal();
         // Interaction IDs are volatile capabilities, not game-position state.
         clone.interaction_session_id = None;
         clone.interaction_generation = 0;
@@ -41325,6 +41325,39 @@ mod tests {
                 .len(),
             ids.len(),
             "all pip ids must be unique after restamp, got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_normalized_copy_drops_the_pools_verification_with_the_journal() {
+        let mut state = GameState::new_two_player(7);
+        let player = state.players[0].id;
+        let pip = state
+            .add_mana_to_pool(
+                player,
+                ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
+            )
+            .expect("the player exists")
+            .pip_id;
+        assert!(
+            state.resolved_rules_journal.has_produced_pip(pip),
+            "reach: the journal produced the pip"
+        );
+        assert!(
+            state.players[0].mana_pool.is_verified(),
+            "reach: a journaled insert leaves the pool verified"
+        );
+
+        let copy = state.normalize_for_loop();
+
+        assert!(
+            !copy.resolved_rules_journal.has_produced_pip(pip),
+            "reach: the copy carries no producer record"
+        );
+        assert!(!copy.players[0].mana_pool.is_verified());
+        assert!(
+            state.players[0].mana_pool.is_verified(),
+            "the source keeps its verification"
         );
     }
 

@@ -333,3 +333,174 @@ fn after_a_sacrifice_mana_ability_auto_tap_pays_the_rest() {
     assert!(board.runner.state().objects[&board.island].tapped);
     assert_pili_pala_paid(&mut board);
 }
+
+/// What a human seat is shown: the interaction authority bound, the state filtered for the
+/// viewer, and the projection derived from that copy.
+fn viewer_projection(
+    state: &GameState,
+) -> (GameState, engine::types::interaction::ViewerInteraction) {
+    use engine::game::interaction::{bind_interaction_authority, derive_viewer_interaction};
+    use engine::types::interaction::InteractionSessionId;
+    let mut bound = state.clone();
+    bind_interaction_authority(&mut bound, InteractionSessionId("viewer".to_string()))
+        .expect("the interaction authority binds");
+    let filtered = engine::game::visibility::filter_state_for_viewer(&bound, P0);
+    let view = derive_viewer_interaction(&bound, &filtered, P0);
+    (filtered, view)
+}
+
+fn offers(view: &engine::types::interaction::ViewerInteraction, action: &GameAction) -> bool {
+    use engine::types::interaction::{
+        InteractionOpportunityResponse, InteractionPresentationSurface,
+    };
+    let wanted = engine::game::interaction::interaction_action_id(action);
+    view.opportunities
+        .iter()
+        .flat_map(|opportunity| match &opportunity.response {
+            InteractionOpportunityResponse::ExactChoices { choices } => choices.iter(),
+            InteractionOpportunityResponse::Schema { candidates, .. } => candidates.iter(),
+        })
+        .flat_map(|choice| choice.surfaces.iter())
+        .any(|surface| {
+            matches!(
+                surface,
+                InteractionPresentationSurface::Action { action_id: Some(id), .. } if *id == wanted
+            )
+        })
+}
+
+/// The mana ability of `id` whose cost is mana alone.
+fn mana_costed(state: &GameState, id: ObjectId) -> GameAction {
+    use engine::types::ability::AbilityCost;
+    let ability_index = state.objects[&id]
+        .abilities
+        .iter()
+        .position(|a| is_mana_ability(a) && matches!(a.cost, Some(AbilityCost::Mana { .. })))
+        .expect("a mana ability with a mana cost");
+    GameAction::ActivateAbility {
+        source_id: id,
+        ability_index,
+    }
+}
+
+/// The floating pip is journaled and verified in the game's own state, and the viewer's copy
+/// holds neither the producer record nor the verification.
+fn assert_the_viewers_copy_drops_the_pools_verification(state: &GameState, filtered: &GameState) {
+    let pips: Vec<_> = state.players[0]
+        .mana_pool
+        .units()
+        .map(|unit| unit.pip_id)
+        .collect();
+    assert!(!pips.is_empty(), "reach: mana floats");
+    assert!(
+        pips.iter()
+            .all(|pip| state.resolved_rules_journal.has_produced_pip(*pip)),
+        "reach: the game's journal produced the floating mana"
+    );
+    assert!(
+        state.players[0].mana_pool.is_verified(),
+        "the game's own pool stays verified"
+    );
+    assert!(
+        pips.iter()
+            .all(|pip| !filtered.resolved_rules_journal.has_produced_pip(*pip)),
+        "reach: the viewer's copy carries no producer record"
+    );
+    assert!(
+        !filtered.players[0].mana_pool.is_verified(),
+        "a copy without the journal does not claim its pips are journaled"
+    );
+}
+
+/// Gruul Signet: "{1}, {T}: Add {R}{G}." While Grizzly Bears is being paid for with a Forest's
+/// {G} floating, the Signet's {1} is payable from the pool (CR 605.3a).
+#[test]
+fn a_viewer_is_offered_a_costed_mana_ability_while_mana_floats_in_a_spell_payment() {
+    use engine::types::game_state::CastPaymentMode;
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let forest = scenario.add_real_card(P0, "Forest", Zone::Battlefield, db);
+    let signet = scenario.add_real_card(P0, "Gruul Signet", Zone::Battlefield, db);
+    let bears = scenario.add_real_card(P0, "Grizzly Bears", Zone::Hand, db);
+    let mut runner = scenario.build();
+    let signet_ability = GameAction::ActivateAbility {
+        source_id: signet,
+        ability_index: ability(runner.state(), signet, true),
+    };
+
+    // With the same {G} floating and no payment in progress the Signet is offered.
+    let mut at_priority = GameRunner::from_state(runner.state().clone());
+    activate(&mut at_priority, forest, true);
+    assert_eq!(pool_total(at_priority.state()), 1, "reach: {{G}} floats");
+    assert!(offers(
+        &viewer_projection(at_priority.state()).1,
+        &signet_ability
+    ));
+
+    let card_id = runner.state().objects[&bears].card_id;
+    act(
+        &mut runner,
+        GameAction::CastSpell {
+            object_id: bears,
+            card_id,
+            targets: Vec::new(),
+            payment_mode: CastPaymentMode::Manual,
+        },
+    );
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ManaPayment { .. }
+    ));
+    // With the pool empty the Forest can pay the Signet's {1}.
+    assert!(offers(
+        &viewer_projection(runner.state()).1,
+        &signet_ability
+    ));
+
+    activate(&mut runner, forest, true);
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ManaPayment { .. }
+    ));
+    let (filtered, view) = viewer_projection(runner.state());
+    assert!(offers(&view, &signet_ability));
+    assert_the_viewers_copy_drops_the_pools_verification(runner.state(), &filtered);
+}
+
+/// Skyshroud Elf: "{T}: Add {G}." and "{1}: Add {R} or {W}." In Pili-Pala's payment window with
+/// the Island's {U} floating, the tapped Elf's {1} is payable from the pool (CR 605.3a).
+#[test]
+fn a_viewer_is_offered_a_costed_mana_ability_while_mana_floats_in_a_mana_abilitys_payment() {
+    let Some(db) = shared_card_db() else { return };
+    for with_elf in [false, true] {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.add_real_card(P0, "Grand Architect", Zone::Battlefield, db);
+        let pili = scenario.add_real_card(P0, "Pili-Pala", Zone::Battlefield, db);
+        let island = scenario.add_real_card(P0, "Island", Zone::Battlefield, db);
+        let elf =
+            with_elf.then(|| scenario.add_real_card(P0, "Skyshroud Elf", Zone::Battlefield, db));
+        let mut runner = scenario.build();
+        if let Some(elf) = elf {
+            runner.state_mut().objects.get_mut(&elf).unwrap().tapped = true;
+        }
+        activate(&mut runner, pili, true);
+        activate(&mut runner, island, true);
+        assert!(
+            matches!(
+                runner.state().waiting_for,
+                WaitingFor::ManaAbilityManaPayment { .. }
+            ),
+            "reach: Pili-Pala's window stands: {:?}",
+            runner.state().waiting_for
+        );
+        assert_eq!(pool_total(runner.state()), 1, "reach: {{U}} floats");
+        let (filtered, view) = viewer_projection(runner.state());
+        assert!(offers(&view, &GameAction::CancelCast));
+        // Without the Elf no mana ability's cost is payable from the pool.
+        let Some(elf) = elf else { continue };
+        assert!(offers(&view, &mana_costed(runner.state(), elf)));
+        assert_the_viewers_copy_drops_the_pools_verification(runner.state(), &filtered);
+    }
+}
