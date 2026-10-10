@@ -1973,6 +1973,7 @@ mod tests {
             current_targets: vec![],
             slots: vec![],
             slot_pools: vec![],
+            keep_is_distinct: Vec::new(),
             legal_new_targets: vec![],
         }
     }

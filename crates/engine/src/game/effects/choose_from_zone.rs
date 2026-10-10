@@ -806,7 +806,7 @@ pub(crate) fn resolve_random_in_chain(
         .choose_multiple(state.rng.draw(RandomDraw::Outcome), clamped)
         .copied()
         .collect();
-    ability.targets = picked.iter().map(|&id| TargetRef::Object(id)).collect();
+    ability.set_unpinned_targets(picked.iter().map(|&id| TargetRef::Object(id)).collect());
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::ChooseFromZone,

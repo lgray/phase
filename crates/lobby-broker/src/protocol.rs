@@ -60,16 +60,16 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 127 — Loop-shortcut and period-confirmation shapes, one bump over 126. P2P
-///      moves in lockstep (wire 109); lobby messages are unchanged.
+/// 128 — Loop-shortcut and period-confirmation shapes, one bump over 127. P2P
+///      moves in lockstep (wire 110); lobby messages are unchanged.
 ///      - `ShortcutDecisionSchema` replaced `max_iterations: u32` with the pair
 ///        `measured_repetition_bound: Option<u32>` and `deliverable_capacity:
 ///        u32`, so `WaitingFor::LoopShortcut` publishes the threshold the
 ///        reduction measured separately from the count this engine will
 ///        deliver. Both new fields carry a `#[serde(default)]`, the removed one
 ///        did too, and the struct has no `deny_unknown_fields` — so this half
-///        is a capability bump rather than a parse bump: a v126 frame's
-///        `max_iterations` is dropped here and a v127 frame's absent key
+///        is a capability bump rather than a parse bump: a v127 frame's
+///        `max_iterations` is dropped here and a v128 frame's absent key
 ///        defaults there, leaving a stale peer driving a count neither side
 ///        measured, silently. The handshake is the only place that skew is
 ///        refusable.
@@ -82,18 +82,40 @@ pub struct TournamentRequestId(pub u64);
 ///        in both directions, and a snapshot written by either side is
 ///        unreadable by the other.
 ///      - `WaitingFor::LoopShortcut` and `ShortcutProposal` gained a required
-///        `road: OfferRoad` naming the producer that minted the offer. A v126
+///        `road: OfferRoad` naming the producer that minted the offer. A v127
 ///        peer drops the key from every frame it re-encodes, and a frame
 ///        without it decodes here only through `GameState`'s legacy-offer
 ///        migration, which infers the road; the exact-match handshake refuses
 ///        the pairing instead.
 ///      - `WaitingFor::ManaAbilityManaPayment` and its `ManaAbilityResume` root
-///        are new variants a v126 peer cannot parse; `ResolvedAbility` gains
+///        are new variants a v127 peer cannot parse; `ResolvedAbility` gains
 ///        the optional `delayed_origin`.
 ///      - `GameState` drops the recorded loop-action sequence.
 ///      - `ConfirmedPeriod` gains its reach and `PeriodicDelta` its cleanup
 ///        pair.
 ///
+/// 127 — `FilterProp`'s three attachment-referent siblings
+///      (`AttachedToSource`, `AttachedToRecipient`, `AttachedToPlayer`) are one
+///      parameterized prop, `{"type":"AttachedTo","to":{"type":"Source"}}`
+///      (`to` is an internally tagged `AttachmentReferent`: `Source`,
+///      `Recipient`, `Player { player }`, and the new `DeclaredTarget { slot }`
+///      for "attached to that creature", CR 701.3a + CR 303.4b). Serialization
+///      writes only the new shape; deserialization still accepts the three old
+///      tags (`filter_prop_from_value`), so a v127 peer reads v126 state but a
+///      v126 peer cannot parse a v127 `GameState` holding any attachment
+///      filter — an unconditional PARSE bump. The same version also makes
+///      retarget choices positional (CR 115.7d + CR 707.10c):
+///      `GameAction::RetargetSpell.new_targets` is `[TargetRef | null]` (`null`
+///      keeps a position's target, a bare target chooses it, so a v126 bare
+///      vector still decodes as all-chosen), `RetargetChoice` gains
+///      `keep_is_distinct`, `CopyTargetSlot` gains `address`, `can_keep` and
+///      `can_decline`, and `CopyRetarget` gains `controller` (the copy's
+///      controller when an announcement slot's chooser answers), `mode`,
+///      `picks`, `can_keep_rest` and `announcer_election` (a copy
+///      announcement's announcing-opponent election) (all serde default). A v126 peer cannot parse a `null` pick, and the client renders
+///      the keep permissions only from the engine's fields. Lobby messages are
+///      unchanged, and P2P moves in lockstep (wire 109).
+///      (Reserved as 119 and then 121 while under review; it landed after 126, so 119 stays unused.)
 /// 126 — `ZoneChangeRecord` gains `arrival` (the owner and controller the destination object holds), serialized inside `GameState` and in the resolved-rules journal's zone-change commands; a v125 peer rejects the journal when the departure owner differs from the command owner. Full-game peers and P2P move in lockstep (wire 108); no lobby carrier names it.
 /// 125 — `MulliganDecisionEntry` and `MulliganDeclaration` (inside `WaitingFor::MulliganDecision`) gain `free_reveals_taken`. Full-game peers and P2P move in lockstep (wire 107); no lobby carrier names it.
 /// 124 — the resolved-rules journal admits a land-play `rebound_from` on a `ResolvedZoneChangeCommand` (Library/Graveyard/Exile -> Battlefield), serialized inside `GameState.resolved_rules_journal`. A v123 peer rejects the state as an invalid resolved-rules journal. Full-game peers and P2P move in lockstep (wire 106); no lobby carrier names it.
@@ -969,7 +991,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 127;
+pub const PROTOCOL_VERSION: u32 = 128;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -2226,12 +2248,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 127);
+        assert_eq!(PROTOCOL_VERSION, 128);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 126);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 127);
     }
 
     #[test]
