@@ -8965,6 +8965,29 @@ pub struct PendingManaAbility {
     pub batch_siblings: Vec<ObjectId>,
 }
 
+impl PendingManaAbility {
+    /// CR 605.3c: this activation and each one suspended beneath it at a payment window,
+    /// innermost first; none of them can be activated again until it has resolved.
+    pub(crate) fn suspended_chain(&self) -> impl Iterator<Item = (ObjectId, Option<usize>)> + '_ {
+        std::iter::successors(Some(self), |pending| match &pending.resume {
+            ManaAbilityResume::ManaAbilityManaPayment {
+                pending_mana_ability,
+            } => Some(pending_mana_ability.as_ref()),
+            ManaAbilityResume::Priority
+            | ManaAbilityResume::CompanionToHand { .. }
+            | ManaAbilityResume::TurnFaceUp { .. }
+            | ManaAbilityResume::EndContinuousEffect { .. }
+            | ManaAbilityResume::ManaPayment { .. }
+            | ManaAbilityResume::ManaSourceSelection { .. }
+            | ManaAbilityResume::UnlessPayment { .. }
+            | ManaAbilityResume::EffectPayCost { .. }
+            | ManaAbilityResume::PhyrexianCastPayment { .. }
+            | ManaAbilityResume::FinalizePendingManaPayment { .. } => None,
+        })
+        .map(|pending| (pending.source_id, pending.ability_index))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetSelectionSlot {
     pub legal_targets: Vec<TargetRef>,
@@ -17661,6 +17684,23 @@ impl WaitingFor {
             | WaitingFor::CombatTaxPayment { .. }
             | WaitingFor::PhyrexianPayment { .. } => false,
         }
+    }
+
+    /// CR 605.3c: the mana abilities suspended at a mana ability's payment window, innermost
+    /// first; empty at every other prompt.
+    pub(crate) fn suspended_mana_abilities(
+        &self,
+    ) -> impl Iterator<Item = (ObjectId, Option<usize>)> + '_ {
+        let window = match self {
+            WaitingFor::ManaAbilityManaPayment {
+                pending_mana_ability,
+                ..
+            } => Some(pending_mana_ability.as_ref()),
+            _ => None,
+        };
+        window
+            .into_iter()
+            .flat_map(PendingManaAbility::suspended_chain)
     }
 
     /// CR 605.3a + CR 605.3b: Whether this state continues a mana ability's

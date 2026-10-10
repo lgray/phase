@@ -15,8 +15,9 @@ use engine::game::{
     play_trace_view, AnswerOptionality, EntryKind, NamedSpan, NamingCause, PlayLocus,
     PlayTraceView, TraceEntry,
 };
-use engine::types::ability::{AbilityKind, TargetRef};
+use engine::types::ability::{AbilityCost, AbilityKind, TargetRef};
 use engine::types::actions::{CastChoice, GameAction};
+use engine::types::counter::CounterType;
 use engine::types::game_state::{
     CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, StackEntryKind, WaitingFor,
 };
@@ -28,6 +29,7 @@ use engine::types::zones::Zone;
 
 use crate::food_chain_board::{self, BoardCMember};
 use crate::loop_shortcut_mana_engine::{drive_one_period, mana_ability_index, untap_ability_index};
+use crate::mana_ability_mana_payment_window::mana_ability_costing;
 use crate::support::shared_card_db;
 
 const BEAT_CAP: usize = 400;
@@ -2071,6 +2073,431 @@ fn play_trace_drops_a_cancelled_spend_after_an_untapped_lands_mana_ability() {
             "only the Elves' mana ability stands (untap first: {untap_first})"
         );
     }
+}
+
+/// One trace entry as the inner-cancel rows compare it: a play by the object and ability it
+/// names, an answer by its action.
+#[derive(Debug, PartialEq)]
+enum Made {
+    Play(PlayLocus),
+    Answer(&'static str),
+    Resolution,
+}
+
+fn mana(source: ObjectId, index: usize) -> Made {
+    Made::Play(PlayLocus::Mana(source, Some(index)))
+}
+
+/// The prompt, the mana ability whose payment window stands, and the trace, compared together.
+fn standing(state: &GameState) -> (&'static str, Option<ObjectId>, Vec<Made>) {
+    let window = match &state.waiting_for {
+        WaitingFor::ManaAbilityManaPayment {
+            pending_mana_ability,
+            ..
+        } => Some(pending_mana_ability.source_id),
+        _ => None,
+    };
+    let made = trace_of(state)
+        .entries
+        .iter()
+        .map(|entry| match &entry.kind {
+            EntryKind::Play { locus, .. } => Made::Play(*locus),
+            EntryKind::Answer { action, .. } => Made::Answer(action.into()),
+            EntryKind::Resolution { .. } => Made::Resolution,
+        })
+        .collect();
+    (state.waiting_for.variant_name(), window, made)
+}
+
+const WINDOW: &str = "ManaAbilityManaPayment";
+
+fn mana_alone(cost: &AbilityCost) -> bool {
+    matches!(cost, AbilityCost::Mana { .. })
+}
+
+struct PrismiteCast {
+    runner: GameRunner,
+    bears: ObjectId,
+    forest: ObjectId,
+    prismite: ObjectId,
+    /// Prismite's "{2}: Add one mana of any color."
+    costed: usize,
+}
+
+/// Grizzly Bears in hand; Forest, Grand Architect and Prismite on the battlefield. Grand Architect
+/// can tap itself for mana, so Prismite's {2} opens a payment window.
+fn prismite_cast_board(db: &CardDatabase) -> PrismiteCast {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let bears = scenario.add_real_card(P0, "Grizzly Bears", Zone::Hand, db);
+    let forest = scenario.add_real_card(P0, "Forest", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Grand Architect", Zone::Battlefield, db);
+    let prismite = scenario.add_real_card(P0, "Prismite", Zone::Battlefield, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let costed = ability(runner.state(), prismite, true);
+    PrismiteCast {
+        runner,
+        bears,
+        forest,
+        prismite,
+        costed,
+    }
+}
+
+fn on_stack(state: &GameState, object: ObjectId) -> bool {
+    state.stack.iter().any(|entry| entry.id == object)
+}
+
+#[test]
+fn play_trace_keeps_the_outer_cast_when_an_inner_mana_payment_is_cancelled() {
+    let Some(db) = shared_card_db() else { return };
+    let PrismiteCast {
+        mut runner,
+        bears,
+        forest,
+        prismite,
+        costed,
+    } = prismite_cast_board(db);
+    let cast_of_bears = || Made::Play(PlayLocus::Cast(bears));
+    let forest_tap = ability(runner.state(), forest, true);
+    cast(&mut runner, bears, vec![], CastPaymentMode::Manual);
+    activate(&mut runner, prismite, costed);
+    assert_eq!(
+        runner.state().waiting_for.variant_name(),
+        WINDOW,
+        "reach: Prismite's {{2}} opens its payment window"
+    );
+    tap_for_mana(&mut runner, forest);
+    assert_eq!(
+        standing(runner.state()),
+        (
+            WINDOW,
+            Some(prismite),
+            vec![
+                cast_of_bears(),
+                mana(prismite, costed),
+                mana(forest, forest_tap)
+            ]
+        ),
+        "reach: the Forest was tapped inside Prismite's window"
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+    assert!(
+        on_stack(runner.state(), bears),
+        "the cast is still in progress"
+    );
+    assert_eq!(
+        standing(runner.state()),
+        (
+            "ManaPayment",
+            None,
+            vec![cast_of_bears(), mana(forest, forest_tap)]
+        )
+    );
+
+    cancel(&mut runner, bears);
+    assert_eq!(
+        standing(runner.state()),
+        ("Priority", None, vec![mana(forest, forest_tap)])
+    );
+}
+
+/// Skyshroud Elf: "{T}: Add {G}." and "{1}: Add {R} or {W}."
+#[test]
+fn play_trace_drops_only_the_cancelled_one_of_two_nested_mana_activations() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    let prismite = scenario.add_real_card(P0, "Prismite", Zone::Battlefield, db);
+    let elf = scenario.add_real_card(P0, "Skyshroud Elf", Zone::Battlefield, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let outer = ability(runner.state(), prismite, true);
+    let inner = mana_ability_costing(runner.state(), elf, mana_alone);
+    activate(&mut runner, prismite, outer);
+    activate(&mut runner, elf, inner);
+    assert_eq!(
+        standing(runner.state()),
+        (
+            WINDOW,
+            Some(elf),
+            vec![mana(prismite, outer), mana(elf, inner)]
+        ),
+        "reach: the Elf's window stands inside Prismite's"
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+    assert_eq!(
+        standing(runner.state()),
+        (WINDOW, Some(prismite), vec![mana(prismite, outer)])
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+    assert_eq!(standing(runner.state()), ("Priority", None, vec![]));
+}
+
+/// Calciform Pools: "{1}, Remove X storage counters from this land: Add X mana in any combination
+/// of {W} and/or {U}." Its announced X is the activation's own answer.
+#[test]
+fn play_trace_drops_a_cancelled_mana_activations_own_answers() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let bears = scenario.add_real_card(P0, "Grizzly Bears", Zone::Hand, db);
+    scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    let pools = scenario.add_real_card(P0, "Calciform Pools", Zone::Battlefield, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    {
+        let pools = runner.state_mut().objects.get_mut(&pools).unwrap();
+        pools.tapped = true;
+        pools
+            .counters
+            .insert(CounterType::Generic("storage".to_string()), 2);
+    }
+    let storage = mana_ability_costing(runner.state(), pools, |cost| {
+        matches!(cost, AbilityCost::Composite { .. })
+    });
+    let cast_of_bears = || Made::Play(PlayLocus::Cast(bears));
+    cast(&mut runner, bears, vec![], CastPaymentMode::Manual);
+    activate(&mut runner, pools, storage);
+    act(&mut runner, GameAction::SubmitPayAmount { amount: 1 });
+    assert_eq!(
+        standing(runner.state()),
+        (
+            WINDOW,
+            Some(pools),
+            vec![
+                cast_of_bears(),
+                mana(pools, storage),
+                Made::Answer("SubmitPayAmount")
+            ]
+        ),
+        "reach: the Pools' window stands with its X announced"
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+    assert!(
+        on_stack(runner.state(), bears),
+        "the cast is still in progress"
+    );
+    assert_eq!(
+        standing(runner.state()),
+        ("ManaPayment", None, vec![cast_of_bears()])
+    );
+}
+
+/// Grand Architect: "Tap an untapped blue creature you control: Add {C}{C}. Spend this mana only
+/// to cast artifact spells or activate abilities of artifacts."
+#[test]
+fn play_trace_keeps_the_outer_activation_when_a_second_prismites_payment_is_cancelled() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let architect = scenario.add_real_card(P0, "Grand Architect", Zone::Battlefield, db);
+    let first = scenario.add_real_card(P0, "Prismite", Zone::Battlefield, db);
+    let second = scenario.add_real_card(P0, "Prismite", Zone::Battlefield, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let costed = ability(runner.state(), first, true);
+    let tap_blue = ability(runner.state(), architect, true);
+    activate(&mut runner, first, costed);
+    assert_eq!(
+        standing(runner.state()),
+        (WINDOW, Some(first), vec![mana(first, costed)]),
+        "reach: the first Prismite's window"
+    );
+    activate(&mut runner, second, costed);
+    assert_eq!(
+        standing(runner.state()),
+        (
+            WINDOW,
+            Some(second),
+            vec![mana(first, costed), mana(second, costed)]
+        ),
+        "reach: the second Prismite's window stands inside the first's"
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+    assert_eq!(
+        standing(runner.state()),
+        (WINDOW, Some(first), vec![mana(first, costed)])
+    );
+
+    activate(&mut runner, architect, tap_blue);
+    act(
+        &mut runner,
+        GameAction::SelectCards {
+            cards: vec![architect],
+        },
+    );
+    act(
+        &mut runner,
+        GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Red),
+            count: 1,
+        },
+    );
+    assert!(
+        runner.state().objects[&architect].tapped
+            && runner.state().players[0].mana_pool.total() == 1,
+        "the first Prismite's ability resolved on Grand Architect's mana"
+    );
+    assert_eq!(
+        standing(runner.state()),
+        (
+            "Priority",
+            None,
+            vec![
+                mana(first, costed),
+                mana(architect, tap_blue),
+                Made::Answer("SelectCards"),
+                Made::Answer("ChooseManaColor"),
+            ]
+        )
+    );
+}
+
+/// Whether the engine still tracks `land`'s tap as one P0 may take back.
+fn tracked(state: &GameState, land: ObjectId) -> bool {
+    state
+        .lands_tapped_for_mana
+        .get(&P0)
+        .is_some_and(|lands| lands.contains(&land))
+}
+
+/// CR 602.2b + CR 605.3b: withdrawing Prismite's activation at its payment window ends neither
+/// the cast it was paying for nor the Forest's resolved mana ability.
+#[test]
+fn an_inner_cancel_keeps_the_outer_plays_tapped_land_untappable() {
+    let Some(db) = shared_card_db() else { return };
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Line {
+        TappedForTheCast,
+        TappedInsideTheWindow,
+        NoCast,
+    }
+    for line in [
+        Line::TappedForTheCast,
+        Line::TappedInsideTheWindow,
+        Line::NoCast,
+    ] {
+        let PrismiteCast {
+            mut runner,
+            bears,
+            forest,
+            prismite,
+            costed,
+        } = prismite_cast_board(db);
+        let casting = line != Line::NoCast;
+        if casting {
+            cast(&mut runner, bears, vec![], CastPaymentMode::Manual);
+        }
+        if line != Line::TappedInsideTheWindow {
+            tap_for_mana(&mut runner, forest);
+        }
+        activate(&mut runner, prismite, costed);
+        if line == Line::TappedInsideTheWindow {
+            tap_for_mana(&mut runner, forest);
+        }
+        let state = runner.state();
+        assert!(
+            state.waiting_for.variant_name() == WINDOW
+                && state.objects[&forest].tapped
+                && tracked(state, forest),
+            "reach ({line:?}): Prismite's window stands over a tracked Forest tap: {:?}",
+            state.waiting_for
+        );
+
+        act(&mut runner, GameAction::CancelCast);
+        let state = runner.state();
+        assert_eq!(
+            (state.waiting_for.variant_name(), on_stack(state, bears)),
+            (if casting { "ManaPayment" } else { "Priority" }, casting),
+            "reach ({line:?}): only Prismite's activation was withdrawn"
+        );
+
+        let mut outer_cancelled = GameRunner::from_state(state.clone());
+        act(
+            &mut runner,
+            GameAction::UntapLandForMana { object_id: forest },
+        );
+        let state = runner.state();
+        assert!(
+            !state.objects[&forest].tapped && state.players[0].mana_pool.total() == 0,
+            "{line:?}: the Forest's tap was taken back"
+        );
+        assert_eq!(on_stack(state, bears), casting, "{line:?}");
+
+        // Cancelling the cast itself still ends the window in which its taps can be taken back.
+        if casting {
+            cancel(&mut outer_cancelled, bears);
+            assert!(
+                outer_cancelled
+                    .act(GameAction::UntapLandForMana { object_id: forest })
+                    .is_err(),
+                "{line:?}"
+            );
+        }
+    }
+}
+
+/// Marvin, Murderous Mimic: "Marvin has all activated abilities of creatures you control that
+/// don't have the same name as this creature." With Skyshroud Elf and Prismite it has "{T}: Add
+/// {G}." and "{2}: Add one mana of any color.": two mana abilities of one object, one resolved
+/// and one withdrawn.
+#[test]
+fn play_trace_keeps_a_completed_ability_of_the_cancelled_abilitys_own_object() {
+    let Some(db) = shared_card_db() else { return };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_real_card(P0, "Phyrexian Altar", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+    let elf = scenario.add_real_card(P0, "Skyshroud Elf", Zone::Battlefield, db);
+    let prismite = scenario.add_real_card(P0, "Prismite", Zone::Battlefield, db);
+    let marvin = scenario.add_real_card(P0, "Marvin, Murderous Mimic", Zone::Battlefield, db);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    runner.state_mut().objects.get_mut(&elf).unwrap().tapped = true;
+    engine::game::layers::evaluate_layers(runner.state_mut());
+    let state = runner.state();
+    let prismites = state.objects[&prismite].abilities[ability(state, prismite, true)]
+        .cost
+        .clone();
+    let costed = mana_ability_costing(state, marvin, |cost| Some(cost) == prismites.as_ref());
+    let tap = mana_ability_costing(state, marvin, |cost| *cost == AbilityCost::Tap);
+    activate(&mut runner, marvin, costed);
+    assert_eq!(
+        standing(runner.state()),
+        (WINDOW, Some(marvin), vec![mana(marvin, costed)]),
+        "reach: Marvin's {{2}} opens its payment window"
+    );
+    activate(&mut runner, marvin, tap);
+    let green = |state: &GameState| state.players[0].mana_pool.count_color(ManaType::Green);
+    assert_eq!(
+        (standing(runner.state()), green(runner.state())),
+        (
+            (
+                WINDOW,
+                Some(marvin),
+                vec![mana(marvin, costed), mana(marvin, tap)]
+            ),
+            1
+        ),
+        "reach: Marvin's {{T}} resolved inside its own {{2}} window"
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+    assert_eq!(
+        (standing(runner.state()), green(runner.state())),
+        (("Priority", None, vec![mana(marvin, tap)]), 1)
+    );
 }
 
 #[test]

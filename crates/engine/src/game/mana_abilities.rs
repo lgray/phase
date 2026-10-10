@@ -1001,6 +1001,16 @@ pub fn activate_mana_ability(
             required_zone
         )));
     }
+    // CR 605.3c: an ability suspended at a payment window has begun and not resolved.
+    if state
+        .waiting_for
+        .suspended_mana_abilities()
+        .any(|begun| begun == (source_id, Some(ability_index)))
+    {
+        return Err(EngineError::ActionNotAllowed(
+            "A mana ability can't be activated again until it has resolved (CR 605.3c)".to_string(),
+        ));
+    }
     // CR 602.5: enforce activation prohibitions at the executor, not just at
     // legal-action filtering — a buggy or hostile client may submit
     // `GameAction::ActivateAbility` directly. The mana-ability fast path must
@@ -2388,7 +2398,11 @@ pub(super) fn advance_mana_ability_activation(
             let plans = enumerate_hybrid_payment_plans(pool, sub_cost, &activation_ctx);
             match plans.len() {
                 0 if {
-                    let excluded_sources = std::collections::HashSet::from([pending.source_id]);
+                    // CR 605.3c: auto-tap may not pay with a source suspended beneath this one.
+                    let excluded_sources: HashSet<ObjectId> = pending
+                        .suspended_chain()
+                        .map(|(source, _)| source)
+                        .collect();
                     !super::casting::can_pay_ability_mana_cost_after_auto_tap_excluding(
                         state,
                         pending.player,
@@ -2439,12 +2453,17 @@ pub(super) fn advance_mana_ability_activation(
     // re-enters this choice-discovery prefix after the player answers a
     // replacement choice, so paid components and selected objects stay paid.
     let cost_event_start = events.len();
+    // CR 605.3c: the same exclusion binds the payment the feasibility check admitted.
+    let suspended_sources: HashSet<ObjectId> = pending
+        .suspended_chain()
+        .map(|(source, _)| source)
+        .collect();
     continue_mana_ability_cost_payment(
         state,
         pending,
         mana_ability_cost_cursor(
             &ability_def.cost,
-            &HashSet::new(),
+            &suspended_sources,
             None,
             ManaAbilityCostResolutionMode::Interactive,
             None,

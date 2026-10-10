@@ -10921,6 +10921,14 @@ fn apply_action(
         // an activation that was never accepted; its mana-undo window was left
         // intact and must survive the reversal.
         GameAction::CancelCast if activation_cost_still_open(state, &state.waiting_for) => {}
+        // CR 602.2b + CR 605.3b: withdrawing a mana ability at its payment window ends
+        // neither the play it was paying for nor the mana abilities already resolved.
+        GameAction::CancelCast
+            if state
+                .waiting_for
+                .suspended_mana_abilities()
+                .next()
+                .is_some() => {}
         GameAction::PassPriority
         | GameAction::PlayLand { .. }
         | GameAction::CastSpell { .. }

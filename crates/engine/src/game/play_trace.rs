@@ -412,6 +412,9 @@ enum Reversal {
     Process,
     /// Untapping a manually tapped land reverses the latest mana ability it activated.
     ManaSource(ObjectId),
+    /// Withdrawing a mana ability at its payment window reverses that activation alone, in the
+    /// shape CR 733.1 gives a reversal: mana abilities activated meanwhile stand.
+    ManaAbility(ObjectId, Option<usize>),
 }
 
 /// The trace as it stood before a play a later action may reverse.
@@ -419,6 +422,18 @@ enum Reversal {
 struct UndoPoint {
     undoes: Reversal,
     before: Box<PlayTrace>,
+}
+
+impl UndoPoint {
+    /// An untap names the land alone, so it undoes whichever of its mana abilities this is.
+    fn undone_by(&self, reversal: Reversal) -> bool {
+        match (self.undoes, reversal) {
+            (Reversal::ManaAbility(source, _), Reversal::ManaSource(untapped)) => {
+                source == untapped
+            }
+            (made, asked) => made == asked,
+        }
+    }
 }
 
 /// Every play and answer of one window. `im` collections, so a state copy shares it.
@@ -568,18 +583,18 @@ impl PlayTrace {
         entry: TraceEntry,
         continues_mana_ability: bool,
     ) {
-        let mana_source = match entry.kind {
+        let mana_ability = match entry.kind {
             EntryKind::Play {
-                locus: PlayLocus::Mana(source, _),
+                locus: PlayLocus::Mana(source, index),
                 ..
-            } => Some(source),
+            } => Some(Reversal::ManaAbility(source, index)),
             _ => None,
         };
-        if mana_source.is_some() || continues_mana_ability {
+        if mana_ability.is_some() || continues_mana_ability {
             self.mana_ability_entries.insert(self.entries.len());
         }
-        let undo = mana_source.zip(prior).map(|(source, prior)| UndoPoint {
-            undoes: Reversal::ManaSource(source),
+        let undo = mana_ability.zip(prior).map(|(undoes, prior)| UndoPoint {
+            undoes,
             before: Box::new(prior.clone()),
         });
         match &entry.kind {
@@ -852,7 +867,15 @@ fn classify(action: &GameAction, prompt: &WaitingFor) -> Choice {
         GameAction::SaddleMount { mount_id, .. } if at_priority => {
             Choice::Play(Play::Keyword(*mount_id, KeywordActivation::Saddle))
         }
-        GameAction::CancelCast => Choice::Reverse(Reversal::Process),
+        // At a mana ability's payment window a cancel withdraws the innermost activation alone.
+        GameAction::CancelCast => Choice::Reverse(
+            prompt
+                .suspended_mana_abilities()
+                .next()
+                .map_or(Reversal::Process, |(source, index)| {
+                    Reversal::ManaAbility(source, index)
+                }),
+        ),
         GameAction::UntapLandForMana { object_id } => {
             Choice::Reverse(Reversal::ManaSource(*object_id))
         }
@@ -1383,17 +1406,23 @@ pub(crate) fn end_action(
         if let Some(before) = snapshot.opening.filter(|_| began_play) {
             trace.begin_play(before);
         }
-        // A land's mana ability stays reversible only while the engine still tracks its tap.
+        // A mana ability stays reversible while the engine still tracks its land's tap, or while
+        // a play is in progress whose payment window a cancel may yet withdraw it from.
         trace.undo.retain(|point| match point.undoes {
             Reversal::Process => true,
-            Reversal::ManaSource(source) => tapped.values().any(|ids| ids.contains(&source)),
+            // An untap's request; no point is kept under it.
+            Reversal::ManaSource(_) => false,
+            Reversal::ManaAbility(source, _) => {
+                began_play || tapped.values().any(|ids| ids.contains(&source))
+            }
         });
     }
 }
 
 /// Restores the trace to its state before the reversed play and records again what came after it
 /// that the reversal leaves standing; a cancel leaves only the mana abilities activated while
-/// making the play and their choices, which the engine does not reverse (CR 733.1).
+/// making the play and their choices, which the engine does not reverse (CR 733.1), and a
+/// withdrawn mana ability leaves everything but its own answers.
 fn reverse(state: &mut GameState, reversal: Reversal) {
     let Some(trace) = state.play_trace.as_deref() else {
         return;
@@ -1402,7 +1431,7 @@ fn reverse(state: &mut GameState, reversal: Reversal) {
         .undo
         .iter()
         .rev()
-        .find(|point| point.undoes == reversal)
+        .find(|point| point.undone_by(reversal))
     else {
         return;
     };
@@ -1413,8 +1442,13 @@ fn reverse(state: &mut GameState, reversal: Reversal) {
         .map(|point| point.before.entries.len());
     let reversed_at = point.before.entries.len();
     let mut restored = (*point.before).clone();
+    // A withdrawn mana ability's own answers are the entries up to the next play.
+    let mut own_answer = matches!(reversal, Reversal::ManaAbility(..));
     for (at, entry) in trace.entries.iter().enumerate().skip(reversed_at + 1) {
-        if reversal == Reversal::Process && !trace.mana_ability_entries.contains(&at) {
+        own_answer &= !matches!(entry.kind, EntryKind::Play { .. });
+        if own_answer
+            || (reversal == Reversal::Process && !trace.mana_ability_entries.contains(&at))
+        {
             continue;
         }
         restored.rerecord(trace, at, entry.clone(), Some(at) == process_at);
