@@ -10,7 +10,7 @@ use engine::types::ability::{AbilityCost, AbilityKind};
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
 use engine::types::game_state::{
-    GameState, LoopDetectionMode, ManaAbilityResume, ManaChoice, WaitingFor,
+    GameState, LoopDetectionMode, ManaAbilityResume, ManaChoice, PayCostKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaType;
@@ -1806,6 +1806,60 @@ fn an_amount_answer_that_cannot_be_carried_out_reverses_the_activation() {
     assert_eq!(state.objects[&pools].counters.get(&storage), Some(&2));
     assert!(pool(state).is_empty());
     assert!(trace(state).is_empty(), "{:?}", trace(state));
+}
+
+/// The Food Court: "Sacrifice three Foods: Add {W}{U}{B}{R}{G}." One Food named three times is
+/// not three Foods (CR 118.3), so that answer is refused and the prompt stands for a legal one.
+#[test]
+fn one_food_named_three_times_is_refused_at_the_food_courts_prompt() {
+    let Some((mut runner, ids)) = traced(&[
+        "The Food Court",
+        "Carrot Cake",
+        "Golden Egg",
+        "Tough Cookie",
+        "Heaped Harvest",
+    ]) else {
+        return;
+    };
+    let (court, foods) = (ids[0], &ids[1..]);
+    assert!(
+        offers_mana_ability_of(runner.state(), court),
+        "reach: the opener is offered"
+    );
+    activate(&mut runner, court, true);
+    assert!(
+        matches!(
+            &runner.state().waiting_for,
+            WaitingFor::PayCost { kind: PayCostKind::Sacrifice, choices, count: 3, .. }
+                if choices == foods
+        ),
+        "reach: the prompt asks for three of the four Foods: {:?}",
+        runner.state().waiting_for
+    );
+
+    assert_refused(
+        &mut runner,
+        &GameAction::SelectCards {
+            cards: vec![foods[0]; 3],
+        },
+    );
+
+    act(
+        &mut runner,
+        GameAction::SelectCards {
+            cards: foods[..3].to_vec(),
+        },
+    );
+    assert_eq!(
+        pool(runner.state()),
+        [
+            (ManaType::White, 1),
+            (ManaType::Blue, 1),
+            (ManaType::Black, 1),
+            (ManaType::Red, 1),
+            (ManaType::Green, 1),
+        ]
+    );
 }
 
 /// The creature chosen for Transmogrant Altar's cost before its window opened is sacrificed to

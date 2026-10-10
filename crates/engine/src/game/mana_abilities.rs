@@ -1646,6 +1646,13 @@ pub fn handle_sacrifice_for_mana_ability(
             chosen.len()
         )));
     }
+    // CR 118.3: one permanent pays for one of the sacrifices.
+    if contains_duplicate_object_id(chosen) {
+        return Err(EngineError::InvalidAction(
+            "Cannot sacrifice the same permanent more than once for a mana ability cost"
+                .to_string(),
+        ));
+    }
     for id in chosen {
         if !legal_permanents.contains(id) {
             return Err(EngineError::InvalidAction(
@@ -1697,6 +1704,12 @@ pub fn handle_discard_for_mana_ability(
             count,
             chosen.len()
         )));
+    }
+    // CR 118.3: one card pays for one of the discards.
+    if contains_duplicate_object_id(chosen) {
+        return Err(EngineError::InvalidAction(
+            "Cannot discard the same card more than once for a mana ability cost".to_string(),
+        ));
     }
     for id in chosen {
         if !legal_cards.contains(id) {
