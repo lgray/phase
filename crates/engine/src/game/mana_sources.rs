@@ -6542,19 +6542,24 @@ mod tests {
 #[cfg(test)]
 mod paid_object_label_tests {
     use super::*;
-    use crate::game::scenario::{GameScenario, P0};
+    use crate::game::scenario::{GameRunner, GameScenario, P0};
     use crate::game::scenario_db::GameScenarioDbExt;
 
-    /// The produced-mana label of each of `member`'s mana actions, with
-    /// `others` placed on the battlefield before it.
-    fn labels(member: &str, others: &[&str]) -> Vec<Vec<ManaType>> {
+    /// `member` on P0's battlefield with `others` placed there before it.
+    fn board(member: &str, others: &[&str]) -> (GameRunner, ObjectId) {
         let db = crate::test_support::shared_card_db();
         let mut scenario = GameScenario::new();
         for name in others {
             scenario.add_real_card(P0, name, Zone::Battlefield, db);
         }
         let id = scenario.add_real_card(P0, member, Zone::Battlefield, db);
-        let runner = scenario.build();
+        (scenario.build(), id)
+    }
+
+    /// The produced-mana label of each of `member`'s mana actions, with
+    /// `others` placed on the battlefield before it.
+    fn labels(member: &str, others: &[&str]) -> Vec<Vec<ManaType>> {
+        let (runner, id) = board(member, others);
         let state = runner.state();
         let gates = mana_abilities::ManaActivationGates::compute(state);
         let auras = taps_for_mana_trigger_sources(state);
@@ -6585,16 +6590,23 @@ mod paid_object_label_tests {
         );
     }
 
+    /// CR 608.2h: Priest of Yawgmoth's yield is the mana value of the artifact
+    /// its cost sacrifices: 3 beside Ashnod's Altar (mana cost {3}), 0 beside
+    /// only a Memnite (mana cost {0}).
+    #[test]
+    fn max_mana_yield_reads_the_sacrificed_artifacts_mana_value() {
+        let yielded = |others: &[&str]| {
+            let (runner, priest) = board("Priest of Yawgmoth", others);
+            max_mana_yield(runner.state(), priest, P0)
+        };
+        assert_eq!(yielded(&["Ashnod's Altar"]), 3);
+        assert_eq!(yielded(&["Memnite"]), 0);
+    }
+
     /// The castability profiles of `member`, with `others` placed on the
     /// battlefield before it.
     fn profiles(member: &str, others: &[&str]) -> Vec<ActivatableManaProfileKind> {
-        let db = crate::test_support::shared_card_db();
-        let mut scenario = GameScenario::new();
-        for name in others {
-            scenario.add_real_card(P0, name, Zone::Battlefield, db);
-        }
-        let id = scenario.add_real_card(P0, member, Zone::Battlefield, db);
-        let runner = scenario.build();
+        let (runner, id) = board(member, others);
         activatable_mana_profiles_for_object(runner.state(), id, P0, None)
             .into_iter()
             .map(|profile| profile.kind)

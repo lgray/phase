@@ -13,8 +13,9 @@ use crate::ai_support::{
     FilterPipeline, TacticalClass,
 };
 use crate::analysis::decision_template::{
-    declaration_conforms, AnnouncementSubject, DecisionGroupKey, DecisionKind, DecisionTemplate,
-    IterationCount, PinnedDecision, Ranking, ReplayMode, TargetPin, TargetSchedule,
+    declaration_conforms, recorded_answer, AnnouncementSubject, DecisionGroupKey, DecisionKind,
+    DecisionTemplate, IterationCount, PinnedDecision, Ranking, ReplayMode, TargetPin,
+    TargetSchedule,
 };
 use crate::types::ability::{
     AggregateFunction, ChoiceType, ChooseFromZoneConstraint, Comparator, CounterCostSelection,
@@ -10619,11 +10620,8 @@ fn materialize_loop_shortcut_response(
                 // CR 732.2a: the confirmed period's own answer is the one its take performs.
                 InteractionShortcutPointKind::MayChoice => {
                     let answer = recorded
-                        .into_iter()
-                        .flatten()
-                        .find(|pin| {
-                            matches!(pin, PinnedDecision::MayChoice { slot, .. } if *slot == point.slot)
-                        })
+                        .and_then(|recorded| recorded_answer(recorded, &point.slot))
+                        .filter(|pin| matches!(pin, PinnedDecision::MayChoice { .. }))
                         .ok_or(InteractionReasonCode::InvalidAuthorityState)?;
                     decisions.push(answer.clone());
                 }

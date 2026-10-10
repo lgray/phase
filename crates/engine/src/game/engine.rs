@@ -5195,6 +5195,21 @@ fn apply_confirmed_shortcut(
             // `shortcut_drive_period` cycles, which clamps to `MAX_SHORTCUT_CYCLES`.
             crate::analysis::decision_template::IterationCount::UntilLethal => false,
         }
+        // CR 732.2c: the take performs the recorded period's own choices, so a proposal whose
+        // declared choices differ from them is not the shortcut it would take.
+        || proposal
+            .template
+            .as_ref()
+            .zip(proposal.period.recorded_answers())
+            .is_some_and(|(template, recorded)| {
+                crate::analysis::decision_template::validate_recorded_answers(
+                    template,
+                    recorded,
+                    shortcut_validated_range(&proposal.count, Some(template)),
+                    state,
+                )
+                .is_err()
+            })
     {
         priority::reset_priority(state);
         // CR 800.4a: priority passes to the next player in turn order still in the game.

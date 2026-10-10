@@ -1248,6 +1248,28 @@ impl PinnedDecision {
             | PinnedDecision::ConvokeTaps { slot } => slot,
         }
     }
+
+    /// CR 732.2a: this choice named as the next occurrence of its source and point after
+    /// `earlier`, so a sequence that asks one source the same choice again names each time it
+    /// does; `None` once the occurrences outrun the slot's index.
+    pub(crate) fn at_occurrence_among(mut self, earlier: &[PinnedDecision]) -> Option<Self> {
+        let slot = match &mut self {
+            PinnedDecision::Order { slot, .. }
+            | PinnedDecision::Targets { slot, .. }
+            | PinnedDecision::Mode { slot, .. }
+            | PinnedDecision::MayChoice { slot, .. }
+            | PinnedDecision::UnlessBreak { slot, .. }
+            | PinnedDecision::ManaColor { slot, .. }
+            | PinnedDecision::ConvokeTaps { slot } => slot,
+        };
+        let occurrence = earlier
+            .iter()
+            .map(PinnedDecision::slot)
+            .filter(|named| named.source == slot.source && named.point == slot.point)
+            .count();
+        slot.index = u8::try_from(occurrence).ok()?;
+        Some(self)
+    }
 }
 
 /// CR 732.2a: whether `pin` answers `point` — same slot AND the 1:1 kind peer
@@ -1516,6 +1538,16 @@ pub fn validate_pins(
     Ok(())
 }
 
+/// CR 732.2a: the recorded answer `slot` names; `None` when no answer carries that slot, or more
+/// than one does.
+pub(crate) fn recorded_answer<'a>(
+    recorded: &'a [PinnedDecision],
+    slot: &DecisionSlot,
+) -> Option<&'a PinnedDecision> {
+    let mut named = recorded.iter().filter(|answer| answer.slot() == slot);
+    named.next().filter(|_| named.next().is_none())
+}
+
 /// CR 732.2a: a recorded take performs `recorded`, the confirmed period's own answers, so a
 /// declaration may pin a slot only the way the period answered it. Targets compare by what they
 /// resolve to at every driven index, since a recorded pin names its object at a past incarnation
@@ -1528,28 +1560,25 @@ pub fn validate_recorded_answers(
 ) -> Result<(), PinValidation> {
     for pin in &template.decisions {
         let slot = pin.slot();
-        let agrees = recorded
-            .iter()
-            .find(|answer| answer.slot() == slot)
-            .is_some_and(|answer| match (pin, answer) {
-                (
-                    PinnedDecision::Targets { targets, .. },
-                    PinnedDecision::Targets {
-                        targets: answered, ..
-                    },
-                ) => {
-                    targets.len() == answered.len()
-                        && (0..validated_range).all(|i| {
-                            targets.iter().zip(answered).all(|(declared, answered)| {
-                                resolve_target(declared, slot, i, state).is_ok_and(|target| {
-                                    resolve_target(&answered.at_live_incarnation(), slot, i, state)
-                                        == Ok(target)
-                                })
+        let agrees = recorded_answer(recorded, slot).is_some_and(|answer| match (pin, answer) {
+            (
+                PinnedDecision::Targets { targets, .. },
+                PinnedDecision::Targets {
+                    targets: answered, ..
+                },
+            ) => {
+                targets.len() == answered.len()
+                    && (0..validated_range).all(|i| {
+                        targets.iter().zip(answered).all(|(declared, answered)| {
+                            resolve_target(declared, slot, i, state).is_ok_and(|target| {
+                                resolve_target(&answered.at_live_incarnation(), slot, i, state)
+                                    == Ok(target)
                             })
                         })
-                }
-                _ => pin == answer,
-            });
+                    })
+            }
+            _ => pin == answer,
+        });
         if !agrees {
             return Err(PinValidation::DivergesFromRecordedPeriod { slot: slot.clone() });
         }
@@ -3575,6 +3604,99 @@ mod tests {
         assert_eq!(
             validate_recorded_answers(&declaring(MayChoiceOption::Take, 10), &[], 2, &state),
             Err(PinValidation::DivergesFromRecordedPeriod { slot: may })
+        );
+    }
+
+    /// CR 732.2a: a recorded choice is numbered among the earlier choices of its own source and
+    /// point, and one past the index's range is no choice.
+    #[test]
+    fn recorded_choices_are_numbered_by_occurrence() {
+        let may = |object| PinnedDecision::MayChoice {
+            slot: DecisionSlot::first(this_obj(object, None), ChoicePoint::MayGate),
+            take: MayChoiceOption::Take,
+        };
+        let aim = |object| PinnedDecision::Targets {
+            slot: DecisionSlot::first(this_obj(object, None), ChoicePoint::AnnouncedTarget),
+            targets: Vec::new(),
+        };
+        let mut recorded = Vec::new();
+        for choice in [may(20), aim(20), may(20), may(21), may(20), aim(20)] {
+            let numbered = choice
+                .clone()
+                .at_occurrence_among(&recorded)
+                .expect("within the index's range");
+            assert_eq!(
+                (&numbered.slot().source, numbered.slot().point),
+                (&choice.slot().source, choice.slot().point)
+            );
+            recorded.push(numbered);
+        }
+        let indices: Vec<u8> = recorded.iter().map(|pin| pin.slot().index).collect();
+        assert_eq!(indices, [0, 0, 1, 0, 2, 1]);
+
+        let asked = vec![may(20); usize::from(u8::MAX) + 1];
+        assert_eq!(
+            may(20)
+                .at_occurrence_among(&asked[1..])
+                .map(|pin| pin.slot().index),
+            Some(u8::MAX)
+        );
+        assert_eq!(may(20).at_occurrence_among(&asked), None);
+    }
+
+    /// CR 732.2a + CR 603.5: a period that asks one source the same "may" twice records two
+    /// choices, and a declared pin answers the one occurrence its slot names; a slot two recorded
+    /// answers share names neither.
+    #[test]
+    fn validate_recorded_answers_names_each_occurrence() {
+        use MayChoiceOption::{Decline, Take};
+        let state = GameState::new_two_player(7);
+        let slot = |index| DecisionSlot {
+            source: this_obj(20, None),
+            point: ChoicePoint::MayGate,
+            index,
+        };
+        let may = |index, take| PinnedDecision::MayChoice {
+            slot: slot(index),
+            take,
+        };
+        let declared = |recorded: &[PinnedDecision], decisions: Vec<PinnedDecision>| {
+            let template = DecisionTemplate {
+                owner: PlayerId(0),
+                decisions,
+                replay: ReplayMode::Static,
+                key: tri_key(),
+            };
+            validate_recorded_answers(&template, recorded, 2, &state)
+        };
+        let diverges = |index| Err(PinValidation::DivergesFromRecordedPeriod { slot: slot(index) });
+
+        let sharing = [may(0, Take), may(0, Decline)];
+        assert_eq!(declared(&sharing, vec![may(0, Take)]), diverges(0));
+
+        let mixed = [may(0, Take), may(1, Decline)];
+        assert_eq!(
+            declared(&mixed, vec![may(0, Take), may(1, Decline)]),
+            Ok(())
+        );
+        assert_eq!(declared(&mixed, vec![may(0, Take)]), Ok(()));
+        assert_eq!(
+            declared(&mixed, vec![may(0, Take), may(1, Take)]),
+            diverges(1)
+        );
+
+        let identical = [may(0, Take), may(1, Take)];
+        assert_eq!(
+            declared(&identical, vec![may(0, Take), may(1, Take)]),
+            Ok(())
+        );
+        assert_eq!(
+            declared(&identical, vec![may(0, Decline), may(1, Take)]),
+            diverges(0)
+        );
+        assert_eq!(
+            declared(&identical, vec![may(0, Take), may(1, Decline)]),
+            diverges(1)
         );
     }
 }

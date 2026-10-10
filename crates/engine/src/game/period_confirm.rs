@@ -536,7 +536,7 @@ fn answer(
         if matches!(item.action, GameAction::TapForConvoke { .. }) {
             let convoked = convoke_choice(replay);
             if rebind_convoke(replay, events)?.is_some() {
-                choices.extend(convoked);
+                record_choice(choices, convoked)?;
                 for convoke in candidates.clone() {
                     if matches!(items[convoke].action, GameAction::TapForConvoke { .. }) {
                         done[convoke] = true;
@@ -564,7 +564,7 @@ fn answer(
             Err(refusal) => return Err(refusal),
         }
         done[at] = true;
-        choices.extend(choice);
+        record_choice(choices, choice)?;
         if let (Some(recorded), Some(offered)) = (&item.cost_move, offered) {
             if offered.moved(replay).arrivals != recorded.arrivals {
                 return Err(OfferRefusal::ArrivalDiverged);
@@ -576,10 +576,25 @@ fn answer(
     // creatures it can tap instead, as a recorded convoke is.
     let convoked = convoke_choice(replay);
     if rebind_convoke(replay, events)?.is_some_and(|tapped| tapped > 0) {
-        choices.extend(convoked);
+        record_choice(choices, convoked)?;
         return Ok(true);
     }
     Ok(false)
+}
+
+/// CR 732.2a: records `choice` as the next occurrence of its source and point, so each time a
+/// cycle asks one source the same choice is a slot a declaration can name.
+fn record_choice(
+    choices: &mut Vec<PinnedDecision>,
+    choice: Option<PinnedDecision>,
+) -> Result<(), OfferRefusal> {
+    if let Some(choice) = choice {
+        let choice = choice
+            .at_occurrence_among(choices)
+            .ok_or(OfferRefusal::UnanswerablePrompt)?;
+        choices.push(choice);
+    }
+    Ok(())
 }
 
 /// CR 702.51a: the convoke a replayed cast is about to pay, by the card cast.

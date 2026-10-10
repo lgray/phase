@@ -1,6 +1,6 @@
 //! CR 732.2a: the confirmer's replay of a trace candidate, and the cover it certifies on.
 
-use engine::analysis::decision_template::IterationCount;
+use engine::analysis::decision_template::{IterationCount, PinnedDecision};
 use engine::analysis::loop_check::{LoopCertificate, OfferRoad, ShortcutResponse, WinKind};
 use engine::analysis::loop_states_equal_modulo_resources;
 use engine::analysis::resource::{
@@ -12,12 +12,17 @@ use engine::game::combat::AttackTarget;
 use engine::game::effects::attach::{attach_to, attach_to_player};
 use engine::game::engine::certify_object_growth_frames_for_tests;
 use engine::game::functioning_abilities::active_trigger_definitions;
+use engine::game::interaction::{
+    bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
+    submit_interaction,
+};
 use engine::game::keywords::effective_foretell_cost;
 use engine::game::log::resolve_log_entries;
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
+use engine::game::visibility::filter_state_for_viewer;
 use engine::game::zones::{add_to_zone, remove_from_zone};
 use engine::game::{play_trace_view, NamedSpan, NamingCause, PeriodReach, SpanSource};
 use engine::types::ability::{
@@ -31,6 +36,12 @@ use engine::types::game_state::{
     WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
+use engine::types::interaction::{
+    InteractionOpportunity, InteractionOpportunityResponse, InteractionResponse,
+    InteractionResponseSpec, InteractionSessionId, InteractionShortcutDecision,
+    InteractionShortcutPoint, InteractionShortcutPointKind, InteractionSubmission,
+    ViewerInteraction,
+};
 use engine::types::keywords::Keyword;
 use engine::types::log::LogSegment;
 use engine::types::mana::{ManaType, ManaUnit};
@@ -2195,7 +2206,7 @@ fn an_altar_zulaport_period_is_offered_a_bounded_shortcut_and_taken() {
 
 /// `state` reloaded through the persisted codec the WASM restore and server persistence use, then
 /// through bare `GameState` serde.
-fn reload_both(state: &GameState) -> [Result<GameState, String>; 2] {
+pub(super) fn reload_both(state: &GameState) -> [Result<GameState, String>; 2] {
     let saved = serde_json::to_value(PersistedGameState::capture(state.clone())).expect("saves");
     let persisted = serde_json::from_value::<PersistedGameState>(saved)
         .map_err(|error| error.to_string())
@@ -2206,12 +2217,37 @@ fn reload_both(state: &GameState) -> [Result<GameState, String>; 2] {
 }
 
 /// `state` reloaded through both ingresses, each asserted to restore the same decision.
-fn reloaded(state: &GameState) -> [GameState; 2] {
+pub(super) fn reloaded(state: &GameState) -> [GameState; 2] {
     reload_both(state).map(|restored| {
         let restored = restored.expect("an engine-minted state reloads");
         assert_eq!(restored.waiting_for, state.waiting_for);
         restored
     })
+}
+
+/// `state` bound to an interaction session, and the interaction it publishes to P0.
+pub(super) fn published_to_p0(state: &GameState) -> (GameState, ViewerInteraction) {
+    let mut bound = state.clone();
+    bind_interaction_authority(&mut bound, InteractionSessionId("shortcut".into()))
+        .expect("valid interaction authority binding");
+    let filtered = filter_state_for_viewer(&bound, P0);
+    let view = derive_viewer_interaction(&bound, &filtered, P0);
+    (bound, view)
+}
+
+/// The opportunity among `view`'s that is a shortcut schema, and its points.
+pub(super) fn shortcut_schema(
+    view: &ViewerInteraction,
+) -> Option<(&InteractionOpportunity, &[InteractionShortcutPoint])> {
+    view.opportunities
+        .iter()
+        .find_map(|opportunity| match &opportunity.response {
+            InteractionOpportunityResponse::Schema {
+                spec: InteractionResponseSpec::Shortcut { points, .. },
+                ..
+            } => Some((opportunity, points.as_slice())),
+            _ => None,
+        })
 }
 
 /// Each ingress refuses `state` for carrying a confirmed period on the ring road.
@@ -2521,6 +2557,89 @@ fn a_grove_marvin_board_without_natures_revolt_has_no_cycle() {
     );
     assert_eq!(described(runner.state(), marvin, "Add {R} or {G}"), None);
     assert!(!is_offer(runner.state()));
+}
+
+/// CR 732.2a: the Grove period asks Marvin for a mana color twice, once for the Grove's "{T}: Add
+/// {R} or {G}. Each opponent gains 1 life." and once for Pili-Pala's "{2}, {Q}: Add one mana of
+/// any color."; each is published to P0 as its own fixed point, and the response declares both and
+/// is taken, Tainted Remedy turning each of the three gains into a loss of 1.
+#[test]
+fn a_repeated_mana_color_period_is_published_and_taken_at_the_interaction_ingress() {
+    const COUNT: u32 = 3;
+    let Some(db) = shared_card_db() else { return };
+    let (mut runner, marvin, mountain) = grove_board(&[20, 20], true, db);
+    grove_to_offer(&mut runner, marvin, mountain, &[P1]);
+    let offer = runner.state().clone();
+    let WaitingFor::LoopShortcut { period, .. } = &offer.waiting_for else {
+        panic!("no offer: {:?}", latest_verdict(&offer));
+    };
+    let colors: Vec<&PinnedDecision> = period
+        .choices()
+        .iter()
+        .filter(|pin| matches!(pin, PinnedDecision::ManaColor { .. }))
+        .collect();
+    let [first, second] = colors.as_slice() else {
+        panic!("reach: the period chose a mana color twice; {colors:?}");
+    };
+    assert_eq!(first.slot().source, second.slot().source, "reach");
+    assert_eq!(
+        (first.slot().index, second.slot().index),
+        (0, 1),
+        "reach: each choice is its own occurrence on that source"
+    );
+
+    let (bound, view) = published_to_p0(&offer);
+    let (opportunity, points) =
+        shortcut_schema(&view).expect("the offer is published as a shortcut schema");
+    assert_eq!(points.len(), colors.len());
+    for point in points {
+        assert!(
+            point.kind == InteractionShortcutPointKind::ManaColor
+                && point.read_only
+                && point.candidate_ids.len() == 1,
+            "each occurrence is a fixed point with its recorded color; got {point:?}"
+        );
+    }
+
+    let submission = InteractionSubmission {
+        interaction_id: opportunity.interaction_id.clone(),
+        response: InteractionResponse::Shortcut {
+            decision: InteractionShortcutDecision::Fixed { iterations: COUNT },
+            pins: Vec::new(),
+        },
+    };
+    let template = match resolve_interaction_response(&bound, P0, &submission) {
+        Ok(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(COUNT),
+            template: Some(template),
+        }) => template,
+        other => panic!(
+            "the response mints a declaration of {COUNT}; got {:?}",
+            other.map_err(|error| error.code)
+        ),
+    };
+    for color in &colors {
+        assert!(
+            template.decisions.contains(color),
+            "the declaration carries each recorded color"
+        );
+    }
+
+    let mut declared = bound.clone();
+    assert!(
+        submit_interaction(&mut declared, P0, submission).is_ok(),
+        "the response is accepted"
+    );
+    assert!(
+        matches!(declared.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "the declaration opens the response window; got {}",
+        declared.waiting_for.variant_name()
+    );
+    let mut runner = GameRunner::from_state(declared);
+    accept(&mut runner);
+    let taken = runner.state();
+    assert_eq!(taken.waiting_for, WaitingFor::Priority { player: P0 });
+    assert_eq!(taken.players[1].life, offer.players[1].life - COUNT as i32);
 }
 
 /// P0's precombat main with `name` on P0's battlefield.
@@ -3397,6 +3516,135 @@ fn an_archaeomancer_time_warp_period_is_offered_its_hand_bound_and_taken() {
         assert_eq!(
             after.players[0].hand.len(),
             state.players[0].hand.len() + n as usize
+        );
+    }
+}
+
+/// [`warp_step`], with Carpet of Flowers' trigger aimed at P1 and its mana taken as green.
+fn carpet_warp_step(runner: &mut GameRunner) {
+    let state = runner.state();
+    let action = match &state.waiting_for {
+        WaitingFor::TriggerTargetSelection {
+            source_id: Some(source),
+            ..
+        } if state.objects[source].name == "Carpet of Flowers" => GameAction::ChooseTarget {
+            target: Some(TargetRef::Player(P1)),
+        },
+        WaitingFor::ChooseManaColor { .. } => GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Green),
+            count: 1,
+        },
+        _ => return warp_step(runner),
+    };
+    act(runner, action);
+}
+
+fn carpet_warp_until(runner: &mut GameRunner, until: impl Fn(&GameState) -> bool) {
+    for _ in 0..8000 {
+        if until(runner.state()) {
+            return;
+        }
+        carpet_warp_step(runner);
+    }
+    panic!("the Carpet of Flowers drive did not reach its stop");
+}
+
+type TurnPosition = (
+    (u32, Phase, PlayerId),
+    Vec<String>,
+    Vec<String>,
+    usize,
+    Vec<String>,
+    usize,
+    Vec<i32>,
+    Vec<(String, PlayerId, bool)>,
+);
+
+/// The turn, phase and active player, the stack's sources, P0's hand, library size, graveyard and
+/// pool size, every life total, and each permanent with its controller and tapped state.
+fn turn_position(state: &GameState) -> TurnPosition {
+    let named = |ids: &mut dyn Iterator<Item = ObjectId>| {
+        let mut names: Vec<String> = ids.map(|id| state.objects[&id].name.clone()).collect();
+        names.sort();
+        names
+    };
+    let mut battlefield: Vec<(String, PlayerId, bool)> = state
+        .battlefield
+        .iter()
+        .map(|id| {
+            let object = &state.objects[id];
+            (object.name.clone(), object.controller, object.tapped)
+        })
+        .collect();
+    battlefield.sort();
+    let p0 = &state.players[0];
+    (
+        (state.turn_number, state.phase, state.active_player),
+        named(&mut state.stack.iter().map(|entry| entry.source_id)),
+        named(&mut p0.hand.iter().copied()),
+        p0.library.len(),
+        named(&mut p0.graveyard.iter().copied()),
+        p0.mana_pool.total(),
+        lives(state),
+        battlefield,
+    )
+}
+
+/// CR 500.7 + CR 732.2a: Carpet of Flowers ("At the beginning of each of your main phases, if you
+/// haven't added mana with this ability this turn, you may add X mana of any one color, where X is
+/// the number of Islands target opponent controls.") reads "this turn", so every extra turn asks it
+/// at its first main phase alike: the Time Warp period beside it is offered, and a take is that
+/// many turns played by hand. The board without Carpet of Flowers is offered and taken the same.
+#[test]
+fn an_archaeomancer_time_warp_period_with_carpet_of_flowers_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    for others in [&["Carpet of Flowers"][..], &[]] {
+        let board = |mode| {
+            let mut scenario = GameScenario::new();
+            for _ in 0..2 {
+                scenario.add_real_card(P1, "Island", Zone::Battlefield, db);
+            }
+            warp_board_in(scenario, 25, others, mode, db)
+        };
+        let mut runner = board(LoopDetectionMode::Interactive);
+        let turn = runner.state().turn_number;
+        let carpet = !others.is_empty();
+        if carpet {
+            carpet_warp_until(&mut runner, |state| {
+                turn_window(state) && state.turn_number == turn + 1
+            });
+            assert!(
+                !runner
+                    .state()
+                    .triggered_abilities_added_mana_this_turn
+                    .is_empty(),
+                "reach: Carpet of Flowers added mana in the turn before the offer"
+            );
+        }
+        carpet_warp_until(&mut runner, |state| {
+            is_offer(state) || state.turn_number > turn + 3
+        });
+        let offered = runner.state().clone();
+        let (span, count) = offer_of(&offered);
+        assert_eq!(span.reach, PeriodReach::ExtraTurn, "{others:?}");
+        if carpet {
+            assert_eq!(offered.turn_number, turn + 2, "reach: the turn after");
+        }
+        let n = fixed(&count);
+
+        let mut by_hand = board(LoopDetectionMode::Off);
+        carpet_warp_until(&mut by_hand, |state| {
+            state.turn_number == offered.turn_number + n
+                && state.phase == Phase::PreCombatMain
+                && state.stack.len() == offered.stack.len()
+                && matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+        });
+
+        take(&mut runner, n);
+        assert_eq!(
+            turn_position(runner.state()),
+            turn_position(by_hand.state()),
+            "{others:?}"
         );
     }
 }
