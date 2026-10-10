@@ -4829,16 +4829,20 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::policies::mulligan::registry_keeps;
+    use crate::policies::mulligan::{registry_keeps, FREE_REVEAL_BOUND};
     use engine::ai_support::{
         ActionMetadata, AiDecisionContext, CandidateAction, CertifiedPactPlan, TacticalClass,
     };
     use engine::database::card_db::CardDatabase;
-    use engine::game::deck_loading::DeckPayload;
+    use engine::game::deck_loading::{
+        load_and_hydrate_decks, resolve_deck_list, DeckList, DeckPayload, PlayerDeckList,
+    };
+    use engine::game::engine::start_game_with_starting_player;
+    use engine::game::mulligan::free_reveal_futile_for;
     use engine::game::rehydrate_game_from_card_db;
     use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
     use engine::game::scenario_db::GameScenarioDbExt;
-    use engine::game::zones::create_object;
+    use engine::game::zones::{add_to_zone, create_object, remove_from_zone};
     use engine::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, CategoryChooserScope, CommanderOwnership,
         ContinuousModification, ControllerRef, Duration, Effect, EffectKind, ManaProduction,
@@ -4850,6 +4854,7 @@ mod tests {
     use engine::types::ability::{ChoiceType, ChosenAttribute};
     use engine::types::card_type::CoreType;
     use engine::types::counter::CounterType;
+    use engine::types::format::FormatConfig;
     use engine::types::game_state::{
         CastPaymentMode, CastingVariant, NamedChoiceSource, NamedChoiceSourceBinding,
         OpponentGuessOwner, OpponentGuessSource, PromptSourceBinding, StackEntry, StackEntryKind,
@@ -9307,7 +9312,6 @@ mod tests {
     }
 
     fn dandan_pile(db: &CardDatabase, pile: &[(&str, usize)]) -> DeckPayload {
-        use engine::game::deck_loading::{resolve_deck_list, DeckList, PlayerDeckList};
         let main_deck = pile
             .iter()
             .flat_map(|&(name, copies)| std::iter::repeat_n(name.to_string(), copies))
@@ -9326,10 +9330,6 @@ mod tests {
 
     /// A Dandan game dealt from `payload` through the production load path.
     fn dandan_game(db: &CardDatabase, payload: &DeckPayload, seed: u64) -> GameState {
-        use engine::game::deck_loading::load_and_hydrate_decks;
-        use engine::game::engine::start_game_with_starting_player;
-        use engine::types::format::FormatConfig;
-
         let mut state = GameState::new(FormatConfig::dandan(), 2, seed);
         load_and_hydrate_decks(&mut state, payload, Some(db));
         start_game_with_starting_player(&mut state, P0);
@@ -9338,7 +9338,6 @@ mod tests {
 
     /// Make the named cards `seat`'s whole hand, swapping with the shared pile.
     fn give_dandan_hand(state: &mut GameState, seat: PlayerId, names: &[&str]) {
-        use engine::game::zones::{add_to_zone, remove_from_zone};
         let holder = state.zone_storage_seat(Zone::Library, seat);
         let hand: Vec<ObjectId> = state.players[seat.0 as usize]
             .hand
@@ -9407,8 +9406,6 @@ mod tests {
     /// same, so a decision that changes with it reads a hidden hand.
     #[test]
     fn both_routes_decide_the_reveal_from_public_state_and_the_own_hand() {
-        use engine::game::mulligan::free_reveal_futile_for;
-
         let db = shared_integration_card_db();
         let payload = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
         for (ai, other) in [(P1, P0), (P0, P1)] {
@@ -9460,9 +9457,6 @@ mod tests {
     /// The bound ends the AI's reveals per seat; each route's existing next arm answers.
     #[test]
     fn both_routes_decline_the_reveal_once_a_seat_reaches_the_bound() {
-        use crate::policies::mulligan::FREE_REVEAL_BOUND;
-        use engine::game::mulligan::free_reveal_futile_for;
-
         let db = shared_integration_card_db();
         let plain = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
         let with_powder = dandan_pile(db, &[("Island", 77), ("Opt", 2), ("Serum Powder", 1)]);
@@ -9509,8 +9503,6 @@ mod tests {
     /// reveal the engine still issues and accepts.
     #[test]
     fn both_routes_decline_a_free_reveal_from_a_pile_that_cannot_clear() {
-        use engine::game::mulligan::free_reveal_futile_for;
-
         let db = shared_integration_card_db();
         let futile_opt = dandan_pile(db, &[("Island", 79), ("Opt", 1)]);
         let futile_powder = dandan_pile(db, &[("Island", 79), ("Serum Powder", 1)]);
@@ -9603,8 +9595,6 @@ mod tests {
     /// every redraw is rejected: the AI takes reveals up to the bound and leaves.
     #[test]
     fn both_routes_leave_the_mulligan_by_the_bound_when_every_redraw_is_rejected() {
-        use crate::policies::mulligan::FREE_REVEAL_BOUND;
-
         let db = shared_integration_card_db();
         let payload = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
         for route in MULLIGAN_ROUTES {

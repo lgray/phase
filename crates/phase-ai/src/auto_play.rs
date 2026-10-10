@@ -484,11 +484,20 @@ pub fn run_driver_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::game::zones::create_object;
+    use crate::policies::mulligan::{registry_keeps, FREE_REVEAL_BOUND};
+    use engine::ai_support::legal_actions_for_viewer;
+    use engine::game::deck_loading::{
+        load_and_hydrate_decks, resolve_deck_list, DeckList, PlayerDeckList,
+    };
+    use engine::game::engine::{apply, start_game_with_starting_player};
+    use engine::game::mulligan::free_reveal_futile_for;
+    use engine::game::zones::{add_to_zone, create_object, remove_from_zone};
     use engine::types::ability::{
         AbilityDefinition, AbilityKind, Effect, QuantityExpr, ResolvedAbility, TargetFilter,
     };
+    use engine::types::actions::MulliganChoice;
     use engine::types::card_type::CoreType;
+    use engine::types::format::FormatConfig;
     use engine::types::game_state::{
         AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin, StackEntry, StackEntryKind,
         StackResolutionPolicy, WaitingFor,
@@ -496,6 +505,7 @@ mod tests {
     use engine::types::identifiers::{CardId, ObjectId};
     use engine::types::phase::Phase;
     use engine::types::zones::Zone;
+    use rand::SeedableRng;
 
     fn recheck_priority_state() -> GameState {
         recheck_priority_state_with_top_controller(PlayerId(0))
@@ -881,7 +891,6 @@ mod tests {
         db: &engine::database::card_db::CardDatabase,
         pile: &[(&str, usize)],
     ) -> engine::game::deck_loading::DeckPayload {
-        use engine::game::deck_loading::{resolve_deck_list, DeckList, PlayerDeckList};
         let main_deck = pile
             .iter()
             .flat_map(|&(name, copies)| std::iter::repeat_n(name.to_string(), copies))
@@ -908,13 +917,6 @@ mod tests {
     /// driver leaves the mulligan without taking a free reveal.
     #[test]
     fn native_ai_pair_leaves_the_mulligan_on_a_futile_dandan_pile() {
-        use engine::ai_support::legal_actions_for_viewer;
-        use engine::game::deck_loading::load_and_hydrate_decks;
-        use engine::game::engine::start_game_with_starting_player;
-        use engine::game::mulligan::free_reveal_futile_for;
-        use engine::types::format::FormatConfig;
-        use rand::SeedableRng;
-
         let db = integration_db();
         let (p0, p1) = (PlayerId(0), PlayerId(1));
 
@@ -966,12 +968,6 @@ mod tests {
         seed: u64,
         ai_opts: usize,
     ) -> GameState {
-        use engine::game::deck_loading::load_and_hydrate_decks;
-        use engine::game::engine::start_game_with_starting_player;
-        use engine::game::zones::{add_to_zone, remove_from_zone};
-        use engine::types::format::FormatConfig;
-        use rand::SeedableRng;
-
         let (p0, p1) = (PlayerId(0), PlayerId(1));
         let mut state = GameState::new(FormatConfig::dandan(), 2, seed);
         load_and_hydrate_decks(
@@ -1023,13 +1019,6 @@ mod tests {
     /// pile can deal is still offered the reveal, so only the bound ends the chain.
     #[test]
     fn native_ai_leaves_the_mulligan_against_a_kept_hand_that_leaves_the_reveal_open() {
-        use crate::policies::mulligan::{registry_keeps, FREE_REVEAL_BOUND};
-        use engine::ai_support::legal_actions_for_viewer;
-        use engine::game::engine::apply;
-        use engine::game::mulligan::free_reveal_futile_for;
-        use engine::types::actions::MulliganChoice;
-        use rand::SeedableRng;
-
         let db = integration_db();
         let (human, ai) = (PlayerId(0), PlayerId(1));
         for ai_opts in [0, 1] {

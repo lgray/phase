@@ -2934,19 +2934,21 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
+    use engine::ai_support::legal_actions_for_viewer;
     use engine::database::card_db::CardDatabase;
     use engine::game::deck_loading::DeckEntry;
     use engine::game::engine::apply;
     use engine::game::interaction::derive_viewer_interaction;
     use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
     use engine::game::scenario_db::GameScenarioDbExt;
+    use engine::game::zones::{add_to_zone, remove_from_zone};
     use engine::types::ability::{Effect, ResolvedAbility, TargetRef};
     use engine::types::actions::{
-        DebugCardCreationKind, PrecastCopyShortcutResponse, ResolveAllConsentDecision,
-        ResolveAllScope,
+        DebugCardCreationKind, MulliganChoice, PrecastCopyShortcutResponse,
+        ResolveAllConsentDecision, ResolveAllScope,
     };
     use engine::types::card::CardFace;
-    use engine::types::card_type::CardType;
+    use engine::types::card_type::{CardType, CoreType};
     use engine::types::game_state::{
         AutoPassMode, CastPaymentMode, PersistedGameState, StackEntry, StackEntryKind,
         StackResolutionAutoPassOverlay, StackResolutionBudget, StackResolutionEntryFence,
@@ -2959,6 +2961,7 @@ mod tests {
     use engine::types::mana::ManaCost;
     use engine::types::phase::{Phase, PhaseStop, PhaseStopScope};
     use engine::types::zones::Zone;
+    use rand::SeedableRng;
     use seat_reducer::types::SeatMutation;
 
     /// The two production statements a join is now made of: the session issues
@@ -10348,9 +10351,6 @@ mod tests {
     /// the reveal chain is a function of `seed` alone, not of the session's
     /// randomly assigned object ids or first player.
     fn pin_dandan_hands(state: &mut GameState, seed: u64, ai_opts: usize) {
-        use engine::game::zones::{add_to_zone, remove_from_zone};
-        use rand::SeedableRng;
-
         let (p0, p1) = (PlayerId(0), PlayerId(1));
         let holder = state.zone_storage_seat(Zone::Library, p0);
         for seat in [p0, p1] {
@@ -10397,10 +10397,6 @@ mod tests {
     /// mulligan without tripping its action cap.
     #[test]
     fn ai_seat_leaves_a_dandan_mulligan_whose_every_redraw_is_offered_the_reveal() {
-        use engine::ai_support::legal_actions_for_viewer;
-        use engine::types::actions::MulliganChoice;
-        use engine::types::card_type::CoreType;
-
         let pile = PlayerDeckPayload {
             main_deck: vec![
                 DeckEntry {

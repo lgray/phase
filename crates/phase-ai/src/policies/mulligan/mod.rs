@@ -376,6 +376,9 @@ pub(crate) fn registry_keeps(state: &GameState, player: PlayerId) -> bool {
 
 #[cfg(test)]
 mod cedh_registration_tests {
+    use engine::database::card_db::CardDatabase;
+    use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
+    use engine::types::format::FormatConfig;
     use std::sync::Arc;
 
     use engine::game::bracket_estimate::CommanderBracketTier;
@@ -1240,10 +1243,6 @@ mod cedh_registration_tests {
     /// all offered, so `B` is the smallest bound with `p^(B+1) < 1e-5`.
     #[test]
     fn free_reveal_bound_is_the_smallest_with_a_negligible_truncation_chance() {
-        use engine::database::card_db::CardDatabase;
-        use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
-        use engine::types::format::FormatConfig;
-
         fn choose(n: usize, k: usize) -> f64 {
             (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
         }

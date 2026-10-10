@@ -2560,13 +2560,12 @@ mod tests {
     use crate::types::ability::{AbilityKind, Effect, ParsedCondition, QuantityExpr};
     use crate::types::card_type::CoreType;
     use crate::types::counter::CounterType;
-    use crate::types::game_state::WaitingFor;
+    use crate::types::game_state::{ArrivalIdentity, WaitingFor, ZoneChangeRecord};
     use crate::types::identifiers::CardId;
     use crate::types::zones::Zone;
 
     #[test]
     fn cards_left_your_graveyard_counts_the_departure_owner() {
-        use crate::types::game_state::{ArrivalIdentity, ZoneChangeRecord};
         let mut state = crate::types::game_state::GameState::new(
             crate::types::format::FormatConfig::dandan(),
             2,
