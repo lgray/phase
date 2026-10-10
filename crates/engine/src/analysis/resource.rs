@@ -5654,7 +5654,7 @@ fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bo
 
 /// The growth-invariant non-object remainder of the two projected frames, through
 /// `impl PartialEq for GameState`: strip the grown ids from both object maps and clear the
-/// battlefield ordering + stack, with its per-entry tables and the incarnation LKI and
+/// battlefield ordering + stack, with its per-entry tables and the `lki_by_incarnation` and
 /// departed-spell records only they carry
 /// (the grown ids live there, and those axes are covered by `board_covers` / the stack gate), so
 /// what is left for `PartialEq` to answer is
@@ -5699,9 +5699,10 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     a.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
     b.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
 
-    // The stack leaves the remainder with its per-entry tables, and the LKI and departed-spell
-    // records only they carry go with them. CR 405.5 + CR 608.2h: an entry beneath the
-    // recurrence resolves only after it and reads its LKI then.
+    // The stack leaves the remainder with its per-entry tables, and the `lki_by_incarnation` and
+    // departed-spell records only they carry go with them; last-known copiable values stay.
+    // CR 405.5 + CR 608.2h: an entry beneath the recurrence resolves only after it and reads its
+    // LKI then.
     crate::game::stack::clear_stack_with_entry_tables(&mut a);
     crate::game::stack::clear_stack_with_entry_tables(&mut b);
     a.retain_carrier_referenced_lki();
