@@ -413,8 +413,9 @@ enum Reversal {
     /// Untapping a manually tapped land reverses the latest mana ability it activated.
     ManaSource(ObjectId),
     /// Withdrawing a mana ability at its payment window reverses that activation alone, in the
-    /// shape CR 733.1 gives a reversal: mana abilities activated meanwhile stand.
-    ManaAbility(ObjectId, Option<usize>),
+    /// shape CR 733.1 gives a reversal: mana abilities activated meanwhile stand. The activation
+    /// is named by its source and its `PendingManaAbility::chain_place`.
+    ManaAbility(ObjectId, usize),
 }
 
 /// The trace as it stood before a play a later action may reverse.
@@ -458,10 +459,10 @@ pub(crate) struct PlayTrace {
     offered: Option<NamedSpan>,
     undo: im::Vector<UndoPoint>,
     /// CR 733.1: the mana abilities the engine reversed inside the action in progress.
-    reversed: Vec<(ObjectId, Option<usize>)>,
+    reversed: Vec<(ObjectId, usize)>,
     /// Each entry that activates a mana ability or answers one of its choices (CR 605.3b), with
     /// the ability it belongs to.
-    mana_ability_entries: im::HashMap<usize, (ObjectId, Option<usize>)>,
+    mana_ability_entries: im::HashMap<usize, (ObjectId, usize)>,
     /// Spans carried from earlier windows, in the order their keys last occurred.
     carried: im::Vector<CarriedSpan>,
     /// Carried spans this window named, which a named span's `SpanSource::Carried` indexes.
@@ -548,14 +549,14 @@ impl PlayTrace {
         &mut self,
         prior: &PlayTrace,
         entry: TraceEntry,
-        continues: Option<(ObjectId, Option<usize>)>,
+        continues: Option<(ObjectId, usize)>,
     ) {
         self.carry(&entry, continues);
         self.append(Some(prior), entry, continues);
     }
 
     /// Appends `entry`, whose nodes are this trace's, to every live carried span.
-    fn carry(&mut self, entry: &TraceEntry, continues: Option<(ObjectId, Option<usize>)>) {
+    fn carry(&mut self, entry: &TraceEntry, continues: Option<(ObjectId, usize)>) {
         let nodes = &self.nodes;
         for span in self.carried.iter_mut() {
             meter!(carry_appends += 1);
@@ -585,28 +586,29 @@ impl PlayTrace {
     }
 
     /// Appends an entry whose nodes this trace has interned; `prior`, when given, is kept as where
-    /// an untap of its mana source returns the trace.
+    /// an untap of its mana source returns the trace. `continues` names the mana-ability
+    /// activation the entry begins or continues.
     fn append(
         &mut self,
         prior: Option<&PlayTrace>,
         entry: TraceEntry,
-        continues: Option<(ObjectId, Option<usize>)>,
+        continues: Option<(ObjectId, usize)>,
     ) {
         let mana_play = match entry.kind {
             EntryKind::Play {
-                locus: PlayLocus::Mana(source, index),
+                locus: PlayLocus::Mana(..),
                 ..
-            } => Some((source, index)),
+            } => continues,
             _ => None,
         };
-        if let Some(ability) = mana_play.or(continues) {
+        if let Some(ability) = continues {
             self.mana_ability_entries
                 .insert(self.entries.len(), ability);
         }
         let undo = mana_play
             .zip(prior)
-            .map(|((source, index), prior)| UndoPoint {
-                undoes: Reversal::ManaAbility(source, index),
+            .map(|((source, place), prior)| UndoPoint {
+                undoes: Reversal::ManaAbility(source, place),
                 before: Box::new(prior.clone()),
             });
         match &entry.kind {
@@ -884,8 +886,8 @@ fn classify(action: &GameAction, prompt: &WaitingFor) -> Choice {
             prompt
                 .suspended_mana_abilities()
                 .next()
-                .map_or(Reversal::Process, |(source, index)| {
-                    Reversal::ManaAbility(source, index)
+                .map_or(Reversal::Process, |begun| {
+                    Reversal::ManaAbility(begun.source_id, begun.chain_place())
                 }),
         ),
         GameAction::UntapLandForMana { object_id } => {
@@ -1335,7 +1337,14 @@ pub(crate) fn begin_action(
                     prompt,
                     next_object_id,
                 };
-                (entry, None)
+                // It will stand above every activation suspended at the prompt it begins at.
+                let begins = match locus {
+                    PlayLocus::Mana(source, _) => {
+                        Some((source, state.waiting_for.suspended_mana_abilities().count()))
+                    }
+                    PlayLocus::Cast(_) | PlayLocus::Activate(..) | PlayLocus::Unread => None,
+                };
+                (entry, begins)
             }
             Choice::Answer(answer) => {
                 let optional = answer_optionality(&state.waiting_for, answer);
@@ -1361,7 +1370,7 @@ pub(crate) fn begin_action(
                 let continues = state
                     .waiting_for
                     .continued_mana_ability()
-                    .map(|pending| (pending.source_id, pending.ability_index));
+                    .map(|pending| (pending.source_id, pending.chain_place()));
                 (entry, continues)
             }
             Choice::Setting => return None,
@@ -1378,9 +1387,9 @@ pub(crate) fn begin_action(
 }
 
 /// CR 733.1: the engine reversed this mana ability's activation inside the action in progress.
-pub(crate) fn mana_ability_reversed(state: &mut GameState, source: ObjectId, index: Option<usize>) {
+pub(crate) fn mana_ability_reversed(state: &mut GameState, source: ObjectId, place: usize) {
     if let Some(trace) = state.play_trace.as_deref_mut() {
-        trace.reversed.push((source, index));
+        trace.reversed.push((source, place));
     }
 }
 
@@ -1431,8 +1440,8 @@ pub(crate) fn end_action(
         }
     }
     // Applied after the stamp, which indexes the action's entry in the unreversed trace.
-    for (source, index) in reversed {
-        reverse(state, Reversal::ManaAbility(source, index));
+    for (source, place) in reversed {
+        reverse(state, Reversal::ManaAbility(source, place));
     }
     let tapped = &state.lands_tapped_for_mana;
     if let Some(trace) = state.play_trace.as_deref_mut() {
@@ -1482,7 +1491,7 @@ fn reverse(state: &mut GameState, reversal: Reversal) {
         let dropped = match reversal {
             Reversal::Process => ability.is_none(),
             // The reversed activation's own answers, wherever they sit.
-            Reversal::ManaAbility(source, index) => ability == Some(&(source, index)),
+            Reversal::ManaAbility(source, place) => ability == Some(&(source, place)),
             Reversal::ManaSource(_) => false,
         };
         if dropped {

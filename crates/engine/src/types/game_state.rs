@@ -8968,7 +8968,7 @@ pub struct PendingManaAbility {
 impl PendingManaAbility {
     /// CR 605.3c: this activation and each one suspended beneath it at a payment window,
     /// innermost first; none of them can be activated again until it has resolved.
-    pub(crate) fn suspended_chain(&self) -> impl Iterator<Item = (ObjectId, Option<usize>)> + '_ {
+    pub(crate) fn suspended_chain(&self) -> impl Iterator<Item = &PendingManaAbility> + '_ {
         std::iter::successors(Some(self), |pending| match &pending.resume {
             ManaAbilityResume::ManaAbilityManaPayment {
                 pending_mana_ability,
@@ -8984,7 +8984,12 @@ impl PendingManaAbility {
             | ManaAbilityResume::PhyrexianCastPayment { .. }
             | ManaAbilityResume::FinalizePendingManaPayment { .. } => None,
         })
-        .map(|pending| (pending.source_id, pending.ability_index))
+    }
+
+    /// How many activations are suspended beneath this one. With its source this identifies the
+    /// activation for as long as it stands begun: whatever is begun meanwhile stands above it.
+    pub(crate) fn chain_place(&self) -> usize {
+        self.suspended_chain().skip(1).count()
     }
 }
 
@@ -17690,7 +17695,7 @@ impl WaitingFor {
     /// first; empty at every other prompt.
     pub(crate) fn suspended_mana_abilities(
         &self,
-    ) -> impl Iterator<Item = (ObjectId, Option<usize>)> + '_ {
+    ) -> impl Iterator<Item = &PendingManaAbility> + '_ {
         let window = match self {
             WaitingFor::ManaAbilityManaPayment {
                 pending_mana_ability,

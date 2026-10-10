@@ -1001,11 +1001,20 @@ pub fn activate_mana_ability(
             required_zone
         )));
     }
-    // CR 605.3c: an ability suspended at a payment window has begun and not resolved.
-    if state
-        .waiting_for
-        .suspended_mana_abilities()
-        .any(|begun| begun == (source_id, Some(ability_index)))
+    // CR 605.3c + CR 113.2c: a suspended ability is the one announced, wherever its source holds
+    // it now, and each equal instance of it on the source can be begun once.
+    let suspended = || {
+        let begun = state.waiting_for.suspended_mana_abilities();
+        begun.filter(|begun| begun.source_id == source_id)
+    };
+    let announced = suspended()
+        .filter(|begun| begun.ability_snapshot.as_ref() == Some(ability_def))
+        .count();
+    let instances = source.abilities.iter().filter(|held| *held == ability_def);
+    if (announced > 0 && announced >= instances.count())
+        || suspended().any(|begun| {
+            begun.ability_snapshot.is_none() && begun.ability_index == Some(ability_index)
+        })
     {
         return Err(EngineError::ActionNotAllowed(
             "A mana ability can't be activated again until it has resolved (CR 605.3c)".to_string(),
@@ -2401,7 +2410,7 @@ pub(super) fn advance_mana_ability_activation(
                     // CR 605.3c: auto-tap may not pay with a source suspended beneath this one.
                     let excluded_sources: HashSet<ObjectId> = pending
                         .suspended_chain()
-                        .map(|(source, _)| source)
+                        .map(|begun| begun.source_id)
                         .collect();
                     !super::casting::can_pay_ability_mana_cost_after_auto_tap_excluding(
                         state,
@@ -2456,7 +2465,7 @@ pub(super) fn advance_mana_ability_activation(
     // CR 605.3c: the same exclusion binds the payment the feasibility check admitted.
     let suspended_sources: HashSet<ObjectId> = pending
         .suspended_chain()
-        .map(|(source, _)| source)
+        .map(|begun| begun.source_id)
         .collect();
     continue_mana_ability_cost_payment(
         state,
@@ -3674,13 +3683,12 @@ pub(super) fn continue_mana_ability_activation(
 ) -> Result<WaitingFor, EngineError> {
     let before = state.clone();
     let events_before = events.len();
-    let (player, source_id, ability_index) =
-        (pending.player, pending.source_id, pending.ability_index);
+    let (player, source_id, place) = (pending.player, pending.source_id, pending.chain_place());
     let resume = pending.resume.clone();
     advance_mana_ability_activation(state, pending, events).or_else(|_| {
         *state = before;
         events.truncate(events_before);
-        super::play_trace::mana_ability_reversed(state, source_id, ability_index);
+        super::play_trace::mana_ability_reversed(state, source_id, place);
         resume_mana_ability_root(state, player, resume, events)
     })
 }

@@ -1986,3 +1986,176 @@ fn an_inner_cancel_reverses_an_outer_activation_it_leaves_unpayable() {
     assert!(state.objects[&lens].tapped && !state.objects[&prism].tapped);
     assert_eq!(trace(state), [lens_tap]);
 }
+
+/// The index among `holder`'s abilities of its copy of `of`'s first ability.
+fn granted(state: &GameState, holder: ObjectId, of: ObjectId) -> usize {
+    let ability = &state.objects[&of].abilities[0];
+    state.objects[&holder]
+        .abilities
+        .iter()
+        .position(|held| held == ability)
+        .expect("the granted ability")
+}
+
+struct MimicBoard {
+    runner: GameRunner,
+    marvin: ObjectId,
+    /// The index Marvin's "{2}" ability was activated at.
+    begun_at: usize,
+    /// The index it has since Rishkar left.
+    moved_to: usize,
+    /// The Altar's completed activation.
+    altar_entries: Vec<GameAction>,
+}
+
+/// Marvin, Murderous Mimic: "Marvin has all activated abilities of creatures you control that
+/// don't have the same name as this creature." Rishkar, Peema Renegade: "Each creature you
+/// control with a counter on it has "{T}: Add {G}."" Bog Initiate: "{1}: Add {B}." Marvin's copy
+/// of Prismite's "{2}: Add one mana of any color." is suspended at its window when Rishkar is
+/// sacrificed to Phyrexian Altar, so Rishkar's ability leaves Marvin and Marvin's other abilities
+/// each move down one.
+fn mimic_board_after_rishkar_leaves() -> Option<MimicBoard> {
+    let (mut runner, ids) = traced(&[
+        "Rishkar, Peema Renegade",
+        "Prismite",
+        "Bog Initiate",
+        "Marvin, Murderous Mimic",
+        "Phyrexian Altar",
+    ])?;
+    let (rishkar, prismite, initiate, marvin, altar) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&marvin)
+        .unwrap()
+        .counters
+        .insert(CounterType::Plus1Plus1, 1);
+    engine::game::layers::evaluate_layers(runner.state_mut());
+    let begun_at = granted(runner.state(), marvin, prismite);
+    let begun = GameAction::ActivateAbility {
+        source_id: marvin,
+        ability_index: begun_at,
+    };
+    act(&mut runner, begun.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [begun.clone()],
+        "reach: Marvin's {{2}} opens its payment window"
+    );
+    let mut altar_entries = sacrifice_to_altar(&mut runner, altar, rishkar).to_vec();
+    act(&mut runner, color(ManaType::Red));
+    altar_entries.push(color(ManaType::Red));
+    let state = runner.state();
+    let moved_to = granted(state, marvin, prismite);
+    assert!(
+        state.objects[&rishkar].zone == Zone::Graveyard
+            && suspended(state) == [begun]
+            && moved_to + 1 == begun_at
+            && granted(state, marvin, initiate) == begun_at,
+        "reach: Rishkar's ability left Marvin inside the standing window: {:?}",
+        state.waiting_for
+    );
+    Some(MimicBoard {
+        runner,
+        marvin,
+        begun_at,
+        moved_to,
+        altar_entries,
+    })
+}
+
+/// CR 605.3c names the ability, wherever it now sits among its source's abilities.
+#[test]
+fn a_suspended_mana_ability_cannot_be_activated_again_where_it_has_moved() {
+    let Some(mut board) = mimic_board_after_rishkar_leaves() else {
+        return;
+    };
+    let moved = GameAction::ActivateAbility {
+        source_id: board.marvin,
+        ability_index: board.moved_to,
+    };
+
+    assert_refused(&mut board.runner, &moved);
+}
+
+/// Bog Initiate's ability, now where the suspended one was activated, is another ability
+/// (CR 605.3c); cancelling afterwards withdraws the suspended "{2}" alone (CR 733.1).
+#[test]
+fn another_ability_where_the_suspended_one_was_is_activated_and_survives_its_cancel() {
+    let Some(mut board) = mimic_board_after_rishkar_leaves() else {
+        return;
+    };
+    let other = GameAction::ActivateAbility {
+        source_id: board.marvin,
+        ability_index: board.begun_at,
+    };
+
+    act(&mut board.runner, other.clone());
+
+    let state = board.runner.state();
+    assert!(
+        suspended(state).len() == 1 && pool(state) == [(ManaType::Black, 1)],
+        "the Altar's mana paid for {{B}} and the window stands: {:?}",
+        state.waiting_for
+    );
+
+    act(&mut board.runner, GameAction::CancelCast);
+
+    let state = board.runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Black, 1)]);
+    let mut completed = board.altar_entries;
+    completed.push(other);
+    assert_eq!(trace(state), completed);
+}
+
+/// Two Prismites give Marvin two "{2}: Add one mana of any color." abilities, each functioning
+/// independently (CR 113.2c); the engine keeps one of equal granted abilities, so Marvin's list is
+/// set by hand to what its text gives. One being suspended leaves the other to be activated.
+#[test]
+fn an_identical_second_ability_is_activated_while_the_first_is_suspended() {
+    let Some((mut runner, ids)) = traced(&[
+        "Prismite",
+        "Prismite",
+        "Marvin, Murderous Mimic",
+        "Phyrexian Altar",
+    ]) else {
+        return;
+    };
+    let (prismite, marvin) = (ids[0], ids[2]);
+    engine::game::layers::evaluate_layers(runner.state_mut());
+    let twin = runner.state().objects[&prismite].abilities[0].clone();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&marvin)
+        .unwrap()
+        .abilities = vec![twin.clone(), twin].into();
+    let [first, second] = [0, 1].map(|ability_index| GameAction::ActivateAbility {
+        source_id: marvin,
+        ability_index,
+    });
+    act(&mut runner, first.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [first.clone()],
+        "reach: the first {{2}} opens its payment window"
+    );
+
+    act(&mut runner, second.clone());
+
+    assert_eq!(
+        suspended(runner.state()),
+        [second.clone(), first.clone()],
+        "the second {{2}} opens its window inside the first's"
+    );
+    assert_refused(&mut runner, &first);
+    assert_refused(&mut runner, &second);
+
+    act(&mut runner, GameAction::CancelCast);
+
+    let state = runner.state();
+    assert_eq!(suspended(state), [first.clone()]);
+    assert_eq!(trace(state), [first]);
+    assert_eq!(state.objects[&marvin].abilities.len(), 2);
+}
