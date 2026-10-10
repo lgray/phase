@@ -363,6 +363,34 @@ pub(crate) fn resolved_battlefield_object_ids(
         .collect()
 }
 
+/// CR 115.10a + CR 608.2c + CR 608.2h: the battlefield objects an UNTARGETED
+/// population filter ("each creature you control") selects, determined once,
+/// when the effect resolves. The filter's context references ("you", the
+/// source) bind to the resolving ability (`FilterContext::from_ability`: "you"
+/// is the ability's controller, CR 109.5 + CR 113.8); CR 702.26b phased-out
+/// permanents are not listed.
+///
+/// Unlike [`resolved_battlefield_object_ids`], this never reads
+/// `ability.targets` as the subject: a mass form names no target, so object
+/// targets propagated through a chain must not narrow or replace the
+/// population. The ids are collected before the caller mutates anything.
+/// Shared by the `EffectScope::All` arms of the Suspect/Unsuspect and
+/// BecomePrepared/BecomeUnprepared resolvers.
+pub(crate) fn resolved_battlefield_population_ids(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    filter: &TargetFilter,
+) -> Vec<ObjectId> {
+    let effective_filter = resolved_object_filter(state, ability, filter);
+    let ctx = crate::game::filter::FilterContext::from_ability(ability);
+    crate::game::targeting::zone_object_ids(state, crate::types::zones::Zone::Battlefield)
+        .into_iter()
+        .filter(|id| {
+            crate::game::filter::matches_target_filter(state, *id, &effective_filter, &ctx)
+        })
+        .collect()
+}
+
 pub(crate) fn target_filter_controller_scope(filter: &TargetFilter) -> Option<ControllerRef> {
     match filter {
         TargetFilter::Typed(tf) => tf.controller.clone(),
@@ -7630,130 +7658,35 @@ fn is_multi_target_player_filter(filter: &TargetFilter) -> bool {
     }
 }
 
-// ── Batch resolution (Tier 3) ────────────────────────────────────────────
+// ── Bulk token resolution ─────────────────────────────────────────────────
 //
-// Driver-level collapse of N contiguous, identical, observer-free
-// triggered-ability resolutions into a single execution pass. The eligibility
-// predicate is layered (Layer A run-identity in `game/stack.rs`, Layer B
-// handler purity here + in `token.rs`, Layer C observer-order-invariance in
-// `game/stack.rs`). All gates default to "not batchable" — only the Token
-// handler opts in, and only for provably-equivalent runs. See the planning
-// trace in `game/stack.rs::resolve_next`.
+// The stack's bulk executor (`game/stack.rs::resolve_bulk_token_run`) resolves
+// a contiguous run of identical untargeted token triggers member by member
+// through `resolve_top`, eliding only the priority checkpoints between them.
+// Admission is layered: Layer A run identity in `game/stack.rs`
+// (`batch_run_key`), Layer B handler purity here and in `token.rs`, and the
+// executor's own member-1 checkpoint, layer and state-trigger checks, its
+// per-member token-entry event check (`token_entry_events`) and per-member
+// trigger collection. Every gate defaults to "not admitted"; only the
+// Token handler opts in.
 
-/// Handler-specific execution data for a batch. Each variant carries exactly
-/// what the execute step needs to reproduce N one-by-one resolutions.
-#[cfg(test)]
-pub(crate) enum BatchExecutionPlan {
-    /// Resolve `Effect::Token` `run_len` times by replaying the existing
-    /// per-resolution body. Carries the resolved per-resolution `TokenSpec`
-    /// so Layer C (`game/stack.rs::observers_are_batch_safe`) can build the
-    /// real ZoneChanged/TokenCreated probe events from its true
-    /// characteristics (HIGH-1).
-    Token {
-        spec: crate::types::proposed_event::TokenSpec,
-    },
-    /// CR 608.2c + CR 707.2: Resolve a met copy-instead swap (`CopyTokenOf`)
-    /// `prefix_len` times by replaying `token_copy::resolve` on the swapped
-    /// ability. `swapped` is the once-applied instead-swap (CR 608.2c — done
-    /// ONCE in `try_resolve_batch`, not per iteration). `probe_spec` carries the
-    /// prefix's shared copiable values so Layer C can build the real
-    /// ZoneChanged/TokenCreated probe events from the produced token's true
-    /// characteristics.
-    CopyToken {
-        probe_spec: crate::types::proposed_event::TokenSpec,
-        probe_mana_value: u32,
-    },
-}
-
-/// A proven-safe batch plan returned by `try_resolve_batch`. The driver
-/// consumes `consumed` stack entries and applies the plan once.
-#[cfg(test)]
-pub(crate) struct BatchPlan {
-    plan: BatchExecutionPlan,
-    /// Number of stack entries this batch consumes (drives the pop loop and
-    /// the auto-pass baseline decrement, §7.2).
-    consumed: u32,
-}
-
-#[cfg(test)]
-impl BatchPlan {
-    /// Build a Token batch plan: resolve the base `Effect::Token` `run_len`
-    /// times, producing the single per-resolution `spec` each iteration.
-    pub(crate) fn token(spec: crate::types::proposed_event::TokenSpec, run_len: u32) -> Self {
-        BatchPlan {
-            plan: BatchExecutionPlan::Token { spec },
-            consumed: run_len,
-        }
-    }
-
-    /// CR 608.2c + CR 707.2: Build a copy-prefix batch plan: resolve the
-    /// swapped `CopyTokenOf` `prefix_len` times, producing one copy token each
-    /// iteration. Consumes `prefix_len` stack entries (may be < the full run).
-    pub(crate) fn copy_token(
-        probe_spec: crate::types::proposed_event::TokenSpec,
-        probe_mana_value: u32,
-        prefix_len: u32,
-    ) -> Self {
-        BatchPlan {
-            plan: BatchExecutionPlan::CopyToken {
-                probe_spec,
-                probe_mana_value,
-            },
-            consumed: prefix_len,
-        }
-    }
-
-    pub(crate) fn consumed(&self) -> u32 {
-        self.consumed
-    }
-
-    /// CR 603.6a: the resolved token spec(s) this batch will produce, exposed
-    /// so Layer C can build the REAL ZoneChanged/TokenCreated probe events
-    /// from each spec's true `core_types` — never a hand-fixed key set.
-    pub(crate) fn produced_token_specs(&self) -> Vec<&crate::types::proposed_event::TokenSpec> {
-        match &self.plan {
-            BatchExecutionPlan::Token { spec, .. } => vec![spec],
-            BatchExecutionPlan::CopyToken { probe_spec, .. } => vec![probe_spec],
-        }
-    }
-
-    pub(crate) fn produced_token_mana_values(&self) -> Vec<u32> {
-        match &self.plan {
-            BatchExecutionPlan::Token { .. } => vec![0],
-            BatchExecutionPlan::CopyToken {
-                probe_mana_value, ..
-            } => vec![*probe_mana_value],
-        }
-    }
-}
-
-/// CR 608.2 + CR 608.2c: Returns a `BatchPlan` iff this effect instance is
-/// provably state-invariant across `run_len` identical resolutions for its
-/// OWN inputs — i.e. resolving it `run_len` times one-by-one would produce the
-/// same per-resolution decision and token spec as one batched application.
-/// Returns `None` (the default) for every effect not explicitly proven
-/// batch-safe.
-///
-/// This gate covers ONLY the effect's own inputs (Layer B), INCLUDING the
-/// §2.2a emits-exactly-{ZoneChanged,TokenCreated} gate (`spec_emits_only_etb_pair`)
-/// and the §2.3a produced-token-non-observer gate applied inside the Token arm
-/// so a returned plan's spec emits exactly the ETB pair. The driver must ALSO
-/// pass the battlefield-wide observer-order-invariance gate (Layer C,
-/// `game/stack.rs::observers_are_batch_safe`) before batching — that probe is
-/// complete by construction precisely because the spec emits only the ETB pair.
-#[cfg(test)]
-pub(crate) fn try_resolve_batch(
+/// CR 608.2 + CR 608.2c: Layer B — whether resolving this effect once per
+/// member of a run of identical untargeted entries is admitted to the bulk
+/// executor: each member's resolution reads only inputs the run leaves
+/// unchanged and creates what member 1's did. `run_members` are the run's
+/// abilities, top-down (`ability` first): a self-copy member reads its own
+/// source. `false` (the default) for every effect not explicitly proven.
+pub(crate) fn admits_bulk_token_run(
     state: &GameState,
     ability: &ResolvedAbility,
-    run_len: u32,
-    run_source_ids: &[crate::types::identifiers::ObjectId],
-) -> Option<BatchPlan> {
+    run_members: &[&ResolvedAbility],
+) -> bool {
     match &ability.effect {
-        Effect::Token { .. } => token::try_resolve_batch(state, ability, run_len, run_source_ids),
-        // Exhaustive conservative default: every other effect is non-batchable
-        // in v1. The wildcard encodes "opt-in," not a forgotten arm — new
-        // batch-aware handlers add an explicit arm above.
-        _ => None,
+        Effect::Token { .. } => token::admits_bulk_run(state, ability, run_members),
+        // Exhaustive conservative default: every other effect is not admitted.
+        // The wildcard encodes "opt-in," not a forgotten arm — a new admitted
+        // handler adds an explicit arm above.
+        _ => false,
     }
 }
 
@@ -13137,7 +13070,7 @@ fn previous_effect_counts_by_player_from_events(
         EffectKind::ChangeZoneAll => {
             for event in &events[..=resolved_index] {
                 if let GameEvent::ZoneChanged { record, .. } = event {
-                    *counts.entry(record.owner).or_insert(0) += 1;
+                    *counts.entry(record.arrival.owner).or_insert(0) += 1;
                 }
             }
         }
@@ -25393,7 +25326,7 @@ mod tests {
                 _ => None,
             })
             .expect("Tergrid return should emit a battlefield-entry ZoneChanged event");
-        assert_eq!(event_record.controller, PlayerId(0));
+        assert_eq!(event_record.arrival.controller, PlayerId(0));
         assert_eq!(
             state
                 .zone_changes_this_turn
@@ -25402,7 +25335,7 @@ mod tests {
                 .find(|record| {
                     record.object_id == victim_id && record.to_zone == Zone::Battlefield
                 })
-                .map(|record| record.controller),
+                .map(|record| record.arrival.controller),
             Some(PlayerId(0))
         );
         assert_eq!(
@@ -27159,6 +27092,10 @@ mod tests {
             mana_value: 8,
             controller: PlayerId(0),
             owner: PlayerId(0),
+            arrival: crate::types::game_state::ArrivalIdentity {
+                owner: PlayerId(0),
+                controller: PlayerId(0),
+            },
             ..ZoneChangeRecord::test_minimal(moved, Some(Zone::Graveyard), Zone::Battlefield)
         };
         let events = vec![GameEvent::ZoneChanged {
@@ -27269,6 +27206,7 @@ mod tests {
             amount: 3,
             is_combat: false,
             excess: 0,
+            source_incarnation: None,
         }];
 
         let snapshot = damaged_object_context_from_events(&state, &events)
@@ -27303,6 +27241,7 @@ mod tests {
                 amount: 1,
                 is_combat: false,
                 excess: 0,
+                source_incarnation: None,
             },
             GameEvent::DamageDealt {
                 source_id: ObjectId(99),
@@ -27310,6 +27249,7 @@ mod tests {
                 amount: 1,
                 is_combat: false,
                 excess: 0,
+                source_incarnation: None,
             },
         ];
         assert!(damaged_object_context_from_events(&state, &events).is_none());
@@ -27326,6 +27266,7 @@ mod tests {
             amount: 3,
             is_combat: false,
             excess: 0,
+            source_incarnation: None,
         }];
         assert!(damaged_object_context_from_events(&state, &events).is_none());
     }
@@ -29411,7 +29352,9 @@ mod tests {
         creature_record.base_toughness = Some(7);
         creature_record.core_types = vec![CoreType::Creature];
         creature_record.controller = PlayerId(1);
+        creature_record.arrival.controller = PlayerId(1);
         creature_record.owner = PlayerId(1);
+        creature_record.arrival.owner = PlayerId(1);
 
         let events = vec![
             // Extra public-zone move: without the sacrifice-id-keyed record
@@ -43402,6 +43345,10 @@ mod tests {
     fn zone_changed_event(object_id: ObjectId, owner: PlayerId) -> GameEvent {
         let record = ZoneChangeRecord {
             owner,
+            arrival: crate::types::game_state::ArrivalIdentity {
+                owner,
+                controller: PlayerId(0),
+            },
             ..ZoneChangeRecord::test_minimal(object_id, Some(Zone::Hand), Zone::Library)
         };
         GameEvent::ZoneChanged {
@@ -43520,6 +43467,25 @@ mod tests {
             ),
             Some(HashMap::new()),
             "a completed no-move ChangeZoneAll must replace stale counts with an empty map"
+        );
+    }
+
+    #[test]
+    fn previous_effect_counts_change_zone_all_credits_the_installed_owner() {
+        let source = ObjectId(10);
+        let effect = hand_to_library_effect(TargetFilter::ScopedPlayer);
+        let mut moved = zone_changed_event(ObjectId(1), PlayerId(0));
+        if let GameEvent::ZoneChanged { record, .. } = &mut moved {
+            record.arrival.owner = PlayerId(1);
+        }
+        assert_eq!(
+            previous_effect_counts_by_player_from_events(
+                EffectKind::from(&effect),
+                source,
+                &[moved, resolved_event(EffectKind::ChangeZoneAll, source)],
+            ),
+            Some(HashMap::from([(PlayerId(1), 1)])),
+            "the recipient is the owner the move installed"
         );
     }
 

@@ -2051,6 +2051,7 @@ mod tests {
                     pending: vec![MulliganDecisionEntry {
                         player,
                         mulligan_count: 0,
+                        free_reveals_taken: 0,
                         phase: MulliganDecisionPhase::Declare,
                     }],
                     free_first_mulligan: false,

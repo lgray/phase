@@ -281,6 +281,13 @@ pub(crate) fn spell_cast_record_for(
         // history record carries provenance so own-cast exclusion (CR 601.2i)
         // can identify a permanent's own pending cast positionally.
         spell_object_id: Some(obj.id),
+        // CR 722.3d + CR 601.2i: capture the prepare-spell designation the
+        // spell has as it becomes cast (the CR 722.3c linked copy's marker), so
+        // `FilterProp::PrepareSpell` and its negation are exact on the history
+        // record after the spell leaves the stack. Unconditional on zone: the
+        // live candidate seam projects the linked copy while it still waits in
+        // exile, and that object can only be cast as a prepare spell.
+        prepared_copy_source: obj.prepared_copy_source,
     }
 }
 
@@ -2553,9 +2560,36 @@ mod tests {
     use crate::types::ability::{AbilityKind, Effect, ParsedCondition, QuantityExpr};
     use crate::types::card_type::CoreType;
     use crate::types::counter::CounterType;
-    use crate::types::game_state::WaitingFor;
+    use crate::types::game_state::{ArrivalIdentity, WaitingFor, ZoneChangeRecord};
     use crate::types::identifiers::CardId;
     use crate::types::zones::Zone;
+
+    #[test]
+    fn cards_left_your_graveyard_counts_the_departure_owner() {
+        let mut state = crate::types::game_state::GameState::new(
+            crate::types::format::FormatConfig::dandan(),
+            2,
+            42,
+        );
+        let mut record =
+            ZoneChangeRecord::test_minimal(ObjectId(1), Some(Zone::Graveyard), Zone::Battlefield);
+        record.owner = PlayerId(0);
+        record.controller = PlayerId(0);
+        record.arrival = ArrivalIdentity {
+            owner: PlayerId(1),
+            controller: PlayerId(1),
+        };
+        state.zone_changes_this_turn.push_back(record);
+        let condition = ParsedCondition::CardsLeftYourGraveyardThisTurnAtLeast { count: 1 };
+        assert!(
+            evaluate_condition(&state, PlayerId(0), ObjectId(9), &condition),
+            "the card left the departure owner's graveyard"
+        );
+        assert!(
+            !evaluate_condition(&state, PlayerId(1), ObjectId(9), &condition),
+            "the installed owner's graveyard lost nothing"
+        );
+    }
 
     /// Two-step pattern: parse condition text, then evaluate.
     /// Returns `true` for unrecognized conditions (matching prior permissive behavior).
@@ -3977,6 +4011,7 @@ mod tests {
                 cast_variant: crate::types::game_state::CastingVariant::Normal,
                 was_kicked: false,
                 spell_object_id: None,
+                prepared_copy_source: None,
             }]),
         );
 
@@ -4014,6 +4049,7 @@ mod tests {
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
                     spell_object_id: None,
+                    prepared_copy_source: None,
                 },
                 crate::types::game_state::SpellCastRecord {
                     name: String::new(),
@@ -4029,6 +4065,7 @@ mod tests {
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
                     spell_object_id: None,
+                    prepared_copy_source: None,
                 },
                 crate::types::game_state::SpellCastRecord {
                     name: String::new(),
@@ -4044,6 +4081,7 @@ mod tests {
                     cast_variant: crate::types::game_state::CastingVariant::Normal,
                     was_kicked: false,
                     spell_object_id: None,
+                    prepared_copy_source: None,
                 },
             ]),
         );

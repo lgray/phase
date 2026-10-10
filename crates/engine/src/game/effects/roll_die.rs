@@ -1236,6 +1236,7 @@ mod tests {
             amount: 6,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
         let draw = ResolvedAbility::new(
             Effect::Draw {
@@ -1302,6 +1303,7 @@ mod tests {
             amount: 20,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
         let draw = ResolvedAbility::new(
             Effect::Draw {

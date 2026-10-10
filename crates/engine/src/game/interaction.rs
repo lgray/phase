@@ -2146,7 +2146,7 @@ fn mana_payment_direct_actions(
         state
             .objects
             .values()
-            .filter(|object| object.is_delve_eligible(player))
+            .filter(|object| object.is_delve_eligible(state, player))
             .count()
     } else {
         0

@@ -145,7 +145,11 @@ fn resolve_effect_recipients(
     // `DealDamage { target: SelfRef }` sub-abilities don't inherit the parent's
     // targets via chain propagation (issue #323 class).
     if matches!(target_filter, TargetFilter::SelfRef) {
-        return vec![TargetRef::Object(ability.source_id)];
+        return ability
+            .self_ref_binding(state)
+            .map(TargetRef::Object)
+            .into_iter()
+            .collect();
     }
     // CR 615.5 + CR 120.1: the prevented event's damage source object (Comeuppance
     // reflecting to "that creature"). An OBJECT context ref — resolved here (not
@@ -877,6 +881,9 @@ pub(crate) fn apply_damage_after_replacement(
         amount: primary_amount,
         is_combat,
         excess: primary_excess,
+        // CR 400.7: the incarnation captured with the damage context, as the
+        // damage record below uses.
+        source_incarnation: ctx.source_incarnation,
     });
 
     // CR 120.1: Record damage for "was dealt damage by" condition queries.
@@ -7244,6 +7251,7 @@ mod tests {
             amount: 5,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
 
         let ability = ResolvedAbility::new(

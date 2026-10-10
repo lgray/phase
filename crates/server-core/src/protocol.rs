@@ -3347,11 +3347,31 @@ mod tests {
     }
 
     /// The bump this number is at: `WaitingFor::LoopShortcut` and
-    /// `ShortcutProposal` gained a required `road: OfferRoad`. A v121 peer drops
+    /// `ShortcutProposal` gained a required `road: OfferRoad`. A v126 peer drops
     /// the key from every frame it re-encodes, so the handshake refuses the
     /// pairing rather than leave the road to the legacy-offer migration's
     /// inference.
     ///
+    /// The resolved-rules journal admits a land-play `rebound_from` on a
+    /// `ResolvedZoneChangeCommand` (Library/Graveyard/Exile -> Battlefield); a v123
+    /// peer rejects that `GameState.resolved_rules_journal`, so it must be refused
+    /// before it receives v124 state.
+    /// `MulliganDecisionEntry` and `MulliganDeclaration` gain `free_reveals_taken`; a
+    /// v124 peer drops the count, so it must be refused before it receives v125 state.
+    /// `ZoneChangeRecord` gains `arrival`; a v125 peer rejects the journal when the
+    /// departure owner differs from the command owner, so it must be refused before it
+    /// receives v126 state.
+    /// `FilterProp::PrepareSpell` (CR 722.3d), the `scope` field on
+    /// `Effect::BecomePrepared` / `BecomeUnprepared` (CR 722.3a + CR 115.10a),
+    /// `SpellCastRecord::prepared_copy_source`, `CopiableValues::prepare_face`
+    /// and `GameObject::copied_prepare_face` are new in serialized full-game
+    /// state; a v122 peer cannot parse the new `FilterProp` tag and would read a
+    /// mass prepare as a single-target one, so it must be refused before it
+    /// receives v123 state.
+    /// `PermissionGrantee` gains `TriggeringSourceController` (a cast grant bound to
+    /// the triggering object's controller, CR 603.2 + CR 109.4), and damage events
+    /// carry the source incarnation (CR 400.7); a v121 peer cannot deserialize
+    /// the tag, so it must be refused before it receives v122 state.
     /// The successful-mana-history ledger now stores the actual receiving
     /// player with each trigger definition. A v120 peer cannot decode a
     /// nonempty pair ledger, so it must be refused before v121 state.
@@ -3474,8 +3494,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_122_for_period_reach_and_cleanup() {
-        assert_eq!(PROTOCOL_VERSION, 122);
+    fn protocol_version_is_127_for_period_reach_and_cleanup() {
+        assert_eq!(PROTOCOL_VERSION, 127);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3486,7 +3506,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_122_for_period_reach_and_cleanup` stays
+    /// `protocol_version_is_127_for_period_reach_and_cleanup` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

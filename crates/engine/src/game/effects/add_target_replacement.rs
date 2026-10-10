@@ -510,7 +510,11 @@ fn replacement_targets(
     // trigger anchors the replacement on its own source without needing to
     // consult the target pipeline.
     if matches!(target, TargetFilter::SelfRef) {
-        return vec![TargetRef::Object(ability.source_id)];
+        return ability
+            .self_ref_binding(state)
+            .map(TargetRef::Object)
+            .into_iter()
+            .collect();
     }
 
     resolve_event_context_target(state, target, ability.source_id)
@@ -1348,6 +1352,7 @@ mod tests {
             amount: 3,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
 
         let replacement = ReplacementDefinition::new(ReplacementEvent::DamageDone)
@@ -1417,6 +1422,7 @@ mod tests {
             amount: 3,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
 
         let replacement = ReplacementDefinition::new(ReplacementEvent::DamageDone)

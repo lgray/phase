@@ -57,11 +57,17 @@ pub(super) fn token_is_outside_battlefield_and_stack(state: &GameState, obj: &Ga
 /// (CR 707.10f makes a permanent copy a token there) and may change zones freely
 /// while alive, so this predicate is used ONLY by the cease-to-exist SBA — never
 /// by the CR 111.8 "can't change zones" movement guards, which apply to tokens only.
+/// CR 722.3c: except the linked prepare-spell copy in exile, which remains for as
+/// long as its prepared permanent remains on the battlefield and has the prepared
+/// designation ("This is an exception to rule 704.5e").
 pub(super) fn copy_of_card_outside_battlefield_and_stack(
     state: &GameState,
     obj: &GameObject,
 ) -> bool {
-    obj.is_copy && obj.zone != Zone::Battlefield && !object_has_stack_residency(state, obj)
+    obj.is_copy
+        && obj.zone != Zone::Battlefield
+        && !object_has_stack_residency(state, obj)
+        && !crate::game::effects::prepare::is_retained_linked_prepared_copy(state, obj)
 }
 
 /// CR 122.2 + CR 113.6b: Determine whether `object_id`'s counters survive a move
@@ -290,6 +296,11 @@ pub(crate) fn apply_zone_exit_cleanup(
                 .insert(incarnation, lki);
         }
         if let Some(values) = lki_copiable_values {
+            state
+                .lki_copiable_values_by_incarnation
+                .entry(object_id)
+                .or_default()
+                .insert(occurrence.incarnation, values.clone());
             state.lki_copiable_values.insert(object_id, values);
         }
     }
@@ -824,6 +835,11 @@ pub(crate) fn record_resolution_source_relatch(
     // A faithful READ of the resolving ability's captured source identity. The
     // clone is disconnected from the local resolving borrow, so it cannot be the
     // carrier — the record on `state` is (consumed inside `source_is_current`).
+    // A triggered ability's stamp is its trigger provenance; any other stack
+    // ability's is the `source_incarnation` captured when it was put on the
+    // stack. CR 400.7j: an activated ability that moves its own source (Unearth,
+    // "return this card from your graveyard to the battlefield. It gains haste")
+    // can still find the moved object for the rest of its effect.
     let Some((source_id, Some(captured), successor_start)) = state
         .resolving_stack_entry
         .as_ref()
@@ -928,8 +944,7 @@ fn destination_position_after_removal(
 /// timestamp or a new object identity.
 ///
 /// `owner` is the object's owner before the move; `receiver` is `Some` only when
-/// the move rebinds ownership, and then names the new owner whose hand holds the
-/// card.
+/// the move rebinds ownership, and then names the new owner.
 pub fn resolve_and_apply_zone_change(
     state: &mut GameState,
     object_id: ObjectId,
@@ -972,10 +987,8 @@ pub fn resolve_and_apply_zone_change(
     zone_change_record.turn_zone_change_index = turn_zone_change_index;
     zone_change_record.recorded_turn_number = state.turn_number;
     if rebound_from.is_some() {
-        // CR 108.4a + CR 109.4: off the battlefield and stack a card's controller is its owner.
-        zone_change_record.owner = installed_owner;
-        zone_change_record.controller = installed_owner;
-        zone_change_record.sync_trigger_source_context();
+        // CR 108.3 as modified by the entry-ownership axis: the receiver becomes owner and controller; on the battlefield or stack that receiver is the player who played or cast it.
+        zone_change_record.install_rebound_arrival(installed_owner);
     }
 
     let command = ResolvedZoneChangeCommand {
@@ -1078,9 +1091,10 @@ pub(crate) fn prune_object_bound_effects_on_exit(
     super::layers::prune_affected_object_left_effects(state, object_id);
 }
 
-/// CR 108.3 as modified by a format's hand-entry ownership axis + CR 108.4a +
+/// CR 108.3 as modified by a format's entry-ownership axis + CR 108.4a +
 /// CR 109.4: the receiving player owns the card, and off the battlefield and
-/// stack its controller is its owner. `base_controller` follows because exit
+/// stack its controller is its owner; on them the receiver is the caster or the
+/// land's player, who controls it. `base_controller` follows because exit
 /// cleanup computes `controller` from it.
 fn install_rebound_owner(object: &mut crate::game::game_object::GameObject, owner: PlayerId) {
     object.owner = owner;
@@ -1309,16 +1323,16 @@ pub fn move_to_zone(
 /// is the SINGLE authoritative post-move face swap and already runs on `to == Zone::Battlefield`, so the
 /// guard here only gates eligibility — it never mutates the face.
 ///
-/// `hand_receiver` (see `zone_pipeline::hand_entry_receiver`) takes effect only
-/// in the ordinary-container branch, so a CR 717.6 redirect to Command never
-/// rebinds ownership.
+/// `receiver` (see `zone_pipeline::entry_receiver`) takes effect in the
+/// ordinary-container branch and on a Stack arrival, so a CR 717.6 redirect to
+/// Command never rebinds ownership.
 pub(crate) fn move_to_zone_with_entry_flags(
     state: &mut GameState,
     object_id: ObjectId,
     mut to: Zone,
     events: &mut Vec<GameEvent>,
     enter_transformed: bool,
-    hand_receiver: Option<PlayerId>,
+    receiver: Option<PlayerId>,
 ) {
     // CR 111.8: A token that has left the battlefield can't move to another zone
     // or come back onto the battlefield — "if such a token would change zones, it
@@ -1572,6 +1586,12 @@ pub(crate) fn move_to_zone_with_entry_flags(
                 // CR 400.7: a move between zones creates a new object.
                 obj_mut.bump_incarnation();
             }
+            // CR 601.2a: the caster's ownership is installed as the spell arrives on
+            // the stack, with the same record fields the journaled branch rebinds.
+            if let Some(new_owner) = receiver.filter(|_| to == Zone::Stack) {
+                install_rebound_owner(obj_mut, new_owner);
+                zone_change_record.install_rebound_arrival(new_owner);
+            }
             (pre_bump_incarnation, obj_mut.incarnation, false)
         } else {
             let resolved_zone_change = resolve_and_apply_zone_change(
@@ -1580,7 +1600,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
                 from,
                 to,
                 owner,
-                hand_receiver,
+                receiver,
                 zone_change_record,
             )
             .expect("ordinary zone transition must install its resolved core");
@@ -2745,8 +2765,7 @@ pub(crate) fn apply_battlefield_entry_controller_override(
             } if *id == object_id
         )
     }) {
-        record.controller = controller;
-        record.sync_trigger_source_context();
+        record.arrival.controller = controller;
     }
 
     // CR 733: journal the settled override. The event fix-up above is deliberately
@@ -2785,8 +2804,7 @@ fn retag_battlefield_entry_snapshots(
     if let Some(record) =
         zone_change_index.and_then(|index| state.zone_changes_this_turn.get_mut(index))
     {
-        record.controller = controller;
-        record.sync_trigger_source_context();
+        record.arrival.controller = controller;
     }
     if let Some(record) =
         battlefield_entry_index.and_then(|index| state.battlefield_entries_this_turn.get_mut(index))
@@ -6169,7 +6187,12 @@ mod hand_entry_rebind_tests {
             .as_array_mut()
             .expect("journal entries")
             .iter_mut()
-            .find_map(|entry| entry["command"]["ZoneChange"].as_object_mut())
+            .find_map(|entry| {
+                entry
+                    .get_mut("command")?
+                    .get_mut("ZoneChange")?
+                    .as_object_mut()
+            })
             .expect("a zone-change command")
     }
 
@@ -6248,6 +6271,82 @@ mod hand_entry_rebind_tests {
         assert!(
             !journal_is_accepted(journal_wire(&from_exile)),
             "a rebind out of a zone no format shares"
+        );
+
+        for from in [Zone::Library, Zone::Graveyard, Zone::Exile] {
+            let (_, played, _, _) = rebound_move(from, Zone::Battlefield);
+            assert!(
+                journal_is_accepted(journal_wire(&played)),
+                "a land-play rebind out of {from:?}"
+            );
+        }
+
+        let (_, from_hand, _, _) = rebound_move(Zone::Hand, Zone::Battlefield);
+        assert!(
+            !journal_is_accepted(journal_wire(&from_hand)),
+            "a Battlefield rebind out of Hand"
+        );
+    }
+
+    fn accepts_with_record_edit(state: &GameState, path: &[&str], value: PlayerId) -> bool {
+        let mut wire = journal_wire(state);
+        let mut slot = &mut command_json(&mut wire)["zone_change_record"];
+        for key in path {
+            slot = &mut slot[*key];
+        }
+        *slot = serde_json::json!(value);
+        journal_is_accepted(wire)
+    }
+
+    #[test]
+    fn the_journal_validator_ties_the_record_to_the_command() {
+        let (_, live, _, _) = rebound_move(Zone::Library, Zone::Hand);
+        assert!(
+            journal_is_accepted(journal_wire(&live)),
+            "reach: the well-formed rebind validates"
+        );
+        assert!(
+            accepts_with_record_edit(&live, &["controller"], P1),
+            "an edit of a field the validator does not read is accepted"
+        );
+        assert!(
+            accepts_with_record_edit(&live, &["arrival", "controller"], P0),
+            "the arrival controller is not part of the command"
+        );
+        assert!(
+            !accepts_with_record_edit(&live, &["arrival", "owner"], P0),
+            "the arrival owner is the command's installed owner"
+        );
+        assert!(
+            !accepts_with_record_edit(&live, &["owner"], P1),
+            "the departure owner is the owner the rebind replaced"
+        );
+
+        let mut state = GameState::new(FormatConfig::dandan(), 2, 42);
+        let card = create_object(&mut state, CardId(1), P0, "Own".to_string(), Zone::Library);
+        let record =
+            state.objects[&card].snapshot_for_zone_change(card, Some(Zone::Library), Zone::Hand);
+        resolve_and_apply_zone_change(
+            &mut state,
+            card,
+            Zone::Library,
+            Zone::Hand,
+            P0,
+            None,
+            record,
+        )
+        .expect("an ordinary move applies");
+        assert!(
+            journal_is_accepted(journal_wire(&state)),
+            "reach: an unrebound move validates"
+        );
+        assert!(
+            accepts_with_record_edit(&state, &["controller"], P1),
+            "an edit of a field the validator does not read is accepted"
+        );
+        assert!(
+            !accepts_with_record_edit(&state, &["owner"], P1),
+            "an unrebound command's departure owner is its owner"
         );
     }
 

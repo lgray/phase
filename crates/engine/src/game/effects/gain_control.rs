@@ -219,7 +219,7 @@ fn gain_control_object_targets(
     // CR 608.2c: `SelfRef` binds to the ability source even when target
     // propagation has populated `ability.targets`.
     if matches!(filter, TargetFilter::SelfRef) {
-        return vec![ability.source_id];
+        return ability.self_ref_binding(state).into_iter().collect();
     }
 
     // CR 608.2c: a precise slot anaphor ("gain control of that Equipment" →
@@ -369,7 +369,7 @@ pub(crate) fn give_control_object_targets(
     // CR 608.2c: `SelfRef` ("this artifact") binds to the ability source even
     // when target propagation has populated `ability.targets`.
     if matches!(filter, TargetFilter::SelfRef) {
-        return vec![ability.source_id];
+        return ability.self_ref_binding(state).into_iter().collect();
     }
 
     // CR 400.7 + CR 603.7c: identical shape to `gain_control_object_targets`
@@ -1460,6 +1460,7 @@ mod tests {
             amount: 2,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
         let ability = ResolvedAbility::new(
             Effect::GiveControl {
@@ -1538,6 +1539,7 @@ then lose that much life.";
             amount: 2,
             is_combat: true,
             excess: 0,
+            source_incarnation: None,
         });
 
         let resolved = build_resolved_from_def(execute, kain, PlayerId(0));

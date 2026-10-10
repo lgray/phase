@@ -6106,6 +6106,7 @@ mod tests {
                 "mulligan",
                 WaitingFor::MulliganDecision {
                     pending: vec![MulliganDecisionEntry {
+                        free_reveals_taken: 0,
                         player: PlayerId(0),
                         mulligan_count: 1,
                         phase: MulliganDecisionPhase::Declare,
@@ -6118,6 +6119,7 @@ mod tests {
                 "mulliganPutBack",
                 WaitingFor::MulliganDecision {
                     pending: vec![MulliganDecisionEntry {
+                        free_reveals_taken: 0,
                         player: PlayerId(0),
                         mulligan_count: 1,
                         phase: MulliganDecisionPhase::BottomCards {
@@ -7921,6 +7923,7 @@ mod tests {
         let mut state = GameState::new_two_player(7);
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 0,
                 phase: MulliganDecisionPhase::Declare,
@@ -7976,6 +7979,7 @@ mod tests {
         );
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 0,
                 phase: MulliganDecisionPhase::Declare,
@@ -8001,6 +8005,7 @@ mod tests {
 
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 1,
                 phase: MulliganDecisionPhase::BottomCards {

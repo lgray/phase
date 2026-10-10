@@ -788,7 +788,10 @@ impl EventObjectSnapshot {
             FilterProp::HasSingleTarget
             | FilterProp::Targets { .. }
             | FilterProp::TargetsOnly { .. }
-            | FilterProp::Modal => PermanentDomainFalse,
+            | FilterProp::Modal
+            // CR 722.3d: a prepare spell is a Stack-zone object by definition, so a
+            // permanent subject is a decided false, not a gap.
+            | FilterProp::PrepareSpell => PermanentDomainFalse,
 
             // ---- unsupported: needs a live candidate lookup or an unmodeled field ----
             // Not reachable from the subject grammar today. Reaching one fails the gate,
@@ -1269,6 +1272,14 @@ pub enum GameEvent {
         /// CR 120.10: Excess damage beyond lethal for creatures/planeswalkers/battles.
         #[serde(default)]
         excess: u32,
+        /// CR 400.7 + CR 608.2h: the incarnation of the object that dealt the
+        /// damage. If it leaves the battlefield and returns before a trigger
+        /// that reads "that creature's controller" resolves (a blink), the
+        /// returned permanent is a new object; this names the one that dealt
+        /// the damage. `None` on legacy events and for a source with no live
+        /// object.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_incarnation: Option<u64>,
     },
     /// CR 615: Damage was prevented (by a prevention shield or protection).
     /// Enables "when damage is prevented" triggers.
@@ -1584,6 +1595,11 @@ pub enum GameEvent {
         /// damage step — the sum of all `source_amounts` entries.
         #[serde(default)]
         total_damage: u32,
+        /// CR 400.7 + CR 608.2h: the incarnation of each `source_amounts`
+        /// source as it dealt the damage, carried into the per-source
+        /// `DamageDealt` a trigger records. Empty on legacy events.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source_incarnations: Vec<crate::types::identifiers::ObjectIncarnationRef>,
     },
     PlayerEliminated {
         player_id: PlayerId,
@@ -2160,6 +2176,7 @@ mod tests {
             amount: 3,
             is_combat: false,
             excess: 0,
+            source_incarnation: None,
         };
         let serialized = serde_json::to_string(&event).unwrap();
         let deserialized: GameEvent = serde_json::from_str(&serialized).unwrap();
@@ -2184,6 +2201,7 @@ mod tests {
             player_id: PlayerId(1),
             source_amounts: vec![(ObjectId(10), 3), (ObjectId(11), 4)],
             total_damage: 7,
+            source_incarnations: vec![],
         };
         let serialized = serde_json::to_string(&event).unwrap();
         let deserialized: GameEvent = serde_json::from_str(&serialized).unwrap();
@@ -2285,6 +2303,14 @@ mod tests {
             properties: vec![FilterProp::HasSingleTarget],
         });
         assert_eq!(classify(&stack_prop), PermanentDomainFalse);
+
+        // CR 722.3d: a prepare spell is only ever a Stack-zone object.
+        let prepare_spell = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: None,
+            properties: vec![FilterProp::PrepareSpell],
+        });
+        assert_eq!(classify(&prepare_spell), PermanentDomainFalse);
     }
 
     /// A shape that needs a live candidate lookup is `Unsupported` — the signal that the

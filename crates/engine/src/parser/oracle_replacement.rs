@@ -1781,6 +1781,7 @@ fn parse_enters_prepared(norm_lower: &str, text: &str) -> Option<ReplacementDefi
                 AbilityKind::Spell,
                 Effect::BecomePrepared {
                     target: TargetFilter::SelfRef,
+                    scope: EffectScope::Single,
                 },
             ))
             .valid_card(TargetFilter::SelfRef)
@@ -17493,7 +17494,8 @@ mod tests {
         assert!(matches!(
             *def.execute.as_ref().unwrap().effect,
             Effect::BecomePrepared {
-                target: TargetFilter::SelfRef
+                target: TargetFilter::SelfRef,
+                scope: EffectScope::Single,
             }
         ));
     }
@@ -17516,7 +17518,8 @@ mod tests {
                 .expect("execute should be set")
                 .effect,
             Effect::BecomePrepared {
-                target: TargetFilter::SelfRef
+                target: TargetFilter::SelfRef,
+                scope: EffectScope::Single,
             }
         ));
     }

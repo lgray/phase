@@ -3383,7 +3383,7 @@ fn validate_delve_selection_at_commit(
         state
             .objects
             .get(id)
-            .is_some_and(|obj| obj.is_delve_eligible(player))
+            .is_some_and(|obj| obj.is_delve_eligible(state, player))
     }) {
         Ok(())
     } else {
@@ -7046,6 +7046,19 @@ fn concretize_chosen_x_cost(cost: &AbilityCost, chosen_x: u32) -> AbilityCost {
                 value: chosen_x as i32,
             },
         },
+        // CR 107.3a + CR 107.3k: bare X belongs to this activation's announcement.
+        // CR 602.2b + CR 601.2h + CR 119.4: bind it before the authoritative
+        // residual cost payer deducts life, without replacing derived quantities.
+        AbilityCost::PayLife {
+            amount:
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable { name },
+                },
+        } if name == "X" => AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed {
+                value: chosen_x as i32,
+            },
+        },
         AbilityCost::Composite { costs } => AbilityCost::Composite {
             costs: costs
                 .iter()
@@ -8419,7 +8432,7 @@ fn check_additional_cost_or_pay_with_kept_cost(
                         .map(|extra| extra.cost)
                     })
                 })
-        } else if super::casting::object_in_players_library(state, obj, player) {
+        } else if state.object_in_players_zone(obj, Zone::Library, player) {
             // CR 401.5 + CR 118.9 + CR 601.2a: Top-of-library cast with an
             // alt-cost rider (Bolas's Citadel: "pay life equal to its mana
             // value rather than paying its mana cost").
@@ -12311,7 +12324,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
     // goes through the single entry while the consult is skipped (PLAN §3). The
     // spell moves itself, so the attribution source is the object.
     let stack_req =
-        crate::game::zone_pipeline::ZoneMoveRequest::casting_to_stack(object_id, object_id);
+        crate::game::zone_pipeline::ZoneMoveRequest::casting_to_stack(object_id, object_id, player);
     crate::game::zone_pipeline::move_object(state, stack_req, events);
 
     // CR 614.1a + CR 608.2n: install the graveyard-redirect rider captured above
@@ -16772,6 +16785,86 @@ mod tests {
     use rand::RngCore;
 
     use super::*;
+
+    // CR 107.3a + CR 107.3k: bind this activation's bare X, without replacing
+    // fixed, other-variable, source-derived, or compound life quantities.
+    #[test]
+    fn concretize_chosen_x_pay_life_binds_only_the_bare_variable() {
+        let x = AbilityCost::PayLife {
+            amount: QuantityExpr::Ref {
+                qty: QuantityRef::Variable {
+                    name: "X".to_string(),
+                },
+            },
+        };
+        for chosen_x in [0, 2] {
+            assert_eq!(
+                concretize_chosen_x_cost(&x, chosen_x),
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed {
+                        value: chosen_x as i32
+                    },
+                }
+            );
+        }
+        let fixed = AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed { value: 3 },
+        };
+        let nested = AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::Composite {
+                    costs: vec![fixed.clone(), x.clone()],
+                },
+            ],
+        };
+        assert_eq!(
+            concretize_chosen_x_cost(&nested, 2),
+            AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Tap,
+                    AbilityCost::Composite {
+                        costs: vec![
+                            fixed.clone(),
+                            AbilityCost::PayLife {
+                                amount: QuantityExpr::Fixed { value: 2 }
+                            },
+                        ]
+                    }
+                ],
+            }
+        );
+        for cost in [
+            fixed,
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::Variable {
+                        name: "Y".to_string(),
+                    },
+                },
+            },
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::CountersOn {
+                        scope: crate::types::ability::ObjectScope::Source,
+                        counter_type: None,
+                    },
+                },
+            },
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Offset {
+                    inner: Box::new(QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string(),
+                        },
+                    }),
+                    offset: 1,
+                },
+            },
+        ] {
+            assert_eq!(concretize_chosen_x_cost(&cost, 2), cost);
+        }
+    }
 
     /// CR 601.2a + CR 118.9a: `begin_required_cost_before_targets` starts paying
     /// a cast's costs without passing through
@@ -29027,7 +29120,7 @@ its replicate cost was paid.)\nDraw a card.";
             0,
             "excluding one real card leaves insufficient Delve capacity for {{X}}{{X}}"
         );
-        assert!(state.objects[&real_b].is_delve_eligible(PlayerId(0)));
+        assert!(state.objects[&real_b].is_delve_eligible(&state, PlayerId(0)));
     }
 
     #[test]

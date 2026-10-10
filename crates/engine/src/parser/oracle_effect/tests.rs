@@ -15,8 +15,8 @@ use crate::parser::parse_oracle_text;
 use crate::types::ability::CardPlayMode::{Cast, Play};
 use crate::types::ability::CastFromZoneDriver::{DuringResolution, LingeringPermission};
 use crate::types::ability::{
-    AbilityUseTally, AttachSelection, AttachmentKind, CardSelectionMode, CastCostModifier,
-    CastManaObjectScope, CastManaSpentMetric, CommanderOwnership, CountBinding,
+    AbilityUseTally, ActivationRestriction, AttachSelection, AttachmentKind, CardSelectionMode,
+    CastCostModifier, CastManaObjectScope, CastManaSpentMetric, CommanderOwnership, CountBinding,
     CounterTransferMode, DigRestOrder, ExcessRecipient, ForEachCategoryAction,
     MassLibraryShuffleMode, ModalChoice, PerpetualModification, PileSource, SeatDirection,
     TurnJournalKind, VoteTally, VoteVisibility, VoterScope,
@@ -2529,7 +2529,8 @@ fn stensian_class_builds_whenever_event_this_combat_delayed_trigger() {
         matches!(
             effect.effect.as_ref(),
             Effect::BecomePrepared {
-                target: TargetFilter::SelfRef
+                target: TargetFilter::SelfRef,
+                scope: EffectScope::Single,
             }
         ),
         "expected BecomePrepared{{SelfRef}}, got {:?}",
@@ -2545,6 +2546,103 @@ fn stensian_class_builds_whenever_event_this_combat_delayed_trigger() {
         !json.contains("\"Unimplemented\""),
         "parsed tree must contain no Effect::Unimplemented"
     );
+}
+
+/// CR 115.10a + CR 722.3a/b: the scope of "<subject> becomes (un)prepared"
+/// follows the subject's shape. An untargeted population ("each creature you
+/// control") is `All` and keeps its filter; a declared target is `Single`.
+/// Each `All` positive is paired with a `Single` negative of the same verb.
+#[test]
+fn becomes_prepared_scope_follows_subject_shape() {
+    use crate::types::ability::{ControllerRef, TypedFilter};
+    let yours = || TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You));
+
+    assert_eq!(
+        parse_effect("Each creature you control becomes prepared."),
+        Effect::BecomePrepared {
+            target: yours(),
+            scope: EffectScope::All,
+        }
+    );
+    assert_eq!(
+        parse_effect("Each creature you control becomes unprepared."),
+        Effect::BecomeUnprepared {
+            target: yours(),
+            scope: EffectScope::All,
+        }
+    );
+    // Paired negatives (reach guard: the parse produced the effect, not
+    // `Unimplemented`): a declared target is the single scope.
+    assert!(matches!(
+        parse_effect("Target creature becomes prepared."),
+        Effect::BecomePrepared {
+            scope: EffectScope::Single,
+            ..
+        }
+    ));
+    assert!(matches!(
+        parse_effect("Target creature becomes unprepared."),
+        Effect::BecomeUnprepared {
+            scope: EffectScope::Single,
+            ..
+        }
+    ));
+    // Grammar sibling (building-block row, no printed card): another
+    // population is also `All`, keeping its own controller.
+    match parse_effect("Each creature your opponents control becomes unprepared.") {
+        Effect::BecomeUnprepared {
+            target: TargetFilter::Typed(typed),
+            scope: EffectScope::All,
+        } => assert_ne!(typed.controller, Some(ControllerRef::You)),
+        other => panic!("expected a mass BecomeUnprepared, got {other:?}"),
+    }
+}
+
+/// CR 115.10a + CR 722.3a: the mass (`All`) reading of "<subject> becomes
+/// (un)prepared" is fail-closed. Only an untargeted subject that names an
+/// enumerable population ("each creature you control") is `All`; a subject the
+/// parser could not classify (`Any`, a contentless `Typed`, a player filter)
+/// matches no bounded population, so it keeps its filter under `Single` instead
+/// of sweeping both players' battlefields.
+#[test]
+fn prepared_designation_subject_unclassified_subject_stays_single() {
+    use super::subject::prepared_designation_subject;
+    use crate::parser::oracle_ir::ast::SubjectApplication;
+    use crate::types::ability::{ControllerRef, TypedFilter};
+    let untargeted = |affected: TargetFilter| SubjectApplication {
+        affected,
+        target: None,
+        multi_target: None,
+        inherits_parent: false,
+        is_optional: false,
+    };
+    let yours = TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You));
+
+    // Positive reach guard: the Codie subject shape is an enumerable
+    // population, through the helper and through the real parse.
+    assert_eq!(
+        prepared_designation_subject(&untargeted(yours.clone())),
+        (yours.clone(), EffectScope::All)
+    );
+    assert_eq!(
+        parse_effect("Each creature you control becomes prepared."),
+        Effect::BecomePrepared {
+            target: yours,
+            scope: EffectScope::All,
+        }
+    );
+
+    // Unclassified subjects: no enumerable population, so `Single`.
+    for unclassified in [
+        TargetFilter::Any,
+        TargetFilter::Typed(TypedFilter::default()),
+        TargetFilter::Player,
+    ] {
+        assert_eq!(
+            prepared_designation_subject(&untargeted(unclassified.clone())),
+            (unclassified, EffectScope::Single)
+        );
+    }
 }
 
 /// CR 601.2c + CR 508.1d + CR 509.1c: A dual-target combat compound —
@@ -12251,20 +12349,82 @@ fn effect_self_ref_endures_strips_subject_to_endure() {
     );
 }
 
+// SHAPE: CR 107.3a + CR 701.63a: bare X retains the announced amount.
 #[test]
-fn effect_endure_dynamic_x_degrades_gracefully_without_binding() {
-    // CR 701.63b: bare "it endures X" without a defining clause still
-    // degrades to endure 0 (nothing happens).
-    let e = parse_effect("it endures X");
+fn effect_endure_dynamic_x_preserves_announced_variable() {
+    for text in ["it endures X", "this creature endures X", "~ endures X"] {
+        let e = parse_effect(text);
+        assert!(
+            matches!(
+                &e,
+                Effect::Endure {
+                    amount: QuantityExpr::Ref { qty: QuantityRef::Variable { name } },
+                    ..
+                } if name == "X"
+            ),
+            "expected symbolic Endure X, got {e:?}"
+        );
+    }
+}
+
+// SHAPE: literal amounts remain literals, including Endure 0 (CR 701.63b).
+#[test]
+fn effect_endure_literal_zero_and_two_remain_fixed() {
+    for (text, expected) in [
+        ("this creature endures 0", 0),
+        ("this creature endures 2", 2),
+    ] {
+        assert!(matches!(parse_effect(text), Effect::Endure {
+            amount: QuantityExpr::Fixed { value }, subject: TargetFilter::SelfRef,
+        } if value == expected));
+    }
+}
+
+// SHAPE: CR 602.2b + CR 602.5d: preserve the full printed cost and restriction.
+#[test]
+fn krumar_initiate_full_activation_preserves_x_cost_and_endure_shape() {
+    let parsed = parse_oracle_text(
+        "{X}{B}, {T}, Pay X life: This creature endures X. Activate only as a sorcery. (Put X +1/+1 counters on it or create an X/X white Spirit creature token.)",
+        "Krumar Initiate", &[], &["Creature".to_string()], &["Human".to_string(), "Cleric".to_string()],
+    );
+    assert_eq!(parsed.abilities.len(), 1);
+    let def = &parsed.abilities[0];
+    assert_eq!(def.kind, AbilityKind::Activated);
+    assert!(matches!(def.effect.as_ref(), Effect::Endure {
+        amount: QuantityExpr::Ref { qty: QuantityRef::Variable { name } },
+        subject: TargetFilter::SelfRef,
+    } if name == "X"));
+    assert_eq!(
+        def.cost,
+        Some(AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Mana {
+                    cost: ManaCost::Cost {
+                        shards: vec![ManaCostShard::X, ManaCostShard::Black],
+                        generic: 0
+                    }
+                },
+                AbilityCost::Tap,
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::Variable {
+                            name: "X".to_string()
+                        }
+                    }
+                },
+            ]
+        })
+    );
+    assert_eq!(
+        def.activation_restrictions,
+        vec![ActivationRestriction::AsSorcery]
+    );
+    assert!(def.sub_ability.is_none());
+    assert!(def.else_ability.is_none());
     assert!(
-        matches!(
-            e,
-            Effect::Endure {
-                amount: QuantityExpr::Fixed { value: 0 },
-                ..
-            } | Effect::Unimplemented { .. }
-        ),
-        "bare dynamic endure X must degrade to Endure{{0}} or Unimplemented, got {e:?}"
+        parsed.parse_warnings.is_empty(),
+        "all printed clauses must survive: {:?}",
+        parsed.parse_warnings
     );
 }
 
@@ -64661,6 +64821,7 @@ fn prop_has_chosen_color(p: &FilterProp) -> bool {
         | FilterProp::MatchesLastChosenCardPredicate
         | FilterProp::HasSingleTarget
         | FilterProp::Modal
+        | FilterProp::PrepareSpell
         | FilterProp::NotColor { .. }
         | FilterProp::NotSupertype { .. }
         | FilterProp::Suspected
@@ -81175,4 +81336,147 @@ fn copy_each_of_those_spells_twice_is_a_member_loop_over_the_tracked_set() {
             }),
         })
     );
+}
+
+// SHAPE: CR 608.2k + CR 701.63a: the entering subject and source-derived
+// where-X amount remain distinct from the activated Endure-X route.
+#[test]
+fn warden_endure_where_x_preserves_entering_subject_and_source_counters_shape() {
+    let parsed = parse_oracle_text(
+        "At the beginning of your end step, put a +1/+1 counter on this creature.\nWhenever another nontoken creature you control enters, it endures X, where X is the number of counters on this creature. (Put X +1/+1 counters on the creature that entered or create an X/X white Spirit creature token.)",
+        "Warden of the Grove", &[], &["Creature".to_string()], &[],
+    );
+    assert_eq!(parsed.triggers.len(), 2);
+    let def = parsed.triggers[1]
+        .execute
+        .as_ref()
+        .expect("entering creature payoff");
+    assert!(matches!(
+        def.effect.as_ref(),
+        Effect::Endure {
+            amount: QuantityExpr::Ref {
+                qty: QuantityRef::CountersOn {
+                    scope: ObjectScope::Source,
+                    counter_type: None
+                }
+            },
+            subject: TargetFilter::TriggeringSource,
+        }
+    ));
+    assert!(def.sub_ability.is_none());
+    assert!(parsed.parse_warnings.is_empty());
+}
+
+const CURSE_OF_HOSPITALITY_GRANT: &str = "That player exiles the top card of their library. \
+Until end of turn, that creature's controller may play that card and they may spend mana as \
+though it were mana of any color to cast that spell.";
+
+fn trigger_chain(text: &str) -> AbilityDefinition {
+    let mut ctx = ParseContext {
+        in_trigger: true,
+        ..ParseContext::default()
+    };
+    parse_effect_chain_with_context(text, AbilityKind::Spell, &mut ctx)
+}
+
+fn play_grant(def: &AbilityDefinition) -> Option<(&CastingPermission, &PermissionGrantee)> {
+    std::iter::successors(Some(def), |link| link.sub_ability.as_deref()).find_map(|link| match link
+        .effect
+        .as_ref()
+    {
+        Effect::GrantCastingPermission {
+            permission: permission @ CastingPermission::PlayFromExile { .. },
+            grantee,
+            ..
+        } => Some((permission, grantee)),
+        _ => None,
+    })
+}
+
+/// CR 603.2 + CR 109.4 + CR 609.4b: inside a trigger, "that creature's
+/// controller may play that card" binds the grant to the triggering object's
+/// controller, the leading "until end of turn" is its duration, and the
+/// comma-less "and they may spend mana …" rider is folded onto it.
+#[test]
+fn a_triggering_creatures_controller_play_grant_keeps_its_grantee_and_rider() {
+    let def = trigger_chain(CURSE_OF_HOSPITALITY_GRANT);
+    let (permission, grantee) = play_grant(&def).expect("the play grant");
+    assert_eq!(*grantee, PermissionGrantee::TriggeringSourceController);
+    let CastingPermission::PlayFromExile {
+        duration,
+        mana_spend_permission,
+        ..
+    } = permission
+    else {
+        unreachable!()
+    };
+    assert_eq!(*duration, Duration::UntilEndOfTurn);
+    assert_eq!(*mana_spend_permission, Some(ManaSpendPermission::AnyColor));
+    assert!(
+        std::iter::successors(Some(&def), |link| link.sub_ability.as_deref())
+            .all(|link| !matches!(link.effect.as_ref(), Effect::Unimplemented { .. })),
+        "no gap is left: {def:?}"
+    );
+}
+
+/// The grantee form is read only inside a trigger, where "that creature" is
+/// the triggering object; elsewhere the clause is not claimed by it.
+#[test]
+fn a_triggering_creatures_controller_play_grant_is_not_read_outside_a_trigger() {
+    let def = parse_effect_chain(CURSE_OF_HOSPITALITY_GRANT, AbilityKind::Spell);
+    // The clause is reached and reported as the unbound-subject gap: the player
+    // subject has no slot here, so it is not lowered as the controller's grant.
+    assert!(
+        std::iter::successors(Some(&def), |link| link.sub_ability.as_deref()).any(|link| matches!(
+            link.effect.as_ref(),
+            Effect::Unimplemented { name, description: Some(text) }
+                if name == "unbound_subject" && text.contains("that creature's controller may play that card")
+        )),
+        "{def:?}"
+    );
+    assert!(play_grant(&def).is_none(), "{def:?}");
+}
+
+/// The grantee form is read whole: a longer predicate after "that card" is not
+/// shortened into the grant.
+#[test]
+fn a_triggering_creatures_controller_play_grant_is_read_whole() {
+    assert!(parses_triggering_creature_controller_grant(
+        "that creature's controller may play that card"
+    ));
+    assert!(parses_triggering_creature_controller_grant(
+        "that creature's controller may cast it."
+    ));
+    assert!(!parses_triggering_creature_controller_grant(
+        "that creature's controller may play that card without paying its mana cost"
+    ));
+    assert!(!parses_triggering_creature_controller_grant(
+        "that creature's controller may draw a card"
+    ));
+    // A period ends the clause only at the end of the input.
+    assert!(!parses_triggering_creature_controller_grant(
+        "that creature's controller may play that card. draw a card"
+    ));
+}
+
+/// CR 609.4b: the mana-rider conjunct is cut off only when it runs to the end
+/// of its sentence.
+#[test]
+fn a_mana_rider_conjunct_must_end_its_sentence() {
+    let rider = "and they may spend mana as though it were mana of any color to cast that spell";
+    assert!(starts_mana_spend_rider_conjunct(rider));
+    // The comma path reads the rest of the paragraph: the rider ends at its
+    // sentence's period, and a later sentence may follow.
+    assert!(starts_mana_spend_rider_conjunct(&format!(
+        "{rider}. draw a card"
+    )));
+    assert!(!starts_mana_spend_rider_conjunct(&format!(
+        "{rider} and draw a card"
+    )));
+    // The comma-less split reads the same rider after the bare "and ".
+    let bare = "they may spend mana as though it were mana of any color to cast that spell";
+    assert!(super::sequence::starts_bare_and_clause(bare));
+    assert!(!super::sequence::starts_bare_and_clause(&format!(
+        "{bare}. draw a card"
+    )));
 }

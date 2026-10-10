@@ -633,7 +633,7 @@ fn a_suspended_mana_ability_cannot_be_activated_again() {
     act(&mut runner, begun.clone());
     assert_eq!(
         suspended(runner.state()),
-        [begun.clone()],
+        std::slice::from_ref(&begun),
         "reach: Prismite's {{2}} opens its payment window"
     );
 
@@ -680,7 +680,7 @@ fn a_suspended_mana_abilitys_other_ability_and_other_sources_still_pay() {
     act(&mut runner, begun.clone());
     assert_eq!(
         suspended(runner.state()),
-        [begun.clone()],
+        std::slice::from_ref(&begun),
         "reach: the Elf's {{1}} opens its payment window"
     );
 
@@ -1305,7 +1305,7 @@ fn a_hybrid_answer_that_cannot_be_carried_out_reverses_the_filter_ability() {
         act(&mut runner, filter.clone());
         assert_eq!(
             suspended(runner.state()),
-            [filter.clone()],
+            std::slice::from_ref(&filter),
             "reach: the Ruins' window"
         );
         assert!(
@@ -2012,7 +2012,7 @@ fn an_inner_cancel_reverses_an_outer_activation_it_leaves_unpayable() {
     act(&mut runner, lens_costed.clone());
     assert_eq!(
         suspended(runner.state()),
-        [lens_costed.clone()],
+        std::slice::from_ref(&lens_costed),
         "reach: the Lens's window"
     );
     act(&mut runner, prism_costed.clone());
@@ -2093,7 +2093,7 @@ fn mimic_board_after_rishkar_leaves() -> Option<MimicBoard> {
     act(&mut runner, begun.clone());
     assert_eq!(
         suspended(runner.state()),
-        [begun.clone()],
+        std::slice::from_ref(&begun),
         "reach: Marvin's {{2}} opens its payment window"
     );
     let mut altar_entries = sacrifice_to_altar(&mut runner, altar, rishkar).to_vec();
@@ -2192,7 +2192,7 @@ fn an_identical_second_ability_is_activated_while_the_first_is_suspended() {
     act(&mut runner, first.clone());
     assert_eq!(
         suspended(runner.state()),
-        [first.clone()],
+        std::slice::from_ref(&first),
         "reach: the first {{2}} opens its payment window"
     );
 
@@ -2209,7 +2209,7 @@ fn an_identical_second_ability_is_activated_while_the_first_is_suspended() {
     act(&mut runner, GameAction::CancelCast);
 
     let state = runner.state();
-    assert_eq!(suspended(state), [first.clone()]);
+    assert_eq!(suspended(state), std::slice::from_ref(&first));
     assert_eq!(trace(state), [first]);
     assert_eq!(state.objects[&marvin].abilities.len(), 2);
 }

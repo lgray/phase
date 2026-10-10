@@ -484,19 +484,37 @@ pub fn run_driver_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::game::zones::create_object;
-    use engine::types::ability::{
-        AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter,
+    use crate::policies::mulligan::{registry_keeps, FREE_REVEAL_BOUND};
+    use engine::ai_support::legal_actions_for_viewer;
+    use engine::game::deck_loading::{
+        load_and_hydrate_decks, resolve_deck_list, DeckList, PlayerDeckList,
     };
+    use engine::game::engine::{apply, start_game_with_starting_player};
+    use engine::game::mulligan::free_reveal_futile_for;
+    use engine::game::zones::{add_to_zone, create_object, remove_from_zone};
+    use engine::types::ability::{
+        AbilityDefinition, AbilityKind, Effect, QuantityExpr, ResolvedAbility, TargetFilter,
+    };
+    use engine::types::actions::MulliganChoice;
     use engine::types::card_type::CoreType;
+    use engine::types::format::FormatConfig;
     use engine::types::game_state::{
-        StackEntry, StackEntryKind, StackResolutionPolicy, WaitingFor,
+        AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin, StackEntry, StackEntryKind,
+        StackResolutionPolicy, WaitingFor,
     };
     use engine::types::identifiers::{CardId, ObjectId};
     use engine::types::phase::Phase;
     use engine::types::zones::Zone;
+    use rand::SeedableRng;
 
     fn recheck_priority_state() -> GameState {
+        recheck_priority_state_with_top_controller(PlayerId(0))
+    }
+
+    /// P0 is active and holds priority over one NoOp activated ability
+    /// (70_001) controlled by `top_controller`; P1 controls "AI Recheck
+    /// Action", a free activated draw.
+    fn recheck_priority_state_with_top_controller(top_controller: PlayerId) -> GameState {
         let mut state = GameState::new_two_player(1);
         state.phase = Phase::PreCombatMain;
         state.active_player = PlayerId(0);
@@ -507,14 +525,14 @@ mod tests {
         state.stack.push_back(StackEntry {
             id: ObjectId(70_001),
             source_id: ObjectId(70_001),
-            controller: PlayerId(1),
+            controller: top_controller,
             kind: StackEntryKind::ActivatedAbility {
                 source_id: ObjectId(70_001),
                 ability: Box::new(engine::types::ability::ResolvedAbility::new(
                     Effect::NoOp,
                     Vec::new(),
                     ObjectId(70_001),
-                    PlayerId(1),
+                    top_controller,
                 )),
             },
         });
@@ -555,6 +573,39 @@ mod tests {
                 )),
             },
         });
+    }
+
+    /// An optional "you may" NoOp trigger controlled by P1 whose auto-choice
+    /// is Decline: an inert entry the stack resolver may batch.
+    fn push_declined_no_op_trigger(state: &mut GameState, id: u64) {
+        let origin = MayTriggerOrigin::Printed { trigger_index: 0 };
+        let mut ability = ResolvedAbility::new(Effect::NoOp, Vec::new(), ObjectId(id), PlayerId(1));
+        ability.optional = true;
+        ability.may_trigger_origin = Some(origin.clone());
+        state.stack.push_back(StackEntry {
+            id: ObjectId(id),
+            source_id: ObjectId(id),
+            controller: PlayerId(1),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: ObjectId(id),
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: "Declined Trigger".to_string(),
+                subject_match_count: None,
+                die_result: None,
+                provenance: None,
+            },
+        });
+        state.set_may_trigger_auto_choice(
+            MayTriggerAutoChoiceKey {
+                player: PlayerId(1),
+                source_id: ObjectId(id),
+                origin,
+            },
+            AutoMayChoice::Decline,
+        );
     }
 
     fn dummy_result(state: &GameState) -> AiActionResult {
@@ -671,6 +722,81 @@ mod tests {
         );
     }
 
+    /// Adjudication (b) pin: an AI representative that has not verified a pass
+    /// in the Recheck cohort is engine-passed over its own top entry by its
+    /// standing pass (`priority::standing_priority_pass`), although it holds a
+    /// meaningful activated ability, so it gets no decision before that entry
+    /// resolves.
+    #[test]
+    fn unverified_ai_representative_is_standing_passed_over_its_own_top() {
+        let ai_players = HashSet::from([PlayerId(0), PlayerId(1)]);
+        let ai_configs = HashMap::from([
+            (PlayerId(0), AiConfig::default()),
+            (PlayerId(1), AiConfig::default()),
+        ]);
+        let mut rng = rand::rng();
+
+        // Paired positive control: with the top under P0, P1 has no standing
+        // pass, and the same one-action run stops at P1's window.
+        let mut control = recheck_priority_state_with_top_controller(PlayerId(0));
+        let control_session = AiSession::arc_from_game(&control);
+        let control_run = run_ai_actions_bounded(
+            &mut control,
+            &ai_players,
+            &ai_configs,
+            &mut rng,
+            &control_session,
+            1,
+        );
+        assert!(matches!(
+            control_run.results.as_slice(),
+            [AiActionResult {
+                action: GameAction::PassPriority,
+                ..
+            }]
+        ));
+        assert!(matches!(
+            control.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(1)
+            }
+        ));
+        assert_eq!(
+            control.stack.len(),
+            1,
+            "reach guard: P1's window is offered"
+        );
+        assert!(
+            engine::ai_support::legal_actions(&control)
+                .iter()
+                .any(|action| matches!(action, GameAction::ActivateAbility { .. })),
+            "reach guard: P1 holds a meaningful activated ability at its window"
+        );
+
+        let mut state = recheck_priority_state_with_top_controller(PlayerId(1));
+        let session = AiSession::arc_from_game(&state);
+        let run =
+            run_ai_actions_bounded(&mut state, &ai_players, &ai_configs, &mut rng, &session, 1);
+        let [AiActionResult {
+            action: GameAction::PassPriority,
+            events,
+            ..
+        }] = run.results.as_slice()
+        else {
+            panic!("only P0's verified pass is taken");
+        };
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                GameEvent::StackResolved {
+                    object_id: ObjectId(70_001)
+                }
+            )),
+            "P1 is standing-passed over its own entry inside P0's dispatch"
+        );
+        assert!(state.stack.is_empty());
+    }
+
     #[test]
     fn verified_pass_cache_drains_a_large_ai_stack_without_action_cap() {
         let mut state = recheck_priority_state();
@@ -706,5 +832,238 @@ mod tests {
             counters.priority_cast_probe_builds, 0,
             "cached verified passes must avoid the recheck probe on every stack entry"
         );
+    }
+
+    /// CR 117.3b + CR 117.4 + CR 732.2b: P0's verified pass and P1's standing
+    /// pass over its own triggers (`priority::standing_priority_pass`) authorize
+    /// every skipped window over P1's run, so the declined trigger run resolves
+    /// as one proven inert batch.
+    #[test]
+    fn verified_pass_cohort_batches_a_declined_trigger_stack() {
+        let mut state = recheck_priority_state();
+        state.objects.clear();
+        for id in 70_003..70_204 {
+            push_declined_no_op_trigger(&mut state, id);
+        }
+        let ai_players = HashSet::from([PlayerId(0), PlayerId(1)]);
+        let ai_configs = HashMap::from([
+            (PlayerId(0), AiConfig::default()),
+            (PlayerId(1), AiConfig::default()),
+        ]);
+        let session = AiSession::arc_from_game(&state);
+        let mut rng = rand::rng();
+
+        engine::game::perf_counters::reset();
+        let run = run_ai_actions(&mut state, &ai_players, &ai_configs, &mut rng, &session);
+        let counters = engine::game::perf_counters::snapshot();
+
+        assert!(
+            matches!(run.stop, AiActionsStop::NoEligibleAiActor),
+            "the drained stack ends the AI run: {:?}",
+            run.stop
+        );
+        assert!(state.stack.is_empty());
+        assert!(state.stack_resolution_session.is_none());
+        assert_eq!(counters.priority_cast_probe_builds, 0);
+        assert_eq!(counters.stack_inert_noop_batches, 1);
+        assert_eq!(counters.stack_inert_noop_entries, 201);
+    }
+
+    /// The mulligan is over: no seat owes a declaration or a bottoming.
+    fn left_the_mulligan(state: &GameState) -> bool {
+        !matches!(
+            state.waiting_for,
+            WaitingFor::MulliganDecision { .. } | WaitingFor::OpeningHandBottomCards { .. }
+        )
+    }
+
+    fn integration_db() -> engine::database::card_db::CardDatabase {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../engine/tests/fixtures/integration_cards.json.gz");
+        let file = std::fs::File::open(path).expect("integration fixture should open");
+        engine::database::card_db::CardDatabase::from_export_reader(flate2::read::GzDecoder::new(
+            std::io::BufReader::new(file),
+        ))
+        .expect("integration fixture should load")
+    }
+
+    fn dandan_pile(
+        db: &engine::database::card_db::CardDatabase,
+        pile: &[(&str, usize)],
+    ) -> engine::game::deck_loading::DeckPayload {
+        let main_deck = pile
+            .iter()
+            .flat_map(|&(name, copies)| std::iter::repeat_n(name.to_string(), copies))
+            .collect();
+        resolve_deck_list(
+            db,
+            &DeckList {
+                player: PlayerDeckList {
+                    main_deck,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
+    fn free_reveal() -> GameAction {
+        GameAction::MulliganDecision {
+            choice: engine::types::actions::MulliganChoice::FreeReveal,
+        }
+    }
+
+    /// Both seats AI on Dandan piles whose every redraw is futile: the native
+    /// driver leaves the mulligan without taking a free reveal.
+    #[test]
+    fn native_ai_pair_leaves_the_mulligan_on_a_futile_dandan_pile() {
+        let db = integration_db();
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+
+        for pile in [&[("Island", 80)][..], &[("Island", 79), ("Opt", 1)][..]] {
+            let payload = dandan_pile(&db, pile);
+            let mut state = GameState::new(FormatConfig::dandan(), 2, 0);
+            load_and_hydrate_decks(&mut state, &payload, Some(&db));
+            start_game_with_starting_player(&mut state, p0);
+            for seat in [p0, p1] {
+                assert!(
+                    legal_actions_for_viewer(&state, seat)
+                        .0
+                        .contains(&free_reveal()),
+                    "reach: {seat:?} is issued the reveal"
+                );
+                assert!(free_reveal_futile_for(&state, seat), "{pile:?} {seat:?}");
+            }
+
+            let ai_players = HashSet::from([p0, p1]);
+            let ai_configs = HashMap::from([(p0, AiConfig::default()), (p1, AiConfig::default())]);
+            let session = AiSession::arc_from_game(&state);
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+            let run = run_ai_actions_bounded(
+                &mut state,
+                &ai_players,
+                &ai_configs,
+                &mut rng,
+                &session,
+                20,
+            );
+
+            assert!(
+                left_the_mulligan(&run.results.last().expect("the AI acted").state),
+                "{pile:?}: the mulligan ends within 20 actions"
+            );
+            assert!(left_the_mulligan(&state), "{pile:?}");
+            assert!(
+                run.results.iter().all(|r| r.action != free_reveal()),
+                "{pile:?}"
+            );
+        }
+    }
+
+    /// A 78 Island + 2 Opt pile with both hands returned to it, the pile ordered
+    /// by object id, seat 0 dealt seven Islands and seat 1 `ai_opts` Opts among
+    /// seven cards, and the RNG reseeded: the whole chain is a function of `seed`.
+    fn pinned_game(
+        db: &engine::database::card_db::CardDatabase,
+        seed: u64,
+        ai_opts: usize,
+    ) -> GameState {
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let mut state = GameState::new(FormatConfig::dandan(), 2, seed);
+        load_and_hydrate_decks(
+            &mut state,
+            &dandan_pile(db, &[("Island", 78), ("Opt", 2)]),
+            Some(db),
+        );
+        start_game_with_starting_player(&mut state, p0);
+        let holder = state.zone_storage_seat(Zone::Library, p0);
+        for seat in [p0, p1] {
+            let hand: Vec<ObjectId> = state.players[seat.0 as usize]
+                .hand
+                .iter()
+                .copied()
+                .collect();
+            for id in hand {
+                remove_from_zone(&mut state, id, Zone::Hand, seat);
+                add_to_zone(&mut state, id, Zone::Library, holder);
+                state.objects.get_mut(&id).unwrap().zone = Zone::Library;
+            }
+        }
+        let mut pile: Vec<ObjectId> = state.library_of(p0).iter().copied().collect();
+        pile.sort();
+        *state.library_of_mut(p0) = pile.iter().copied().collect();
+        let named = |state: &GameState, name: &str| -> Vec<ObjectId> {
+            pile.iter()
+                .copied()
+                .filter(|id| state.objects[id].name == name)
+                .collect()
+        };
+        let (islands, opts) = (named(&state, "Island"), named(&state, "Opt"));
+        let mut ai_hand = islands[7..14 - ai_opts].to_vec();
+        ai_hand.extend_from_slice(&opts[..ai_opts]);
+        for (seat, cards) in [(p0, islands[..7].to_vec()), (p1, ai_hand)] {
+            for id in cards {
+                remove_from_zone(&mut state, id, Zone::Library, holder);
+                add_to_zone(&mut state, id, Zone::Hand, seat);
+                let object = state.objects.get_mut(&id).unwrap();
+                object.zone = Zone::Hand;
+                object.owner = seat;
+            }
+        }
+        state.rng_seed = seed;
+        state.rng = engine::types::game_state::GameRng::seed_from_u64(seed);
+        state
+    }
+
+    /// One AI seat against a human who kept seven Islands: every redraw the
+    /// pile can deal is still offered the reveal, so only the bound ends the chain.
+    #[test]
+    fn native_ai_leaves_the_mulligan_against_a_kept_hand_that_leaves_the_reveal_open() {
+        let db = integration_db();
+        let (human, ai) = (PlayerId(0), PlayerId(1));
+        for ai_opts in [0, 1] {
+            for seed in [8, 11] {
+                let mut state = pinned_game(&db, seed, ai_opts);
+                apply(
+                    &mut state,
+                    human,
+                    GameAction::MulliganDecision {
+                        choice: MulliganChoice::Keep,
+                    },
+                )
+                .expect("the human keeps");
+                assert!(
+                    legal_actions_for_viewer(&state, ai)
+                        .0
+                        .contains(&free_reveal()),
+                    "reach: the AI is issued the reveal"
+                );
+                assert!(!free_reveal_futile_for(&state, ai));
+                assert!(!registry_keeps(&state, ai), "reach: the registry rejects");
+
+                let ai_players = HashSet::from([ai]);
+                let ai_configs = HashMap::from([(ai, AiConfig::default())]);
+                let session = AiSession::arc_from_game(&state);
+                let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+                let run = run_ai_actions(&mut state, &ai_players, &ai_configs, &mut rng, &session);
+
+                let label = format!("{ai_opts} Opts seed {seed}");
+                assert!(left_the_mulligan(&state), "{label}");
+                assert!(
+                    matches!(run.stop, AiActionsStop::NoEligibleAiActor),
+                    "{label}: {:?}",
+                    run.stop
+                );
+                let reveals = run
+                    .results
+                    .iter()
+                    .filter(|r| r.action == free_reveal())
+                    .count();
+                assert!(
+                    (1..=usize::from(FREE_REVEAL_BOUND)).contains(&reveals),
+                    "{label}: {reveals} reveals"
+                );
+            }
+        }
     }
 }
