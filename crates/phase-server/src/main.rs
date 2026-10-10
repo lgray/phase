@@ -12418,6 +12418,7 @@ mod state_transport_derived_tests {
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: [PlayerId(0), PlayerId(1)]
                 .map(|player| MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player,
                     mulligan_count: 0,
                     phase: MulliganDecisionPhase::Declare,

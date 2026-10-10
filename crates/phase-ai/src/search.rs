@@ -1756,9 +1756,7 @@ pub fn fallback_action(
                             }
                         )
                     })
-                    .filter(|_| {
-                        crate::policies::mulligan::free_reveal_can_improve(state, entry.player)
-                    });
+                    .filter(|_| crate::policies::mulligan::takes_free_reveal(state, entry));
                     free_reveal.or_else(|| {
                         Some(match first_serum_powder_in_hand(state, entry.player) {
                             Some(object_id) => GameAction::MulliganDecision {
@@ -3799,7 +3797,7 @@ pub(crate) fn deterministic_choice(
                 let choice = if decision.keep {
                     MulliganChoice::Keep
                 } else if free_reveal_issued
-                    && crate::policies::mulligan::free_reveal_can_improve(state, player)
+                    && crate::policies::mulligan::takes_free_reveal(state, entry)
                 {
                     MulliganChoice::FreeReveal
                 } else if let Some(object_id) = first_serum_powder_in_hand(state, player) {
@@ -4831,6 +4829,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::policies::mulligan::registry_keeps;
     use engine::ai_support::{
         ActionMetadata, AiDecisionContext, CandidateAction, CertifiedPactPlan, TacticalClass,
     };
@@ -9104,6 +9103,7 @@ mod tests {
             pending: [(P0, p0_count), (P1, 0)]
                 .into_iter()
                 .map(|(player, mulligan_count)| MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player,
                     mulligan_count,
                     phase: MulliganDecisionPhase::Declare,
@@ -9135,31 +9135,6 @@ mod tests {
     ];
     /// With a `NO_LANDS` hand, a pool that can deal two lands and two nonlands.
     const CLEARING_LIBRARY: [&str; 3] = ["Island"; 3];
-
-    fn registry_keeps(state: &GameState, player: PlayerId) -> bool {
-        let hand: Vec<ObjectId> = state.players[player.0 as usize]
-            .hand
-            .iter()
-            .copied()
-            .collect();
-        let count = match &state.waiting_for {
-            WaitingFor::MulliganDecision { pending, .. } => pending
-                .iter()
-                .find(|e| e.player == player)
-                .map_or(0, |e| e.mulligan_count),
-            _ => 0,
-        };
-        crate::policies::mulligan::MulliganRegistry::default()
-            .evaluate_hand(
-                &hand,
-                state,
-                &crate::features::DeckFeatures::default(),
-                &crate::plan::PlanSnapshot::default(),
-                crate::policies::mulligan::turn_order_for(state, player),
-                count,
-            )
-            .keep
-    }
 
     fn free_reveal_action() -> GameAction {
         GameAction::MulliganDecision {
@@ -9306,12 +9281,12 @@ mod tests {
     }
 
     /// Applies one AI answer per step until the mulligan ends or `max_steps`
-    /// pass; each step records the acting seat's futility fact and the answer.
+    /// pass; each step records the acting seat, its futility fact and the answer.
     fn drive_mulligan(
         state: &mut GameState,
         route: MulliganRoute,
         max_steps: usize,
-    ) -> Vec<(bool, GameAction)> {
+    ) -> Vec<(PlayerId, bool, GameAction)> {
         let mut steps = Vec::new();
         for _ in 0..max_steps {
             let WaitingFor::MulliganDecision { pending, .. } = &state.waiting_for else {
@@ -9320,7 +9295,7 @@ mod tests {
             let seat = pending[0].player;
             let action = route_choice(state, seat, route);
             let futile = engine::game::mulligan::free_reveal_futile_for(state, seat);
-            steps.push((futile, action.clone()));
+            steps.push((seat, futile, action.clone()));
             engine::game::engine::apply(state, seat, action)
                 .expect("the engine accepts the AI's answer");
         }
@@ -9390,43 +9365,193 @@ mod tests {
         }
     }
 
+    const SEVEN_ISLANDS: [&str; 7] = ["Island"; 7];
+    const FIVE_ISLANDS_TWO_OPTS: [&str; 7] = [
+        "Island", "Island", "Island", "Island", "Island", "Opt", "Opt",
+    ];
+    const SIX_ISLANDS_POWDER: [&str; 7] = [
+        "Island",
+        "Island",
+        "Island",
+        "Island",
+        "Island",
+        "Island",
+        "Serum Powder",
+    ];
+
+    /// `seat` pending in `state` has taken `taken` free reveals.
+    fn set_reveals_taken(state: &mut GameState, seat: PlayerId, taken: u8) {
+        let WaitingFor::MulliganDecision { pending, .. } = &mut state.waiting_for else {
+            panic!("expected MulliganDecision, got {:?}", state.waiting_for);
+        };
+        pending
+            .iter_mut()
+            .find(|entry| entry.player == seat)
+            .expect("the seat is pending")
+            .free_reveals_taken = taken;
+    }
+
+    /// The engine issued `seat` the free reveal and the registry rejects its hand.
+    fn assert_reveal_issued_for_a_rejected_hand(state: &GameState, seat: PlayerId) {
+        assert!(
+            issued_actions(state, seat).contains(&free_reveal_action()),
+            "reach: the engine issued the reveal to {seat:?}"
+        );
+        assert!(
+            !registry_keeps(state, seat),
+            "reach: the registry rejects the hand"
+        );
+    }
+
+    /// The other seat's kept hand differs in Opts while the pile list is the
+    /// same, so a decision that changes with it reads a hidden hand.
     #[test]
-    fn both_routes_decline_a_free_reveal_no_redraw_can_improve() {
+    fn both_routes_decide_the_reveal_from_public_state_and_the_own_hand() {
         use engine::game::mulligan::free_reveal_futile_for;
 
-        let control = dandan_mulligan_state(&NO_LANDS, &CLEARING_LIBRARY, 0);
-        assert!(!free_reveal_futile_for(&control, P0));
-        let mut powder_hand = NO_LANDS[..6].to_vec();
-        powder_hand.push("Serum Powder");
-        for library in [&[][..], &["Island"][..]] {
-            let state = dandan_mulligan_state(&NO_LANDS, library, 0);
-            assert!(
-                issued_actions(&state, P0).contains(&free_reveal_action()),
-                "reach: the engine issued the reveal"
-            );
-            assert!(free_reveal_futile_for(&state, P0), "{library:?}");
-            assert!(!registry_keeps(&state, P0), "reach: the registry declines");
-            engine::game::engine::apply(&mut state.clone(), P0, free_reveal_action())
-                .expect("the reveal stays legal");
-            assert_eq!(
-                route_choice(&state, P0, MulliganRoute::Deterministic),
-                mulligan_action(MulliganChoice::Mulligan)
-            );
-            assert_eq!(
-                route_choice(&state, P0, MulliganRoute::Fallback),
-                mulligan_action(MulliganChoice::Keep)
-            );
+        let db = shared_integration_card_db();
+        let payload = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
+        for (ai, other) in [(P1, P0), (P0, P1)] {
+            for other_keeps in [true, false] {
+                let mut opts_in_other_hand = Vec::new();
+                for other_hand in [&SEVEN_ISLANDS, &FIVE_ISLANDS_TWO_OPTS] {
+                    let mut state = dandan_game(db, &payload, 3);
+                    give_dandan_hand(&mut state, ai, &SEVEN_ISLANDS);
+                    give_dandan_hand(&mut state, other, other_hand);
+                    if other_keeps {
+                        engine::game::engine::apply(
+                            &mut state,
+                            other,
+                            mulligan_action(MulliganChoice::Keep),
+                        )
+                        .expect("the other seat keeps");
+                    }
+                    let WaitingFor::MulliganDecision { pending, .. } = &state.waiting_for else {
+                        panic!("reach: the round is open");
+                    };
+                    assert_eq!(
+                        pending.iter().any(|entry| entry.player == other),
+                        !other_keeps,
+                        "reach: the other seat is {}",
+                        if other_keeps { "settled" } else { "pending" }
+                    );
+                    assert_reveal_issued_for_a_rejected_hand(&state, ai);
+                    assert!(!free_reveal_futile_for(&state, ai));
+                    for route in MULLIGAN_ROUTES {
+                        assert_eq!(
+                            route_choice(&state, ai, route),
+                            free_reveal_action(),
+                            "{ai:?} {route:?} keeps={other_keeps} other={other_hand:?}"
+                        );
+                    }
+                    opts_in_other_hand.push(
+                        state.players[other.0 as usize]
+                            .hand
+                            .iter()
+                            .filter(|id| state.objects[id].name == "Opt")
+                            .count(),
+                    );
+                }
+                assert_eq!(opts_in_other_hand, [0, 2], "reach: the hidden hands differ");
+            }
+        }
+    }
 
-            let state = dandan_mulligan_state(&powder_hand, library, 0);
-            let powder = first_serum_powder_in_hand(&state, P0).expect("reach: Powder in hand");
-            assert!(free_reveal_futile_for(&state, P0), "{library:?}");
+    /// The bound ends the AI's reveals per seat; each route's existing next arm answers.
+    #[test]
+    fn both_routes_decline_the_reveal_once_a_seat_reaches_the_bound() {
+        use crate::policies::mulligan::FREE_REVEAL_BOUND;
+        use engine::game::mulligan::free_reveal_futile_for;
+
+        let db = shared_integration_card_db();
+        let plain = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
+        let with_powder = dandan_pile(db, &[("Island", 77), ("Opt", 2), ("Serum Powder", 1)]);
+        for (payload, at_bound_hand) in
+            [(&plain, SEVEN_ISLANDS), (&with_powder, SIX_ISLANDS_POWDER)]
+        {
+            let mut state = dandan_game(db, payload, 3);
+            give_dandan_hand(&mut state, P0, &SEVEN_ISLANDS);
+            give_dandan_hand(&mut state, P1, &at_bound_hand);
+            let powder = first_serum_powder_in_hand(&state, P1);
+            assert_eq!(powder.is_some(), at_bound_hand == SIX_ISLANDS_POWDER);
+            for seat in [P0, P1] {
+                assert_reveal_issued_for_a_rejected_hand(&state, seat);
+                assert!(!free_reveal_futile_for(&state, seat));
+            }
+
+            set_reveals_taken(&mut state, P0, FREE_REVEAL_BOUND - 1);
+            set_reveals_taken(&mut state, P1, FREE_REVEAL_BOUND);
             for route in MULLIGAN_ROUTES {
                 assert_eq!(
                     route_choice(&state, P0, route),
-                    mulligan_action(MulliganChoice::UseSerumPowder { object_id: powder }),
-                    "{route:?} {library:?}"
+                    free_reveal_action(),
+                    "{route:?}: one below the bound"
+                );
+                let declined = match (powder, route) {
+                    (Some(object_id), _) => {
+                        mulligan_action(MulliganChoice::UseSerumPowder { object_id })
+                    }
+                    (None, MulliganRoute::Deterministic) => {
+                        mulligan_action(MulliganChoice::Mulligan)
+                    }
+                    (None, MulliganRoute::Fallback) => mulligan_action(MulliganChoice::Keep),
+                };
+                assert_eq!(
+                    route_choice(&state, P1, route),
+                    declined,
+                    "{route:?}: at the bound"
                 );
             }
+        }
+    }
+
+    /// The registered pile cannot clear the condition, so the AI declines the
+    /// reveal the engine still issues and accepts.
+    #[test]
+    fn both_routes_decline_a_free_reveal_from_a_pile_that_cannot_clear() {
+        use engine::game::mulligan::free_reveal_futile_for;
+
+        let db = shared_integration_card_db();
+        let futile_opt = dandan_pile(db, &[("Island", 79), ("Opt", 1)]);
+        let futile_powder = dandan_pile(db, &[("Island", 79), ("Serum Powder", 1)]);
+        let clearing = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
+
+        let mut state = dandan_game(db, &futile_opt, 3);
+        give_dandan_hand(&mut state, P0, &SEVEN_ISLANDS);
+        assert_reveal_issued_for_a_rejected_hand(&state, P0);
+        assert!(free_reveal_futile_for(&state, P0));
+        engine::game::engine::apply(&mut state.clone(), P0, free_reveal_action())
+            .expect("the reveal stays legal");
+        assert_eq!(
+            route_choice(&state, P0, MulliganRoute::Deterministic),
+            mulligan_action(MulliganChoice::Mulligan)
+        );
+        assert_eq!(
+            route_choice(&state, P0, MulliganRoute::Fallback),
+            mulligan_action(MulliganChoice::Keep)
+        );
+
+        let mut state = dandan_game(db, &futile_powder, 3);
+        give_dandan_hand(&mut state, P0, &SIX_ISLANDS_POWDER);
+        let powder = first_serum_powder_in_hand(&state, P0).expect("reach: Powder in hand");
+        assert_reveal_issued_for_a_rejected_hand(&state, P0);
+        assert!(free_reveal_futile_for(&state, P0));
+        for route in MULLIGAN_ROUTES {
+            assert_eq!(
+                route_choice(&state, P0, route),
+                mulligan_action(MulliganChoice::UseSerumPowder { object_id: powder }),
+                "{route:?}"
+            );
+        }
+
+        let mut state = dandan_game(db, &clearing, 3);
+        give_dandan_hand(&mut state, P0, &SEVEN_ISLANDS);
+        assert!(
+            !free_reveal_futile_for(&state, P0),
+            "control: the pile clears"
+        );
+        for route in MULLIGAN_ROUTES {
+            assert_eq!(route_choice(&state, P0, route), free_reveal_action());
         }
     }
 
@@ -9451,7 +9576,7 @@ mod tests {
                     assert!(
                         steps
                             .iter()
-                            .all(|(_, action)| *action != free_reveal_action()),
+                            .all(|(_, _, action)| *action != free_reveal_action()),
                         "{pile:?} {route:?} seed {seed}: {steps:?}"
                     );
                 }
@@ -9469,44 +9594,35 @@ mod tests {
                 let steps = drive_mulligan(&mut state, route, 40);
                 assert!(!steps.is_empty(), "reach: the AI decided");
                 assert!(!in_mulligan(&state), "{route:?} seed {seed}");
-                assert!(steps.iter().all(|(futile, _)| !futile), "{steps:?}");
+                assert!(steps.iter().all(|(_, futile, _)| !futile), "{steps:?}");
             }
         }
     }
 
-    /// A seat that kept both Opts of a 78 Island + 2 Opt pile leaves the other
-    /// seat's every redraw without two nonlands.
+    /// With the other seat's keep holding both Opts of a 78 Island + 2 Opt pile,
+    /// every redraw is rejected: the AI takes reveals up to the bound and leaves.
     #[test]
-    fn both_routes_leave_once_another_seats_keep_depletes_the_pool() {
-        use engine::game::mulligan::free_reveal_futile_for;
+    fn both_routes_leave_the_mulligan_by_the_bound_when_every_redraw_is_rejected() {
+        use crate::policies::mulligan::FREE_REVEAL_BOUND;
 
         let db = shared_integration_card_db();
         let payload = dandan_pile(db, &[("Island", 78), ("Opt", 2)]);
         for route in MULLIGAN_ROUTES {
             let mut state = dandan_game(db, &payload, 3);
-            give_dandan_hand(&mut state, P1, &["Island"; 7]);
-            give_dandan_hand(
-                &mut state,
-                P0,
-                &[
-                    "Island", "Island", "Island", "Island", "Island", "Opt", "Opt",
-                ],
-            );
-            assert!(
-                !free_reveal_futile_for(&state, P1),
-                "reach: P0 may still return the Opts"
-            );
+            give_dandan_hand(&mut state, P1, &SEVEN_ISLANDS);
+            give_dandan_hand(&mut state, P0, &FIVE_ISLANDS_TWO_OPTS);
             engine::game::engine::apply(&mut state, P0, mulligan_action(MulliganChoice::Keep))
                 .expect("P0 keeps");
-            assert!(free_reveal_futile_for(&state, P1));
             assert!(issued_actions(&state, P1).contains(&free_reveal_action()));
 
             let steps = drive_mulligan(&mut state, route, 40);
             assert!(!in_mulligan(&state), "{route:?}");
+            let reveals = steps
+                .iter()
+                .filter(|(_, _, action)| *action == free_reveal_action())
+                .count();
             assert!(
-                steps
-                    .iter()
-                    .all(|(_, action)| *action != free_reveal_action()),
+                (1..=usize::from(FREE_REVEAL_BOUND)).contains(&reveals),
                 "{route:?}: {steps:?}"
             );
         }
@@ -9528,13 +9644,22 @@ mod tests {
                     "{route:?} seed {seed}: the mulligan must end"
                 );
                 assert!(
-                    steps.iter().all(|(futile, _)| !futile),
+                    steps.iter().all(|(_, futile, _)| !futile),
                     "{route:?} seed {seed}"
                 );
-                free_reveals += steps
-                    .iter()
-                    .filter(|(_, action)| *action == free_reveal_action())
-                    .count();
+                for seat in [P0, P1] {
+                    let seat_reveals = steps
+                        .iter()
+                        .filter(|(acting, _, action)| {
+                            *acting == seat && *action == free_reveal_action()
+                        })
+                        .count();
+                    assert!(
+                        seat_reveals < usize::from(crate::policies::mulligan::FREE_REVEAL_BOUND),
+                        "{route:?} seed {seed} {seat:?}: the bound never truncates the default list"
+                    );
+                    free_reveals += seat_reveals;
+                }
             }
             assert!(free_reveals > 0, "reach: {route:?} took a free reveal");
         }
@@ -12964,6 +13089,7 @@ mod tests {
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![
                 engine::types::game_state::MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player: PlayerId(0),
                     mulligan_count: 1,
                     phase: MulliganDecisionPhase::BottomCards {
@@ -12972,6 +13098,7 @@ mod tests {
                     },
                 },
                 engine::types::game_state::MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player: PlayerId(1),
                     mulligan_count: 3,
                     phase: MulliganDecisionPhase::BottomCards {
@@ -15406,6 +15533,7 @@ mod tests {
             hand_pool(state, PlayerId(0), 7);
             WaitingFor::MulliganDecision {
                 pending: vec![MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player: PlayerId(0),
                     mulligan_count: 2,
                     phase: MulliganDecisionPhase::BottomCards {
@@ -16337,6 +16465,7 @@ mod tests {
         let hand = hand_pool(&mut state, P1, 7);
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![engine::types::game_state::MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: P1,
                 mulligan_count: 2,
                 phase: MulliganDecisionPhase::BottomCards {
@@ -16392,11 +16521,13 @@ mod tests {
         state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![
                 engine::types::game_state::MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player: P0,
                     mulligan_count: 0,
                     phase: MulliganDecisionPhase::Declare,
                 },
                 engine::types::game_state::MulliganDecisionEntry {
+                    free_reveals_taken: 0,
                     player: P1,
                     mulligan_count: 2,
                     phase: MulliganDecisionPhase::BottomCards {

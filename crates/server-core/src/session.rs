@@ -5243,6 +5243,7 @@ mod tests {
         );
         session.state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![engine::types::game_state::MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: ai_pid,
                 mulligan_count: 0,
                 phase: engine::types::game_state::MulliganDecisionPhase::Declare,
@@ -7664,6 +7665,7 @@ mod tests {
         let (a, b): (ObjectId, ObjectId) = (hand[0], hand[1]);
         session.state.waiting_for = WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: bottom_player,
                 mulligan_count: 1,
                 phase: MulliganDecisionPhase::BottomCards {
@@ -7747,6 +7749,7 @@ mod tests {
         }
         let (a, b): (ObjectId, ObjectId) = (hand[0], hand[1]);
         let pending_before = vec![MulliganDecisionEntry {
+            free_reveals_taken: 0,
             player: bottom_player,
             mulligan_count: 1,
             phase: MulliganDecisionPhase::BottomCards {
@@ -10326,5 +10329,146 @@ mod tests {
                 .contains("cEDH"),
             "a missing deck must not be reported as a bracket violation"
         );
+    }
+
+    fn dandan_pile_face(name: &str, core_type: engine::types::card_type::CoreType) -> CardFace {
+        let mut face = make_deck().main_deck[0].card.clone();
+        face.name = name.to_string();
+        face.card_type = CardType {
+            supertypes: vec![],
+            core_types: vec![core_type],
+            subtypes: vec![],
+        };
+        face
+    }
+
+    /// Both hands go back to the 78 Island + 2 Opt pile, the pile is ordered by
+    /// name, seat 0 is dealt seven Islands and seat 1 seven cards holding
+    /// `ai_opts` Opts, seat 0 is the starting player, and the RNG is reseeded:
+    /// the reveal chain is a function of `seed` alone, not of the session's
+    /// randomly assigned object ids or first player.
+    fn pin_dandan_hands(state: &mut GameState, seed: u64, ai_opts: usize) {
+        use engine::game::zones::{add_to_zone, remove_from_zone};
+        use rand::SeedableRng;
+
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let holder = state.zone_storage_seat(Zone::Library, p0);
+        for seat in [p0, p1] {
+            let hand: Vec<ObjectId> = state.players[seat.0 as usize]
+                .hand
+                .iter()
+                .copied()
+                .collect();
+            for id in hand {
+                remove_from_zone(state, id, Zone::Hand, seat);
+                add_to_zone(state, id, Zone::Library, holder);
+                state.objects.get_mut(&id).unwrap().zone = Zone::Library;
+            }
+        }
+        let mut pile: Vec<ObjectId> = state.library_of(p0).iter().copied().collect();
+        pile.sort_by_key(|id| (state.objects[id].name.clone(), *id));
+        *state.library_of_mut(p0) = pile.iter().copied().collect();
+        let named = |state: &GameState, name: &str| -> Vec<ObjectId> {
+            pile.iter()
+                .copied()
+                .filter(|id| state.objects[id].name == name)
+                .collect()
+        };
+        let (islands, opts) = (named(state, "Island"), named(state, "Opt"));
+        let mut ai_hand = islands[7..14 - ai_opts].to_vec();
+        ai_hand.extend_from_slice(&opts[..ai_opts]);
+        for (seat, cards) in [(p0, islands[..7].to_vec()), (p1, ai_hand)] {
+            for id in cards {
+                remove_from_zone(state, id, Zone::Library, holder);
+                add_to_zone(state, id, Zone::Hand, seat);
+                let object = state.objects.get_mut(&id).unwrap();
+                object.zone = Zone::Hand;
+                object.owner = seat;
+            }
+        }
+        state.active_player = p0;
+        state.current_starting_player = p0;
+        state.rng_seed = seed;
+        state.rng = rand_chacha::ChaCha20Rng::seed_from_u64(seed);
+    }
+
+    /// The human keeps seven Islands, so the AI is offered the reveal on every
+    /// hand a 78 Island + 2 Opt pile deals; the session driver still leaves the
+    /// mulligan without tripping its action cap.
+    #[test]
+    fn ai_seat_leaves_a_dandan_mulligan_whose_every_redraw_is_offered_the_reveal() {
+        use engine::ai_support::legal_actions_for_viewer;
+        use engine::types::actions::MulliganChoice;
+        use engine::types::card_type::CoreType;
+
+        let pile = PlayerDeckPayload {
+            main_deck: vec![
+                DeckEntry {
+                    card: dandan_pile_face("Island", CoreType::Land),
+                    count: 78,
+                },
+                DeckEntry {
+                    card: dandan_pile_face("Opt", CoreType::Instant),
+                    count: 2,
+                },
+            ],
+            ..Default::default()
+        };
+        let reveal = GameAction::MulliganDecision {
+            choice: MulliganChoice::FreeReveal,
+        };
+        for ai_opts in [0, 1] {
+            let mut mgr = SessionManager::new();
+            let db = Arc::new(CardDatabase::default());
+            let (code, token) = mgr
+                .create_game_with_ai(
+                    pile.clone(),
+                    DeckChoice::Random,
+                    "Host".to_string(),
+                    None,
+                    MatchConfig::default(),
+                    vec![ai_setup(
+                        1,
+                        AiDifficulty::Easy,
+                        PlayerDeckPayload::default(),
+                    )],
+                    Vec::new(),
+                    Some(engine::types::format::FormatConfig::dandan()),
+                    &db,
+                )
+                .unwrap();
+            let mut session = mgr.try_session(&code).unwrap();
+            pin_dandan_hands(&mut session.state, 0, ai_opts);
+            assert!(
+                legal_actions_for_viewer(&session.state, PlayerId(1))
+                    .0
+                    .contains(&reveal),
+                "reach: the AI seat is offered the reveal"
+            );
+
+            session
+                .handle_action(
+                    &token,
+                    GameAction::MulliganDecision {
+                        choice: MulliganChoice::Keep,
+                    },
+                )
+                .expect("the human keeps");
+            let outcome = session.run_ai();
+
+            assert!(
+                outcome.failure.is_none(),
+                "{ai_opts} Opts: {:?}",
+                outcome.failure
+            );
+            assert!(session.ai_driver_fault().is_none(), "{ai_opts} Opts");
+            assert!(
+                !matches!(
+                    session.state.waiting_for,
+                    WaitingFor::MulliganDecision { .. }
+                ),
+                "{ai_opts} Opts: the AI left the mulligan"
+            );
+        }
     }
 }

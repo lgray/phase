@@ -9664,6 +9664,9 @@ pub struct MulliganDeclaration {
     pub player: PlayerId,
     /// Mulligans taken before this declaration (a `Regular` redraw makes it one more).
     pub mulligan_count: u8,
+    /// Free reveals this seat has taken before this declaration.
+    #[serde(default)]
+    pub free_reveals_taken: u8,
     #[serde(default)]
     pub kind: MulliganDeclarationKind,
 }
@@ -9674,6 +9677,9 @@ pub struct MulliganDeclaration {
 pub struct MulliganDecisionEntry {
     pub player: PlayerId,
     pub mulligan_count: u8,
+    /// Free reveals this seat has taken; public, since a reveal is shown to every player.
+    #[serde(default)]
+    pub free_reveals_taken: u8,
     #[serde(default)]
     pub phase: MulliganDecisionPhase,
 }
@@ -42243,6 +42249,7 @@ mod tests {
         variants.push(Box::new(WaitingFor::ResolveAllReady { epoch: 1 }));
         variants.push(Box::new(WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 1,
                 phase: MulliganDecisionPhase::Declare,
@@ -42252,6 +42259,7 @@ mod tests {
         }));
         variants.push(Box::new(WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 1,
                 phase: MulliganDecisionPhase::BottomCards {
@@ -42264,6 +42272,7 @@ mod tests {
         }));
         variants.push(Box::new(WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 2,
                 phase: MulliganDecisionPhase::BottomCards {
@@ -42278,12 +42287,14 @@ mod tests {
         }));
         variants.push(Box::new(WaitingFor::MulliganDecision {
             pending: vec![MulliganDecisionEntry {
+                free_reveals_taken: 0,
                 player: PlayerId(0),
                 mulligan_count: 0,
                 phase: MulliganDecisionPhase::Declare,
             }],
             free_first_mulligan: false,
             declared: vec![MulliganDeclaration {
+                free_reveals_taken: 0,
                 player: PlayerId(1),
                 mulligan_count: 0,
                 kind: MulliganDeclarationKind::FreeReveal,
@@ -42625,6 +42636,7 @@ mod tests {
     #[test]
     fn mulligan_decision_declared_round_trips_and_is_omitted_when_empty() {
         let entry = MulliganDecisionEntry {
+            free_reveals_taken: 0,
             player: PlayerId(0),
             mulligan_count: 0,
             phase: MulliganDecisionPhase::Declare,
@@ -42633,6 +42645,7 @@ mod tests {
             pending: vec![entry.clone()],
             free_first_mulligan: false,
             declared: vec![MulliganDeclaration {
+                free_reveals_taken: 0,
                 player: PlayerId(1),
                 mulligan_count: 2,
                 kind: MulliganDeclarationKind::Regular,
@@ -42663,6 +42676,7 @@ mod tests {
             MulliganDeclarationKind::FreeReveal,
         ] {
             let declaration = MulliganDeclaration {
+                free_reveals_taken: 0,
                 player: PlayerId(1),
                 mulligan_count: 0,
                 kind,
