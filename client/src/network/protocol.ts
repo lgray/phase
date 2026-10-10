@@ -106,6 +106,14 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  108 — ZoneChangeRecord carries arrival (the owner and controller the destination
+ *       object holds) in game_setup and state_update. Bumped with full-game protocol 126.
+ *  107 — MulliganDecisionEntry and MulliganDeclaration carry free_reveals_taken in
+ *       game_setup and state_update. Bumped with full-game protocol 125.
+ *  106 — game_setup and state_update carry GameState, whose resolved-rules journal
+ *       now admits a land-play rebound_from (Library/Graveyard/Exile -> Battlefield).
+ *       A v102 peer rejects the journal, so first contact rejects the skew. Bumped
+ *       with full-game protocol 124.
  *  105 — game_setup and state_update carry GameState, whose ability
  *       definitions now carry the "prepared spell" filter tag, a scope on
  *       the become-prepared / become-unprepared effects, the prepared-copy
@@ -611,7 +619,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 105 as const;
+export const WIRE_PROTOCOL_VERSION = 108 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

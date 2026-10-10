@@ -3346,6 +3346,15 @@ mod tests {
         }
     }
 
+    /// The resolved-rules journal admits a land-play `rebound_from` on a
+    /// `ResolvedZoneChangeCommand` (Library/Graveyard/Exile -> Battlefield); a v123
+    /// peer rejects that `GameState.resolved_rules_journal`, so it must be refused
+    /// before it receives v124 state.
+    /// `MulliganDecisionEntry` and `MulliganDeclaration` gain `free_reveals_taken`; a
+    /// v124 peer drops the count, so it must be refused before it receives v125 state.
+    /// `ZoneChangeRecord` gains `arrival`; a v125 peer rejects the journal when the
+    /// departure owner differs from the command owner, so it must be refused before it
+    /// receives v126 state.
     /// `FilterProp::PrepareSpell` (CR 722.3d), the `scope` field on
     /// `Effect::BecomePrepared` / `BecomeUnprepared` (CR 722.3a + CR 115.10a),
     /// `SpellCastRecord::prepared_copy_source`, `CopiableValues::prepare_face`
@@ -3479,8 +3488,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_123_for_prepared_spell_and_mass_prepare() {
-        assert_eq!(PROTOCOL_VERSION, 123);
+    fn protocol_version_is_126_for_zone_change_arrival_identity() {
+        assert_eq!(PROTOCOL_VERSION, 126);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3491,7 +3500,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_123_for_prepared_spell_and_mass_prepare` stays
+    /// `protocol_version_is_126_for_zone_change_arrival_identity` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

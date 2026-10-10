@@ -210,6 +210,18 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 126 — `ZoneChangeRecord` gains `arrival` (the owner and controller the
+ *      destination object holds) inside `GameState` and the resolved-rules
+ *      journal's zone-change commands; a v122 peer rejects the journal when the
+ *      departure owner differs from the command owner. Wire 108 moves with it;
+ *      no lobby frame names it.
+ * 125 — `MulliganDecisionEntry` and `MulliganDeclaration` (inside
+ *      `WaitingFor::MulliganDecision`) gain `free_reveals_taken`. Wire 107
+ *      moves with it; no lobby frame names it.
+ * 124 — the resolved-rules journal admits a land-play `rebound_from`
+ *      (Library/Graveyard/Exile -> Battlefield) inside
+ *      GameState.resolved_rules_journal; a v120 peer rejects the state. Wire
+ *      106 moves with it; no lobby frame names it.
  * 123 — FilterProp PrepareSpell ("a prepared spell" cast-trigger qualifier,
  *      CR 722.3d), scope on Effect BecomePrepared / BecomeUnprepared (mass
  *      "each creature you control becomes prepared", CR 722.3a + CR 115.10a),
@@ -769,7 +781,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 123;
+export const PROTOCOL_VERSION = 126;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
