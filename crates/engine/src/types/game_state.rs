@@ -17712,30 +17712,42 @@ impl WaitingFor {
     /// A mana-color choice made while an *effect* resolves
     /// (`ManaChoiceContext::ResolvingEffect`) is not a mana ability.
     pub fn is_mana_ability_continuation(&self) -> bool {
+        self.continued_mana_ability().is_some()
+    }
+
+    /// CR 602.2: the begun mana-ability activation this prompt belongs to.
+    pub(crate) fn continued_mana_ability(&self) -> Option<&PendingManaAbility> {
         match self {
             WaitingFor::ChooseManaColor { context, .. } => match context {
-                ManaChoiceContext::ManaAbility(_) => true,
-                ManaChoiceContext::ResolvingEffect(_) => false,
+                ManaChoiceContext::ManaAbility(pending) => Some(pending),
+                ManaChoiceContext::ResolvingEffect(_) => None,
             },
             WaitingFor::PayCost { resume, .. } => match resume {
-                CostResume::ManaAbility { .. } => true,
+                CostResume::ManaAbility { mana_ability } => Some(mana_ability),
                 CostResume::Spell { .. }
                 | CostResume::SpellCost { .. }
-                | CostResume::Resolution => false,
+                | CostResume::Resolution => None,
             },
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_ref() {
-                CollectEvidenceResume::ManaAbility { .. } => true,
+                CollectEvidenceResume::ManaAbility {
+                    pending_mana_ability,
+                } => Some(pending_mana_ability),
                 CollectEvidenceResume::Casting { .. } | CollectEvidenceResume::Effect { .. } => {
-                    false
+                    None
                 }
             },
             WaitingFor::PayAmountChoice {
                 pending_mana_ability,
                 ..
-            } => pending_mana_ability.is_some(),
-            WaitingFor::PayManaAbilityMana { .. } | WaitingFor::ManaAbilityManaPayment { .. } => {
-                true
+            } => pending_mana_ability.as_deref(),
+            WaitingFor::PayManaAbilityMana {
+                pending_mana_ability,
+                ..
             }
+            | WaitingFor::ManaAbilityManaPayment {
+                pending_mana_ability,
+                ..
+            } => Some(pending_mana_ability),
             // Every other prompt is not part of a mana ability's activation.
             // Listed rather than `_` so a new prompt has to be classified.
             WaitingFor::Priority { .. }
@@ -17873,7 +17885,7 @@ impl WaitingFor {
             | WaitingFor::RemoveCountersChoice { .. }
             | WaitingFor::RetargetChoice { .. }
             | WaitingFor::CombatTaxPayment { .. }
-            | WaitingFor::PhyrexianPayment { .. } => false,
+            | WaitingFor::PhyrexianPayment { .. } => None,
         }
     }
 

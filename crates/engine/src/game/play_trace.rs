@@ -457,8 +457,11 @@ pub(crate) struct PlayTrace {
     /// The span the latest offer was made for.
     offered: Option<NamedSpan>,
     undo: im::Vector<UndoPoint>,
-    /// Entries that activate a mana ability or answer one of its choices (CR 605.3b).
-    mana_ability_entries: im::HashSet<usize>,
+    /// CR 733.1: the mana abilities the engine reversed inside the action in progress.
+    reversed: Vec<(ObjectId, Option<usize>)>,
+    /// Each entry that activates a mana ability or answers one of its choices (CR 605.3b), with
+    /// the ability it belongs to.
+    mana_ability_entries: im::HashMap<usize, (ObjectId, Option<usize>)>,
     /// Spans carried from earlier windows, in the order their keys last occurred.
     carried: im::Vector<CarriedSpan>,
     /// Carried spans this window named, which a named span's `SpanSource::Carried` indexes.
@@ -484,7 +487,8 @@ impl PlayTrace {
             unread: 0,
             offered: None,
             undo: im::Vector::new(),
-            mana_ability_entries: im::HashSet::new(),
+            reversed: Vec::new(),
+            mana_ability_entries: im::HashMap::new(),
             carried: im::Vector::new(),
             carried_named: im::Vector::new(),
             carrying: im::HashMap::new(),
@@ -540,18 +544,23 @@ impl PlayTrace {
 
     /// Appends an entry whose nodes this trace has interned, keeping `prior`, this trace before
     /// anything of the entry was recorded, as where an untap of its mana source returns it.
-    fn record(&mut self, prior: &PlayTrace, entry: TraceEntry, continues_mana_ability: bool) {
-        self.carry(&entry, continues_mana_ability);
-        self.append(Some(prior), entry, continues_mana_ability);
+    fn record(
+        &mut self,
+        prior: &PlayTrace,
+        entry: TraceEntry,
+        continues: Option<(ObjectId, Option<usize>)>,
+    ) {
+        self.carry(&entry, continues);
+        self.append(Some(prior), entry, continues);
     }
 
     /// Appends `entry`, whose nodes are this trace's, to every live carried span.
-    fn carry(&mut self, entry: &TraceEntry, continues_mana_ability: bool) {
+    fn carry(&mut self, entry: &TraceEntry, continues: Option<(ObjectId, Option<usize>)>) {
         let nodes = &self.nodes;
         for span in self.carried.iter_mut() {
             meter!(carry_appends += 1);
             let entry = span.trace.reinterned(nodes, entry.clone());
-            span.trace.append(None, entry, continues_mana_ability);
+            span.trace.append(None, entry, continues);
         }
     }
 
@@ -581,22 +590,25 @@ impl PlayTrace {
         &mut self,
         prior: Option<&PlayTrace>,
         entry: TraceEntry,
-        continues_mana_ability: bool,
+        continues: Option<(ObjectId, Option<usize>)>,
     ) {
-        let mana_ability = match entry.kind {
+        let mana_play = match entry.kind {
             EntryKind::Play {
                 locus: PlayLocus::Mana(source, index),
                 ..
-            } => Some(Reversal::ManaAbility(source, index)),
+            } => Some((source, index)),
             _ => None,
         };
-        if mana_ability.is_some() || continues_mana_ability {
-            self.mana_ability_entries.insert(self.entries.len());
+        if let Some(ability) = mana_play.or(continues) {
+            self.mana_ability_entries
+                .insert(self.entries.len(), ability);
         }
-        let undo = mana_ability.zip(prior).map(|(undoes, prior)| UndoPoint {
-            undoes,
-            before: Box::new(prior.clone()),
-        });
+        let undo = mana_play
+            .zip(prior)
+            .map(|((source, index), prior)| UndoPoint {
+                undoes: Reversal::ManaAbility(source, index),
+                before: Box::new(prior.clone()),
+            });
         match &entry.kind {
             EntryKind::Play { node, .. } | EntryKind::Resolution { node } => {
                 self.push_node_entry(*node, entry);
@@ -633,7 +645,7 @@ impl PlayTrace {
     fn rerecord(&mut self, from: &PlayTrace, at: usize, entry: TraceEntry, begins_play: bool) {
         let prior = self.clone();
         let entry = self.reinterned(&from.nodes, entry);
-        self.record(&prior, entry, from.mana_ability_entries.contains(&at));
+        self.record(&prior, entry, from.mana_ability_entries.get(&at).copied());
         if begins_play {
             self.begin_play(Box::new(prior));
         }
@@ -1300,7 +1312,7 @@ pub(crate) fn begin_action(
         };
         let next_object_id = state.next_object_id;
         let mut cost = None;
-        let (entry, continues_mana_ability) = match choice {
+        let (entry, continues) = match choice {
             Choice::Reverse(reversal) => {
                 return Some(TraceSnapshot {
                     before,
@@ -1323,7 +1335,7 @@ pub(crate) fn begin_action(
                     prompt,
                     next_object_id,
                 };
-                (entry, false)
+                (entry, None)
             }
             Choice::Answer(answer) => {
                 let optional = answer_optionality(&state.waiting_for, answer);
@@ -1346,12 +1358,16 @@ pub(crate) fn begin_action(
                     prompt,
                     next_object_id,
                 };
-                (entry, state.waiting_for.is_mana_ability_continuation())
+                let continues = state
+                    .waiting_for
+                    .continued_mana_ability()
+                    .map(|pending| (pending.source_id, pending.ability_index));
+                (entry, continues)
             }
             Choice::Setting => return None,
         };
         let opening = (!play_in_progress(state)).then(|| Box::new(prior.clone()));
-        trace_mut(state).record(&prior, entry, continues_mana_ability);
+        trace_mut(state).record(&prior, entry, continues);
         Some(TraceSnapshot {
             before,
             reverses: None,
@@ -1359,6 +1375,13 @@ pub(crate) fn begin_action(
             cost,
         })
     })
+}
+
+/// CR 733.1: the engine reversed this mana ability's activation inside the action in progress.
+pub(crate) fn mana_ability_reversed(state: &mut GameState, source: ObjectId, index: Option<usize>) {
+    if let Some(trace) = state.play_trace.as_deref_mut() {
+        trace.reversed.push((source, index));
+    }
 }
 
 /// Restores the trace when the action did not apply; applies the reversal when it did.
@@ -1383,6 +1406,12 @@ pub(crate) fn end_action(
         }
         Some(ActionDisposition::Applied) => {}
     }
+    // Taken before the action's own reversal installs a trace restored from an undo point.
+    let reversed = state
+        .play_trace
+        .as_deref_mut()
+        .map(|trace| std::mem::take(&mut trace.reversed))
+        .unwrap_or_default();
     if let Some(reversal) = snapshot.reverses {
         reverse(state, reversal);
     }
@@ -1390,7 +1419,6 @@ pub(crate) fn end_action(
     let cost_move = snapshot
         .cost
         .map(|(at, choices)| (at, choices.moved(state)));
-    let tapped = &state.lands_tapped_for_mana;
     if let Some(trace) = state.play_trace.as_deref_mut() {
         if let Some((at, moved)) = cost_move {
             if let Some(TraceEntry {
@@ -1401,6 +1429,13 @@ pub(crate) fn end_action(
                 *cost_move = Some(moved);
             }
         }
+    }
+    // Applied after the stamp, which indexes the action's entry in the unreversed trace.
+    for (source, index) in reversed {
+        reverse(state, Reversal::ManaAbility(source, index));
+    }
+    let tapped = &state.lands_tapped_for_mana;
+    if let Some(trace) = state.play_trace.as_deref_mut() {
         // A play begins at the action after which one is in progress, whatever prompt that
         // action answered; the engine's state, not the prompt, says which action that was.
         if let Some(before) = snapshot.opening.filter(|_| began_play) {
@@ -1442,13 +1477,15 @@ fn reverse(state: &mut GameState, reversal: Reversal) {
         .map(|point| point.before.entries.len());
     let reversed_at = point.before.entries.len();
     let mut restored = (*point.before).clone();
-    // A withdrawn mana ability's own answers are the entries up to the next play.
-    let mut own_answer = matches!(reversal, Reversal::ManaAbility(..));
     for (at, entry) in trace.entries.iter().enumerate().skip(reversed_at + 1) {
-        own_answer &= !matches!(entry.kind, EntryKind::Play { .. });
-        if own_answer
-            || (reversal == Reversal::Process && !trace.mana_ability_entries.contains(&at))
-        {
+        let ability = trace.mana_ability_entries.get(&at);
+        let dropped = match reversal {
+            Reversal::Process => ability.is_none(),
+            // The reversed activation's own answers, wherever they sit.
+            Reversal::ManaAbility(source, index) => ability == Some(&(source, index)),
+            Reversal::ManaSource(_) => false,
+        };
+        if dropped {
             continue;
         }
         restored.rerecord(trace, at, entry.clone(), Some(at) == process_at);
@@ -1502,7 +1539,7 @@ pub(crate) fn record_resolutions(state: &mut GameState, before: &BeforeResolutio
                     prompt: PromptClass::Priority,
                     next_object_id: before.next_object_id,
                 },
-                false,
+                None,
             );
         }
     });

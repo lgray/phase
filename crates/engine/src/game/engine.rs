@@ -12940,28 +12940,20 @@ fn apply_non_priority_pass_action(
             &mut events,
         )?,
         // CR 733.1: withdrawing a mana ability at its payment window reverses that
-        // activation; its resume target stands as before the announcement, and
-        // mana nested activations made stays in the pool.
+        // activation; what it was paying for goes on, and mana nested activations
+        // made stays in the pool.
         (
             WaitingFor::ManaAbilityManaPayment {
                 pending_mana_ability,
                 ..
             },
             GameAction::CancelCast,
-        ) => match pending_mana_ability.resume.clone() {
-            ManaAbilityResume::ManaAbilityManaPayment {
-                pending_mana_ability: outer,
-            } => WaitingFor::ManaAbilityManaPayment {
-                player: outer.player,
-                pending_mana_ability: outer,
-            },
-            resume => mana_abilities::resume_mana_ability_root(
-                state,
-                pending_mana_ability.player,
-                resume,
-                &mut events,
-            )?,
-        },
+        ) => mana_abilities::resume_mana_ability_root(
+            state,
+            pending_mana_ability.player,
+            pending_mana_ability.resume.clone(),
+            &mut events,
+        )?,
         (WaitingFor::ManaPayment { player, .. }, GameAction::CancelCast) => {
             // CR 601.2i: Cancelling at mana payment rolls back the cast — pop
             // the stack entry placed at announcement and return the object to

@@ -3278,7 +3278,7 @@ pub(super) fn handle_resolution_choice(
                     }
                 }
                 let waiting_for =
-                    mana_abilities::advance_mana_ability_activation(state, pending, events)?;
+                    mana_abilities::continue_mana_ability_activation(state, pending, events)?;
                 return Ok(ResolutionChoiceOutcome::WaitingFor(waiting_for));
             }
             match resource {

@@ -5,10 +5,13 @@ use engine::ai_support::{legal_actions, legal_actions_full};
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario, P0};
 use engine::game::scenario_db::GameScenarioDbExt;
+use engine::game::{play_trace_view, EntryKind};
 use engine::types::ability::{AbilityCost, AbilityKind};
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
-use engine::types::game_state::{GameState, ManaAbilityResume, ManaChoice, WaitingFor};
+use engine::types::game_state::{
+    GameState, LoopDetectionMode, ManaAbilityResume, ManaChoice, WaitingFor,
+};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaType;
 use engine::types::phase::Phase;
@@ -150,6 +153,9 @@ fn the_ai_drive_pays_pili_pala_from_its_window_candidates() {
         "the window offers Grand Architect's mana ability"
     );
     act(&mut board.runner, architect);
+    let tap_pili = GameAction::SelectCards {
+        cards: vec![board.pili],
+    };
     for _ in 0..8 {
         if matches!(
             board.runner.state().waiting_for,
@@ -157,10 +163,19 @@ fn the_ai_drive_pays_pili_pala_from_its_window_candidates() {
         ) {
             break;
         }
-        let action = legal_actions(board.runner.state())
-            .into_iter()
-            .find(|action| !matches!(action, GameAction::CancelCast))
-            .expect("an answer");
+        let legal = legal_actions(board.runner.state());
+        let action = if matches!(board.runner.state().waiting_for, WaitingFor::PayCost { .. }) {
+            assert!(
+                legal.contains(&tap_pili),
+                "the answer that taps Pili-Pala is offered"
+            );
+            tap_pili.clone()
+        } else {
+            legal
+                .into_iter()
+                .find(|action| !matches!(action, GameAction::CancelCast))
+                .expect("an answer")
+        };
         act(&mut board.runner, action);
     }
     let state = board.runner.state();
@@ -968,4 +983,1006 @@ fn a_suspended_ancestors_other_mana_ability_is_left_for_the_player_to_tap() {
     assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
     assert_eq!(pool_total(state), 1);
     assert_eq!(state.objects[&pools].counters.get(&storage), Some(&1));
+}
+
+/// The plays and answers the play trace holds, in order.
+fn trace(state: &GameState) -> Vec<GameAction> {
+    play_trace_view(state)
+        .map_or_else(Vec::new, |view| view.entries)
+        .into_iter()
+        .filter_map(|entry| match entry.kind {
+            EntryKind::Play { action, .. } | EntryKind::Answer { action, .. } => Some(action),
+            EntryKind::Resolution { .. } => None,
+        })
+        .collect()
+}
+
+fn at_priority(state: &GameState) -> bool {
+    matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+}
+
+/// P0's pool by mana type, in WUBRGC order.
+fn pool(state: &GameState) -> Vec<(ManaType, usize)> {
+    [
+        ManaType::White,
+        ManaType::Blue,
+        ManaType::Black,
+        ManaType::Red,
+        ManaType::Green,
+        ManaType::Colorless,
+    ]
+    .into_iter()
+    .map(|mana| (mana, state.players[0].mana_pool.count_color(mana)))
+    .filter(|(_, count)| *count > 0)
+    .collect()
+}
+
+fn color(mana: ManaType) -> GameAction {
+    GameAction::ChooseManaColor {
+        choice: ManaChoice::SingleColor(mana),
+        count: 1,
+    }
+}
+
+/// Each of `battlefield` and then each of `elsewhere` under P0, with the play trace kept.
+fn traced_with(
+    battlefield: &[&str],
+    elsewhere: &[(&str, Zone)],
+) -> Option<(GameRunner, Vec<ObjectId>)> {
+    let db = shared_card_db()?;
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let placed = battlefield
+        .iter()
+        .map(|name| (*name, Zone::Battlefield))
+        .chain(elsewhere.iter().copied());
+    let ids = placed
+        .map(|(name, zone)| scenario.add_real_card(P0, name, zone, db))
+        .collect();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    Some((runner, ids))
+}
+
+fn traced(battlefield: &[&str]) -> Option<(GameRunner, Vec<ObjectId>)> {
+    traced_with(battlefield, &[])
+}
+
+/// Activates Phyrexian Altar and sacrifices `creature` to it; returns the two actions.
+fn sacrifice_to_altar(
+    runner: &mut GameRunner,
+    altar: ObjectId,
+    creature: ObjectId,
+) -> [GameAction; 2] {
+    let activation = GameAction::ActivateAbility {
+        source_id: altar,
+        ability_index: ability(runner.state(), altar, true),
+    };
+    let pick = GameAction::SelectCards {
+        cards: vec![creature],
+    };
+    act(runner, activation.clone());
+    act(runner, pick.clone());
+    [activation, pick]
+}
+
+/// Whether any action offered at this prompt activates a mana ability of `id`.
+fn offers_mana_ability_of(state: &GameState, id: ObjectId) -> bool {
+    let per_object = legal_actions_full(state).2.into_values().flatten();
+    legal_actions(state)
+        .into_iter()
+        .chain(per_object)
+        .any(|action| match action {
+            GameAction::ActivateAbility { source_id, .. } => source_id == id,
+            GameAction::TapLandForMana { selection }
+            | GameAction::ActivateManaSource { selection } => selection.source.object_id == id,
+            _ => false,
+        })
+}
+
+fn set_tapped(runner: &mut GameRunner, id: ObjectId) {
+    runner.state_mut().objects.get_mut(&id).unwrap().tapped = true;
+}
+
+/// Celestial Prism: "{2}, {T}: Add one mana of any color." One mana is all the board can make, so
+/// the Prism's activation, submitted directly, cannot be completed and is reversed (CR 602.2);
+/// Phyrexian Altar's resolved ability stands (CR 733.1).
+#[test]
+fn a_window_left_short_of_its_cost_reverses_the_suspended_activation() {
+    let Some((mut runner, ids)) = traced(&["Phyrexian Altar", "Grizzly Bears", "Celestial Prism"])
+    else {
+        return;
+    };
+    let (altar, bears, prism) = (ids[0], ids[1], ids[2]);
+    let begun = composite_costed(runner.state(), prism);
+    act(&mut runner, begun.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [begun],
+        "reach: the Prism's window"
+    );
+    let altar_entries = sacrifice_to_altar(&mut runner, altar, bears);
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::ChooseManaColor { .. }
+        ),
+        "reach: the Altar's color choice: {:?}",
+        runner.state().waiting_for
+    );
+
+    act(&mut runner, color(ManaType::Red));
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Red, 1)]);
+    assert_eq!(state.objects[&bears].zone, Zone::Graveyard);
+    assert!(!state.objects[&prism].tapped);
+    assert_eq!(
+        trace(state),
+        [
+            altar_entries[0].clone(),
+            altar_entries[1].clone(),
+            color(ManaType::Red)
+        ]
+    );
+}
+
+/// With a second creature to sacrifice the Prism's {2} can still be funded, so the window of its
+/// activation, submitted directly, stands and the player may withdraw it (CR 601.2g).
+#[test]
+fn a_window_that_can_still_be_funded_stands_and_can_be_cancelled() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Grizzly Bears",
+        "Celestial Prism",
+    ]) else {
+        return;
+    };
+    let (altar, bears, prism) = (ids[0], ids[1], ids[3]);
+    let begun = composite_costed(runner.state(), prism);
+    act(&mut runner, begun.clone());
+    let altar_entries = sacrifice_to_altar(&mut runner, altar, bears);
+    act(&mut runner, color(ManaType::Red));
+    assert_eq!(suspended(runner.state()), [begun], "the window stands");
+    assert_eq!(pool(runner.state()), [(ManaType::Red, 1)]);
+    assert!(legal_actions(runner.state()).contains(&GameAction::CancelCast));
+
+    act(&mut runner, GameAction::CancelCast);
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Red, 1)]);
+    assert!(!state.objects[&prism].tapped);
+    assert_eq!(
+        trace(state),
+        [
+            altar_entries[0].clone(),
+            altar_entries[1].clone(),
+            color(ManaType::Red)
+        ]
+    );
+}
+
+/// Prismatic Lens: "{T}: Add {C}." and "{1}, {T}: Add one mana of any color." Tapping the Lens for
+/// {C} inside the Elf's nested window leaves the Lens's suspended "{1}, {T}", submitted directly,
+/// unpayable (CR 118.3): that ability is reversed and the Lens's completed tap stands.
+#[test]
+fn a_suspended_sources_own_tap_reverses_its_suspended_ability() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Prismatic Lens",
+        "Skyshroud Elf",
+    ]) else {
+        return;
+    };
+    let (lens, elf) = (ids[2], ids[3]);
+    set_tapped(&mut runner, elf);
+    let lens_costed = composite_costed(runner.state(), lens);
+    let lens_tap = tap_costed(runner.state(), lens);
+    let elf_costed = mana_costed(runner.state(), elf);
+    act(&mut runner, lens_costed.clone());
+    act(&mut runner, elf_costed.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [elf_costed.clone(), lens_costed],
+        "reach: the Elf's window stands inside the Lens's"
+    );
+    act(&mut runner, lens_tap.clone());
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ChooseManaColor { .. })
+            && state.objects[&lens].tapped
+            && pool(state).is_empty(),
+        "reach: the Lens's {{C}} paid the Elf, which asks its color: {:?}",
+        state.waiting_for
+    );
+
+    act(&mut runner, color(ManaType::Red));
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Red, 1)]);
+    assert!(state.objects[&lens].tapped);
+    assert_eq!(trace(state), [elf_costed, lens_tap, color(ManaType::Red)]);
+}
+
+/// Tapping Grand Architect itself for its own cost pays Pili-Pala's {2} and leaves Pili-Pala
+/// untapped, so its {Q} cannot be paid (CR 107.6) and its activation, submitted directly, is
+/// reversed.
+#[test]
+fn an_untap_cost_that_cannot_be_paid_reverses_pili_palas_activation() {
+    for blue in [false, true] {
+        let Some(mut board) = board(blue) else { return };
+        board.runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+        open_window(&mut board);
+        let architect = architect_activation(&board);
+        act(&mut board.runner, architect.clone());
+        let offered: Vec<GameAction> = legal_actions(board.runner.state())
+            .into_iter()
+            .filter(|action| matches!(action, GameAction::SelectCards { .. }))
+            .collect();
+        let tap_architect = GameAction::SelectCards {
+            cards: vec![board.architect],
+        };
+
+        act(&mut board.runner, tap_architect.clone());
+
+        let state = board.runner.state();
+        assert!(at_priority(state), "blue={blue}: {:?}", state.waiting_for);
+        assert_eq!(pool_total(state), 2, "blue={blue}");
+        assert!(!state.objects[&board.pili].tapped, "blue={blue}");
+        assert_eq!(
+            trace(state),
+            [architect.clone(), tap_architect.clone()],
+            "blue={blue}"
+        );
+        assert!(offered.contains(&tap_architect), "blue={blue}: {offered:?}");
+        assert_eq!(
+            offered.len(),
+            if blue { 2 } else { 1 },
+            "blue={blue}: {offered:?}"
+        );
+    }
+}
+
+/// The reversal forecloses nothing: tapping the blue Pili-Pala for Grand Architect's next
+/// activation lets Pili-Pala's ability, submitted directly, be paid in full.
+#[test]
+fn after_the_reversal_pili_palas_activation_can_be_made_and_completed() {
+    let Some(mut board) = board(true) else { return };
+    open_window(&mut board);
+    let architect = architect_activation(&board);
+    act(&mut board.runner, architect.clone());
+    act(
+        &mut board.runner,
+        GameAction::SelectCards {
+            cards: vec![board.architect],
+        },
+    );
+    assert!(
+        at_priority(board.runner.state()) && pool_total(board.runner.state()) == 2,
+        "reach: Pili-Pala's activation was reversed: {:?}",
+        board.runner.state().waiting_for
+    );
+
+    act(&mut board.runner, architect);
+    act(
+        &mut board.runner,
+        GameAction::SelectCards {
+            cards: vec![board.pili],
+        },
+    );
+    activate(&mut board.runner, board.pili, true);
+    act(&mut board.runner, color(ManaType::Blue));
+
+    let state = board.runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Blue, 1), (ManaType::Colorless, 2)]);
+    assert!(!state.objects[&board.pili].tapped);
+}
+
+/// Sunken Ruins: "{T}: Add {C}." and "{U/B}, {T}: Add {U}{U}, {U}{B}, or {B}{B}." The Ruins' own
+/// tap pays the Signet nested in the window of its filter ability, submitted directly; the filter
+/// ability then asks which of the Signet's {U}{B} pays {U/B}, and neither answer can tap the
+/// Ruins again (CR 118.3).
+#[test]
+fn a_hybrid_answer_that_cannot_be_carried_out_reverses_the_filter_ability() {
+    for payment in [ManaType::Blue, ManaType::Black] {
+        let Some((mut runner, ids)) = traced(&[
+            "Phyrexian Altar",
+            "Grizzly Bears",
+            "Sunken Ruins",
+            "Dimir Signet",
+        ]) else {
+            return;
+        };
+        let (ruins, signet) = (ids[2], ids[3]);
+        let filter = composite_costed(runner.state(), ruins);
+        let signet_activation = composite_costed(runner.state(), signet);
+        act(&mut runner, filter.clone());
+        assert_eq!(
+            suspended(runner.state()),
+            [filter.clone()],
+            "reach: the Ruins' window"
+        );
+        assert!(
+            legal_actions(runner.state()).contains(&signet_activation),
+            "reach: the Signet is offered"
+        );
+        act(&mut runner, signet_activation.clone());
+        assert_eq!(
+            suspended(runner.state()),
+            [signet_activation.clone(), filter],
+            "reach: the Signet's window stands inside the Ruins'"
+        );
+        let tap = land_tap(runner.state(), ruins).expect("reach: the Ruins' tap is offered");
+        act(&mut runner, tap.clone());
+        assert!(
+            matches!(
+                &runner.state().waiting_for,
+                WaitingFor::PayManaAbilityMana { pending_mana_ability, .. }
+                    if pending_mana_ability.source_id == ruins
+            ),
+            "reach: the filter ability asks which mana pays {{U/B}}: {:?}",
+            runner.state().waiting_for
+        );
+
+        act(
+            &mut runner,
+            GameAction::PayManaAbilityMana {
+                payment: vec![payment],
+            },
+        );
+
+        let state = runner.state();
+        assert!(at_priority(state), "{payment:?}: {:?}", state.waiting_for);
+        assert_eq!(pool(state), [(ManaType::Blue, 1), (ManaType::Black, 1)]);
+        assert!(state.objects[&ruins].tapped && state.objects[&signet].tapped);
+        assert_eq!(trace(state), [signet_activation, tap], "{payment:?}");
+    }
+}
+
+/// CR 733.1: no effect applies as a result of an undone action. Paying the suspended filter
+/// ability, submitted directly, activates the Signet before the Ruins turns out to be tapped; the
+/// action's events are those of the Ruins' tap alone.
+#[test]
+fn a_reversed_activation_emits_no_events() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Sunken Ruins",
+        "Dimir Signet",
+    ]) else {
+        return;
+    };
+    let (ruins, signet) = (ids[2], ids[3]);
+    let tap = tap_costed(runner.state(), ruins);
+    let filter = composite_costed(runner.state(), ruins);
+    let mut nothing_suspended = GameRunner::from_state(runner.state().clone());
+    let tap_events = nothing_suspended
+        .act(tap.clone())
+        .expect("the Ruins taps for mana")
+        .events;
+    act(&mut runner, filter.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [filter],
+        "reach: the Ruins' window"
+    );
+
+    let result = runner.act(tap);
+
+    let state = runner.state();
+    let events = result.expect("the Ruins' tap is accepted").events;
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Colorless, 1)]);
+    assert!(state.objects[&ruins].tapped && !state.objects[&signet].tapped);
+    let signet_id = format!("{signet:?}");
+    let about_signet: Vec<String> = events
+        .iter()
+        .map(|event| format!("{event:?}"))
+        .filter(|event| event.contains(&signet_id))
+        .collect();
+    assert!(about_signet.is_empty(), "{about_signet:?}");
+    assert_eq!(events.len(), tap_events.len());
+}
+
+/// CR 733.2: after the reversal the player goes on with what the activation was paying for, here
+/// the spell's mana payment. The Lens's "{1}, {T}" is submitted directly.
+#[test]
+fn a_reversal_inside_a_spells_payment_returns_to_that_payment() {
+    let Some((mut runner, ids)) = traced_with(
+        &[
+            "Phyrexian Altar",
+            "Grizzly Bears",
+            "Grizzly Bears",
+            "Prismatic Lens",
+        ],
+        &[("Grizzly Bears", Zone::Hand)],
+    ) else {
+        return;
+    };
+    let (lens, spell) = (ids[3], ids[4]);
+    let cast = GameAction::CastSpell {
+        object_id: spell,
+        card_id: runner.state().objects[&spell].card_id,
+        targets: Vec::new(),
+        payment_mode: engine::types::game_state::CastPaymentMode::Manual,
+    };
+    act(&mut runner, cast.clone());
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::ManaPayment { .. }),
+        "reach: the spell's payment: {:?}",
+        runner.state().waiting_for
+    );
+    let lens_costed = composite_costed(runner.state(), lens);
+    let lens_tap = tap_costed(runner.state(), lens);
+    act(&mut runner, lens_costed.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [lens_costed],
+        "reach: the Lens's window"
+    );
+
+    act(&mut runner, lens_tap.clone());
+
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ManaPayment { .. }),
+        "{:?}",
+        state.waiting_for
+    );
+    assert!(state.stack.len() == 1 && state.pending_cast.is_some());
+    assert_eq!(pool(state), [(ManaType::Colorless, 1)]);
+    assert!(state.objects[&lens].tapped);
+    assert_eq!(trace(state), [cast, lens_tap.clone()]);
+
+    act(&mut runner, GameAction::CancelCast);
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert!(state.stack.is_empty() && state.pending_cast.is_none());
+    assert_eq!(state.objects[&spell].zone, Zone::Hand);
+    assert_eq!(trace(state), [lens_tap]);
+}
+
+/// The Altar's {R} cannot pay the Prism's {2}, so the Prism is reversed; the Lens's window it was
+/// nested in decides its payment again, and {R} pays the Lens's {1}. The Lens's "{1}, {T}" is
+/// submitted directly.
+#[test]
+fn a_reversed_activations_window_parent_decides_its_payment_again() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Prismatic Lens",
+        "Celestial Prism",
+    ]) else {
+        return;
+    };
+    let (altar, bears, lens, prism) = (ids[0], ids[1], ids[2], ids[3]);
+    let lens_costed = composite_costed(runner.state(), lens);
+    let prism_costed = composite_costed(runner.state(), prism);
+    act(&mut runner, lens_costed.clone());
+    act(&mut runner, prism_costed.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [prism_costed, lens_costed.clone()],
+        "reach: the Prism's window stands inside the Lens's"
+    );
+    let altar_entries = sacrifice_to_altar(&mut runner, altar, bears);
+
+    act(&mut runner, color(ManaType::Red));
+
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ChooseManaColor { .. }),
+        "the Lens asks its color: {:?}",
+        state.waiting_for
+    );
+    assert!(!state.objects[&prism].tapped && state.objects[&lens].tapped);
+    assert!(pool(state).is_empty());
+
+    act(&mut runner, color(ManaType::Blue));
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Blue, 1)]);
+    assert_eq!(
+        trace(state),
+        [
+            lens_costed,
+            altar_entries[0].clone(),
+            altar_entries[1].clone(),
+            color(ManaType::Red),
+            color(ManaType::Blue)
+        ]
+    );
+}
+
+/// Two Celestial Prisms, the first submitted directly and the second nested in its window: one
+/// mana completes neither, and each is reversed by its own activation.
+#[test]
+fn a_window_parent_that_cannot_be_completed_is_reversed_in_turn() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Celestial Prism",
+        "Celestial Prism",
+    ]) else {
+        return;
+    };
+    let (altar, bears, outer, inner) = (ids[0], ids[1], ids[2], ids[3]);
+    let outer_costed = composite_costed(runner.state(), outer);
+    let inner_costed = composite_costed(runner.state(), inner);
+    act(&mut runner, outer_costed.clone());
+    act(&mut runner, inner_costed.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [inner_costed, outer_costed],
+        "reach: one Prism's window stands inside the other's"
+    );
+    let altar_entries = sacrifice_to_altar(&mut runner, altar, bears);
+
+    act(&mut runner, color(ManaType::Red));
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Red, 1)]);
+    assert!(!state.objects[&outer].tapped && !state.objects[&inner].tapped);
+    assert_eq!(
+        trace(state),
+        [
+            altar_entries[0].clone(),
+            altar_entries[1].clone(),
+            color(ManaType::Red)
+        ]
+    );
+}
+
+/// Sunken Ruins tapped, the Signet's {U}{B} in the pool, and the Ruins' filter ability submitted
+/// directly: returns the board at the prompt asking which mana pays {U/B}, with the two actions
+/// the trace holds.
+fn tapped_ruins_at_its_hybrid_prompt() -> Option<(GameRunner, [GameAction; 2])> {
+    let (mut runner, ids) = traced(&["Sunken Ruins", "Dimir Signet"])?;
+    let (ruins, signet) = (ids[0], ids[1]);
+    let tap = tap_costed(runner.state(), ruins);
+    let signet_activation = composite_costed(runner.state(), signet);
+    let filter = composite_costed(runner.state(), ruins);
+    act(&mut runner, tap.clone());
+    act(&mut runner, signet_activation.clone());
+    assert_eq!(
+        pool(runner.state()),
+        [(ManaType::Blue, 1), (ManaType::Black, 1)],
+        "reach: the Signet's mana"
+    );
+    assert!(
+        !offers_mana_ability_of(runner.state(), ruins),
+        "reach: the tapped Ruins is not offered"
+    );
+    act(&mut runner, filter);
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::PayManaAbilityMana { .. }
+        ),
+        "reach: the filter ability asks which mana pays {{U/B}}: {:?}",
+        runner.state().waiting_for
+    );
+    Some((runner, [tap, signet_activation]))
+}
+
+/// With no payment window anywhere, a legal answer to the tapped Ruins' hybrid prompt reverses
+/// the activation (CR 602.2).
+#[test]
+fn a_hybrid_answer_with_no_window_reverses_the_activation() {
+    let Some((mut runner, entries)) = tapped_ruins_at_its_hybrid_prompt() else {
+        return;
+    };
+
+    act(
+        &mut runner,
+        GameAction::PayManaAbilityMana {
+            payment: vec![ManaType::Blue],
+        },
+    );
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Blue, 1), (ManaType::Black, 1)]);
+    assert_eq!(trace(state), entries);
+}
+
+/// An answer that is not one of the prompt's options is refused and the activation stands; a
+/// legal one is then accepted.
+#[test]
+fn an_answer_outside_the_prompts_options_is_refused() {
+    let Some((mut runner, _)) = tapped_ruins_at_its_hybrid_prompt() else {
+        return;
+    };
+
+    assert_refused(
+        &mut runner,
+        &GameAction::PayManaAbilityMana {
+            payment: vec![ManaType::Green],
+        },
+    );
+
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::PayManaAbilityMana { .. }
+    ));
+    act(
+        &mut runner,
+        GameAction::PayManaAbilityMana {
+            payment: vec![ManaType::Black],
+        },
+    );
+    assert!(at_priority(runner.state()));
+}
+
+/// Shimmering Grotto: "{T}: Add {C}." and "{1}, {T}: Add one mana of any color." The tap that
+/// strands the Grotto's suspended ability, submitted directly, stays on the trace as a land's
+/// tap, which an untap reverses.
+#[test]
+fn a_land_route_reversal_leaves_the_tap_untappable() {
+    let Some((mut runner, ids)) =
+        traced(&["Phyrexian Altar", "Grizzly Bears", "Shimmering Grotto"])
+    else {
+        return;
+    };
+    let grotto = ids[2];
+    let begun = composite_costed(runner.state(), grotto);
+    act(&mut runner, begun.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [begun],
+        "reach: the Grotto's window"
+    );
+    let tap = land_tap(runner.state(), grotto).expect("reach: the Grotto's tap is offered");
+
+    act(&mut runner, tap.clone());
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Colorless, 1)]);
+    assert_eq!(trace(state), [tap]);
+
+    act(
+        &mut runner,
+        GameAction::UntapLandForMana { object_id: grotto },
+    );
+    assert!(trace(runner.state()).is_empty());
+    assert!(!runner.state().objects[&grotto].tapped);
+}
+
+/// Submits `opener`, which is not offered, and answers the cost prompt it raises with `choice`,
+/// its one option. The activation cannot go on, so it is reversed (CR 602.2): the player has
+/// priority, and nothing was produced or recorded.
+fn assert_the_cost_answer_reverses_the_activation(
+    runner: &mut GameRunner,
+    opener: GameAction,
+    choice: ObjectId,
+) {
+    let GameAction::ActivateAbility { source_id, .. } = opener else {
+        panic!("an ability activation: {opener:?}");
+    };
+    assert!(
+        !offers_mana_ability_of(runner.state(), source_id),
+        "reach: the opener is not offered"
+    );
+    act(runner, opener);
+    assert!(
+        matches!(
+            &runner.state().waiting_for,
+            WaitingFor::PayCost { choices, .. } if *choices == [choice]
+        ),
+        "reach: the cost prompt offers the one choice: {:?}",
+        runner.state().waiting_for
+    );
+
+    act(
+        runner,
+        GameAction::SelectCards {
+            cards: vec![choice],
+        },
+    );
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert!(pool(state).is_empty());
+    assert!(trace(state).is_empty(), "{:?}", trace(state));
+}
+
+/// Transmogrant Altar: "{B}, {T}, Sacrifice a creature: Add {C}{C}{C}." Nothing pays {B}; the
+/// ability is submitted directly.
+#[test]
+fn a_sacrifice_answer_that_cannot_be_carried_out_reverses_the_activation() {
+    let Some((mut runner, ids)) = traced(&["Transmogrant Altar", "Grizzly Bears"]) else {
+        return;
+    };
+    let (altar, bears) = (ids[0], ids[1]);
+    let opener = composite_costed(runner.state(), altar);
+    assert_the_cost_answer_reverses_the_activation(&mut runner, opener, bears);
+    let state = runner.state();
+    assert_eq!(state.objects[&bears].zone, Zone::Battlefield);
+    assert!(!state.objects[&altar].tapped);
+}
+
+/// Bog Witch: "{B}, {T}, Discard a card: Add {B}{B}{B}." Nothing pays {B}; the ability is
+/// submitted directly.
+#[test]
+fn a_discard_answer_that_cannot_be_carried_out_reverses_the_activation() {
+    let Some((mut runner, ids)) = traced_with(&["Bog Witch"], &[("Grizzly Bears", Zone::Hand)])
+    else {
+        return;
+    };
+    let (witch, card) = (ids[0], ids[1]);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&witch)
+        .unwrap()
+        .summoning_sick = false;
+    let opener = composite_costed(runner.state(), witch);
+    assert_the_cost_answer_reverses_the_activation(&mut runner, opener, card);
+    let state = runner.state();
+    assert_eq!(state.objects[&card].zone, Zone::Hand);
+    assert!(!state.objects[&witch].tapped);
+}
+
+/// Springleaf Drum: "{T}, Tap an untapped creature you control: Add one mana of any color." The
+/// Drum is already tapped; the ability is submitted directly.
+#[test]
+fn a_tapped_creature_answer_that_cannot_be_carried_out_reverses_the_activation() {
+    let Some((mut runner, ids)) = traced(&["Springleaf Drum", "Grizzly Bears"]) else {
+        return;
+    };
+    let (drum, bears) = (ids[0], ids[1]);
+    set_tapped(&mut runner, drum);
+    let opener = composite_costed(runner.state(), drum);
+    assert_the_cost_answer_reverses_the_activation(&mut runner, opener, bears);
+    assert!(!runner.state().objects[&bears].tapped);
+}
+
+/// Molt Tender: "{T}, Exile a card from your graveyard: Add one mana of any color." The Tender is
+/// already tapped; the ability is submitted directly.
+#[test]
+fn an_exile_answer_that_cannot_be_carried_out_reverses_the_activation() {
+    let Some((mut runner, ids)) =
+        traced_with(&["Molt Tender"], &[("Grizzly Bears", Zone::Graveyard)])
+    else {
+        return;
+    };
+    let (tender, card) = (ids[0], ids[1]);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&tender)
+        .unwrap()
+        .summoning_sick = false;
+    set_tapped(&mut runner, tender);
+    let opener = composite_costed(runner.state(), tender);
+    assert_the_cost_answer_reverses_the_activation(&mut runner, opener, card);
+    assert_eq!(runner.state().objects[&card].zone, Zone::Graveyard);
+}
+
+/// Calciform Pools' "{1}, Remove X storage counters from this land" with the Pools tapped and
+/// nothing to pay {1}; the ability is submitted directly.
+#[test]
+fn an_amount_answer_that_cannot_be_carried_out_reverses_the_activation() {
+    let Some((mut runner, ids)) = traced(&["Calciform Pools"]) else {
+        return;
+    };
+    let pools = ids[0];
+    let storage = CounterType::Generic("storage".to_string());
+    set_tapped(&mut runner, pools);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&pools)
+        .unwrap()
+        .counters
+        .insert(storage.clone(), 2);
+    let opener = composite_costed(runner.state(), pools);
+    assert!(
+        !offers_mana_ability_of(runner.state(), pools),
+        "reach: the opener is not offered"
+    );
+    act(&mut runner, opener);
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::PayAmountChoice { .. }
+        ),
+        "reach: the Pools asks X: {:?}",
+        runner.state().waiting_for
+    );
+
+    act(&mut runner, GameAction::SubmitPayAmount { amount: 2 });
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(state.objects[&pools].counters.get(&storage), Some(&2));
+    assert!(pool(state).is_empty());
+    assert!(trace(state).is_empty(), "{:?}", trace(state));
+}
+
+/// The creature chosen for Transmogrant Altar's cost before its window opened is sacrificed to
+/// Phyrexian Altar inside it, so the cost can no longer be paid (CR 601.2h). Transmogrant Altar's
+/// ability is submitted directly.
+#[test]
+fn a_selection_spent_inside_the_window_reverses_the_activation() {
+    let Some((mut runner, ids)) =
+        traced(&["Transmogrant Altar", "Phyrexian Altar", "Grizzly Bears"])
+    else {
+        return;
+    };
+    let (transmogrant, phyrexian, bears) = (ids[0], ids[1], ids[2]);
+    let opener = composite_costed(runner.state(), transmogrant);
+    assert!(
+        !offers_mana_ability_of(runner.state(), transmogrant),
+        "reach: the opener is not offered"
+    );
+    let pick = GameAction::SelectCards { cards: vec![bears] };
+    act(&mut runner, opener.clone());
+    act(&mut runner, pick.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [opener],
+        "reach: Transmogrant Altar's window"
+    );
+    let altar = GameAction::ActivateAbility {
+        source_id: phyrexian,
+        ability_index: ability(runner.state(), phyrexian, true),
+    };
+    assert!(
+        legal_actions(runner.state()).contains(&altar),
+        "reach: Phyrexian Altar is offered"
+    );
+    act(&mut runner, altar.clone());
+    assert!(
+        legal_actions(runner.state()).contains(&pick),
+        "reach: the chosen creature is offered"
+    );
+    act(&mut runner, pick.clone());
+
+    act(&mut runner, color(ManaType::Black));
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Black, 1)]);
+    assert_eq!(state.objects[&bears].zone, Zone::Graveyard);
+    assert!(!state.objects[&transmogrant].tapped);
+    assert_eq!(trace(state), [altar, pick, color(ManaType::Black)]);
+}
+
+/// Cancelling the Prism nested in the Pools' window reverses the Prism alone (CR 733.1); the
+/// Pools' activation, submitted directly, decides its payment again, and the Altar's {R} pays its
+/// {1}.
+#[test]
+fn an_inner_cancel_continues_the_outer_activation() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Calciform Pools",
+        "Celestial Prism",
+    ]) else {
+        return;
+    };
+    let (altar, bears, pools, prism) = (ids[0], ids[1], ids[2], ids[3]);
+    let storage = CounterType::Generic("storage".to_string());
+    set_tapped(&mut runner, pools);
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&pools)
+        .unwrap()
+        .counters
+        .insert(storage.clone(), 2);
+    let outer = composite_costed(runner.state(), pools);
+    let inner = composite_costed(runner.state(), prism);
+    let amount = GameAction::SubmitPayAmount { amount: 1 };
+    act(&mut runner, outer.clone());
+    act(&mut runner, amount.clone());
+    act(&mut runner, inner.clone());
+    let chain = [inner, outer.clone()];
+    assert_eq!(
+        suspended(runner.state()),
+        chain,
+        "reach: the Prism's window stands inside the Pools'"
+    );
+    let altar_entries = sacrifice_to_altar(&mut runner, altar, bears);
+    act(&mut runner, color(ManaType::Red));
+    assert_eq!(
+        suspended(runner.state()),
+        chain,
+        "reach: one mana of the Prism's {{2}}: its window stands"
+    );
+    assert_eq!(pool(runner.state()), [(ManaType::Red, 1)]);
+
+    act(&mut runner, GameAction::CancelCast);
+
+    let mut answers = Vec::new();
+    for _ in 0..4 {
+        if at_priority(runner.state()) {
+            break;
+        }
+        let Some(answer) = legal_actions(runner.state())
+            .into_iter()
+            .find(|action| !matches!(action, GameAction::CancelCast))
+        else {
+            break;
+        };
+        act(&mut runner, answer.clone());
+        answers.push(answer);
+    }
+    let state = runner.state();
+    assert!(
+        at_priority(state),
+        "the Pools' activation went on: {:?}",
+        state.waiting_for
+    );
+    assert_eq!(state.objects[&pools].counters.get(&storage), Some(&1));
+    assert_eq!(pool_total(state), 1);
+    assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 0);
+    assert!(!state.objects[&prism].tapped);
+    let mut expected = vec![
+        outer,
+        amount,
+        altar_entries[0].clone(),
+        altar_entries[1].clone(),
+        color(ManaType::Red),
+    ];
+    expected.extend(answers);
+    assert_eq!(trace(state), expected);
+}
+
+/// The Lens's own tap funds one mana of the Prism nested in the window of the Lens's "{1}, {T}",
+/// submitted directly. Cancelling the Prism leaves the Lens's suspended ability unpayable
+/// (CR 118.3), so it is reversed with it; the Lens's completed tap stands (CR 733.1).
+#[test]
+fn an_inner_cancel_reverses_an_outer_activation_it_leaves_unpayable() {
+    let Some((mut runner, ids)) = traced(&[
+        "Phyrexian Altar",
+        "Grizzly Bears",
+        "Prismatic Lens",
+        "Celestial Prism",
+    ]) else {
+        return;
+    };
+    let (lens, prism) = (ids[2], ids[3]);
+    let lens_costed = composite_costed(runner.state(), lens);
+    let lens_tap = tap_costed(runner.state(), lens);
+    let prism_costed = composite_costed(runner.state(), prism);
+    act(&mut runner, lens_costed.clone());
+    assert_eq!(
+        suspended(runner.state()),
+        [lens_costed.clone()],
+        "reach: the Lens's window"
+    );
+    act(&mut runner, prism_costed.clone());
+    let chain = [prism_costed, lens_costed];
+    assert_eq!(
+        suspended(runner.state()),
+        chain,
+        "reach: the Prism's window stands inside the Lens's"
+    );
+    act(&mut runner, lens_tap.clone());
+    let state = runner.state();
+    assert!(
+        suspended(state) == chain
+            && pool(state) == [(ManaType::Colorless, 1)]
+            && state.objects[&lens].tapped,
+        "reach: one mana of the Prism's {{2}}: its window stands: {:?}",
+        state.waiting_for
+    );
+
+    act(&mut runner, GameAction::CancelCast);
+
+    let state = runner.state();
+    assert!(at_priority(state), "{:?}", state.waiting_for);
+    assert_eq!(pool(state), [(ManaType::Colorless, 1)]);
+    assert!(state.objects[&lens].tapped && !state.objects[&prism].tapped);
+    assert_eq!(trace(state), [lens_tap]);
 }
