@@ -8,7 +8,9 @@
 //! `source_census::code` (the comment-stripping authority) with the sibling
 //! censuses in this binary rather than re-deriving either.
 
+use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
 use engine::types::format::{CardPool, DeckSupply, FormatConfig, GameFormat};
+use engine::types::game_state::GameState;
 use strum::IntoEnumIterator;
 
 use super::loop_shortcut_offer_writer_census::cfg_test_scoped_lines;
@@ -308,9 +310,6 @@ fn supplies_fixed_deck_is_derived_from_the_deck_supply_axis() {
 /// Every format whose deck the engine supplies loads a non-empty library from an empty submission.
 #[test]
 fn every_engine_supplied_format_loads_a_library_from_an_empty_submission() {
-    use engine::game::deck_loading::{load_and_hydrate_decks, DeckPayload};
-    use engine::types::game_state::GameState;
-
     let Some(db) = crate::support::shared_card_db() else {
         return;
     };
