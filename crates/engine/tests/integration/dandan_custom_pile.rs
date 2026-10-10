@@ -194,7 +194,6 @@ fn a_replay_reloads_the_pile_from_the_recorded_deck_list() {
     let header = header(jund_list(None));
 
     let replayed = reconstruct_initial_state(&header, Some(&db)).expect("replay reconstructs");
-    // Red when the loader ignores the recorded pile.
     assert_eq!(object_names(&replayed), jund_multiset());
 
     // Preservation: replay and the live load agree for the same header and seed.
