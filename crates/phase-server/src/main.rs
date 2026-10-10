@@ -21507,6 +21507,7 @@ mod issue_4548_deadlock_tests {
 #[cfg(test)]
 mod ai_seat_setup_tests {
     use engine::database::CardDatabase;
+    use engine::types::format::FormatConfig;
     use engine::types::match_config::MatchType;
     use phase_ai::config::AiDifficulty;
     use seat_reducer::types::DeckChoice;
@@ -21631,7 +21632,6 @@ mod ai_seat_setup_tests {
 
     #[test]
     fn an_empty_ai_deck_list_is_accepted_only_where_the_engine_supplies_the_deck() {
-        use engine::types::format::FormatConfig;
         let db = db_with(&["Forest"]);
         let setups_for = |format: &FormatConfig| {
             ai_seat_setups(

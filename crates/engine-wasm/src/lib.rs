@@ -6945,6 +6945,7 @@ mod deck_list_seat_validation_tests {
     use engine::database::CardDatabase;
     use engine::types::card::CardFace;
     use engine::types::card_type::{CardType, CoreType, Supertype};
+    use engine::types::custom_format::CustomFormatId;
     use engine::types::mana::ManaColor;
     use std::collections::BTreeMap;
 
@@ -7160,7 +7161,6 @@ mod deck_list_seat_validation_tests {
 
     #[test]
     fn deck_supply_reads_the_format_axis_and_fails_to_player_built() {
-        use engine::types::custom_format::CustomFormatId;
         assert_eq!(
             deck_supply_or_player_built(Some(GameFormat::Standard)),
             DeckSupply::PlayerBuilt
