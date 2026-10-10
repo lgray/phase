@@ -3430,7 +3430,8 @@ fn zone_change_command_is_invalid(command: &ResolvedZoneChangeCommand) -> bool {
     let record = &command.zone_change_record;
     let changes_incarnation = command.from != command.to;
     command.object.incarnation == LEGACY_INCARNATION
-        || command.owner != record.owner
+        || command.owner != record.arrival.owner
+        || record.owner != command.rebound_from.unwrap_or(command.owner)
         || record.object_id != command.object.object_id
         || record.from_zone != Some(command.from)
         || record.to_zone != command.to

@@ -2800,6 +2800,10 @@ impl GameObject {
             mana_value: self.effective_mana_value(),
             controller: self.controller,
             owner: self.owner,
+            arrival: crate::types::game_state::ArrivalIdentity {
+                owner: self.owner,
+                controller: self.controller,
+            },
             from_zone: from,
             cast_from_zone: self.cast_from_zone,
             played_from_zone: self.played_from_zone,

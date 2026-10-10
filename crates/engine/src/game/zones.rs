@@ -986,9 +986,7 @@ pub fn resolve_and_apply_zone_change(
     zone_change_record.recorded_turn_number = state.turn_number;
     if rebound_from.is_some() {
         // CR 108.3 as modified by the entry-ownership axis: the receiver becomes owner and controller; on the battlefield or stack that receiver is the player who played or cast it.
-        zone_change_record.owner = installed_owner;
-        zone_change_record.controller = installed_owner;
-        zone_change_record.sync_trigger_source_context();
+        zone_change_record.install_rebound_arrival(installed_owner);
     }
 
     let command = ResolvedZoneChangeCommand {
@@ -1589,9 +1587,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
             // the stack, with the same record fields the journaled branch rebinds.
             if let Some(new_owner) = receiver.filter(|_| to == Zone::Stack) {
                 install_rebound_owner(obj_mut, new_owner);
-                zone_change_record.owner = new_owner;
-                zone_change_record.controller = new_owner;
-                zone_change_record.sync_trigger_source_context();
+                zone_change_record.install_rebound_arrival(new_owner);
             }
             (pre_bump_incarnation, obj_mut.incarnation, false)
         } else {
@@ -2764,8 +2760,7 @@ pub(crate) fn apply_battlefield_entry_controller_override(
             } if *id == object_id
         )
     }) {
-        record.controller = controller;
-        record.sync_trigger_source_context();
+        record.arrival.controller = controller;
     }
 
     // CR 733: journal the settled override. The event fix-up above is deliberately
@@ -2804,8 +2799,7 @@ fn retag_battlefield_entry_snapshots(
     if let Some(record) =
         zone_change_index.and_then(|index| state.zone_changes_this_turn.get_mut(index))
     {
-        record.controller = controller;
-        record.sync_trigger_source_context();
+        record.arrival.controller = controller;
     }
     if let Some(record) =
         battlefield_entry_index.and_then(|index| state.battlefield_entries_this_turn.get_mut(index))
@@ -5944,7 +5938,12 @@ mod hand_entry_rebind_tests {
             .as_array_mut()
             .expect("journal entries")
             .iter_mut()
-            .find_map(|entry| entry["command"]["ZoneChange"].as_object_mut())
+            .find_map(|entry| {
+                entry
+                    .get_mut("command")?
+                    .get_mut("ZoneChange")?
+                    .as_object_mut()
+            })
             .expect("a zone-change command")
     }
 
@@ -6037,6 +6036,68 @@ mod hand_entry_rebind_tests {
         assert!(
             !journal_is_accepted(journal_wire(&from_hand)),
             "a Battlefield rebind out of Hand"
+        );
+    }
+
+    fn accepts_with_record_edit(state: &GameState, path: &[&str], value: PlayerId) -> bool {
+        let mut wire = journal_wire(state);
+        let mut slot = &mut command_json(&mut wire)["zone_change_record"];
+        for key in path {
+            slot = &mut slot[*key];
+        }
+        *slot = serde_json::json!(value);
+        journal_is_accepted(wire)
+    }
+
+    #[test]
+    fn the_journal_validator_ties_the_record_to_the_command() {
+        let (_, live, _, _) = rebound_move(Zone::Library, Zone::Hand);
+        assert!(
+            journal_is_accepted(journal_wire(&live)),
+            "reach: the well-formed rebind validates"
+        );
+        assert!(
+            accepts_with_record_edit(&live, &["controller"], P1),
+            "an edit of a field the validator does not read is accepted"
+        );
+        assert!(
+            accepts_with_record_edit(&live, &["arrival", "controller"], P0),
+            "the arrival controller is not part of the command"
+        );
+        assert!(
+            !accepts_with_record_edit(&live, &["arrival", "owner"], P0),
+            "the arrival owner is the command's installed owner"
+        );
+        assert!(
+            !accepts_with_record_edit(&live, &["owner"], P1),
+            "the departure owner is the owner the rebind replaced"
+        );
+
+        let mut state = GameState::new(FormatConfig::dandan(), 2, 42);
+        let card = create_object(&mut state, CardId(1), P0, "Own".to_string(), Zone::Library);
+        let record =
+            state.objects[&card].snapshot_for_zone_change(card, Some(Zone::Library), Zone::Hand);
+        resolve_and_apply_zone_change(
+            &mut state,
+            card,
+            Zone::Library,
+            Zone::Hand,
+            P0,
+            None,
+            record,
+        )
+        .expect("an ordinary move applies");
+        assert!(
+            journal_is_accepted(journal_wire(&state)),
+            "reach: an unrebound move validates"
+        );
+        assert!(
+            accepts_with_record_edit(&state, &["controller"], P1),
+            "an edit of a field the validator does not read is accepted"
+        );
+        assert!(
+            !accepts_with_record_edit(&state, &["owner"], P1),
+            "an unrebound command's departure owner is its owner"
         );
     }
 

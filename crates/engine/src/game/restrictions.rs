@@ -2564,6 +2564,34 @@ mod tests {
     use crate::types::identifiers::CardId;
     use crate::types::zones::Zone;
 
+    #[test]
+    fn cards_left_your_graveyard_counts_the_departure_owner() {
+        use crate::types::game_state::{ArrivalIdentity, ZoneChangeRecord};
+        let mut state = crate::types::game_state::GameState::new(
+            crate::types::format::FormatConfig::dandan(),
+            2,
+            42,
+        );
+        let mut record =
+            ZoneChangeRecord::test_minimal(ObjectId(1), Some(Zone::Graveyard), Zone::Battlefield);
+        record.owner = PlayerId(0);
+        record.controller = PlayerId(0);
+        record.arrival = ArrivalIdentity {
+            owner: PlayerId(1),
+            controller: PlayerId(1),
+        };
+        state.zone_changes_this_turn.push_back(record);
+        let condition = ParsedCondition::CardsLeftYourGraveyardThisTurnAtLeast { count: 1 };
+        assert!(
+            evaluate_condition(&state, PlayerId(0), ObjectId(9), &condition),
+            "the card left the departure owner's graveyard"
+        );
+        assert!(
+            !evaluate_condition(&state, PlayerId(1), ObjectId(9), &condition),
+            "the installed owner's graveyard lost nothing"
+        );
+    }
+
     /// Two-step pattern: parse condition text, then evaluate.
     /// Returns `true` for unrecognized conditions (matching prior permissive behavior).
     fn parse_and_evaluate_condition(

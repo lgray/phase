@@ -4208,6 +4208,10 @@ fn matches_target_filter_on_lki_snapshot_with_incarnation(
         mana_value: lki.mana_value,
         controller: lki.controller,
         owner: lki.owner,
+        arrival: crate::types::game_state::ArrivalIdentity {
+            owner: lki.owner,
+            controller: lki.controller,
+        },
         from_zone: departed_from,
         cast_from_zone: None,
         played_from_zone: None,
@@ -5467,14 +5471,14 @@ fn zone_change_filter_inner(
                 }
                     true
                 };
-                if !zone_axis_admits(state, licensed, record.controller, admits) {
+                if !zone_axis_admits(state, licensed, record.arrival.controller, admits) {
                     return false;
                 }
             }
 
             properties.iter().all(|prop| match prop {
                 FilterProp::Owned { controller } => {
-                    zone_axis_admits(state, licensed, record.owner, |owner| {
+                    zone_axis_admits(state, licensed, record.arrival.owner, |owner| {
                         owned_axis_admits(state, &source_ctx, controller, owner)
                     })
                 }
@@ -8483,7 +8487,9 @@ fn zone_change_record_matches_property(
         // like "from the graveyard" that must not fire on tokens.
         FilterProp::InZone { zone } => record.from_zone == Some(*zone),
         // CR 109.5: Ownership relative to the source's controller.
-        FilterProp::Owned { controller } => owned_axis_admits(state, source, controller, record.owner),
+        FilterProp::Owned { controller } => {
+            owned_axis_admits(state, source, controller, record.arrival.owner)
+        }
         // CR 205.3e + CR 205.3m + CR 702.73a: Source's chosen creature type
         // applied to the snapshot subtypes, including changeling snapshots.
         FilterProp::IsChosenCreatureType => source.chosen_creature_type.as_ref().is_some_and(|chosen| {
@@ -10100,6 +10106,10 @@ mod tests {
         let record = ZoneChangeRecord {
             controller: PlayerId(1),
             owner: PlayerId(1),
+            arrival: crate::types::game_state::ArrivalIdentity {
+                owner: PlayerId(1),
+                controller: PlayerId(1),
+            },
             ..ZoneChangeRecord::test_minimal(
                 opponent_object,
                 Some(Zone::Battlefield),
@@ -18287,6 +18297,10 @@ mod tests {
             mana_value: 5,
             controller: PlayerId(0),
             owner: PlayerId(0),
+            arrival: crate::types::game_state::ArrivalIdentity {
+                owner: PlayerId(0),
+                controller: PlayerId(0),
+            },
             from_zone: Some(Zone::Battlefield),
             cast_from_zone: None,
             played_from_zone: None,
@@ -19891,6 +19905,7 @@ mod dandan_axis_collapse_tests {
 
     const BOTH: [bool; 2] = [true, true];
     const OWNER_ONLY: [bool; 2] = [true, false];
+    const OPPONENT_ONLY: [bool; 2] = [false, true];
 
     /// CR 400.1 as modified by a shared-zone format: a filter that names the pile is satisfied
     /// for every seat, on the controller axis and on `Owned`.
@@ -20050,6 +20065,10 @@ mod dandan_axis_collapse_tests {
         ZoneChangeRecord {
             core_types: vec![CoreType::Creature],
             owner: P0,
+            arrival: crate::types::game_state::ArrivalIdentity {
+                owner: P0,
+                controller: P0,
+            },
             controller: P0,
             ..ZoneChangeRecord::test_minimal(ObjectId(7), from, Zone::Hand)
         }
@@ -20064,6 +20083,62 @@ mod dandan_axis_collapse_tests {
             let ctx = FilterContext::from_source_with_controller(SOURCE, seat);
             matches_target_filter_on_zone_change_record(state, record, filter, &ctx)
         })
+    }
+
+    #[test]
+    fn a_record_filter_compares_the_installed_identity() {
+        let state = dandan();
+        let mut moved = record(Some(Zone::Exile));
+        moved.to_zone = Zone::Battlefield;
+        moved.arrival = crate::types::game_state::ArrivalIdentity {
+            owner: P1,
+            controller: P1,
+        };
+        let controller_you = typed(Some(ControllerRef::You), vec![]);
+        let owned_you = typed(None, vec![owned(ControllerRef::You)]);
+        assert_eq!(
+            record_admitted(&state, &moved, &controller_you),
+            OPPONENT_ONLY,
+            "the controller axis reads the installed controller"
+        );
+        assert_eq!(
+            record_admitted(&state, &moved, &owned_you),
+            OPPONENT_ONLY,
+            "the owner axis reads the installed owner"
+        );
+        let any_owned_you = typed(
+            None,
+            vec![FilterProp::AnyOf {
+                props: vec![owned(ControllerRef::You)],
+            }],
+        );
+        assert_eq!(
+            record_admitted(&state, &moved, &any_owned_you),
+            OPPONENT_ONLY,
+            "a nested Owned reads the installed owner"
+        );
+        let not_owned_you = typed(
+            None,
+            vec![FilterProp::Not {
+                prop: Box::new(owned(ControllerRef::You)),
+            }],
+        );
+        assert_eq!(
+            record_admitted(&state, &moved, &not_owned_you),
+            OWNER_ONLY,
+            "a negated Owned reads the installed owner"
+        );
+        let unmoved = record(Some(Zone::Exile));
+        assert_eq!(
+            record_admitted(&state, &unmoved, &controller_you),
+            OWNER_ONLY,
+            "reach: without a rebind the departure seat answers"
+        );
+        assert_eq!(
+            record_admitted(&state, &unmoved, &any_owned_you),
+            OWNER_ONLY,
+            "reach: a nested Owned answers on an unmoved record"
+        );
     }
 
     /// The record door licenses on the zone the card left.
@@ -20231,6 +20306,10 @@ mod dandan_axis_collapse_tests {
             to: Zone::Hand,
             record: Box::new(ZoneChangeRecord {
                 owner: P1,
+                arrival: crate::types::game_state::ArrivalIdentity {
+                    owner: P1,
+                    controller: P1,
+                },
                 controller: P1,
                 core_types: vec![CoreType::Creature],
                 ..ZoneChangeRecord::test_minimal(ObjectId(7), Some(Zone::Library), Zone::Hand)

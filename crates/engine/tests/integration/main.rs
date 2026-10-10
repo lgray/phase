@@ -278,6 +278,7 @@ mod dandan_shared_container_casts;
 mod dandan_shared_pile_storage;
 mod dandan_simultaneous_draw;
 mod dandan_wheel_split;
+mod dandan_zone_change_identity;
 mod daretti_emblem_simultaneous_death;
 mod dark_confidant_upkeep;
 mod dark_depths_thespian_stage;
