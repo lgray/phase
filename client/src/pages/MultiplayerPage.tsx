@@ -293,7 +293,7 @@ function MultiplayerPageContent({
         ?? hostingLobbySource(useMultiplayerStore.getState()),
     };
     navigate(location.pathname, { replace: true, state: null });
-    // A supplied-deck format takes the empty submission, so a rejected join re-dials once with it.
+    // A supplied-deck format takes the empty submission, so a rejected join re-dials with it.
     if (isSuppliedFormat(action.format)) {
       void executeAction(action);
       return;
