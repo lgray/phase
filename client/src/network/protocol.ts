@@ -112,7 +112,7 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *       game_setup and state_update. Bumped with full-game protocol 125.
  *  106 — game_setup and state_update carry GameState, whose resolved-rules journal
  *       now admits a land-play rebound_from (Library/Graveyard/Exile -> Battlefield).
- *       A v102 peer rejects the journal, so first contact rejects the skew. Bumped
+ *       A v105 peer rejects the journal, so first contact rejects the skew. Bumped
  *       with full-game protocol 124.
  *  105 — game_setup and state_update carry GameState, whose ability
  *       definitions now carry the "prepared spell" filter tag, a scope on

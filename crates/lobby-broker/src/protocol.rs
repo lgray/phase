@@ -60,9 +60,9 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 126 — `ZoneChangeRecord` gains `arrival` (the owner and controller the destination object holds), serialized inside `GameState` and in the resolved-rules journal's zone-change commands; a v122 peer rejects the journal when the departure owner differs from the command owner. Full-game peers and P2P move in lockstep (wire 108); no lobby carrier names it.
+/// 126 — `ZoneChangeRecord` gains `arrival` (the owner and controller the destination object holds), serialized inside `GameState` and in the resolved-rules journal's zone-change commands; a v125 peer rejects the journal when the departure owner differs from the command owner. Full-game peers and P2P move in lockstep (wire 108); no lobby carrier names it.
 /// 125 — `MulliganDecisionEntry` and `MulliganDeclaration` (inside `WaitingFor::MulliganDecision`) gain `free_reveals_taken`. Full-game peers and P2P move in lockstep (wire 107); no lobby carrier names it.
-/// 124 — the resolved-rules journal admits a land-play `rebound_from` on a `ResolvedZoneChangeCommand` (Library/Graveyard/Exile -> Battlefield), serialized inside `GameState.resolved_rules_journal`. A v120 peer rejects the state as an invalid resolved-rules journal. Full-game peers and P2P move in lockstep (wire 106); no lobby carrier names it.
+/// 124 — the resolved-rules journal admits a land-play `rebound_from` on a `ResolvedZoneChangeCommand` (Library/Graveyard/Exile -> Battlefield), serialized inside `GameState.resolved_rules_journal`. A v123 peer rejects the state as an invalid resolved-rules journal. Full-game peers and P2P move in lockstep (wire 106); no lobby carrier names it.
 /// 123 — `FilterProp::PrepareSpell` ("a prepared spell" cast-trigger qualifier,
 ///      CR 722.3d), `scope` on `Effect::BecomePrepared` /
 ///      `BecomeUnprepared` (mass "each creature you control becomes
