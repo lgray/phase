@@ -165,9 +165,13 @@ fn seat_refusal(body: &[TraceEntry], holder: PlayerId) -> Option<OfferRefusal> {
     }
 }
 
-/// The span's plays and answers, rotated to begin at the trace's current position; priority
-/// passes are left to the replay (CR 117.4).
-fn period_items(entries: &im::Vector<TraceEntry>, span: NamedSpan) -> Vec<PeriodItem> {
+/// The span's plays and answers as `frame` replays them, rotated to begin at the trace's current
+/// position; priority passes are left to the replay (CR 117.4).
+fn period_items(
+    entries: &im::Vector<TraceEntry>,
+    span: NamedSpan,
+    frame: &GameState,
+) -> Vec<PeriodItem> {
     let len = span.end - span.start;
     let rotation = if span.end < entries.len() {
         (entries.len() - span.start) % len
@@ -178,6 +182,30 @@ fn period_items(entries: &im::Vector<TraceEntry>, span: NamedSpan) -> Vec<Period
         .chain(span.start..span.start + rotation)
         .filter_map(|at| {
             let entry = &entries[at];
+            // CR 111.7 + CR 111.1: a play whose token source the period made again is the play
+            // one period later, made from that token, which the period minted before it.
+            if let (
+                EntryKind::Play {
+                    action: GameAction::ActivateAbility { ability_index, .. },
+                    ..
+                },
+                Some(source_id),
+            ) = (&entry.kind, play_trace::remade_play_source(frame, span, at))
+            {
+                let minted = frame.next_object_id - entries[entries.len() - len].next_object_id;
+                return Some(PeriodItem {
+                    seat: entry.seat,
+                    action: GameAction::ActivateAbility {
+                        source_id,
+                        ability_index: *ability_index,
+                    },
+                    play: Some((entry.depth, entry.prompt)),
+                    mandatory_answer: false,
+                    next_object_id: entry.next_object_id + minted,
+                    minted_since: entry.next_object_id,
+                    cost_move: None,
+                });
+            }
             let minted_since = entries[at.saturating_sub(len)].next_object_id;
             let (action, play, cost_move, mandatory_answer) = match &entry.kind {
                 EntryKind::Play { action, .. } => {
@@ -732,7 +760,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     if let Some(refusal) = seat_refusal(&body, holder) {
         return Err(refusal);
     }
-    let items = period_items(entries, span);
+    let items = period_items(entries, span, frame);
     #[cfg(feature = "test-support")]
     crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
     let _probe = SimulationProbeGuard::enter();
@@ -852,7 +880,7 @@ pub fn confirm_for_tests(state: &GameState) -> Vec<(NamedSpan, Result<Vec<String
 pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, OfferRefusal>> {
     let span = play_trace::play_trace_view(state)?.offered?;
     let holder = state.waiting_for.acting_player()?;
-    let items = period_items(play_trace::span_entries(state, span)?, span);
+    let items = period_items(play_trace::span_entries(state, span)?, span, state);
     let mut frame = state.clone();
     frame.waiting_for = WaitingFor::Priority { player: holder };
     let _probe = SimulationProbeGuard::enter();

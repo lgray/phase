@@ -6141,11 +6141,11 @@ enum TakeRoute {
 /// CR 732.2c: the one route decision for an accepted proposal. The mark stands only where it
 /// reaches what the replay would: a zero or shortened count is performed as agreed (CR 732.2b),
 /// a period standing on the stack cannot be performed from the step-end collapse's empty stack,
-/// the mark would refill restricted mana without its restriction (CR 106.6), its mint makes
-/// bare tapped copies under the proposer, without a keyword, delayed trigger, other controller or
-/// certified departure the cover admitted as growth, its batched collapse must not miss what the
-/// board observes, and a signed proposal's departures are seen only as its repetitions cross them
-/// (CR 704.3).
+/// the mark would refill restricted mana without its restriction (CR 106.6), it batches none of
+/// the damage a period marks (CR 120.3e), its mint makes bare tapped copies under the proposer,
+/// without a keyword, delayed trigger, other controller or certified departure the cover admitted
+/// as growth, its batched collapse must not miss what the board observes, and a signed proposal's
+/// departures are seen only as its repetitions cross them (CR 704.3).
 fn take_route(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
@@ -6164,7 +6164,7 @@ fn take_route(
     }
     // Every accept-time derivation below reads this one driven cycle.
     let frames = drive_one_period_frames(state, &proposal.period, proposal.proposer);
-    if adds_restricted_mana(frames.as_ref(), proposal.proposer) {
+    if adds_restricted_mana(frames.as_ref(), proposal.proposer) || marks_damage(frames.as_ref()) {
         return TakeRoute::Replay;
     }
     let growth = PeriodGrowth::derive(frames.as_ref(), proposal.proposer);
@@ -6286,6 +6286,17 @@ fn adds_restricted_mana(frames: Option<&(GameState, GameState)>, controller: Pla
             })
     };
     frames.is_some_and(|(before, after)| restricted(after) > restricted(before))
+}
+
+/// CR 120.3e + CR 120.6: whether one driven cycle leaves more damage marked on a battlefield
+/// permanent, whoever controls it, than it found there.
+fn marks_damage(frames: Option<&(GameState, GameState)>) -> bool {
+    frames.is_some_and(|(before, after)| {
+        after.battlefield.iter().any(|id| {
+            let marked = |state: &GameState| state.objects.get(id).map_or(0, |o| o.damage_marked);
+            marked(after) > marked(before)
+        })
+    })
 }
 
 /// PR-7 Phase 4b: CR 732.2a finite materialization of a confirmed `Fixed(N)` loop
@@ -7032,6 +7043,37 @@ pub(crate) fn certify_object_growth_frames(
     // CR 400.7: normalize each frame BEFORE the cover fork so both arms share the normalized
     // frames.
     let (cs_n, cs_n1, cs_n2) = (normalize(s_n), normalize(s_n1), normalize(s_n2));
+    // CR 732.2a: a token the period spent and made again is the same permanent to the board's
+    // recurrence, so each pair is compared without it and without the last-known record of the
+    // spent one; a period that mints nothing else is covered as one that mints nothing.
+    let (first_remade, second_remade) = (remade_tokens(s_n, s_n1), remade_tokens(s_n1, s_n2));
+    if !first_remade.is_empty() || !second_remade.is_empty() {
+        let without = |prior: &GameState, current: &GameState, remade: &[(ObjectId, ObjectId)]| {
+            let (spent, made): (Vec<ObjectId>, Vec<ObjectId>) = remade.iter().copied().unzip();
+            let mut current = crate::analysis::resource::frame_without(current, &made);
+            for id in &spent {
+                current.lki_cache.remove(id);
+                current.lki_copiable_values.remove(id);
+            }
+            (
+                crate::analysis::resource::frame_without(prior, &spent),
+                current,
+            )
+        };
+        let first = without(&cs_n, &cs_n1, &first_remade);
+        if derived_fodder_class(&first.0, &first.1).is_none() {
+            let second = without(&cs_n1, &cs_n2, &second_remade);
+            let covers = |(prior, current): &(GameState, GameState)| {
+                crate::analysis::resource::resource_recurrence_covers(prior, current, caster)
+                    .map(|(_, cover)| cover)
+            };
+            let cover = covers(&first).zip(covers(&second)).map(|(a, b)| a.max(b));
+            return (
+                ObjectGrowthVerdict::ResourceRecurrence(cover),
+                CoveredGrowth::PerformedOnly,
+            );
+        }
+    }
     // CR 732.2a board recurrence on BOTH pairs — two disjoint recurrence shapes:
     //  - fodder-growth (one HOMOGENEOUS class of k >= 1 members was reproduced each period,
     //    `derived_fodder_class` is `Some`): cover modulo the inert reproduced fodder class (the
@@ -7109,15 +7151,57 @@ pub fn certify_object_growth_frames_for_tests(
 /// direction an extra member matching the class does not make the class heterogeneous, so the
 /// count would silently rise.
 ///
-/// ONE test, TWO readers: the class derivation and the producer's token-axis feed, which must
-/// publish the count the boundary mint will reproduce.
+/// CR 111.1 + CR 111.3: a token the period made in place of one it spent ([`remade_tokens`]) is
+/// not a mint either, since the board holds the same permanents after it as before.
+///
+/// ONE test, THREE readers: the class derivation, the sign check's token-axis feed and
+/// `ResourceVector::period`, which must publish the count the boundary mint will reproduce.
 pub(crate) fn minted_battlefield_ids(before: &GameState, after: &GameState) -> Vec<ObjectId> {
+    let remade = remade_tokens(before, after);
+    new_battlefield_ids(before, after)
+        .into_iter()
+        .filter(|id| remade.iter().all(|(_, made)| made != id))
+        .collect()
+}
+
+/// The battlefield objects of `after` that `before` holds in no zone.
+fn new_battlefield_ids(before: &GameState, after: &GameState) -> Vec<ObjectId> {
     after
         .battlefield
         .iter()
         .copied()
         .filter(|id| !before.battlefield.contains(id) && !before.objects.contains_key(id))
         .collect()
+}
+
+/// CR 111.7 + CR 111.3: each battlefield object of `before` that has ceased to exist in `after`,
+/// with one object `after` made that has its tapped status, its content and its copiable values.
+fn remade_tokens(before: &GameState, after: &GameState) -> Vec<(ObjectId, ObjectId)> {
+    let spent: Vec<_> = before
+        .battlefield
+        .iter()
+        .filter(|id| !after.objects.contains_key(id))
+        .filter_map(|id| before.objects.get(id))
+        .collect();
+    if spent.is_empty() {
+        return Vec::new();
+    }
+    let values = crate::game::printed_cards::intrinsic_copiable_values;
+    let mut made = new_battlefield_ids(before, after);
+    let mut pairs = Vec::new();
+    for spent in spent {
+        let twin = made.iter().position(|candidate| {
+            after.objects.get(candidate).is_some_and(|candidate| {
+                spent.tapped == candidate.tapped
+                    && crate::analysis::resource::fodder_content_eq(spent, candidate)
+                    && values(spent) == values(candidate)
+            })
+        });
+        if let Some(twin) = twin {
+            pairs.push((spent.id, made.remove(twin)));
+        }
+    }
+    pairs
 }
 
 /// CR 111.3 / CR 707.2: the content class of the reproduced fodder, and the per-cycle count `k` of
@@ -26700,6 +26784,46 @@ mod minted_battlefield_set_tests {
             vec![ObjectId(2), ObjectId(3)],
             "the same arrival counts as MINTED once `before` no longer knows the id"
         );
+    }
+
+    /// CR 111.7 + CR 111.3: a token made in place of one that ceased to exist is not a mint; a
+    /// second one, one of another name, and one with other copiable values each are.
+    #[test]
+    fn a_token_made_again_is_not_minted() {
+        let mut before = GameState::new_two_player(7);
+        put(&mut before, 1, "Engine", Zone::Battlefield);
+        let spent = put(&mut before, 2, "Treasure", Zone::Battlefield);
+        let mut ceased = before.clone();
+        ceased.objects.remove(&spent);
+        ceased.battlefield.retain(|id| *id != spent);
+        let made = |name: &str| {
+            let mut after = ceased.clone();
+            let id = put(&mut after, 3, name, Zone::Battlefield);
+            (after, id)
+        };
+
+        let (remade, twin) = made("Treasure");
+        assert_eq!(minted_battlefield_ids(&before, &remade), vec![]);
+
+        let mut two = remade.clone();
+        let second = put(&mut two, 4, "Treasure", Zone::Battlefield);
+        assert_eq!(minted_battlefield_ids(&before, &two), vec![second]);
+
+        let (renamed, gold) = made("Gold");
+        assert_eq!(minted_battlefield_ids(&before, &renamed), vec![gold]);
+
+        let mut keyworded = remade.clone();
+        keyworded
+            .objects
+            .get_mut(&twin)
+            .expect("the made token is live")
+            .base_keywords
+            .push(crate::types::keywords::Keyword::Flying);
+        assert_eq!(minted_battlefield_ids(&before, &keyworded), vec![twin]);
+
+        let mut moved = remade.clone();
+        put(&mut moved, spent.0, "Treasure", Zone::Graveyard);
+        assert_eq!(minted_battlefield_ids(&before, &moved), vec![twin]);
     }
 
     /// **`derived_fodder_class` reports `k` over the MINTED members only.**

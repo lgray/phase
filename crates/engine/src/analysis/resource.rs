@@ -7818,13 +7818,16 @@ pub(crate) fn driving_resources_non_decreasing(
     //     destroyed, so a board-growing loop that ALSO accrues damage on the controller's own
     //     engine each cycle is self-terminating, not a sustainable CR 732.2a shortcut.
     //     `project_out_resources` zeroes `damage_marked` (invisible to strict loop-equality);
-    //     this recovers the sign. Summed across the controller's battlefield (damage is one
-    //     scalar per object, no per-kind split). A DECREASE (heal) is allowed.
+    //     this recovers the sign. Summed across the controller's battlefield permanents that
+    //     lethal damage can destroy (damage is one scalar per object, no per-kind split); CR
+    //     702.12b: a permanent with indestructible ignores that state-based action. A DECREASE
+    //     (heal) is allowed.
     let damage_total = |s: &GameState| -> u64 {
         s.battlefield
             .iter()
             .filter_map(|id| s.objects.get(id))
             .filter(|o| o.controller == controller)
+            .filter(|o| !o.has_keyword(&crate::types::keywords::Keyword::Indestructible))
             .map(|o| o.damage_marked as u64)
             .sum()
     };
@@ -14327,6 +14330,27 @@ mod tests {
             sign_check(&prior, &healed),
             "reach-guard: a damage_marked DECREASE (2→0 heal) must still PASS"
         );
+    }
+
+    /// CR 702.12b + CR 704.5g: damage marked on an indestructible permanent never destroys it,
+    /// so its growth is not a consumed engine.
+    #[test]
+    fn sign_check_damage_marked_on_indestructible_not_vetoed() {
+        let mut prior = GameState::new_two_player(7);
+        let oid = inert_token(&mut prior, 620, 0, "Engine");
+        prior.objects.get_mut(&oid).unwrap().damage_marked = 2;
+        let mut current = prior.clone();
+        current.objects.get_mut(&oid).unwrap().damage_marked = 3;
+        assert!(!sign_check(&prior, &current));
+        for frame in [&mut prior, &mut current] {
+            frame
+                .objects
+                .get_mut(&oid)
+                .unwrap()
+                .keywords
+                .push(crate::types::keywords::Keyword::Indestructible);
+        }
+        assert!(sign_check(&prior, &current));
     }
 
     /// carry b controller-scoping: an OPPONENT's damage_marked increase is NOT vetoed (the
