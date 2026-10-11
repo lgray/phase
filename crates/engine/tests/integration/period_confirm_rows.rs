@@ -2209,7 +2209,6 @@ fn in_a_best_of_three(runner: &mut GameRunner) {
     runner.state_mut().set_match_config(MatchConfig {
         match_type: MatchType::Bo3,
         loop_detection: LoopDetectionMode::Interactive,
-        ..Default::default()
     });
 }
 

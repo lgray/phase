@@ -20611,7 +20611,7 @@ mod stage2_injector_tests {
     /// The removal is observed at the ACTIVE PLAYER's own beat on this rig, so the new arm's
     /// position ahead of the settle arm is load-bearing here: demoted below it, the settle arm
     /// takes that beat, the drive continues, and the removal is returned one beat later at the
-    /// next opponent window. The order against the game-end arm is not asserted by this row.
+    /// next opponent window.
     ///
     /// REVERT-PROBE: delete the `SeatLeft` arm ⇒ the drive continues past the first removal and
     /// reaches `CrossLethal` with both opponents dead ⇒ the `SeatLeft` match FAILS.

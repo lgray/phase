@@ -316,9 +316,8 @@ pub fn apply_trusted_match_forfeit(
         winner: Some(winner),
     };
 
-    // CR 104.1 + CR 723.1: the forfeit completes the match before parking the
-    // wait, so `handle_game_over_transition` early-returns on it and never runs
-    // — this is the one ending that has to end player control itself.
+    // CR 104.1 + CR 723.1: a match forfeit does not go through
+    // `elimination::end_game`, so it ends player control itself.
     crate::game::turn_control::end_all_player_control(state);
 
     Ok(vec![GameEvent::GameOver {
@@ -801,9 +800,8 @@ mod tests {
         );
     }
 
-    /// The forfeit completes the match before parking the wait, so every later
-    /// `handle_game_over_transition` early-returns: it is the one ending that has
-    /// to end player control itself.
+    /// CR 104.1 + CR 723.1: a match forfeit does not go through
+    /// `elimination::end_game`, so it ends player control itself.
     #[test]
     fn a_trusted_match_forfeit_ends_player_control() {
         let mut state = state_with_live_player_control(MatchType::Bo3);

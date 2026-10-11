@@ -17581,7 +17581,6 @@ fn install_match(runner: &mut GameRunner, match_type: MatchType, mode: LoopDetec
     runner.state_mut().set_match_config(MatchConfig {
         match_type,
         loop_detection: mode,
-        ..Default::default()
     });
 }
 
@@ -17692,7 +17691,8 @@ fn a_natural_drain_death_in_a_best_of_three_reaches_sideboarding() {
 /// game on the record and reaches its match.
 #[test]
 fn an_until_lethal_crown_is_recorded_and_reaches_its_match() {
-    let boards: [(&str, fn() -> (GameRunner, ObjectId)); 2] = [
+    type Setup = fn() -> (GameRunner, ObjectId);
+    let boards: [(&str, Setup); 2] = [
         ("drain", || {
             let (runner, kickoff, _bolt, _cleric) =
                 setup_2p_optional_drain(LoopDetectionMode::Interactive);
