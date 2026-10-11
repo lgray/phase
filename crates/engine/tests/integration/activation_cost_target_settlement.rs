@@ -790,13 +790,41 @@ fn a_settlement_election_survives_a_restore_and_never_re_announces() {
             | WaitingFor::TargetSelection { .. }
     )));
     assert_eq!(before - pool(&restored, P0), 1, "the elected total");
-    let entry = restored.state().stack.back().expect("placed");
+    let state = restored.state();
+    let entry = state
+        .stack
+        .iter()
+        .find(|entry| {
+            matches!(
+                entry.kind,
+                engine::types::game_state::StackEntryKind::ActivatedAbility { .. }
+            )
+        })
+        .expect("placed");
     assert_eq!(entry.source_id, src);
     let engine::types::game_state::StackEntryKind::ActivatedAbility { ability, .. } = &entry.kind
     else {
         panic!("an activated ability");
     };
     assert_eq!(ability.targets, vec![object(own)], "the original target");
+    // CR 603.2 + CR 602.2b: Professor Hojo's target trigger fired when the
+    // target was declared, before the election paused the activation, and the
+    // carrier holding it survived the restore.
+    let hojo_triggers = state
+        .stack
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.kind,
+                engine::types::game_state::StackEntryKind::TriggeredAbility { source_id, .. }
+                    if state.objects[source_id].name == "Professor Hojo"
+            )
+        })
+        .count();
+    assert_eq!(
+        hojo_triggers, 1,
+        "Hojo's target trigger is on the stack once"
+    );
 }
 
 /// A costlier elected total that turns out unpayable reverses the activation

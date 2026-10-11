@@ -96,6 +96,7 @@ mod bbfu10_entered_this_turn_snapshot;
 mod bbfu7_attacks_if_able_not_goad;
 mod become_choice_trailing_duration;
 mod become_prepared_declared_target;
+mod becomes_target_paused_cast_triggers;
 mod belbe_thornbow_life_loss;
 mod belladonna_took;
 mod best_of_three_ceiling;

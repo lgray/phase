@@ -1581,6 +1581,11 @@ fn apply_action_boundary_core(
             lifecycle,
         });
     }
+    // CR 601.2c + CR 602.2b + CR 603.2: the live announcement's trigger
+    // carrier is held by `announcement_triggers` for this action. The boundary
+    // snapshot above still holds it on its `PendingCast`, so every restore path
+    // below returns it there.
+    super::announcement_triggers::begin_action(state);
     let mut result = match if payment_transaction::owns_action(state, &action) {
         // All staged-payment actions enter through this admission point. The
         // authenticated actor is recorded for deterministic replay; the
@@ -1673,6 +1678,15 @@ fn apply_action_boundary_core(
         state.waiting_for = wf.clone();
         result.waiting_for = wf;
     }
+    // CR 603.2 + CR 603.3: events this action emitted while the announcement
+    // stays paused are staged into its carrier; a spell's carrier returns to
+    // whichever owner now holds the announcement. A reducer arm can return a
+    // prompt carrying the announcement without having written it to the state
+    // yet, so the result's wait is the one the custody authority inspects; the
+    // state's own wait is left exactly as the reducer left it.
+    let reducer_wait = std::mem::replace(&mut state.waiting_for, result.waiting_for.clone());
+    super::announcement_triggers::end_action(state, &result.events);
+    result.waiting_for = std::mem::replace(&mut state.waiting_for, reducer_wait);
     Ok(RawActionApplication {
         result,
         journal_start,

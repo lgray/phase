@@ -7728,9 +7728,12 @@ pub struct PendingCast {
     /// `Unlimited` grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_cost_grant_source: Option<ObjectId>,
-    /// CR 602.2a-b + CR 603.2: Trigger consequences from a target-bearing
-    /// activation are collected while its targets and costs are announced, but
-    /// become globally visible only when the ability reaches the stack.
+    /// CR 602.2a-b + CR 601.2c + CR 603.2: Trigger consequences of an announced
+    /// spell or target-bearing activation are collected while its targets and
+    /// costs are announced, but become globally visible only when the spell
+    /// becomes cast (CR 601.2i) or the ability reaches the stack. Custody is
+    /// owned by `game::announcement_triggers`; despite the field name it
+    /// carries spell announcements too (the wire name is kept).
     ///
     /// The carrier is durable across interactive cost prompts and is redacted
     /// from every per-viewer state projection; its journal is engine-private
@@ -8666,21 +8669,32 @@ impl GameState {
         }
     }
 
-    /// Temporarily removes the activation-local trigger transaction from the
-    /// pending cast that currently owns it.
+    /// The live owner of the announced cast or activation's trigger carrier.
     ///
-    /// `ManaPayment` stores its `PendingCast` in `GameState::pending_cast`;
-    /// every other interactive casting prompt embeds it in `WaitingFor`.
-    /// Keeping that routing distinction here prevents individual cost handlers
-    /// from choosing the wrong continuation carrier.
+    /// CR 601.2c + CR 602.2b + CR 603.2: events emitted while a cast or an
+    /// activation is announced are collected into one private carrier that
+    /// rides the announcement's [`PendingCast`]. Whichever typed owner holds
+    /// that `PendingCast` holds the carrier; [`PendingCastOwner`] enumerates
+    /// them.
+    pub(crate) fn pending_trigger_carrier_owner(&self) -> Option<PendingCastOwner> {
+        let owners = self.live_pending_cast_owners();
+        owners
+            .iter()
+            .copied()
+            .find(|owner| {
+                self.pending_cast_at(*owner)
+                    .is_some_and(|pending| pending.activation_trigger_collection.is_some())
+            })
+            .or_else(|| owners.first().copied())
+    }
+
+    /// Temporarily removes the announcement-local trigger transaction from the
+    /// pending cast that currently owns it (any [`PendingCastOwner`]).
     pub(crate) fn take_pending_activation_trigger_collection(
         &mut self,
     ) -> Option<Box<crate::game::triggers::PendingActivationTriggerCollection>> {
-        if let Some(pending) = self.pending_cast.as_mut() {
-            return pending.activation_trigger_collection.take();
-        }
-        self.waiting_for
-            .pending_cast_mut()?
+        let owner = self.pending_trigger_carrier_owner()?;
+        self.pending_cast_at_mut(owner)?
             .activation_trigger_collection
             .take()
     }
@@ -8692,12 +8706,254 @@ impl GameState {
         &mut self,
         collection: Box<crate::game::triggers::PendingActivationTriggerCollection>,
     ) {
-        if let Some(pending) = self.pending_cast.as_mut() {
+        if let Some(pending) = self
+            .pending_trigger_carrier_owner()
+            .and_then(|owner| self.pending_cast_at_mut(owner))
+        {
             pending.activation_trigger_collection = Some(collection);
-            return;
         }
-        if let Some(pending) = self.waiting_for.pending_cast_mut() {
-            pending.activation_trigger_collection = Some(collection);
+    }
+
+    /// Every typed owner currently holding a live [`PendingCast`], in custody
+    /// precedence order.
+    pub(crate) fn live_pending_cast_owners(&self) -> Vec<PendingCastOwner> {
+        let owners: Vec<PendingCastOwner> = PendingCastOwner::ALL
+            .into_iter()
+            .filter(|owner| self.pending_cast_at(*owner).is_some())
+            .collect();
+        // One announcement is in flight at a time (CR 601.2 / CR 602.2 do not
+        // nest; mana abilities carry no `PendingCast`), so every owner that is
+        // live names the same announcement.
+        debug_assert!(
+            owners.windows(2).all(|pair| {
+                let (a, b) = (
+                    self.pending_cast_at(pair[0]).expect("filtered live"),
+                    self.pending_cast_at(pair[1]).expect("filtered live"),
+                );
+                a.object_id == b.object_id
+                    && a.activation_ability_index == b.activation_ability_index
+            }),
+            "two live PendingCast owners name different announcements: {owners:?}"
+        );
+        owners
+    }
+
+    /// The [`PendingCast`] held by `owner`, if that owner is live.
+    pub(crate) fn pending_cast_at(&self, owner: PendingCastOwner) -> Option<&PendingCast> {
+        match owner {
+            PendingCastOwner::External => self.pending_cast.as_deref(),
+            PendingCastOwner::Prompt => self.waiting_for.pending_cast_ref(),
+            PendingCastOwner::DeferredLifeCost => {
+                match self.pending_deferred_life_cost_resume.as_ref()? {
+                    DeferredLifeCostResume::Cast { pending, .. } => pending.as_deref(),
+                    DeferredLifeCostResume::PayAmount { .. }
+                    | DeferredLifeCostResume::ManaRoot { .. } => None,
+                }
+            }
+            PendingCastOwner::CostMove => match self.pending_cost_move_resume.as_ref()? {
+                PendingCostMoveResume::Cast { pending, .. }
+                | PendingCostMoveResume::SacrificeForCost { pending, .. } => pending.as_deref(),
+                PendingCostMoveResume::CollectEvidencePayment { resume, .. } => {
+                    match resume.as_ref() {
+                        CollectEvidenceResume::Casting { pending_cast, .. } => Some(pending_cast),
+                        CollectEvidenceResume::Effect { .. }
+                        | CollectEvidenceResume::ManaAbility { .. } => None,
+                    }
+                }
+                PendingCostMoveResume::ActivationMillPayment { pending, .. } => Some(pending),
+                PendingCostMoveResume::WardSacrificePayment { .. }
+                | PendingCostMoveResume::ReplacementMayCost { .. }
+                | PendingCostMoveResume::Foretell { .. }
+                | PendingCostMoveResume::UnlessBouncePayment { .. }
+                | PendingCostMoveResume::ManaAbilityPayment { .. }
+                | PendingCostMoveResume::LoyaltyActivation { .. }
+                | PendingCostMoveResume::CounterAdditionUnlessPayment { .. }
+                | PendingCostMoveResume::RandomDiscardUnlessPayment(..) => None,
+            },
+            PendingCastOwner::DiscardForCost => match self.pending_discard_for_cost.as_deref()? {
+                PendingDiscardForCostResume::Chosen { pending, .. }
+                | PendingDiscardForCostResume::Random { pending, .. } => Some(pending),
+            },
+        }
+    }
+
+    /// Mutable counterpart of [`Self::pending_cast_at`].
+    pub(crate) fn pending_cast_at_mut(
+        &mut self,
+        owner: PendingCastOwner,
+    ) -> Option<&mut PendingCast> {
+        match owner {
+            PendingCastOwner::External => self.pending_cast.as_deref_mut(),
+            PendingCastOwner::Prompt => self.waiting_for.pending_cast_mut(),
+            PendingCastOwner::DeferredLifeCost => {
+                match self.pending_deferred_life_cost_resume.as_mut()? {
+                    DeferredLifeCostResume::Cast { pending, .. } => pending.as_deref_mut(),
+                    DeferredLifeCostResume::PayAmount { .. }
+                    | DeferredLifeCostResume::ManaRoot { .. } => None,
+                }
+            }
+            PendingCastOwner::CostMove => match self.pending_cost_move_resume.as_mut()? {
+                PendingCostMoveResume::Cast { pending, .. }
+                | PendingCostMoveResume::SacrificeForCost { pending, .. } => pending.as_deref_mut(),
+                PendingCostMoveResume::CollectEvidencePayment { resume, .. } => {
+                    match resume.as_mut() {
+                        CollectEvidenceResume::Casting { pending_cast, .. } => Some(pending_cast),
+                        CollectEvidenceResume::Effect { .. }
+                        | CollectEvidenceResume::ManaAbility { .. } => None,
+                    }
+                }
+                PendingCostMoveResume::ActivationMillPayment { pending, .. } => Some(pending),
+                PendingCostMoveResume::WardSacrificePayment { .. }
+                | PendingCostMoveResume::ReplacementMayCost { .. }
+                | PendingCostMoveResume::Foretell { .. }
+                | PendingCostMoveResume::UnlessBouncePayment { .. }
+                | PendingCostMoveResume::ManaAbilityPayment { .. }
+                | PendingCostMoveResume::LoyaltyActivation { .. }
+                | PendingCostMoveResume::CounterAdditionUnlessPayment { .. }
+                | PendingCostMoveResume::RandomDiscardUnlessPayment(..) => None,
+            },
+            PendingCastOwner::DiscardForCost => {
+                match self.pending_discard_for_cost.as_deref_mut()? {
+                    PendingDiscardForCostResume::Chosen { pending, .. }
+                    | PendingDiscardForCostResume::Random { pending, .. } => Some(pending),
+                }
+            }
+        }
+    }
+
+    /// Retires `owner`'s [`PendingCast`] — and the prompt it parked behind —
+    /// without finalizing or cancelling it, because `departing_player` left
+    /// (CR 800.4a). A spell's prompt hands priority to the active player. An
+    /// activation's prompt, an external payment prompt left without its
+    /// `PendingCast`, and a typed cost root's orphaned child prompt become a
+    /// priority wait for the same player, which the departure sweep re-points
+    /// past a player who has left exactly as it would have re-pointed the
+    /// prompt. Turning the prompt into priority here, before the departure's
+    /// trigger settlement, lets that settlement run in the same pass (CR 603.3).
+    pub(crate) fn retire_pending_cast_owner(
+        &mut self,
+        owner: PendingCastOwner,
+        departing_player: PlayerId,
+    ) {
+        match owner {
+            PendingCastOwner::External => {
+                self.pending_cast = None;
+                if self.waiting_for.has_pending_cast()
+                    && self.waiting_for.pending_cast_ref().is_none()
+                {
+                    if let Some(player) = self.waiting_for.acting_player() {
+                        self.waiting_for = WaitingFor::Priority { player };
+                    }
+                }
+            }
+            PendingCastOwner::Prompt => {
+                let is_activation = self
+                    .waiting_for
+                    .pending_cast_ref()
+                    .is_some_and(|pending| pending.activation_ability_index.is_some());
+                let player = if is_activation {
+                    self.waiting_for
+                        .acting_player()
+                        .unwrap_or(self.active_player)
+                } else {
+                    self.active_player
+                };
+                self.waiting_for = WaitingFor::Priority { player };
+            }
+            PendingCastOwner::DeferredLifeCost => {
+                self.pending_deferred_life_cost_resume = None;
+                self.retire_orphaned_cost_child_prompt(departing_player);
+            }
+            PendingCastOwner::CostMove => {
+                self.pending_cost_move_resume = None;
+                self.retire_orphaned_cost_child_prompt(departing_player);
+            }
+            PendingCastOwner::DiscardForCost => {
+                self.pending_discard_for_cost = None;
+                self.retire_orphaned_cost_child_prompt(departing_player);
+            }
+        }
+    }
+
+    /// CR 616.1: a typed cost root parks its announcement behind a child prompt
+    /// (a replacement choice). Once the departing chooser's replacement record
+    /// is gone, that prompt has no owner left.
+    fn retire_orphaned_cost_child_prompt(&mut self, departing_player: PlayerId) {
+        let orphaned = self.pending_replacement.is_none()
+            && !matches!(
+                self.waiting_for,
+                WaitingFor::Priority { .. } | WaitingFor::GameOver { .. }
+            )
+            && !self.waiting_for.has_pending_cast()
+            && self.waiting_for.acting_player() == Some(departing_player);
+        if orphaned {
+            self.waiting_for = WaitingFor::Priority {
+                player: departing_player,
+            };
+        }
+    }
+}
+
+/// CR 601.2 + CR 602.2b: every typed owner of an announced cast or activation
+/// that has not yet completed. Single custody authority for the
+/// announcement's trigger carrier and for CR 800.4a abandonment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingCastOwner {
+    /// `GameState::pending_cast`: `ManaPayment` and the other external
+    /// payment prompts.
+    External,
+    /// A `PendingCast` embedded in the current `WaitingFor`.
+    Prompt,
+    /// `DeferredLifeCostResume::Cast` (a replacement-paused life payment).
+    DeferredLifeCost,
+    /// The cast-owning `PendingCostMoveResume` roots (a replacement-paused
+    /// cost move).
+    CostMove,
+    /// `PendingDiscardForCostResume` (a replacement-paused discard cost).
+    DiscardForCost,
+}
+
+impl PendingCastOwner {
+    pub(crate) const ALL: [PendingCastOwner; 5] = [
+        PendingCastOwner::External,
+        PendingCastOwner::Prompt,
+        PendingCastOwner::DeferredLifeCost,
+        PendingCastOwner::CostMove,
+        PendingCastOwner::DiscardForCost,
+    ];
+}
+
+/// A spell announcement's trigger carrier while one reducer action owns it.
+/// See [`GameState::in_flight_spell_trigger_carrier`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InFlightSpellTriggerCarrier {
+    /// The announced spell (CR 601.2a) the carrier belongs to.
+    pub(crate) object_id: ObjectId,
+    pub(crate) collection: Box<crate::game::triggers::PendingActivationTriggerCollection>,
+}
+
+/// Which events of the current action's buffer a live announcement owns.
+/// See [`GameState::announcement_event_scope`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AnnouncementEventScope {
+    /// No announcement owns any unstaged event of this buffer: none is live,
+    /// or the events belong to another authority (a departure, CR 800.4a).
+    #[default]
+    Unowned,
+    /// CR 601.2a + CR 602.2a: the announcement owns `events[start..]`. `start`
+    /// is the announcement's inception offset (0 when it was already live at
+    /// action entry) and advances past every event already staged or scanned.
+    From { start: usize },
+}
+
+impl AnnouncementEventScope {
+    /// The scope after an authority has accounted for `events[..end]`.
+    pub(crate) fn advanced_to(self, end: usize) -> Self {
+        match self {
+            AnnouncementEventScope::Unowned => AnnouncementEventScope::Unowned,
+            AnnouncementEventScope::From { start } => AnnouncementEventScope::From {
+                start: start.max(end),
+            },
         }
     }
 }
@@ -21281,7 +21537,7 @@ declare_game_state! {
     /// CR 603.2c: Event occurrences already collected before a player would
     /// receive priority — including the `PhaseChanged` delayed/normal merge, an
     /// activation trigger collection (`casting_costs.rs`,
-    /// `engine_priority::stage_pending_activation_trigger_events`), a dispatched
+    /// `announcement_triggers::stage_announcement_trigger_events`), a dispatched
     /// batch's consumed events, and the `ZoneChanged` occurrences claimed by
     /// `triggers::mark_logical_zone_events_consumed_before_priority`. Consumed by
     /// `triggers::filter_consumed_trigger_events{,_from}` and
@@ -23213,6 +23469,22 @@ declare_game_state! {
     /// Consumed by the (ManaPayment, PassPriority) handler to finalize the cast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_cast: Option<Box<PendingCast>>,
+
+    /// CR 601.2c + CR 601.2i: a spell announcement's trigger carrier, held here
+    /// for the duration of ONE reducer action and returned to whichever
+    /// [`PendingCastOwner`] holds the announcement when the action ends.
+    /// Spell continuations rebuild their `PendingCast` freely, so the carrier
+    /// is not left on it mid-action. Empty at every action boundary; never
+    /// serialized and never part of state equality.
+    #[serde(skip)]
+    pub(crate) in_flight_spell_trigger_carrier: Option<InFlightSpellTriggerCarrier>,
+    /// The part of the current action's event buffer owned by a live
+    /// announcement and not yet staged into its carrier. Established at action
+    /// entry (an announcement already live) or at the announcement's inception
+    /// part-way through the buffer; reset at the next action entry. Never
+    /// serialized and never part of state equality.
+    #[serde(skip)]
+    pub(crate) announcement_event_scope: AnnouncementEventScope,
 
     /// CR 701.54: Per-player ring level (0-3, 4 levels total).
     #[serde(default)]
@@ -29005,6 +29277,8 @@ impl GameState {
             trigger_construction_finisher_ran_this_action: false,
             pending_discard_for_cost: None,
             pending_cast: None,
+            in_flight_spell_trigger_carrier: None,
+            announcement_event_scope: AnnouncementEventScope::Unowned,
             ring_level: HashMap::new(),
             ring_bearer: HashMap::new(),
             dungeon_progress: HashMap::new(),
@@ -32020,6 +32294,8 @@ fn _gamestate_partition_is_total(s: &GameState) {
         trigger_construction_finisher_ran_this_action: _,
         pending_discard_for_cost: _,
         pending_cast: _,
+        in_flight_spell_trigger_carrier: _,
+        announcement_event_scope: _,
         ring_level: _,
         ring_bearer: _,
         dungeon_progress: _,

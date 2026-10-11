@@ -843,18 +843,19 @@ impl TriggerCollectionSession {
     }
 }
 
-/// Trigger collection held by an announced activated ability until its
-/// activation transaction commits or is cancelled.
+/// Trigger collection held by an announced spell or activated ability until its
+/// announcement commits or is cancelled.
 ///
 /// CR 602.2a + CR 602.2b: An activation may cross several payment prompts after targets
 /// have produced trigger events, but none of those events become globally
-/// committed until the full activation is complete. This owner retains only the
+/// committed until the full activation is complete. CR 601.2c + CR 601.2i:
+/// a spell's target-declaration events likewise wait, and their abilities are
+/// put on the stack with the spell's own cast triggers. This owner retains only the
 /// virtual source authority, ordered semantic operations, and collected
 /// contexts. Each continuation reconstructs an ephemeral staged clone from the
 /// current live state and replays the operations before collecting its next
-/// event slice. Dropping it is cancellation: neither operations nor contexts
-/// escape to the live game.
-#[cfg_attr(not(test), allow(dead_code))] // Casting owns this session in the next activation step.
+/// event slice. Dropping it is cancellation (CR 733.1): neither operations nor
+/// contexts escape to the live game.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PendingActivationTriggerCollection {
     overlay: TriggerCollectionOverlay,
@@ -862,12 +863,22 @@ pub(crate) struct PendingActivationTriggerCollection {
     pending_contexts: Vec<PendingTriggerContext>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Exercised by unit tests until casting adopts it.
 impl PendingActivationTriggerCollection {
     #[cfg_attr(not(test), allow(dead_code))] // Construction moves into the activation announcement path next.
     pub(crate) fn for_activated_ability(source_id: ObjectId, controller: PlayerId) -> Self {
         Self {
             overlay: TriggerCollectionOverlay::for_activated_ability(source_id, controller),
+            operation_journal: Vec::new(),
+            pending_contexts: Vec::new(),
+        }
+    }
+
+    /// Creates a spell-announcement collector. CR 601.2a: the announced spell
+    /// is already on the stack, so the targeting source resolves against its
+    /// real stack entry and needs no virtual projection.
+    pub(crate) fn for_spell() -> Self {
+        Self {
+            overlay: TriggerCollectionOverlay::default(),
             operation_journal: Vec::new(),
             pending_contexts: Vec::new(),
         }
@@ -918,7 +929,10 @@ impl PendingActivationTriggerCollection {
 
     /// Commit collector consequences exactly once and append the retained
     /// contexts to the caller's deferred delivery list.
-    #[cfg_attr(not(test), allow(dead_code))] // Called by the activated stack-push boundary next.
+    ///
+    /// CR 800.4d: a triggered ability that would be controlled by a player who
+    /// has left the game isn't put on the stack, so a context whose controller
+    /// left while the announcement was pending is retired here.
     pub(crate) fn commit_into(
         self,
         state: &mut GameState,
@@ -927,7 +941,16 @@ impl PendingActivationTriggerCollection {
         for operation in self.operation_journal {
             let _ = TriggerCollectionSession::apply_operation(state, operation);
         }
-        deferred_contexts.extend(self.pending_contexts);
+        for context in self.pending_contexts {
+            if super::players::is_alive(state, context.pending.controller) {
+                deferred_contexts.push(context);
+            } else {
+                crate::game::lifecycle::record_delayed_terminal(
+                    context.firing(),
+                    crate::game::lifecycle::DelayedTerminalDisposition::Eliminated,
+                );
+            }
+        }
     }
 
     fn rebuild_staged_state(&self, state: &GameState) -> GameState {
@@ -11492,6 +11515,18 @@ pub(crate) fn collect_delayed_triggers_into_deferred(state: &mut GameState, even
     state
         .consumed_before_priority_trigger_events
         .extend(consumed_events);
+}
+
+/// [`collect_delayed_triggers_into_deferred`] for a caller that claims the
+/// batch itself: `events` is a filtered slice of the action buffer, so the
+/// occurrences the matcher would record are not identities in that buffer.
+pub(crate) fn collect_delayed_trigger_contexts_into_deferred(
+    state: &mut GameState,
+    events: &[GameEvent],
+) {
+    let pending =
+        collect_matching_delayed_triggers(state, events, DelayedTriggerEventScope::Any).contexts;
+    state.deferred_triggers.extend(pending);
 }
 
 /// Delayed counterpart to [`collect_sba_choice_triggers_into_deferred`].
