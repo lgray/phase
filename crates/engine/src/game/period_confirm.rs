@@ -420,7 +420,7 @@ fn replay_cycle(
     let mut performed = Vec::new();
     let start = play_trace::WindowKey::of(replay);
     for beat in 0..CYCLE_BEATS {
-        if matches!(replay.waiting_for, WaitingFor::GameOver { .. }) || !end.admits(start, replay) {
+        if replay.game_end.is_some() || !end.admits(start, replay) {
             return Err(OfferRefusal::NoRecurrence);
         }
         let next = done.iter().position(|d| !d);

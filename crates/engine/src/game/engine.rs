@@ -2186,6 +2186,16 @@ impl Drop for SimulationProbeGuard {
 fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     reconcile_terminal_sba(state, result);
     reconcile_loop_shortcut(state, result);
+    settle_finished_game(state, result);
+}
+
+/// CR 104.1 + CR 100.4: a finished game goes to its match here, and the wait the match leaves
+/// is the action's result.
+fn settle_finished_game(state: &mut GameState, result: &mut ActionResult) {
+    if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
+        match_flow::handle_game_over_transition(state);
+        result.waiting_for = state.waiting_for.clone();
+    }
 }
 
 /// CR 704.3: the terminal half of [`reconcile_terminal_result`] — the player-loss SBA safety net
@@ -2216,10 +2226,7 @@ fn reconcile_terminal_sba(state: &mut GameState, result: &mut ActionResult) {
     }
 
     super::elimination::ensure_game_over_if_terminal(state, &mut result.events);
-    if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
-        match_flow::handle_game_over_transition(state);
-        result.waiting_for = state.waiting_for.clone();
-    }
+    settle_finished_game(state, result);
 }
 
 /// CR 732.2a: the loop-shortcut half of [`reconcile_terminal_result`] — the ring road, then the
@@ -2332,14 +2339,7 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
                         // debug `SetInfiniteMana` toggle is the only other producer). It runs
                         // only inside this OFF-gated block, so a default-OFF game never marks ∞.
                         state.mark_unbounded_loop(winner, &delta.unbounded_axes_for(winner));
-                        result.events.push(GameEvent::GameOver {
-                            winner: Some(winner),
-                        });
-                        state.waiting_for = WaitingFor::GameOver {
-                            winner: Some(winner),
-                        };
-                        result.waiting_for = state.waiting_for.clone();
-                        match_flow::handle_game_over_transition(state);
+                        super::elimination::end_game(state, Some(winner), &mut result.events);
                     }
                 }
             }
@@ -2422,14 +2422,7 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             // FIRM #1 — mandatory winning drain: identical to the `On` auto-win.
             // CR 732.2a: mark the loop's unbounded axes; CR 704.5a: terminal GameOver.
             state.mark_unbounded_loop(winner, &delta.unbounded_axes_for(winner));
-            result.events.push(GameEvent::GameOver {
-                winner: Some(winner),
-            });
-            state.waiting_for = WaitingFor::GameOver {
-                winner: Some(winner),
-            };
-            result.waiting_for = state.waiting_for.clone();
-            match_flow::handle_game_over_transition(state);
+            super::elimination::end_game(state, Some(winner), &mut result.events);
         } else {
             // CR 732.2a: OPTIONAL winning drain — only the player with priority may propose
             // the shortcut. Keep that proposer distinct from the already-measured winner; a
@@ -2522,8 +2515,6 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         };
         if drawn {
             super::elimination::end_game(state, None, &mut result.events);
-            result.waiting_for = state.waiting_for.clone();
-            match_flow::handle_game_over_transition(state);
             return;
         }
     }
@@ -5377,9 +5368,6 @@ fn apply_until_lethal_shortcut(
                             w.mark_unbounded_loop(winner, &proposal.unbounded);
                             *state = w;
                             result.events.append(&mut events);
-                            state.waiting_for = WaitingFor::GameOver {
-                                winner: Some(winner),
-                            };
                             result.waiting_for = state.waiting_for.clone();
                         } else {
                             until_lethal_fallback(state, result, committed, proposal.proposer);
@@ -5467,14 +5455,8 @@ fn crown_until_lethal(
     winner: PlayerId,
 ) {
     state.mark_unbounded_loop(winner, &proposal.unbounded);
-    result.events.push(GameEvent::GameOver {
-        winner: Some(winner),
-    });
-    state.waiting_for = WaitingFor::GameOver {
-        winner: Some(winner),
-    };
+    super::elimination::end_game(state, Some(winner), &mut result.events);
     result.waiting_for = state.waiting_for.clone();
-    match_flow::handle_game_over_transition(state);
 }
 
 /// CR 732.2a: the E1 crown refused (no determinate winner / aborted drive) ⇒ roll back to the
@@ -5618,7 +5600,7 @@ enum CycleOutcome {
         events: Vec<GameEvent>,
     },
     /// CR 704.5a: the cycle crossed lethal mid-drive ⇒ the win is already applied to `state`
-    /// (`waiting_for = GameOver{winner}`); `events` include the terminal `GameOver`.
+    /// (`game_end` is recorded); `events` include the terminal `GameOver`.
     CrossLethal {
         state: Box<GameState>,
         winner: Option<PlayerId>,
@@ -5744,15 +5726,13 @@ fn drive_one_shortcut_cycle(
         let mut beat_events: Vec<GameEvent> = Vec::new();
         match pass_priority_once_with_pipeline(&mut work, &mut beat_events, None) {
             // Cross-lethal: COMMIT + STOP. The GameOver event + transition are already in
-            // `work`/`beat_events`.
-            Ok(PriorityPassPipelineOutcome {
-                waiting_for: WaitingFor::GameOver { winner },
-                ..
-            }) => {
+            // `work`/`beat_events`. The record is read because a best-of-three's match
+            // transition has already replaced the wait.
+            Ok(_) if work.game_end.is_some() => {
                 ev.append(&mut beat_events);
                 return CycleOutcome::CrossLethal {
+                    winner: work.game_end.and_then(|end| end.winner),
                     state: Box::new(work),
-                    winner,
                     events: ev,
                 };
             }
@@ -5767,9 +5747,8 @@ fn drive_one_shortcut_cycle(
             // would instead be handed to that arm, which re-runs its recurrence check on a
             // board a seat has just left — and a match there returns `Recurred`, committing the
             // cycle and driving another one past the removal, on a period the certificate no
-            // longer describes. The `GameOver` arm above is disjoint from this pattern, so
-            // their relative order decides nothing: a total wipe stays `CrossLethal` and
-            // CR 104.2a crowns exactly where it does today.
+            // longer describes. The game-end arm above overlaps this pattern and must stay
+            // first: a total wipe stays `CrossLethal` and CR 104.2a crowns there.
             //
             // Gated on `Priority` because CR 732.2a admits only a place where a player has
             // priority. A departure first observed at a non-priority prompt is answered from
@@ -6354,7 +6333,7 @@ fn materialize_fixed_shortcut(
                 &mut result.events,
             );
             // CR 104.2a: a predicted crossing that ended the game ends the take with it.
-            if let WaitingFor::GameOver { .. } = state.waiting_for {
+            if state.game_end.is_some() {
                 result.waiting_for = state.waiting_for.clone();
                 return;
             }
@@ -6528,7 +6507,7 @@ fn materialize_fixed_shortcut(
             }
             // Cross-lethal: COMMIT + STOP, ON THE NAME THE OFFER PUBLISHED. CR 704.5a: the win
             // is already applied to `work` (SBA → GameOver in `events`,
-            // `waiting_for = GameOver`). Do NOT roll back, NOT `mark_unbounded_loop`
+            // `game_end` recorded). Do NOT roll back, NOT `mark_unbounded_loop`
             // (finite ≠ unbounded — contrast the UntilLethal arm).
             //
             // CR 732.2a admits only a sequence "that may be legally taken based on the current
@@ -6566,7 +6545,7 @@ fn materialize_fixed_shortcut(
                 }
                 *state = *s;
                 result.events.append(&mut events);
-                result.waiting_for = WaitingFor::GameOver { winner };
+                result.waiting_for = state.waiting_for.clone();
                 return;
             }
             // CR 732.2a ENDING POINT: a seat left the game and the game continued. Commit the
@@ -6611,7 +6590,7 @@ fn materialize_fixed_shortcut(
             //
             // ⚠ THE THREE TERMINAL ARMS ARE ASYMMETRIC, and a future drive must learn that
             // here rather than by accident. A cycle that takes EVERY remaining opponent to 0 at
-            // once reaches `WaitingFor::GameOver` and lands in the `CrossLethal` arm above: it
+            // once ends the game and lands in the `CrossLethal` arm above: it
             // COMMITS and the game ends (CR 104.2a) when the offer named the seat that verdict
             // produces, or named nobody, and is otherwise dropped whole. A cycle that takes ONE
             // seat to 0 while >= 2 players survive raises no `GameOver` and lands HERE: it
@@ -7658,8 +7637,8 @@ pub(crate) fn drive_persistent_axis_collapse(
             .map(|(before, entries)| departure_verdict(entries, before, state, i + 1));
         // CR 800.4a: the controller's departure ends its cycle's frame whether or not the game
         // ends, so a predicted departure commits the cycle it cut short.
-        let departed = matches!(state.waiting_for, WaitingFor::GameOver { .. })
-            || !crate::game::players::is_alive(state, controller);
+        let departed =
+            state.game_end.is_some() || !crate::game::players::is_alive(state, controller);
         if !performed && departed && verdict == Some(DepartureVerdict::Predicted) {
             events.append(&mut cycle_events);
             delivered += 1;
@@ -9809,7 +9788,6 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                                 // while format_config.range_of_influence is None.
                                 super::elimination::end_game(state, None, &mut result.events);
                                 result.waiting_for = state.waiting_for.clone();
-                                match_flow::handle_game_over_transition(state);
                                 return advanced;
                             }
 
@@ -20633,8 +20611,7 @@ mod stage2_injector_tests {
     /// The removal is observed at the ACTIVE PLAYER's own beat on this rig, so the new arm's
     /// position ahead of the settle arm is load-bearing here: demoted below it, the settle arm
     /// takes that beat, the drive continues, and the removal is returned one beat later at the
-    /// next opponent window. The order against the `GameOver` arm is deliberately NOT asserted
-    /// — those two patterns are disjoint and no ordering of them changes any classification.
+    /// next opponent window. The order against the game-end arm is not asserted by this row.
     ///
     /// REVERT-PROBE: delete the `SeatLeft` arm ⇒ the drive continues past the first removal and
     /// reaches `CrossLethal` with both opponents dead ⇒ the `SeatLeft` match FAILS.

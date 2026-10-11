@@ -37,11 +37,12 @@ use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::events::{GameEvent, LifeTotalReading};
 use engine::types::game_state::{
-    AutoPassRequest, CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor,
-    YieldTarget,
+    AutoPassRequest, CastPaymentMode, GameEnd, GameState, LoopDetectionMode, StackEntryKind,
+    WaitingFor, YieldTarget,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
+use engine::types::match_config::{MatchConfig, MatchPhase, MatchType};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
@@ -136,7 +137,7 @@ fn setup_2p_vito(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     scenario.with_life(P0, 20);
     scenario.with_life(P1, 6);
     scenario.add_creature_from_oracle(P0, "Vito, Thorn of the Dusk Rose", 1, 4, VITO);
-    scenario.add_creature_from_oracle(P0, "Sanguine Bond", 2, 2, SANGUINE_BOND);
+    scenario.add_enchantment_from_oracle(P0, "Sanguine Bond", SANGUINE_BOND);
     scenario.add_creature_from_oracle(P0, "Bloodthirsty Conqueror", 3, 4, BLOODTHIRSTY_CONQUEROR);
     let kickoff = scenario
         .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
@@ -1580,7 +1581,7 @@ fn setup_2p_vito_optional(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     scenario.with_life(P0, 20);
     scenario.with_life(P1, 6);
     scenario.add_creature_from_oracle(P0, "Vito, Thorn of the Dusk Rose", 1, 4, VITO);
-    scenario.add_creature_from_oracle(P0, "Sanguine Bond", 2, 2, SANGUINE_BOND);
+    scenario.add_enchantment_from_oracle(P0, "Sanguine Bond", SANGUINE_BOND);
     scenario.add_creature_from_oracle(P0, "Bloodthirsty Conqueror", 3, 4, BLOODTHIRSTY_CONQUEROR);
     scenario.add_basic_land(P1, ManaColor::Red);
     scenario.add_bolt_to_hand(P1);
@@ -1935,8 +1936,8 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
 /// would end the drive before the recurrence witness accumulates. [`drive_collect_primed`]
 /// declines it and keeps driving, so the reach-guard is grounded THROUGH the offer.
 /// REVERT-PROBE (MEASURED, not predicted): delete that decline arm ⇒ the UNEQUAL half's
-/// `primed` goes false and this row FAILS, while the equal half is untouched (it consumes 0
-/// beats) — so the probe flips exactly one half, which is the proof the two halves are
+/// `primed` goes false and this row FAILS, while the equal half is untouched (it does not use
+/// that drive) — so the probe flips exactly one half, which is the proof the two halves are
 /// independently grounded.
 #[test]
 fn injected_3p_unequal_life_pin_all_no_crown() {
@@ -1979,13 +1980,11 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
 
     // UNEQUAL absolute life (gap 50) ⇒ NO crown (F2 staggered-death veto).
     let (unequal, unequal_primed, unequal_declines) = drive_confirmed(1000, 1050);
-    // Reach-guard on the regime (see `drive_collect_primed`) — asserted on THIS half only: the
-    // equal-life half below is measured to consume 0 beats (already crowned as the kick-off
-    // resolved), so it has no drive in which to recur. This is the half the F2 revert-probe
-    // flips, so the whole discriminator lives on the guarded side.
+    // Reach-guard on the regime (see `drive_collect_primed`), asserted on this half: it is the
+    // half the F2 revert-probe flips, so the whole discriminator lives on the guarded side.
     //
     // PR-7 Phase 5b: RE-GROUNDED THROUGH the bounded offers this class now raises — declined,
-    // not avoided. Only the unequal half is re-grounded, for the reason above.
+    // not avoided.
     assert!(
         unequal_primed,
         "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats \
@@ -2006,10 +2005,32 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
         "the F2 veto hands back to manual play, got {unequal:?}"
     );
 
-    // EQUAL absolute life ⇒ CROWN (reach-guard: the F2 check is not always-reject).
-    let (equal, _, _) = drive_confirmed(1000, 1000);
+    // EQUAL absolute life on a live offer ⇒ CROWN (reach-guard: the F2 check is not
+    // always-reject).
+    let (mut runner, kickoff) = setup_3p_optional_cascade(LoopDetectionMode::Interactive);
+    let (p1_start, p2_start) = (life(&runner, P1), life(&runner, P2));
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, offer) = drive_collect(&mut runner, 500);
+    assert!(
+        matches!(offer, WaitingFor::LoopShortcut { .. }),
+        "the equal-life drain is offered, got {offer:?}"
+    );
+    assert_eq!(p1_start, p2_start, "the two opponents start level");
+    let (p1_lost, p2_lost) = (p1_start - life(&runner, P1), p2_start - life(&runner, P2));
+    assert!(
+        p1_lost > 0 && p2_lost > 0,
+        "both opponents had lost life when the offer stood (≥2-faller regime)"
+    );
+    assert_eq!(p1_lost, p2_lost, "…and by the same amount");
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("P0 declares UntilLethal");
+    accept_all_opponents(&mut runner);
     assert_eq!(
-        equal,
+        runner.state().waiting_for,
         WaitingFor::GameOver { winner: Some(P0) },
         "equal-life ≥2-faller drain still crowns P0 (F2 pairwise-equal passes)"
     );
@@ -17552,4 +17573,235 @@ fn the_detector_cost_attributes_to_its_named_parts() {
 /// The window's trace offers no span.
 fn no_offered_span(state: &GameState) -> bool {
     engine::game::play_trace_view(state).is_none_or(|view| view.offered.is_none())
+}
+
+// ───────────── loop endings and the match (CR 104.1 + CR 100.4) ─────────────
+
+fn install_match(runner: &mut GameRunner, match_type: MatchType, mode: LoopDetectionMode) {
+    runner.state_mut().set_match_config(MatchConfig {
+        match_type,
+        loop_detection: mode,
+        ..Default::default()
+    });
+}
+
+/// What a game left for its match: the record, the match phase, the game number, the wait, and
+/// the seat a sideboard prompt asks.
+type MatchReading = (
+    Option<GameEnd>,
+    MatchPhase,
+    u8,
+    &'static str,
+    Option<PlayerId>,
+);
+
+fn match_reading(state: &GameState) -> MatchReading {
+    let asked = match state.waiting_for {
+        WaitingFor::BetweenGamesSideboard { player, .. } => Some(player),
+        _ => None,
+    };
+    (
+        state.game_end,
+        state.match_phase,
+        state.game_number,
+        state.waiting_for.variant_name(),
+        asked,
+    )
+}
+
+/// CR 104.1 + CR 100.4: game 1 is over on the record for `winner`; a best-of-one is complete,
+/// and a best-of-three asks P0 to sideboard for game 2.
+fn ended(match_type: MatchType, winner: Option<PlayerId>) -> MatchReading {
+    let record = Some(GameEnd { winner });
+    match match_type {
+        MatchType::Bo1 => (record, MatchPhase::Completed, 1, "GameOver", None),
+        MatchType::Bo3 => (
+            record,
+            MatchPhase::BetweenGames,
+            2,
+            "BetweenGamesSideboard",
+            Some(P0),
+        ),
+    }
+}
+
+/// Declares `count` on the standing offer and has every opponent accept; the events emitted.
+fn declare_and_accept(runner: &mut GameRunner, count: IterationCount) -> Vec<GameEvent> {
+    let mut events = runner
+        .act(GameAction::DeclareShortcut {
+            count,
+            template: None,
+        })
+        .expect("the proposer declares")
+        .events;
+    while matches!(
+        runner.state().waiting_for,
+        WaitingFor::RespondToShortcut { .. }
+    ) {
+        events.extend(
+            runner
+                .act(GameAction::RespondToShortcut {
+                    response: ShortcutResponse::Accept,
+                })
+                .expect("an opponent accepts")
+                .events,
+        );
+    }
+    events
+}
+
+/// CR 732.2a + CR 104.2a: a mandatory drain the detector crowns, from the `On` arm and from the
+/// interactive bridge, ends the game on the record and reaches its match.
+#[test]
+fn a_crowned_mandatory_drain_is_recorded_and_reaches_its_match() {
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for mode in [LoopDetectionMode::On, LoopDetectionMode::Interactive] {
+        for match_type in [MatchType::Bo1, MatchType::Bo3] {
+            let (mut runner, kickoff) = setup_2p_drain(mode);
+            install_match(&mut runner, match_type, mode);
+            let _ = runner.cast(kickoff).resolve();
+            let _ = drive_collect(&mut runner, 500);
+            assert!(
+                life(&runner, P1) > 0 && !is_eliminated(&runner, P1),
+                "{mode:?} {match_type:?}: reach: a crown ended the game, not a CR 704.5a death"
+            );
+            got.push((mode, match_type, match_reading(runner.state())));
+            want.push((mode, match_type, ended(match_type, Some(P0))));
+        }
+    }
+    assert_eq!(got, want);
+}
+
+/// CR 704.5a + CR 100.4: with the detector off the same drain kills P1 and the best-of-three
+/// goes on to sideboarding — the ending every crowned row is held to.
+#[test]
+fn a_natural_drain_death_in_a_best_of_three_reaches_sideboarding() {
+    let (mut runner, kickoff) = setup_2p_drain(LoopDetectionMode::Off);
+    install_match(&mut runner, MatchType::Bo3, LoopDetectionMode::Off);
+    let _ = runner.cast(kickoff).resolve();
+    let _ = drive_collect(&mut runner, 500);
+    assert!(is_eliminated(&runner, P1) && life(&runner, P1) == 0);
+    assert_eq!(
+        match_reading(runner.state()),
+        ended(MatchType::Bo3, Some(P0))
+    );
+}
+
+/// CR 732.2a + CR 104.2a: an `UntilLethal` take that crowns after its measured cycle ends the
+/// game on the record and reaches its match.
+#[test]
+fn an_until_lethal_crown_is_recorded_and_reaches_its_match() {
+    let boards: [(&str, fn() -> (GameRunner, ObjectId)); 2] = [
+        ("drain", || {
+            let (runner, kickoff, _bolt, _cleric) =
+                setup_2p_optional_drain(LoopDetectionMode::Interactive);
+            (runner, kickoff)
+        }),
+        ("vito", || {
+            setup_2p_vito_optional(LoopDetectionMode::Interactive)
+        }),
+    ];
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for (board, setup) in boards {
+        for match_type in [MatchType::Bo1, MatchType::Bo3] {
+            let (mut runner, kickoff) = setup();
+            install_match(&mut runner, match_type, LoopDetectionMode::Interactive);
+            let _ = runner.cast(kickoff).resolve();
+            let (_events, offer) = drive_collect(&mut runner, 2000);
+            assert!(
+                matches!(offer, WaitingFor::LoopShortcut { .. }),
+                "{board} {match_type:?}: reach: the drain is offered, got {offer:?}"
+            );
+            declare_and_accept(&mut runner, IterationCount::UntilLethal);
+            assert!(
+                life(&runner, P1) > 0 && !is_eliminated(&runner, P1),
+                "{board} {match_type:?}: reach: the measured cycle's crown, not the drive's own \
+                 CR 704.5a death"
+            );
+            got.push((board, match_type, match_reading(runner.state())));
+            want.push((board, match_type, ended(match_type, Some(P0))));
+        }
+    }
+    assert_eq!(got, want);
+}
+
+/// CR 104.4b + CR 732.4: "Whenever you gain life, you gain 1 life." after a life gain is a
+/// mandatory loop that moves nobody toward losing — a drawn game, which a best-of-three scores
+/// and follows with sideboarding.
+#[test]
+fn a_mandatory_no_loss_loop_draw_in_a_best_of_three_reaches_sideboarding() {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_creature_from_oracle(P0, "Test Life Engine", 2, 2, SELF_LIFE_ENGINE);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    install_match(&mut runner, MatchType::Bo3, LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let _ = drive_collect(&mut runner, 500);
+
+    let state = runner.state();
+    assert_eq!(state.match_score.draws, 1, "reach: the game was drawn");
+    assert!(state.players.iter().all(|p| !p.is_eliminated));
+    assert_eq!(match_reading(state), ended(MatchType::Bo3, None));
+}
+
+/// CR 704.5a + CR 104.2a: a take whose own driven cycle takes the opponent to 0 ends the game
+/// with that cycle, once — an `UntilLethal` take offered at 1 life, and a fixed count past the
+/// opponent's life.
+#[test]
+fn a_take_whose_drive_ends_the_game_commits_that_ending() {
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for until_lethal in [true, false] {
+        for match_type in [MatchType::Bo1, MatchType::Bo3] {
+            let (mut runner, kickoff, _bolt, _cleric) =
+                setup_2p_optional_drain(LoopDetectionMode::Interactive);
+            install_match(&mut runner, match_type, LoopDetectionMode::Interactive);
+            if until_lethal {
+                runner.state_mut().players[1].life = 2;
+            }
+            let _ = runner.cast(kickoff).resolve();
+            let (_events, offer) = drive_collect(&mut runner, 500);
+            assert!(
+                matches!(offer, WaitingFor::LoopShortcut { .. }),
+                "reach: the drain is offered, got {offer:?}"
+            );
+            let at_offer = life(&runner, P1);
+            let count = if until_lethal {
+                assert_eq!(
+                    at_offer, 1,
+                    "reach: the first driven cycle is the lethal one"
+                );
+                IterationCount::UntilLethal
+            } else {
+                IterationCount::Fixed(at_offer as u32 + 1)
+            };
+            let events = declare_and_accept(&mut runner, count.clone());
+            let game_overs: Vec<GameEvent> = events
+                .into_iter()
+                .filter(|event| matches!(event, GameEvent::GameOver { .. }))
+                .collect();
+            got.push((
+                count.clone(),
+                match_type,
+                match_reading(runner.state()),
+                life(&runner, P1),
+                is_eliminated(&runner, P1),
+                game_overs,
+            ));
+            want.push((
+                count,
+                match_type,
+                ended(match_type, Some(P0)),
+                0,
+                true,
+                vec![GameEvent::GameOver { winner: Some(P0) }],
+            ));
+        }
+    }
+    assert_eq!(got, want);
 }

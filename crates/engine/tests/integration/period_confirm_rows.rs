@@ -32,8 +32,8 @@ use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, PersistedGameState, StackEntryKind,
-    WaitingFor,
+    CastPaymentMode, GameEnd, GameState, LoopDetectionMode, ManaChoice, PersistedGameState,
+    StackEntryKind, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::interaction::{
@@ -45,6 +45,7 @@ use engine::types::interaction::{
 use engine::types::keywords::Keyword;
 use engine::types::log::LogSegment;
 use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::match_config::{MatchConfig, MatchPhase, MatchType};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
@@ -2202,6 +2203,89 @@ fn an_altar_zulaport_period_is_offered_a_bounded_shortcut_and_taken() {
 
         assert_declaration_refused(&offered, l + 1);
     }
+}
+
+fn in_a_best_of_three(runner: &mut GameRunner) {
+    runner.state_mut().set_match_config(MatchConfig {
+        match_type: MatchType::Bo3,
+        loop_detection: LoopDetectionMode::Interactive,
+        ..Default::default()
+    });
+}
+
+/// CR 704.5a + CR 104.2a + CR 100.4: in a best-of-three, the Altar period taken as many times as
+/// P1 has life ends the game with its last repetition, and the players go on to sideboard.
+#[test]
+fn an_altar_period_taken_to_lethal_in_a_best_of_three_reaches_sideboarding() {
+    let Some(db) = shared_card_db() else { return };
+    for payoff in ["Zulaport Cutthroat", "Blood Artist"] {
+        let (mut runner, altar, gravecrawler) = altar_board(Some(payoff), db);
+        in_a_best_of_three(&mut runner);
+        drain_to_offer(&mut runner, altar, gravecrawler, &[P1]);
+        let l = runner.state().players[1].life as u32;
+        bounded_recorded_offer(runner.state(), l);
+
+        let events = take(&mut runner, l);
+        let state = runner.state();
+        assert_eq!(
+            state.game_end,
+            Some(GameEnd { winner: Some(P0) }),
+            "{payoff}"
+        );
+        assert_eq!(eliminated(state), [P1], "{payoff}");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == GameEvent::GameOver { winner: Some(P0) })
+                .count(),
+            1,
+            "{payoff}"
+        );
+        assert_eq!(state.match_phase, MatchPhase::BetweenGames, "{payoff}");
+        assert!(
+            matches!(
+                state.waiting_for,
+                WaitingFor::BetweenGamesSideboard {
+                    player: P0,
+                    game_number: 2,
+                    ..
+                }
+            ),
+            "{payoff}: {:?}",
+            state.waiting_for
+        );
+    }
+}
+
+/// CR 732.2a: a period whose next repetition ends the game does not come round again, in a
+/// best-of-three as in a single game; with one more life the same steps are offered.
+#[test]
+fn a_period_whose_replay_ends_a_best_of_three_game_does_not_recur() {
+    let Some(db) = shared_card_db() else { return };
+    let one_cycle_from = |p1_life: i32| {
+        let (mut runner, altar, gravecrawler) =
+            altar_board_at("Zulaport Cutthroat", &[20, p1_life], db);
+        in_a_best_of_three(&mut runner);
+        let score = |action: &GameAction| {
+            2 * names(&[gravecrawler])(action) + chooses_color(ManaType::Black)(action)
+        };
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        runner
+    };
+
+    let refused = one_cycle_from(3);
+    assert_eq!(lives(refused.state()), [21, 2]);
+    assert!(!is_offer(refused.state()));
+    assert_eq!(
+        latest_verdict(refused.state()),
+        Err(OfferRefusal::NoRecurrence)
+    );
+
+    assert!(is_offer(one_cycle_from(4).state()));
 }
 
 /// `state` reloaded through the persisted codec the WASM restore and server persistence use, then

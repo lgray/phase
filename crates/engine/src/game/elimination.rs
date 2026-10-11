@@ -1806,8 +1806,7 @@ fn check_game_over(state: &mut GameState, events: &mut Vec<GameEvent>) {
 /// player-control effect. The record is what lets [`ensure_game_over_if_terminal`] restore
 /// that wait when a later step of the same action overwrites it; a result that
 /// `is_eliminated` cannot re-derive (the CR 104.4b mandatory-loop draw) would otherwise be
-/// lost. Callers that finish the match themselves still call
-/// `match_flow::handle_game_over_transition` afterwards.
+/// lost.
 pub(super) fn end_game(
     state: &mut GameState,
     winner: Option<PlayerId>,
