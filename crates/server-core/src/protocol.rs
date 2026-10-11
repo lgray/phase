@@ -3347,7 +3347,7 @@ mod tests {
     }
 
     /// The bump this number is at: `WaitingFor::LoopShortcut` and
-    /// `ShortcutProposal` gained a required `road: OfferRoad`. A v127 peer drops
+    /// `ShortcutProposal` gained a required `road: OfferRoad`. A v128 peer drops
     /// the key from every frame it re-encodes, so the handshake refuses the
     /// pairing rather than leave the road to the legacy-offer migration's
     /// inference.
@@ -3361,6 +3361,12 @@ mod tests {
     /// `ZoneChangeRecord` gains `arrival`; a v125 peer rejects the journal when the
     /// departure owner differs from the command owner, so it must be refused before it
     /// receives v126 state.
+    /// `TargetFilter::DeclaredPlayer` is new in serialized full-game state
+    /// (CR 608.2c + CR 115.1a); a v127 peer cannot deserialize it, so it must be
+    /// refused before it receives v128 state. `SpellContext` also gains
+    /// `outer_declared_players` (CR 603.7a), the players a delayed ability's
+    /// creating chain named by group, omitted when empty; amended in place, not
+    /// bumped.
     /// `FilterProp::PrepareSpell` (CR 722.3d), the `scope` field on
     /// `Effect::BecomePrepared` / `BecomeUnprepared` (CR 722.3a + CR 115.10a),
     /// `SpellCastRecord::prepared_copy_source`, `CopiableValues::prepare_face`
@@ -3502,8 +3508,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_128_for_period_reach_and_cleanup() {
-        assert_eq!(PROTOCOL_VERSION, 128);
+    fn protocol_version_is_129_for_period_reach_and_cleanup() {
+        assert_eq!(PROTOCOL_VERSION, 129);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3514,7 +3520,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_128_for_period_reach_and_cleanup` stays
+    /// `protocol_version_is_129_for_period_reach_and_cleanup` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
