@@ -4107,3 +4107,202 @@ fn a_walking_ballista_spending_its_counters_is_refused_on_its_loss_axis() {
     assert_eq!(state.players[1].life, 18);
     assert_eq!(latest_verdict(state), Err(OfferRefusal::LossAxis));
 }
+
+const BOTH_MODES: [LoopDetectionMode; 2] = [LoopDetectionMode::Interactive, LoopDetectionMode::On];
+
+/// The Altar + Gravecrawler + Genesis Chamber board in `mode` with Mayhem Devil ("Whenever a
+/// player sacrifices a permanent, this creature deals 1 damage to any target.") and `damaged`
+/// under `controller`, driven with the Devil aimed at `damaged` until its period is offered.
+fn altar_devil_offered(
+    mode: LoopDetectionMode,
+    controller: PlayerId,
+    damaged: &str,
+    db: &CardDatabase,
+) -> (GameRunner, ObjectId) {
+    let (mut runner, altar, gravecrawler) = altar_board(None, db);
+    runner.state_mut().loop_detection = mode;
+    place(runner.state_mut(), P0, "Genesis Chamber", db);
+    place(runner.state_mut(), P0, "Mayhem Devil", db);
+    let damaged = place(runner.state_mut(), controller, damaged, db);
+    let aims = |action: &GameAction| {
+        i32::from(matches!(
+            action,
+            GameAction::ChooseTarget { target: Some(TargetRef::Object(id)) } if *id == damaged
+        ))
+    };
+    let score = |action: &GameAction| {
+        2 * names(&[gravecrawler])(action)
+            + chooses_color(ManaType::Black)(action)
+            + 8 * aims(action)
+    };
+    for _ in 0..4 {
+        cast(&mut runner, gravecrawler, vec![], CastPaymentMode::Auto);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+        let index = ability(runner.state(), altar, true);
+        activate(&mut runner, altar, index);
+        settle(&mut runner, &score);
+        if is_offer(runner.state()) {
+            break;
+        }
+    }
+    assert!(
+        is_offer(runner.state()),
+        "{mode:?}: no offer with the Devil aimed at {}",
+        runner.state().objects[&damaged].name
+    );
+    (runner, damaged)
+}
+
+/// CR 702.12b + CR 120.3e: the damage Mayhem Devil marks each cycle on the proposer's own
+/// Darksteel Myr (indestructible) never destroys it, so the period is offered, and its take
+/// performs the cycles, marking the damage with the Myr tokens it makes.
+#[test]
+fn a_period_damaging_an_indestructible_permanent_is_offered_and_performed() {
+    let db = shared_card_db().expect("card db");
+    for mode in BOTH_MODES {
+        let (mut runner, myr) = altar_devil_offered(mode, P0, "Darksteel Myr", db);
+        let state = runner.state();
+        assert!(state.objects[&myr].has_keyword(&Keyword::Indestructible));
+        let (damage, made) = (state.objects[&myr].damage_marked, tokens(state, P0).len());
+        assert!(damage > 0, "{mode:?}: the hand-driven cycle marked damage");
+        take(&mut runner, 3);
+        let state = runner.state();
+        assert_eq!(state.objects[&myr].damage_marked, damage + 3, "{mode:?}");
+        assert_eq!(tokens(state, P0).len(), made + 3, "{mode:?}");
+        assert!(!marks_tokens(state, P0), "{mode:?}");
+    }
+}
+
+/// CR 120.3e + CR 120.6: the damage Mayhem Devil marks each cycle on an opponent's Steel Wall
+/// (0/4) is delivered by the take with the Myr tokens, short of the wall's toughness.
+#[test]
+fn a_period_damaging_an_opponents_permanent_is_performed() {
+    let db = shared_card_db().expect("card db");
+    for mode in BOTH_MODES {
+        let (mut runner, wall) = altar_devil_offered(mode, P1, "Steel Wall", db);
+        let state = runner.state();
+        let made = tokens(state, P0).len();
+        assert_eq!(state.objects[&wall].damage_marked, 1, "{mode:?}");
+        take(&mut runner, 2);
+        let state = runner.state();
+        assert_eq!(state.objects[&wall].damage_marked, 3, "{mode:?}");
+        assert_eq!(state.objects[&wall].zone, Zone::Battlefield, "{mode:?}");
+        assert_eq!(tokens(state, P0).len(), made + 2, "{mode:?}");
+    }
+}
+
+fn treasures(state: &GameState) -> usize {
+    tokens(state, P0)
+        .into_iter()
+        .filter(|id| state.objects[id].name == "Treasure")
+        .count()
+}
+
+/// [`charger_board`] with no Mountains, Old Gnawbone ("Whenever a creature you control deals
+/// combat damage to a player, create that many Treasure tokens.") able to attack, and seven
+/// Treasures; the Charger and Old Gnawbone.
+fn charger_gnawbone_board(
+    umbra: bool,
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> (GameRunner, ObjectId, ObjectId) {
+    let (mut runner, charger) =
+        charger_board(0, umbra, &["Old Gnawbone"], LoopDetectionMode::Off, db);
+    let state = runner.state_mut();
+    let gnawbone = state
+        .battlefield
+        .iter()
+        .copied()
+        .find(|id| state.objects[id].name == "Old Gnawbone")
+        .expect("Old Gnawbone");
+    let before = state.turn_number.saturating_sub(1);
+    let object = state.objects.get_mut(&gnawbone).expect("Old Gnawbone");
+    object.entered_battlefield_turn = Some(before);
+    object.summoning_sick = false;
+    crate::loop_period_remade_token_source::make_treasures(state, P0, 7);
+    state.loop_detection = mode;
+    (runner, charger, gnawbone)
+}
+
+/// CR 500.8 + CR 111.7: Hellkite Charger wearing Bear Umbra deals 7, so Old Gnawbone makes again
+/// the seven Treasures that paid its trigger, and the carried combat span is offered at the next
+/// combat's trigger, counted to P1's lethal crossing, and taken.
+#[test]
+fn a_hellkite_charger_period_paid_by_remade_treasures_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    for mode in BOTH_MODES {
+        let (mut runner, charger, _) = charger_gnawbone_board(true, mode, db);
+        charger_until(
+            &mut runner,
+            charger,
+            |_| true,
+            |state| is_offer(state) || combats_begun(state) > 6,
+        );
+        let state = runner.state();
+        let (span, count) = offer_of(state);
+        assert_eq!(
+            (span.source, span.reach),
+            (SpanSource::Carried(0), PeriodReach::Combat),
+            "{mode:?}"
+        );
+        assert_eq!(combats_begun(state), 2, "{mode:?}");
+        let life = state.players[1].life;
+        assert_eq!(fixed(&count), ((life + 6) / 7) as u32, "{mode:?}");
+        assert_eq!(treasures(state), 7, "{mode:?}");
+
+        take(&mut runner, 3);
+        let state = runner.state();
+        assert_eq!(state.players[1].life, life - 21, "{mode:?}");
+        assert_eq!(treasures(state), 7, "{mode:?}");
+        assert_eq!(combats_begun(state), 5, "{mode:?}");
+    }
+}
+
+/// CR 732.2a: without Bear Umbra and with Old Gnawbone attacking beside it, each combat makes
+/// twelve Treasures for the seven it spends, and the cover refuses a period that nets a mint
+/// beside the tokens it makes again.
+#[test]
+fn the_cover_refuses_a_carried_period_that_nets_treasures() {
+    let db = shared_card_db().expect("card db");
+    for mode in BOTH_MODES {
+        let (mut runner, charger, gnawbone) = charger_gnawbone_board(false, mode, db);
+        let mut verdicts = Vec::new();
+        for combat in 2..=5 {
+            for _ in 0..4000 {
+                let state = runner.state();
+                if is_offer(state) || (combats_begun(state) == combat && charger_trigger_top(state))
+                {
+                    break;
+                }
+                match &state.waiting_for {
+                    WaitingFor::DeclareAttackers { player, .. } if *player == P0 => act(
+                        &mut runner,
+                        GameAction::DeclareAttackers {
+                            attacks: [charger, gnawbone]
+                                .map(|attacker| (attacker, AttackTarget::Player(P1)))
+                                .to_vec(),
+                            bands: vec![],
+                        },
+                    ),
+                    _ => charger_step(&mut runner, charger, true),
+                }
+            }
+            let state = runner.state();
+            assert!(!is_offer(state), "{mode:?}, combat {combat}");
+            assert_eq!(combats_begun(state), combat, "{mode:?}");
+            assert_eq!(treasures(state), 7 + 5 * (combat as usize - 1), "{mode:?}");
+            verdicts.extend(carried_verdicts(state));
+        }
+        assert!(!verdicts.is_empty(), "{mode:?}: the span is carried");
+        assert!(
+            verdicts.iter().all(|verdict| matches!(
+                verdict,
+                Err(OfferRefusal::Cover(ObjectGrowthVerdict::FodderGrowth(_)))
+            )),
+            "{mode:?}: {verdicts:?}"
+        );
+    }
+}
