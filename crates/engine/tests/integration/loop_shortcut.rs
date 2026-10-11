@@ -17805,3 +17805,143 @@ fn a_take_whose_drive_ends_the_game_commits_that_ending() {
     }
     assert_eq!(got, want);
 }
+
+/// CR 732.2a + CR 104.2a: a mandatory drain the detector crowns only after auto-pass has advanced
+/// the game ends on the record and reaches its match.
+#[test]
+fn a_drain_crowned_after_an_auto_pass_advance_reaches_its_match() {
+    let arm = || GameAction::SetAutoPass {
+        mode: AutoPassRequest::UntilTurnBoundary {
+            until: Default::default(),
+        },
+    };
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    for match_type in [MatchType::Bo1, MatchType::Bo3] {
+        let (mut runner, kickoff) = setup_2p_drain(LoopDetectionMode::On);
+        install_match(&mut runner, match_type, LoopDetectionMode::On);
+        runner.state_mut().players[1].life = 100_000;
+        let p0_cards: Vec<_> = runner
+            .state()
+            .objects
+            .values()
+            .filter(|object| object.controller == P0)
+            .map(|object| object.card_id)
+            .collect();
+        for card_id in p0_cards {
+            runner.state_mut().add_priority_yield(
+                P1,
+                YieldTarget::AllCopies {
+                    card_id,
+                    trigger_description: None,
+                },
+            );
+        }
+        runner.cast(kickoff).commit();
+        // P0 arms with the kickoff on the stack, P1 passes it and arms on the first trigger.
+        let mut events = Vec::new();
+        for action in [arm(), GameAction::PassPriority, arm()] {
+            events.extend(runner.act(action).expect("a legal beat").events);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, GameEvent::ResolutionHalted { .. })),
+            "{match_type:?}: reach: auto-pass advanced the game before the crown"
+        );
+        assert!(
+            life(&runner, P1) > 0 && !is_eliminated(&runner, P1),
+            "{match_type:?}: reach: a crown ended the game, not a CR 704.5a death"
+        );
+        got.push((match_type, match_reading(runner.state())));
+        want.push((match_type, ended(match_type, Some(P0))));
+    }
+    assert_eq!(got, want);
+}
+
+/// Drain Cleric, Blood Sipper and Bloodthirsty Conqueror: each loss of P1's raises two
+/// simultaneous triggers for P0 to order. P1's castable Bolt keeps the loop optional.
+fn setup_2p_two_gainer_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 20);
+    scenario.add_creature_from_oracle(P0, "Test Drain Cleric", 2, 2, DRAIN_CLERIC);
+    scenario.add_creature_from_oracle(P0, "Test Blood Sipper", 2, 2, BLOOD_SIPPER);
+    scenario.add_creature_from_oracle(P0, "Bloodthirsty Conqueror", 5, 5, BLOODTHIRSTY_CONQUEROR);
+    scenario.add_basic_land(P1, ManaColor::Red);
+    scenario.add_bolt_to_hand(P1);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff)
+}
+
+/// The two-gainer drain played out by hand with the detector off: P0's final life and the size
+/// of the stack the game ended on.
+fn two_gainer_drain_by_hand(match_type: MatchType) -> (i32, usize) {
+    let (mut runner, kickoff) = setup_2p_two_gainer_drain(LoopDetectionMode::Off);
+    install_match(&mut runner, match_type, LoopDetectionMode::Off);
+    let _ = runner.cast(kickoff).resolve();
+    let _ = drive_collect(&mut runner, 5000);
+    assert!(
+        runner.state().game_end.is_some(),
+        "reach: play ends the game"
+    );
+    (life(&runner, P0), runner.state().stack.len())
+}
+
+/// CR 704.5a + CR 104.1: a take whose lethal beat is the answer to a mid-cycle prompt ends the
+/// game there, once, where playing the same board by hand ends it.
+#[test]
+fn a_take_ending_at_an_answer_beat_ends_where_play_by_hand_does() {
+    let mut got = Vec::new();
+    let mut want = Vec::new();
+    let mut stacks = Vec::new();
+    for until_lethal in [true, false] {
+        for match_type in [MatchType::Bo1, MatchType::Bo3] {
+            let (by_hand_life, by_hand_stack) = two_gainer_drain_by_hand(match_type);
+            let (mut runner, kickoff) = setup_2p_two_gainer_drain(LoopDetectionMode::Interactive);
+            install_match(&mut runner, match_type, LoopDetectionMode::Interactive);
+            let _ = runner.cast(kickoff).resolve();
+            let (_events, offer) = drive_collect(&mut runner, 2000);
+            assert!(
+                matches!(offer, WaitingFor::LoopShortcut { .. }),
+                "reach: the drain is offered, got {offer:?}"
+            );
+            let count = if until_lethal {
+                IterationCount::UntilLethal
+            } else {
+                IterationCount::Fixed(life(&runner, P1) as u32 + 1)
+            };
+            let events = declare_and_accept(&mut runner, count.clone());
+            let game_overs: Vec<GameEvent> = events
+                .into_iter()
+                .filter(|event| matches!(event, GameEvent::GameOver { .. }))
+                .collect();
+            stacks.push((runner.state().stack.len(), by_hand_stack + 2));
+            got.push((
+                count.clone(),
+                match_type,
+                match_reading(runner.state()),
+                life(&runner, P0),
+                game_overs,
+            ));
+            want.push((
+                count,
+                match_type,
+                ended(match_type, Some(P0)),
+                by_hand_life,
+                vec![GameEvent::GameOver { winner: Some(P0) }],
+            ));
+        }
+    }
+    assert_eq!(got, want);
+    assert!(
+        stacks.iter().all(|(taken, answered)| taken == answered),
+        "reach: play by hand ends at the pass, before P0 orders the lethal loss's two triggers; \
+         a take ending on that answer leaves both on the stack: {stacks:?}"
+    );
+}

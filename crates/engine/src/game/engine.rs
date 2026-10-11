@@ -5761,8 +5761,7 @@ fn drive_one_shortcut_cycle(
             // would instead be handed to that arm, which re-runs its recurrence check on a
             // board a seat has just left — and a match there returns `Recurred`, committing the
             // cycle and driving another one past the removal, on a period the certificate no
-            // longer describes. The game-end arm above overlaps this pattern and must stay
-            // first: a total wipe stays `CrossLethal` and CR 104.2a crowns there.
+            // longer describes.
             //
             // Gated on `Priority` because CR 732.2a admits only a place where a player has
             // priority. A departure first observed at a non-priority prompt is answered from
@@ -5821,7 +5820,17 @@ fn drive_one_shortcut_cycle(
             }) => {
                 ev.append(&mut beat_events);
                 match inject_pinned_answer(&mut work, template, iteration, &other) {
-                    Ok(()) => {
+                    Ok(mut answer_events) => {
+                        // CR 704.5a + CR 104.1: an answer can let the state-based sweep end the
+                        // game, and nothing is performed after it.
+                        if work.game_end.is_some() {
+                            ev.append(&mut answer_events);
+                            return CycleOutcome::CrossLethal {
+                                winner: work.game_end.and_then(|end| end.winner),
+                                state: Box::new(work),
+                                events: ev,
+                            };
+                        }
                         let ring_back_after =
                             work.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
                         if ring_back_after.is_some() && ring_back_after != ring_back_before {
@@ -5859,7 +5868,7 @@ fn inject_pinned_answer(
     template: Option<&crate::analysis::decision_template::DecisionTemplate>,
     iteration: crate::analysis::decision_template::IterationIndex,
     prompt: &WaitingFor,
-) -> Result<(), RecastAbort> {
+) -> Result<Vec<GameEvent>, RecastAbort> {
     use crate::analysis::decision_template::{
         take_answer, ChoicePoint, ConcreteDecision, ConcreteTarget, MayChoiceOption,
     };
@@ -5877,8 +5886,8 @@ fn inject_pinned_answer(
             // its answer.
             let order: Vec<usize> = (0..triggers.len()).collect();
             apply_action(work, *player, GameAction::OrderTriggers { order }, None)
-                .map_err(|_| RecastAbort)?;
-            Ok(())
+                .map(|applied| applied.events)
+                .map_err(|_| RecastAbort)
         }
         // CR 608.2b: choose this trigger's targets from the pin whose source matches the
         // prompt's `source_id` (per-source, so two distinct drainers pinned to distinct
@@ -5916,8 +5925,8 @@ fn inject_pinned_answer(
                 GameAction::SelectTargets { targets: refs },
                 None,
             )
-            .map_err(|_| RecastAbort)?;
-            Ok(())
+            .map(|applied| applied.events)
+            .map_err(|_| RecastAbort)
         }
         // CR 603.5 + CR 732.2a: answer an in-cycle "may" from the pin its owner declared.
         //
@@ -5971,8 +5980,8 @@ fn inject_pinned_answer(
                 },
                 None,
             )
-            .map_err(|_| RecastAbort)?;
-            Ok(())
+            .map(|applied| applied.events)
+            .map_err(|_| RecastAbort)
         }
         // CR 608.2d: answer a resolution-time "choose N permanents" from the step's
         // `ResolutionSet` entry for the prompt's source, submitted as `GameAction::SelectCards`.
@@ -6026,8 +6035,8 @@ fn inject_pinned_answer(
                 GameAction::SelectCards { cards: chosen },
                 None,
             )
-            .map_err(|_| RecastAbort)?;
-            Ok(())
+            .map(|applied| applied.events)
+            .map_err(|_| RecastAbort)
         }
         // CR 732.2a "no conditional actions": any other prompt (mode / unless / X) has no
         // Stage-2 pin producer ⇒ fail-closed. `may` left this list when the mint gained its
