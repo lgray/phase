@@ -2278,7 +2278,7 @@ fn candidate_coverable(
     let mana_short =
         colored_deficit > net.mana[COLORLESS_INDEX].max(0) || net.mana.iter().sum::<i64>() < 0;
     // CR 500.7 + CR 502.3: a cycle granting an extra turn untaps its mana sources each period;
-    // CR 701.26b: so does one untapping a whole population.
+    // CR 701.26b: one untapping a whole population may, which the replay decides.
     if mana_short
         && !unbounded_production.contains(&AxisKey::Mana)
         && !unbounded_production.contains(&AxisKey::Tap)
@@ -3093,8 +3093,8 @@ mod tests {
         t.destination = destination;
         t
     }
-    /// Build a trigger node the way `build_nodes` does — `trigger_axis` is the
-    /// real seam, so reverting a trigger arm flips this node's `requires`.
+    /// Build a trigger node the way `build_nodes` does, through `trigger_requirements`, so
+    /// reverting a trigger arm flips this node's `requires`.
     fn trig_node(name: &str, trig: &TriggerDefinition, execute: AbilityDefinition) -> AbilityNode {
         build_node(ORIGIN, name, &execute, trigger_requirements(trig))
     }
@@ -3675,6 +3675,14 @@ mod tests {
                 "{watcher}"
             );
         }
+        assert!(
+            cycle_holds(
+                &["Aggravated Assault", "The Reaver Cleaver"],
+                "Aggravated Assault",
+                AbilitySlot::Ability(0)
+            ),
+            "a combat-damage trigger an attachment grants"
+        );
 
         let mut names = vec!["Aggravated Assault", "Molten Lavamancer", "Mana Echoes"];
         assert!(!cycle_holds(
@@ -3775,8 +3783,9 @@ mod tests {
         }
     }
 
-    /// CR 732.2a: a node that only untaps what it taps (Nature's Will: "tap all lands that player
-    /// controls and untap all lands you control") names no resource, so it is no candidate.
+    /// CR 732.2a: a node whose only unbounded mark is the tap axis (Nature's Will: "tap all lands
+    /// that player controls and untap all lands you control") names no resource, so it is no
+    /// candidate.
     #[test]
     fn an_untap_is_not_progress() {
         let will = first_trigger_node("Nature's Will");

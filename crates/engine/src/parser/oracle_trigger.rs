@@ -16918,7 +16918,7 @@ fn parse_damage_source_subject(input: &str) -> OracleResult<'_, TargetFilter> {
     Ok((rest, TargetFilter::Typed(typed)))
 }
 
-/// CR 120.3: Parse the damage-kind adjective (`"combat "` / `"noncombat "`).
+/// CR 120.2a + CR 120.2b: Parse the damage-kind adjective (`"combat "` / `"noncombat "`).
 /// Each branch consumes its trailing space so the caller can chain directly
 /// into `tag("damage")`.
 fn parse_damage_kind_adjective(input: &str) -> OracleResult<'_, DamageKindFilter> {
