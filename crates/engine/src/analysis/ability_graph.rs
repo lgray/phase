@@ -40,11 +40,13 @@ use crate::analysis::loop_check::{classify_win_kind, WinKind};
 use crate::analysis::resource::{
     CounterClass, ObjectClass, ResourceAxis, ResourceVector, TriggerKind,
 };
+use crate::game::effects::token::materialize_token_ability_payload;
+use crate::game::mana_abilities::is_mana_ability;
 use crate::game::mana_payment::{shard_to_mana_type, ShardRequirement};
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, ContinuousModification, Effect, ManaProduction,
-    QuantityExpr, ReplacementDefinition, StaticDefinition, TapStateChange, TargetFilter,
-    TriggerDefinition, TypeFilter, VoteSubject,
+    AbilityCost, AbilityDefinition, AbilityKind, ContinuousModification, DamageKindFilter, Effect,
+    EffectScope, ManaProduction, QuantityExpr, ReplacementDefinition, StaticDefinition,
+    TapStateChange, TargetFilter, TriggerDefinition, TypeFilter, VoteSubject,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::{CardType, CoreType};
@@ -606,6 +608,31 @@ pub(crate) fn resolution_token_mint(effect: &Effect) -> Option<&QuantityExpr> {
     }
 }
 
+/// CR 111.10 + CR 111.3: the mana abilities (CR 605.1a) a token `effect` makes is created with,
+/// from its predefined definition and from the creating effect's grants.
+fn minted_mana_abilities(effect: &Effect) -> Vec<AbilityDefinition> {
+    let Effect::Token {
+        name,
+        types,
+        static_abilities,
+        ..
+    } = effect
+    else {
+        return Vec::new();
+    };
+    let mut abilities = materialize_token_ability_payload(name, types, None).abilities;
+    for modification in static_abilities
+        .iter()
+        .flat_map(|statik| &statik.modifications)
+    {
+        if let ContinuousModification::GrantAbility { definition } = modification {
+            abilities.push((**definition).clone());
+        }
+    }
+    abilities.retain(is_mana_ability);
+    abilities
+}
+
 /// The central deliverable: project a single [`Effect`] onto its static resource
 /// contribution. Exhaustive **no-wildcard** match over all 207 `Effect` variants
 /// — five priority families modeled (CR 106.1 / 122.1 / 120.1 / 701.26 / 601.2),
@@ -618,6 +645,23 @@ fn effect_projection(effect: &Effect) -> Projection {
         let (a, mag) = count_seed(count);
         b.add_tokens(a, mag);
         b.add_etb(a, mag);
+        for ability in minted_mana_abilities(effect) {
+            let mut resolved = Vec::new();
+            collect_effects(&ability, &mut resolved);
+            for added in resolved {
+                if let Effect::Mana { produced, .. } = added {
+                    let (seeds, each) = project_mana_production(produced);
+                    // A fixed number of tokens each adding a fixed amount is a fixed amount.
+                    let mag = match (mag, each) {
+                        (AxisMagnitude::Fixed(_), AxisMagnitude::Fixed(_)) => mag,
+                        _ => AxisMagnitude::Unbounded,
+                    };
+                    for (slot, amount) in seeds {
+                        b.add_mana(slot, a * amount, mag);
+                    }
+                }
+            }
+        }
         return b.finish();
     }
     match effect {
@@ -701,10 +745,15 @@ fn effect_projection(effect: &Effect) -> Projection {
             b.add_damage(1, AxisMagnitude::Unbounded);
         }
         // ----- TAP/UNTAP family (CR 701.26a/b) -----
-        Effect::SetTapState { state, .. } => match state {
+        Effect::SetTapState { state, scope, .. } => match state {
             // CR 701.26b: untapping produces untapped state (the loop pivot).
             TapStateChange::Untap => {
                 b.produces.insert(AxisKey::Tap);
+                match scope {
+                    // CR 701.26b + CR 107.5: an untapped population pays its {T} costs again.
+                    EffectScope::All => b.mark(AxisKey::Tap, AxisMagnitude::Unbounded),
+                    EffectScope::Single => {}
+                }
             }
             // CR 701.26a: tapping consumes untapped state (Opposition-style).
             TapStateChange::Tap => {
@@ -1294,6 +1343,24 @@ fn trigger_axis(trig: &TriggerDefinition) -> Option<AxisKey> {
         | TriggerMode::EntersOrHauntedCreatureDies
         | TriggerMode::HauntedCreatureDies
         | TriggerMode::Unknown(..) => None,
+    }
+}
+
+/// The event axes a trigger's node requires: its mode's axis, and for a damage-dealt trigger the
+/// axis of each kind of damage its definition watches.
+fn trigger_requirements(trig: &TriggerDefinition) -> BTreeSet<AxisKey> {
+    let Some(axis) = trigger_axis(trig) else {
+        return BTreeSet::new();
+    };
+    if axis != AxisKey::Damage {
+        return BTreeSet::from([axis]);
+    }
+    match trig.damage_kind {
+        // CR 120.2a + CR 506.1: combat damage is dealt in the combat damage step of a combat phase.
+        DamageKindFilter::CombatOnly => BTreeSet::from([AxisKey::Combat]),
+        // CR 120.2b: noncombat damage is dealt by the effect of a spell or ability.
+        DamageKindFilter::NoncombatOnly => BTreeSet::from([AxisKey::Damage]),
+        DamageKindFilter::Any => BTreeSet::from([AxisKey::Damage, AxisKey::Combat]),
     }
 }
 
@@ -1953,12 +2020,12 @@ fn add_into(acc: &mut ResourceVector, v: &ResourceVector) {
 }
 
 /// Build one [`AbilityNode`] from a definition (the cost is the node's own
-/// `def.cost`; `trigger_req` is the trigger-event axis for trigger nodes).
+/// `def.cost`; `trigger_req` is the trigger-event axes for trigger nodes).
 fn build_node(
     origin: NodeOrigin,
     face_name: &str,
     def: &AbilityDefinition,
-    trigger_req: Option<AxisKey>,
+    trigger_req: impl IntoIterator<Item = AxisKey>,
 ) -> AbilityNode {
     build_node_paying(origin, face_name, def, trigger_req, None)
 }
@@ -1968,7 +2035,7 @@ fn build_node_paying(
     origin: NodeOrigin,
     face_name: &str,
     def: &AbilityDefinition,
-    trigger_req: Option<AxisKey>,
+    trigger_req: impl IntoIterator<Item = AxisKey>,
     spell_cost: Option<&ManaCost>,
 ) -> AbilityNode {
     let mut acc = NodeAcc::default();
@@ -1997,9 +2064,7 @@ fn build_node_paying(
     // Unbounded-up production axes are produced even if a same-node cost masks
     // the net component (HIGH-1).
     produces.extend(acc.unbounded_production.iter().copied());
-    if let Some(req) = trigger_req {
-        requires.insert(req);
-    }
+    requires.extend(trigger_req);
 
     AbilityNode {
         face_name: face_name.to_string(),
@@ -2056,7 +2121,7 @@ fn build_nodes(sources: &[AbilitySource]) -> Vec<AbilityNode> {
                     at(AbilitySlot::Trigger(i)),
                     source.name,
                     def,
-                    trigger_axis(trig),
+                    trigger_requirements(trig),
                 ));
             }
         }
@@ -2082,7 +2147,12 @@ fn build_nodes(sources: &[AbilitySource]) -> Vec<AbilityNode> {
                     }
                     ContinuousModification::GrantTrigger { trigger } => {
                         if let Some(def) = &trigger.execute {
-                            nodes.push(build_node(origin, source.name, def, trigger_axis(trigger)));
+                            nodes.push(build_node(
+                                origin,
+                                source.name,
+                                def,
+                                trigger_requirements(trigger),
+                            ));
                         }
                     }
                     ContinuousModification::GrantReplacement { replacement } => {
@@ -2207,8 +2277,13 @@ fn candidate_coverable(
         .sum();
     let mana_short =
         colored_deficit > net.mana[COLORLESS_INDEX].max(0) || net.mana.iter().sum::<i64>() < 0;
-    // CR 500.7 + CR 502.3: a cycle granting an extra turn untaps its mana sources each period.
-    if mana_short && !unbounded_production.contains(&AxisKey::Mana) && net.extra_turns <= 0 {
+    // CR 500.7 + CR 502.3: a cycle granting an extra turn untaps its mana sources each period;
+    // CR 701.26b: so does one untapping a whole population.
+    if mana_short
+        && !unbounded_production.contains(&AxisKey::Mana)
+        && !unbounded_production.contains(&AxisKey::Tap)
+        && net.extra_turns <= 0
+    {
         return false;
     }
     if net.life.get(&controller).copied().unwrap_or(0) < 0
@@ -2216,7 +2291,11 @@ fn candidate_coverable(
     {
         return false;
     }
-    !net.unbounded_axes_for(controller).is_empty() || !unbounded_production.is_empty()
+    // Progress is an unbounded axis that names a resource; an untap names none.
+    !net.unbounded_axes_for(controller).is_empty()
+        || unbounded_production
+            .iter()
+            .any(|key| axis_key_to_resource(key, net).is_some())
 }
 
 /// Map a coverable [`AxisKey`] back to a named [`ResourceAxis`] at the candidate's
@@ -3017,7 +3096,7 @@ mod tests {
     /// Build a trigger node the way `build_nodes` does — `trigger_axis` is the
     /// real seam, so reverting a trigger arm flips this node's `requires`.
     fn trig_node(name: &str, trig: &TriggerDefinition, execute: AbilityDefinition) -> AbilityNode {
-        build_node(ORIGIN, name, &execute, trigger_axis(trig))
+        build_node(ORIGIN, name, &execute, trigger_requirements(trig))
     }
 
     // === A2. effect_projection per-family (revert = flip/delete the arm) =====
@@ -3544,6 +3623,170 @@ mod tests {
             "Hellkite Charger",
             AbilitySlot::Trigger(0),
         ));
+    }
+
+    fn face(name: &str) -> &'static CardFace {
+        crate::test_support::shared_card_db()
+            .get_face_by_name(name)
+            .unwrap_or_else(|| panic!("{name} is in the card fixture"))
+    }
+
+    /// The node built from `name`'s first printed trigger.
+    fn first_trigger_node(name: &str) -> AbilityNode {
+        build_nodes(&[AbilitySource::from(face(name))])
+            .into_iter()
+            .find(|node| node.origin.slot == AbilitySlot::Trigger(0))
+            .unwrap_or_else(|| panic!("{name}'s first trigger has a node"))
+    }
+
+    /// CR 120.2a + CR 120.2b: a damage-dealt trigger requires the combat axis, the damage axis, or
+    /// both, by the kind of damage it watches; a damage-received trigger requires neither.
+    #[test]
+    fn a_damage_trigger_requires_the_axes_of_the_damage_kinds_it_watches() {
+        let requires = |name: &str| trigger_requirements(&face(name).triggers[0]);
+        assert_eq!(requires("Old Gnawbone"), BTreeSet::from([AxisKey::Combat]));
+        assert_eq!(
+            requires("Virtue of Courage"),
+            BTreeSet::from([AxisKey::Damage])
+        );
+        assert_eq!(
+            requires("Malcolm, Keen-Eyed Navigator"),
+            BTreeSet::from([AxisKey::Damage, AxisKey::Combat])
+        );
+        assert_eq!(requires("Smaug the Impenetrable"), BTreeSet::new());
+        assert_eq!(
+            requires("Hellkite Charger"),
+            BTreeSet::from([AxisKey::Combat])
+        );
+    }
+
+    /// CR 120.2a + CR 500.8: an added combat phase feeds a trigger watching combat damage, and a
+    /// trigger watching only noncombat damage (CR 120.2b) is fed by an effect that deals damage.
+    #[test]
+    fn a_combat_damage_trigger_cycles_with_the_combat_that_feeds_it() {
+        for watcher in ["Old Gnawbone", "Malcolm, Keen-Eyed Navigator"] {
+            let names = ["Aggravated Assault", watcher];
+            assert!(
+                cycle_holds(&names, watcher, AbilitySlot::Trigger(0)),
+                "{watcher}"
+            );
+            assert!(
+                cycle_holds(&names, "Aggravated Assault", AbilitySlot::Ability(0)),
+                "{watcher}"
+            );
+        }
+
+        let mut names = vec!["Aggravated Assault", "Molten Lavamancer", "Mana Echoes"];
+        assert!(!cycle_holds(
+            &names,
+            "Molten Lavamancer",
+            AbilitySlot::Trigger(0)
+        ));
+        names.push("Prodigal Pyromancer");
+        assert!(
+            cycle_holds(&names, "Molten Lavamancer", AbilitySlot::Trigger(0)),
+            "reach: a noncombat damage source closes the cycle the combat did not"
+        );
+    }
+
+    /// Whether a five-mana activation that grants a combat and untaps nothing cycles with `name`'s
+    /// nodes.
+    fn pays_a_five_mana_combat(name: &str) -> bool {
+        let mut nodes = build_nodes(&[AbilitySource::from(face(name))]);
+        let mut spender = raw_node("spender");
+        spender.origin.source = 1;
+        spender.net.mana[COLORLESS_INDEX] = -5;
+        spender.net.combat_phases = 1;
+        spender.requires.insert(AxisKey::Mana);
+        spender.produces.insert(AxisKey::Combat);
+        nodes.push(spender);
+        candidate_cycles_from_nodes(nodes)
+            .iter()
+            .any(|cycle| cycle.members.iter().any(|member| member.source == 1))
+    }
+
+    /// CR 111.10a + CR 111.3: a mint also produces the mana its tokens' own mana abilities add,
+    /// whether the ability comes from the token's definition (Treasure) or from the creating effect
+    /// ("They have "Sacrifice this token: Add {C}.""); a fixed mint is weighed against the cost.
+    #[test]
+    fn a_mint_produces_the_mana_its_tokens_add() {
+        let gnawbone = first_trigger_node("Old Gnawbone");
+        assert!(gnawbone.produces.contains(&AxisKey::Mana));
+        assert!(gnawbone.unbounded_production.contains(&AxisKey::Mana));
+
+        let hireling = first_trigger_node("Grim Hireling");
+        assert_eq!(hireling.net.mana.iter().sum::<i64>(), 2);
+        assert!(!hireling.unbounded_production.contains(&AxisKey::Mana));
+
+        assert!(cycle_holds(
+            &["Aggravated Assault", "Rapacious One"],
+            "Rapacious One",
+            AbilitySlot::Trigger(0)
+        ));
+
+        assert!(pays_a_five_mana_combat("Old Gnawbone"));
+        assert!(pays_a_five_mana_combat("Rapacious One"));
+        assert!(!pays_a_five_mana_combat("Grim Hireling"));
+    }
+
+    /// CR 701.26b + CR 107.5: an untap of a whole population lets a cycle whose summed mana is short
+    /// of its cost stand, and an untap of one permanent does not.
+    #[test]
+    fn an_untap_of_a_population_lifts_the_mana_shortfall_veto() {
+        let candidates = |scope: EffectScope| {
+            let mut acc = NodeAcc::default();
+            fold_projection(
+                &mut acc,
+                effect_projection(&Effect::SetTapState {
+                    target: default_target_filter_any(),
+                    scope,
+                    state: TapStateChange::Untap,
+                }),
+            );
+            let marked = acc.unbounded_production.contains(&AxisKey::Tap);
+            let mut spender = raw_node("spender");
+            spender.net.mana[COLORLESS_INDEX] = -5;
+            spender.net.combat_phases = 1;
+            spender.requires.insert(AxisKey::Mana);
+            spender.produces = acc.produces;
+            spender.produces.insert(AxisKey::Combat);
+            spender.unbounded_production = acc.unbounded_production;
+            let mut source = raw_node("source");
+            source.origin.source = 1;
+            source.net.mana[COLORLESS_INDEX] = 1;
+            source.requires.insert(AxisKey::Tap);
+            source.produces.insert(AxisKey::Mana);
+            (
+                marked,
+                candidate_cycles_from_nodes(vec![spender, source]).len(),
+            )
+        };
+        assert_eq!(candidates(EffectScope::All), (true, 1));
+        assert_eq!(candidates(EffectScope::Single), (false, 0));
+
+        for names in [
+            &["Aggravated Assault", "Bear Umbra", "Mountain"][..],
+            &["Aggravated Assault", "Birds of Paradise"][..],
+        ] {
+            assert!(
+                cycle_holds(names, "Aggravated Assault", AbilitySlot::Ability(0)),
+                "{names:?}"
+            );
+        }
+    }
+
+    /// CR 732.2a: a node that only untaps what it taps (Nature's Will: "tap all lands that player
+    /// controls and untap all lands you control") names no resource, so it is no candidate.
+    #[test]
+    fn an_untap_is_not_progress() {
+        let will = first_trigger_node("Nature's Will");
+        assert!(
+            will.unbounded_production.contains(&AxisKey::Tap)
+                && will.requires.contains(&AxisKey::Tap)
+                && will.produces.contains(&AxisKey::Tap),
+            "reach: the trigger loops on the tap axis it marks unbounded"
+        );
+        assert_eq!(candidate_cycles(&[face("Nature's Will")]), []);
     }
 
     #[test]

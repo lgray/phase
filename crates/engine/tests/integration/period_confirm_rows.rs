@@ -18,6 +18,7 @@ use engine::game::interaction::{
 };
 use engine::game::keywords::effective_foretell_cost;
 use engine::game::log::resolve_log_entries;
+use engine::game::mana_abilities::is_mana_ability;
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
@@ -4304,5 +4305,443 @@ fn the_cover_refuses_a_carried_period_that_nets_treasures() {
             )),
             "{mode:?}: {verdicts:?}"
         );
+    }
+}
+
+/// The mana Aggravated Assault's {3}{R}{R} costs.
+const ASSAULT_COST: usize = 5;
+
+/// How the Aggravated Assault drive pays {3}{R}{R}.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AssaultPay {
+    /// The engine pays at the mana payment.
+    Engine,
+    /// Mana sources are activated one at a time until the pool pays.
+    Hand,
+}
+
+/// What stands beside Aggravated Assault on P0's battlefield; `aura` is on `attacker`.
+#[derive(Clone, Copy, Debug)]
+struct AssaultBoard<'a> {
+    others: &'a [&'a str],
+    attacker: &'a str,
+    aura: Option<&'a str>,
+    mountains: usize,
+    treasures: u32,
+}
+
+/// The Aggravated Assault drive: what it plays with, and the activations it has made.
+#[derive(Clone, Copy, Debug)]
+struct AssaultDrive {
+    assault: ObjectId,
+    attacker: ObjectId,
+    pay: AssaultPay,
+    /// The combats begun when Aggravated Assault was last activated.
+    activated_at: Option<u32>,
+    activations: u32,
+}
+
+/// P0 at `phase` with Aggravated Assault ("{3}{R}{R}: Untap all creatures you control. After this
+/// main phase, there is an additional combat phase followed by an additional main phase. Activate
+/// only as a sorcery.") and `board`, each permanent there since before the turn; P1 at 200 life
+/// with no creatures. Detection is off until the board stands.
+fn assault_board(
+    board: AssaultBoard,
+    phase: Phase,
+    pay: AssaultPay,
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> (GameRunner, AssaultDrive) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(phase);
+    scenario.with_life(P1, 200);
+    scenario.with_library_top(P0, &["Island"; 25]);
+    scenario.with_library_top(P1, &["Island"; 25]);
+    let assault = scenario.add_real_card(P0, "Aggravated Assault", Zone::Battlefield, db);
+    let mut permanents: Vec<ObjectId> = board
+        .others
+        .iter()
+        .map(|name| scenario.add_real_card(P0, name, Zone::Battlefield, db))
+        .collect();
+    let attacker = scenario.add_real_card(P0, board.attacker, Zone::Battlefield, db);
+    permanents.push(attacker);
+    for _ in 0..board.mountains {
+        scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db);
+    }
+    let mut runner = scenario.build();
+    let state = runner.state_mut();
+    let before = state.turn_number.saturating_sub(1);
+    for id in permanents {
+        let object = state.objects.get_mut(&id).expect("placed");
+        object.entered_battlefield_turn = Some(before);
+        object.summoning_sick = false;
+    }
+    if let Some(aura) = board.aura {
+        let aura = place(state, P0, aura, db);
+        attach_to(state, aura, attacker);
+    }
+    if board.treasures > 0 {
+        crate::loop_period_remade_token_source::make_treasures(state, P0, board.treasures);
+    }
+    state.loop_detection = mode;
+    let drive = AssaultDrive {
+        assault,
+        attacker,
+        pay,
+        activated_at: None,
+        activations: 0,
+    };
+    (runner, drive)
+}
+
+/// P0's priority in a main phase of their own turn with an empty stack.
+fn assault_window(state: &GameState) -> bool {
+    matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+        && state.active_player == P0
+        && matches!(state.phase, Phase::PreCombatMain | Phase::PostCombatMain)
+        && state.stack.is_empty()
+}
+
+fn untapped_mana_sources(state: &GameState) -> Vec<ObjectId> {
+    state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            let object = &state.objects[id];
+            object.controller == P0
+                && !object.tapped
+                && object.abilities.iter().any(is_mana_ability)
+        })
+        .collect()
+}
+
+/// One action of Aggravated Assault's period: activate it once per main phase when P0's untapped
+/// mana sources and pool cover its cost, attack P1 with the attacker whenever it is untapped,
+/// take every mana as red, keep trigger order, and pass every other priority.
+fn assault_step(runner: &mut GameRunner, drive: &mut AssaultDrive) {
+    let state = runner.state();
+    let action = match &state.waiting_for {
+        WaitingFor::Priority { .. } if assault_window(state) => {
+            let combats = combats_begun(state);
+            let sources = untapped_mana_sources(state);
+            let pool = state.players[0].mana_pool.total();
+            if drive.activated_at == Some(combats) || sources.len() + pool < ASSAULT_COST {
+                GameAction::PassPriority
+            } else if drive.pay == AssaultPay::Hand && pool < ASSAULT_COST {
+                GameAction::ActivateAbility {
+                    source_id: sources[0],
+                    ability_index: ability(state, sources[0], true),
+                }
+            } else {
+                drive.activated_at = Some(combats);
+                drive.activations += 1;
+                GameAction::ActivateAbility {
+                    source_id: drive.assault,
+                    ability_index: ability(state, drive.assault, false),
+                }
+            }
+        }
+        WaitingFor::Priority { .. } | WaitingFor::ManaPayment { .. } => GameAction::PassPriority,
+        WaitingFor::ChooseManaColor { .. } => GameAction::ChooseManaColor {
+            choice: ManaChoice::SingleColor(ManaType::Red),
+            count: 1,
+        },
+        WaitingFor::DeclareAttackers { player, .. }
+            if *player == P0 && !state.objects[&drive.attacker].tapped =>
+        {
+            GameAction::DeclareAttackers {
+                attacks: vec![(drive.attacker, AttackTarget::Player(P1))],
+                bands: vec![],
+            }
+        }
+        WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+            attacks: vec![],
+            bands: vec![],
+        },
+        WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+            assignments: vec![],
+        },
+        WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+            order: (0..triggers.len()).collect(),
+        },
+        other => panic!("the Assault drive has no answer to {other:?}"),
+    };
+    act(runner, action);
+}
+
+/// Drives Aggravated Assault's period until `until` holds.
+fn assault_until(
+    runner: &mut GameRunner,
+    drive: &mut AssaultDrive,
+    until: impl Fn(&GameState) -> bool,
+) {
+    for _ in 0..4000 {
+        if until(runner.state()) {
+            return;
+        }
+        assault_step(runner, drive);
+    }
+    panic!("the Assault drive did not reach its stop");
+}
+
+/// What a cycle of Aggravated Assault's period moves or leaves as it found it: P1's life, P0's
+/// Treasures, the phase, the combats begun, P0's pool, the stack, and the tapped permanents.
+type AssaultFrame = (i32, usize, Phase, u32, usize, usize, Vec<String>);
+
+fn assault_frame(state: &GameState) -> AssaultFrame {
+    let mut tapped: Vec<String> = state
+        .battlefield
+        .iter()
+        .filter(|id| state.objects[*id].tapped)
+        .map(|id| state.objects[id].name.clone())
+        .collect();
+    tapped.sort();
+    (
+        state.players[1].life,
+        treasures(state),
+        state.phase,
+        combats_begun(state),
+        state.players[0].mana_pool.total(),
+        state.stack.len(),
+        tapped,
+    )
+}
+
+/// The offer standing at `state` is the carried combat span of a play legal again, on the
+/// recorded road; the count it suggests.
+fn carried_combat_offer(state: &GameState, case: &str) -> u32 {
+    let (span, count) = offer_of(state);
+    assert_eq!(
+        (span.source, span.reach, span.cause),
+        (
+            SpanSource::Carried(0),
+            PeriodReach::Combat,
+            NamingCause::LegalNow
+        ),
+        "{case}"
+    );
+    assert_eq!(road(state), Some(OfferRoad::RecordedPeriod), "{case}");
+    fixed(&count)
+}
+
+/// CR 500.8 + CR 120.2a + CR 732.2a: in the combat Aggravated Assault adds, Spined Wurm deals 5
+/// combat damage and Old Gnawbone ("Whenever a creature you control deals combat damage to a
+/// player, create that many Treasure tokens.") makes again the five Treasures ("{T}, Sacrifice this
+/// token: Add one mana of any color.") the activation spent. The carried span is offered once the
+/// cycle has come round, counted to P1's lethal crossing (CR 704.5a), and a take leaves what its
+/// cycles driven by hand leave.
+#[test]
+fn an_aggravated_assault_period_paid_by_the_treasures_its_combat_makes_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    let board = AssaultBoard {
+        others: &["Old Gnawbone"],
+        attacker: "Spined Wurm",
+        aura: None,
+        mountains: 0,
+        treasures: 5,
+    };
+    for mode in BOTH_MODES {
+        for pay in [AssaultPay::Engine, AssaultPay::Hand] {
+            // CR 505.1a: every added main phase is a postcombat main, so a period begun in the
+            // precombat main first comes round to the phase it resumes in one cycle later.
+            for (phase, combats) in [(Phase::PreCombatMain, 2), (Phase::PostCombatMain, 1)] {
+                let case = format!("{mode:?}, {pay:?}, from {phase:?}");
+                let (mut runner, mut drive) = assault_board(board, phase, pay, mode, db);
+                assault_until(&mut runner, &mut drive, |state| {
+                    is_offer(state) || combats_begun(state) > 6
+                });
+                let state = runner.state().clone();
+                let n = carried_combat_offer(&state, &case);
+                let life = state.players[1].life;
+                assert_eq!(
+                    assault_frame(&state),
+                    (
+                        life,
+                        5,
+                        Phase::PostCombatMain,
+                        combats,
+                        0,
+                        0,
+                        vec!["Spined Wurm".to_string()]
+                    ),
+                    "{case}"
+                );
+                assert_eq!(n, ((life + 4) / 5) as u32, "{case}");
+
+                let cycles = assault_frame(&taken(&state, 3));
+                assert_eq!(
+                    cycles,
+                    (
+                        life - 15,
+                        5,
+                        Phase::PostCombatMain,
+                        combats + 3,
+                        0,
+                        0,
+                        vec!["Spined Wurm".to_string()]
+                    ),
+                    "{case}"
+                );
+                let mut by_hand = GameRunner::from_state(state);
+                act(&mut by_hand, GameAction::DeclineShortcut);
+                by_hand.state_mut().loop_detection = LoopDetectionMode::Off;
+                let mut hand_drive = AssaultDrive {
+                    activated_at: None,
+                    ..drive
+                };
+                assault_until(&mut by_hand, &mut hand_drive, |state| {
+                    combats_begun(state) == combats + 3 && assault_window(state)
+                });
+                assert_eq!(cycles, assault_frame(by_hand.state()), "{case}");
+
+                let events = take(&mut runner, n);
+                assert_eq!(
+                    runner.state().waiting_for,
+                    WaitingFor::GameOver { winner: Some(P0) },
+                    "{case}"
+                );
+                assert!(
+                    events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+                    "{case}"
+                );
+            }
+        }
+    }
+}
+
+/// CR 500.8 + CR 701.26b + CR 732.2a: Aggravated Assault paid by a population untapped each
+/// period — five Mountains by Bear Umbra's granted trigger ("Whenever this creature attacks, untap
+/// all lands you control."), or five Birds of Paradise ("{T}: Add one mana of any color.") by
+/// Aggravated Assault itself — is offered at its second combat, counted to P1's lethal crossing
+/// (CR 704.5a), and a take ends the game.
+#[test]
+fn an_aggravated_assault_period_paid_by_a_population_it_untaps_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    let boards = [
+        (
+            AssaultBoard {
+                others: &[],
+                attacker: "Spined Wurm",
+                aura: Some("Bear Umbra"),
+                mountains: 5,
+                treasures: 0,
+            },
+            7,
+        ),
+        (
+            AssaultBoard {
+                others: &["Birds of Paradise"; 5],
+                attacker: "Spined Wurm",
+                aura: None,
+                mountains: 0,
+                treasures: 0,
+            },
+            5,
+        ),
+    ];
+    for (board, power) in boards {
+        for mode in BOTH_MODES {
+            let case = format!("{board:?}, {mode:?}");
+            let (mut runner, mut drive) =
+                assault_board(board, Phase::PreCombatMain, AssaultPay::Engine, mode, db);
+            assault_until(&mut runner, &mut drive, |state| {
+                is_offer(state) || combats_begun(state) > 6
+            });
+            let state = runner.state();
+            let n = carried_combat_offer(state, &case);
+            assert_eq!(combats_begun(state), 2, "{case}");
+            assert_eq!(state.objects[&drive.attacker].power, Some(power), "{case}");
+            assert_eq!(
+                n,
+                ((state.players[1].life + power - 1) / power) as u32,
+                "{case}"
+            );
+
+            let events = take(&mut runner, n);
+            assert_eq!(
+                runner.state().waiting_for,
+                WaitingFor::GameOver { winner: Some(P0) },
+                "{case}"
+            );
+            assert!(
+                events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+                "{case}"
+            );
+        }
+    }
+}
+
+/// CR 732.2a: Aggravated Assault boards whose mana sources run down are carried and refused by the
+/// confirmer. Grim Hireling ("Whenever one or more creatures you control deal combat damage to a
+/// player, create two Treasure tokens.") and Old Gnawbone behind Grizzly Bears make two Treasures
+/// for the five spent, and behind Ornithopter none; Virtue of Courage ("Whenever a source you
+/// control deals noncombat damage to an opponent, …") and Smaug the Impenetrable ("Whenever Smaug
+/// is dealt noncombat damage, create that many Treasure tokens.") make nothing from combat damage
+/// dealt to a player; Bear Umbra untaps four Mountains for a cost of five; nothing untaps twenty.
+#[test]
+fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
+    let db = shared_card_db().expect("card db");
+    let with_treasures = |others, attacker| AssaultBoard {
+        others,
+        attacker,
+        aura: None,
+        mountains: 0,
+        treasures: 20,
+    };
+    let boards = [
+        with_treasures(&["Grim Hireling"], "Spined Wurm"),
+        with_treasures(&["Old Gnawbone"], "Grizzly Bears"),
+        with_treasures(&["Old Gnawbone"], "Ornithopter"),
+        with_treasures(&["Virtue of Courage"], "Spined Wurm"),
+        with_treasures(&["Smaug the Impenetrable"], "Spined Wurm"),
+        AssaultBoard {
+            others: &[],
+            attacker: "Spined Wurm",
+            aura: Some("Bear Umbra"),
+            mountains: 4,
+            treasures: 6,
+        },
+        AssaultBoard {
+            others: &[],
+            attacker: "Spined Wurm",
+            aura: None,
+            mountains: 20,
+            treasures: 0,
+        },
+    ];
+    for board in boards {
+        for mode in BOTH_MODES {
+            let case = format!("{board:?}, {mode:?}");
+            let (mut runner, mut drive) =
+                assault_board(board, Phase::PreCombatMain, AssaultPay::Engine, mode, db);
+            let mut verdicts = Vec::new();
+            let mut gathered_at = 0;
+            for _ in 0..4000 {
+                let state = runner.state();
+                assert!(!is_offer(state), "{case}");
+                if state.active_player != P0 {
+                    break;
+                }
+                if assault_window(state) && combats_begun(state) > gathered_at {
+                    gathered_at = combats_begun(state);
+                    verdicts.extend(carried_verdicts(state));
+                }
+                assault_step(&mut runner, &mut drive);
+            }
+            assert_eq!(runner.state().active_player, P1, "{case}: the turn ended");
+            assert!(drive.activations >= 2, "reach: {case} activates twice");
+            assert!(!verdicts.is_empty(), "reach: {case} carries the span");
+            assert!(
+                verdicts.iter().all(|verdict| matches!(
+                    verdict,
+                    Err(
+                        OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(None))
+                            | OfferRefusal::IllegalReplayedPlay
+                    )
+                )),
+                "{case}: {verdicts:?}"
+            );
+        }
     }
 }
