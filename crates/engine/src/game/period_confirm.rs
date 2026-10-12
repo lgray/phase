@@ -23,8 +23,8 @@ use crate::game::engine::{
 };
 use crate::game::mana_payment::{select_convoke_taps, ConvokeTapOrder};
 use crate::game::play_trace::{
-    self, AnswerOptionality, CostChoices, CostMove, EntryKind, NamedSpan, PeriodReach, PromptClass,
-    TraceEntry,
+    self, AnswerOptionality, CostChoices, CostMove, EntryKind, NamedSpan, PeriodReach, PlayLocus,
+    PromptClass, TraceEntry,
 };
 use crate::types::ability::TargetRef;
 use crate::types::actions::GameAction;
@@ -32,7 +32,8 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::{
     CostResume, GameState, ManaChoiceContext, PayCostKind, StackEntryKind, WaitingFor, YieldTarget,
 };
-use crate::types::identifiers::ObjectId;
+use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
+use crate::types::mana::ManaSourceSelection;
 use crate::types::player::PlayerId;
 
 /// Why the confirmer did not confirm a span, in the order its stages read.
@@ -186,19 +187,18 @@ fn period_items(
             // one period later, made from that token, which the period minted before it.
             if let (
                 EntryKind::Play {
-                    action: GameAction::ActivateAbility { ability_index, .. },
+                    action,
+                    locus: PlayLocus::Mana(spent, _),
                     ..
                 },
                 Some(source_id),
             ) = (&entry.kind, play_trace::remade_play_source(frame, span, at))
             {
                 let minted = frame.next_object_id - entries[entries.len() - len].next_object_id;
+                let remade = |id: ObjectId| if id == *spent { source_id } else { id };
                 return Some(PeriodItem {
                     seat: entry.seat,
-                    action: GameAction::ActivateAbility {
-                        source_id,
-                        ability_index: *ability_index,
-                    },
+                    action: renamed(action, remade, frame),
                     play: Some((entry.depth, entry.prompt)),
                     mandatory_answer: false,
                     next_object_id: entry.next_object_id + minted,
@@ -252,11 +252,32 @@ fn rebound(item: &PeriodItem, replay: &GameState) -> GameAction {
             id
         }
     };
+    renamed(&item.action, map, replay)
+}
+
+/// `action` with each object it names replaced by the one `map` gives for it. CR 400.7: a mana
+/// source selection whose source is replaced names that object as `state` holds it.
+fn renamed(
+    action: &GameAction,
+    map: impl Fn(ObjectId) -> ObjectId,
+    state: &GameState,
+) -> GameAction {
     let target = |t: &TargetRef| match t {
         TargetRef::Object(id) => TargetRef::Object(map(*id)),
         TargetRef::Player(p) => TargetRef::Player(*p),
     };
-    match &item.action {
+    let selected = |selection: &ManaSourceSelection| {
+        let id = map(selection.source.object_id);
+        ManaSourceSelection {
+            source: state
+                .objects
+                .get(&id)
+                .filter(|_| id != selection.source.object_id)
+                .map_or(selection.source, ObjectIncarnationRef::from_object),
+            ..selection.clone()
+        }
+    };
+    match action {
         GameAction::ChooseTarget { target: chosen } => GameAction::ChooseTarget {
             target: chosen.as_ref().map(target),
         },
@@ -272,6 +293,12 @@ fn rebound(item: &PeriodItem, replay: &GameState) -> GameAction {
         } => GameAction::ActivateAbility {
             source_id: map(*source_id),
             ability_index: *ability_index,
+        },
+        GameAction::TapLandForMana { selection } => GameAction::TapLandForMana {
+            selection: selected(selection),
+        },
+        GameAction::ActivateManaSource { selection } => GameAction::ActivateManaSource {
+            selection: selected(selection),
         },
         GameAction::CastSpell {
             object_id,

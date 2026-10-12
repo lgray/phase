@@ -7819,9 +7819,9 @@ pub(crate) fn driving_resources_non_decreasing(
     //     engine each cycle is self-terminating, not a sustainable CR 732.2a shortcut.
     //     `project_out_resources` zeroes `damage_marked` (invisible to strict loop-equality);
     //     this recovers the sign. Summed across the controller's battlefield permanents that
-    //     lethal damage can destroy (damage is one scalar per object, no per-kind split); CR
-    //     702.12b: a permanent with indestructible ignores that state-based action. A DECREASE
-    //     (heal) is allowed.
+    //     lethal damage can destroy (damage is one scalar per object, no per-kind split);
+    //     CR 702.12b: a permanent with indestructible ignores that state-based action. A
+    //     DECREASE (heal) is allowed.
     let damage_total = |s: &GameState| -> u64 {
         s.battlefield
             .iter()

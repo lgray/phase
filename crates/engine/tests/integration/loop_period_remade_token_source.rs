@@ -18,7 +18,9 @@ use engine::game::{play_trace_view, NamingCause};
 use engine::types::ability::{AbilityKind, TargetRef};
 use engine::types::actions::{DebugAction, DebugTokenRequest, GameAction};
 use engine::types::counter::CounterType;
-use engine::types::game_state::{GameState, LoopDetectionMode, ManaChoice, WaitingFor};
+use engine::types::game_state::{
+    CastPaymentMode, GameState, LoopDetectionMode, ManaChoice, WaitingFor,
+};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaType};
 use engine::types::phase::Phase;
@@ -716,4 +718,121 @@ fn two_treasures_sacrificed_before_the_stack_empties_are_offered_and_taken() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+/// CR 601.2g + CR 605.3a: Warren Soultrader ("Pay 1 life, Sacrifice another creature: Create a
+/// Treasure token.") sacrificing Gravecrawler ("You may cast this card from your graveyard as
+/// long as you control a Zombie.") beside Blood Artist ("Whenever this creature or another
+/// creature dies, target player loses 1 life and you gain 1 life.") makes again the Treasure
+/// that pays for Gravecrawler, however `payment` has that Treasure spent.
+fn a_treasure_remade_after_paying_for_a_cast_is_offered_and_taken(payment: CastPaymentMode) {
+    let db = shared_card_db().expect("the card fixture");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let trader = scenario.add_real_card(P0, "Warren Soultrader", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Blood Artist", Zone::Battlefield, db);
+    let crawler = scenario.add_real_card(P0, "Gravecrawler", Zone::Graveyard, db);
+    let board = built(scenario, 1);
+    let answers = Answers {
+        color: ManaType::Black,
+        aim: Some(TargetRef::Player(PlayerId(1))),
+        accept: true,
+    };
+    let cycle = |state: &mut GameState| {
+        let treasure = tokens(state, "Treasure")[0];
+        let card_id = state.objects[&crawler].card_id;
+        act(
+            state,
+            GameAction::CastSpell {
+                object_id: crawler,
+                card_id,
+                targets: vec![],
+                payment_mode: payment,
+            },
+        );
+        match payment {
+            CastPaymentMode::Auto => {}
+            CastPaymentMode::Manual => {
+                assert!(matches!(state.waiting_for, WaitingFor::ManaPayment { .. }));
+                tap_for_mana(state, treasure);
+            }
+            CastPaymentMode::AutoExceptSacrificialMana => {
+                let WaitingFor::ManaSourceSelection { options, .. } = &state.waiting_for else {
+                    panic!("no mana source asked for at {:?}", state.waiting_for);
+                };
+                let [selection] = &options[..] else {
+                    panic!("one Treasure offers {options:?}");
+                };
+                assert_eq!(selection.source.object_id, treasure);
+                let selection = selection.clone();
+                act(state, GameAction::ActivateManaSource { selection });
+            }
+        }
+        settle(state, &answers);
+        assert!(!state.objects.contains_key(&treasure));
+        assert_eq!(state.objects[&crawler].zone, Zone::Battlefield);
+        activate_ability(state, trader);
+        act(
+            state,
+            GameAction::SelectCards {
+                cards: vec![crawler],
+            },
+        );
+        settle(state, &answers);
+    };
+    let mut reference = in_mode(&board, LoopDetectionMode::Off);
+    for _ in 0..4 {
+        cycle(&mut reference);
+    }
+    assert_eq!(
+        reading(&reference, trader),
+        Reading {
+            life: vec![20, 16],
+            eliminated: vec![false; 2],
+            mana: mana_of(ManaType::Black, 0),
+            tokens: 1,
+            damage: 0,
+            counters: 0,
+        }
+    );
+    assert_eq!(reference.objects[&crawler].zone, Zone::Graveyard);
+    for mode in MODES {
+        let mut live = in_mode(&board, mode);
+        cycle(&mut live);
+        let (certificate, schema) = offer(&live);
+        assert_eq!(
+            certificate.unbounded,
+            [ResourceAxis::Life(PlayerId(1))],
+            "{mode:?}"
+        );
+        assert_eq!(schema.measured_repetition_bound, Some(19), "{mode:?}");
+        take(&mut live, 3);
+        assert_eq!(
+            reading(&live, trader),
+            reading(&reference, trader),
+            "{mode:?}"
+        );
+        assert_eq!(live.objects[&crawler].zone, Zone::Graveyard, "{mode:?}");
+        assert_eq!(live.waiting_for, reference.waiting_for, "{mode:?}");
+    }
+}
+
+/// The engine spends the Treasure, and no play records it.
+#[test]
+fn a_treasure_the_engine_pays_a_cast_with_is_offered_and_taken() {
+    a_treasure_remade_after_paying_for_a_cast_is_offered_and_taken(CastPaymentMode::Auto);
+}
+
+/// The Treasure's ability is activated at the payment.
+#[test]
+fn a_treasure_activated_at_a_casts_payment_is_offered_and_taken() {
+    a_treasure_remade_after_paying_for_a_cast_is_offered_and_taken(CastPaymentMode::Manual);
+}
+
+/// The Treasure is the mana source selected when the engine asks before sacrificing one.
+#[test]
+fn a_treasure_selected_as_a_casts_sacrificial_mana_is_offered_and_taken() {
+    a_treasure_remade_after_paying_for_a_cast_is_offered_and_taken(
+        CastPaymentMode::AutoExceptSacrificialMana,
+    );
 }

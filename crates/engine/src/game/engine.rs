@@ -26787,7 +26787,8 @@ mod minted_battlefield_set_tests {
     }
 
     /// CR 111.7 + CR 111.3: a token made in place of one that ceased to exist is not a mint; a
-    /// second one, one of another name, and one with other copiable values each are.
+    /// second one, one of another name, one of another tapped status, and one with other
+    /// copiable values each are.
     #[test]
     fn a_token_made_again_is_not_minted() {
         let mut before = GameState::new_two_player(7);
@@ -26811,6 +26812,14 @@ mod minted_battlefield_set_tests {
 
         let (renamed, gold) = made("Gold");
         assert_eq!(minted_battlefield_ids(&before, &renamed), vec![gold]);
+
+        let mut tapped = remade.clone();
+        tapped
+            .objects
+            .get_mut(&twin)
+            .expect("the made token is live")
+            .tapped = true;
+        assert_eq!(minted_battlefield_ids(&before, &tapped), vec![twin]);
 
         let mut keyworded = remade.clone();
         keyworded
