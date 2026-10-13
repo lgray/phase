@@ -3234,6 +3234,35 @@ fn the_history_cover_refuses_a_grown_attack_history_a_live_static_reads() {
     assert!(!history_covers_for_tests(&prior, &current));
 }
 
+/// CR 601.3 + CR 702.170d + CR 732.2a: the history cover reads a casting-permission grant by its
+/// permission. Ramirez DePietro, Pillager's "You may cast that card for as long as it remains
+/// exiled." reads no history, so the Charger's frames and the Time Warp board's turn frames are
+/// admitted beside it. Kellan Joins Up's "it becomes plotted" (CR 702.170c) reads the turn, which
+/// the Charger's frames share and the turn frames grow.
+#[test]
+fn the_history_cover_reads_a_casting_permission_grant_by_its_permission() {
+    let db = shared_card_db().expect("card db");
+    for (other, turn_cover) in [
+        (
+            "Ramirez DePietro, Pillager",
+            Some(RecurrenceCover::TurnCycle),
+        ),
+        ("Kellan Joins Up", None),
+    ] {
+        let [prior, current] = charger_frames(other, db);
+        assert!(
+            !loop_states_equal_modulo_resources(&prior, &current),
+            "reach: the comparand refuses the grown history beside {other}"
+        );
+        assert!(history_covers_for_tests(&prior, &current), "{other}");
+        assert_eq!(
+            warp_verdict(&warp_frames(&[other], db)),
+            ObjectGrowthVerdict::ResourceRecurrence(turn_cover),
+            "{other}"
+        );
+    }
+}
+
 const MYR: [&str; 5] = [
     "Gold Myr",
     "Silver Myr",
@@ -4897,8 +4926,9 @@ fn assault_take_differs(
 /// (CR 704.5a), and an engine-paid take leaves what its cycles driven by hand leave. The cards: a
 /// tapped Mana Confluence or Forgotten Monument; Kain, Traitorous Dragoon, Cecil, Dark Knight and
 /// Namazu Trader, which neither attack nor enter; Carnival of Souls and Davvol, Evincar of Rath,
-/// with no creature entering; and an instant or sorcery left in a hand or a graveyard. Time Warp
-/// held beside Mountains reaches a turn (CR 500.7), since an added turn would untap them.
+/// with no creature entering; Ramirez DePietro, Pillager, with no Pirate dealing damage; and an
+/// instant or sorcery left in a hand or a graveyard. Time Warp held beside Mountains reaches a
+/// turn (CR 500.7), since an added turn would untap them.
 #[test]
 fn a_period_beside_cards_it_never_uses_is_offered_as_it_is_without_them() {
     let db = shared_card_db().expect("card db");
@@ -4921,6 +4951,7 @@ fn a_period_beside_cards_it_never_uses_is_offered_as_it_is_without_them() {
                 (in_graveyard("World at War"), combat),
                 (in_hand("Jeska's Will"), combat),
                 (in_hand("Time Warp"), combat),
+                (untapped("Ramirez DePietro, Pillager"), combat),
             ],
         ),
         (
