@@ -5125,3 +5125,73 @@ fn an_aggravated_assault_period_paid_by_neheb_and_lands_is_offered_and_taken() {
         }
     }
 }
+
+/// CR 119.3 + CR 119.4 + CR 732.2a: Aggravated Assault paid by Treasonous Ogre ("Pay 3 life: Add
+/// {R}.") beside Sinister Monolith ("At the beginning of combat on your turn, each opponent loses
+/// 1 life and you gain 1 life."): the Monolith's gain is life the Ogre spends, so the span is
+/// carried, and the confirmer refuses a period paying fifteen life for the one it regains.
+/// Without the Monolith nothing returns life and nothing is carried.
+#[test]
+fn a_period_fed_by_an_each_opponent_drain_is_carried_and_refused() {
+    let db = shared_card_db().expect("card db");
+    let boards = [
+        (
+            &["Treasonous Ogre", "Sinister Monolith"][..],
+            &[OfferRefusal::IllegalReplayedPlay][..],
+        ),
+        (&["Treasonous Ogre"][..], &[][..]),
+    ];
+    for (others, refusals) in boards {
+        let board = AssaultBoard {
+            others,
+            attacker: "Spined Wurm",
+            aura: None,
+            mountains: 0,
+            treasures: 0,
+        };
+        for mode in BOTH_MODES {
+            let case = format!("{others:?}, {mode:?}");
+            let (mut runner, mut drive) =
+                assault_board(board, Phase::PreCombatMain, AssaultPay::Hand, mode, db);
+            runner.state_mut().players[0].life = 80;
+            let state = runner.state();
+            let ogre = state
+                .battlefield
+                .iter()
+                .copied()
+                .find(|id| state.objects[id].name == "Treasonous Ogre")
+                .expect("the Ogre");
+            let (mut verdicts, mut gathered_at, mut most_carried) = (Vec::new(), 0, 0);
+            for _ in 0..4000 {
+                let state = runner.state();
+                assert!(!is_offer(state), "{case}");
+                if state.active_player != P0 {
+                    break;
+                }
+                gather_carried_verdicts(state, &mut gathered_at, &mut verdicts);
+                most_carried = most_carried.max(carried(state).len());
+                if assault_window(state)
+                    && drive.activated_at != Some(combats_begun(state))
+                    && state.players[0].mana_pool.total() < ASSAULT_COST
+                    && state.players[0].life > 3
+                {
+                    let ability_index = ability(state, ogre, true);
+                    act(
+                        &mut runner,
+                        GameAction::ActivateAbility {
+                            source_id: ogre,
+                            ability_index,
+                        },
+                    );
+                } else {
+                    assault_step(&mut runner, &mut drive);
+                }
+            }
+            assert!(drive.activations >= 2, "reach: {case} activates twice");
+            assert_eq!(most_carried == 0, refusals.is_empty(), "{case}");
+            verdicts.dedup();
+            let refused: Vec<_> = refusals.iter().cloned().map(Err).collect();
+            assert_eq!(verdicts, refused, "{case}");
+        }
+    }
+}

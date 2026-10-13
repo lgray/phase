@@ -41,8 +41,8 @@ use crate::game::mana_abilities::is_mana_ability;
 use crate::game::mana_payment::{shard_to_mana_type, ShardRequirement};
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, ContinuousModification, DamageKindFilter, Effect,
-    ManaProduction, QuantityExpr, ReplacementDefinition, StaticDefinition, TapStateChange,
-    TargetFilter, TriggerDefinition, TypeFilter, VoteSubject,
+    ManaProduction, PlayerFilter, QuantityExpr, ReplacementDefinition, StaticDefinition,
+    TapStateChange, TargetFilter, TriggerDefinition, TypeFilter, VoteSubject,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::{CardType, CoreType};
@@ -378,6 +378,61 @@ fn target_player_opt(filter: &Option<TargetFilter>) -> PlayerId {
     }
 }
 
+/// CR 102.2 + CR 102.3: the players a definition's player scope makes its effect act on, where
+/// the scope alone names them; `None` where a game state or another object decides who they are.
+fn scoped_players(scope: &PlayerFilter) -> Option<&'static [PlayerId]> {
+    match scope {
+        PlayerFilter::Controller => Some(&[CONTROLLER]),
+        PlayerFilter::Opponent => Some(&[OPPONENT]),
+        PlayerFilter::All => Some(&[CONTROLLER, OPPONENT]),
+        PlayerFilter::DefendingPlayer
+        | PlayerFilter::OpponentLostLife
+        | PlayerFilter::OpponentGainedLife
+        | PlayerFilter::HasLostTheGame
+        | PlayerFilter::OpponentDealtDamage { .. }
+        | PlayerFilter::OpponentAttacked { .. }
+        | PlayerFilter::OpponentAttackingEnchantedPlayer
+        | PlayerFilter::AllExcept { .. }
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::TriggeringPlayer
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::OpponentOfTriggeringPlayer
+        | PlayerFilter::OpponentOfTriggeringPlayerNotAttacked
+        | PlayerFilter::VotedFor { .. }
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ControlsCount { .. }
+        | PlayerFilter::PlayerAttribute { .. }
+        | PlayerFilter::ChosenPlayer { .. }
+        | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::GrantingObjectCaster
+        | PlayerFilter::AnyOf { .. }
+        | PlayerFilter::TargetPlayer
+        | PlayerFilter::TrackedSetPossessor { .. } => None,
+    }
+}
+
+/// CR 119.3 + CR 701.17a: [`effect_projection`] under the player scope of the definition `effect`
+/// heads. Each scoped player is the one the effect acts on, so what it moves on the controller's
+/// life or library moves on theirs.
+fn scoped_projection(effect: &Effect, scope: Option<&PlayerFilter>) -> Projection {
+    let mut projection = effect_projection(effect);
+    if let (Projection::Modeled { vector, .. }, Some(players)) =
+        (&mut projection, scope.and_then(scoped_players))
+    {
+        for axis in [&mut vector.life, &mut vector.library_delta] {
+            if let Some(amount) = axis.remove(&CONTROLLER) {
+                for player in players {
+                    *axis.entry(*player).or_insert(0) += amount;
+                }
+            }
+        }
+    }
+    projection
+}
+
 /// CR 700.4: a "dies" (Death-axis) event requires a *creature* moving to a
 /// graveyard. A sacrifice/destroy produces the Death axis unless its target
 /// filter **provably** cannot match a creature (§3.5). Recall-first: only an
@@ -637,7 +692,7 @@ fn effect_projection(effect: &Effect) -> Projection {
         for ability in minted_mana_abilities(effect) {
             let mut resolved = Vec::new();
             collect_effects(&ability, &mut resolved);
-            for added in resolved {
+            for (added, _) in resolved {
                 if let Effect::Mana { produced, .. } = added {
                     let (seeds, each) = project_mana_production(produced);
                     // A fixed number of tokens each adding a fixed amount is a fixed amount.
@@ -1352,13 +1407,16 @@ fn trigger_requirements(trig: &TriggerDefinition) -> BTreeSet<AxisKey> {
 // collect_effects — the recursive Effect-collecting walker
 // ---------------------------------------------------------------------------
 
+/// An effect and the player scope of the definition it heads; an effect heading none has none.
+pub(crate) type ScopedEffect<'a> = (&'a Effect, Option<&'a PlayerFilter>);
+
 /// Collect every [`Effect`] reachable from an [`AbilityDefinition`]: the head
 /// effect, the chained `sub_ability`/`else_ability`/`mode_abilities`, and — via
 /// [`collect_effects_in_effect`] — the nested-effect payloads that the display
 /// walkers (`build_ability_item`) do *not* descend. Borrows the faces, so the
 /// returned references live as long as the input.
-pub(crate) fn collect_effects<'a>(def: &'a AbilityDefinition, out: &mut Vec<&'a Effect>) {
-    collect_effects_in_effect(&def.effect, out);
+pub(crate) fn collect_effects<'a>(def: &'a AbilityDefinition, out: &mut Vec<ScopedEffect<'a>>) {
+    collect_effects_in_effect(&def.effect, def.player_scope.as_ref(), out);
     if let Some(sub) = &def.sub_ability {
         collect_effects(sub, out);
     }
@@ -1373,8 +1431,12 @@ pub(crate) fn collect_effects<'a>(def: &'a AbilityDefinition, out: &mut Vec<&'a 
 /// Push `effect`, then descend the nested-`AbilityDefinition` payloads carried by
 /// the variants the display walkers skip (or this projection silently
 /// under-counts). Structural traversal — a wildcard covers the leaf variants.
-fn collect_effects_in_effect<'a>(effect: &'a Effect, out: &mut Vec<&'a Effect>) {
-    out.push(effect);
+fn collect_effects_in_effect<'a>(
+    effect: &'a Effect,
+    scope: Option<&'a PlayerFilter>,
+    out: &mut Vec<ScopedEffect<'a>>,
+) {
+    out.push((effect, scope));
     match effect {
         Effect::Vote {
             per_choice_effect,
@@ -1449,7 +1511,7 @@ fn collect_effects_in_effect<'a>(effect: &'a Effect, out: &mut Vec<&'a Effect>) 
         // replacement install escapes every `collect_effects` consumer.
         Effect::CreateDrawReplacement { replacement_effect }
         | Effect::CreatePlaneswalkReplacement { replacement_effect } => {
-            collect_effects_in_effect(replacement_effect, out);
+            collect_effects_in_effect(replacement_effect, None, out);
         }
         _ => {}
     }
@@ -2014,8 +2076,8 @@ fn build_node_paying(
     let mut acc = NodeAcc::default();
     let mut effects = Vec::new();
     collect_effects(def, &mut effects);
-    for e in effects {
-        fold_projection(&mut acc, effect_projection(e));
+    for (effect, scope) in effects {
+        fold_projection(&mut acc, scoped_projection(effect, scope));
     }
     if let Some(cost) = &def.cost {
         fold_cost(&mut acc, cost);
@@ -2772,13 +2834,15 @@ mod tests {
         let mut effects = Vec::new();
         collect_effects(&top, &mut effects);
         assert!(
-            effects.iter().any(|e| matches!(e, Effect::Mana { .. })),
+            effects
+                .iter()
+                .any(|(e, _)| matches!(e, Effect::Mana { .. })),
             "the ChooseOneOf branch's Mana is collected"
         );
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::PutCounter { .. })),
+                .any(|(e, _)| matches!(e, Effect::PutCounter { .. })),
             "the sub_ability PutCounter is collected"
         );
     }
@@ -3632,6 +3696,51 @@ mod tests {
             "reach: the cost nets the seeded mana away"
         );
         assert!(nykthos.produces.contains(&AxisKey::Mana));
+    }
+
+    /// CR 102.2 + CR 102.3 + CR 119.3 + CR 701.17a: an effect naming no target moves the life or
+    /// the library of the players its definition's scope names: each opponent, or each player.
+    #[test]
+    fn a_player_scope_names_whose_life_and_library_an_effect_moves() {
+        let trigger = AbilitySlot::Trigger(0);
+        // "each opponent loses 1 life and you gain 1 life"
+        let monolith = node_of("Sinister Monolith", trigger);
+        assert_eq!(
+            monolith.net.life,
+            BTreeMap::from([(CONTROLLER, 1), (OPPONENT, -1)])
+        );
+        assert!(monolith.produces.contains(&AxisKey::Life));
+        // "each opponent mills a card"
+        assert_eq!(
+            node_of("Altar of the Brood", trigger).net.library_delta,
+            BTreeMap::from([(OPPONENT, -1)])
+        );
+        // "each player loses 1 life"
+        assert_eq!(
+            node_of("Blood Tyrant", trigger).net.life,
+            BTreeMap::from([(CONTROLLER, -1), (OPPONENT, -1)])
+        );
+        // "{T}: Each player mills a card."
+        assert_eq!(
+            node_of("Ghoulcaller's Bell", AbilitySlot::Ability(0))
+                .net
+                .library_delta,
+            BTreeMap::from([(CONTROLLER, -1), (OPPONENT, -1)])
+        );
+        // "{T}: Add {R} or {G}. Each opponent gains 1 life.": the scope of the definition the
+        // effect heads, not of the ability it ends.
+        assert_eq!(
+            node_of("Grove of the Burnwillows", AbilitySlot::Ability(1))
+                .net
+                .life,
+            BTreeMap::from([(OPPONENT, 1)])
+        );
+        // "each opponent who doesn't control an Elf loses 1 life": who they are is the game's
+        // to say, so the loss stays where an unscoped effect puts it.
+        assert_eq!(
+            node_of("Thornbow Archer", trigger).net.life,
+            BTreeMap::from([(CONTROLLER, -1)])
+        );
     }
 
     // === E. PR-4a review resolution (PR #4493) ==============================
