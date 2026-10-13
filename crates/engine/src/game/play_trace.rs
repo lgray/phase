@@ -766,7 +766,6 @@ fn refresh_carrying(
     let sources: Vec<AbilitySource<'_>> = objects
         .iter()
         .map(|object| AbilitySource {
-            name: &object.base_name,
             mana_cost: &object.base_mana_cost,
             card_type: &object.base_card_types,
             abilities: &object.base_abilities,

@@ -1580,7 +1580,6 @@ pub struct NodeOrigin {
 /// The definitions Engine B reads from one card or object, borrowed.
 #[derive(Debug, Clone, Copy)]
 pub struct AbilitySource<'a> {
-    pub name: &'a str,
     pub mana_cost: &'a ManaCost,
     pub card_type: &'a CardType,
     pub abilities: &'a [AbilityDefinition],
@@ -1592,7 +1591,6 @@ pub struct AbilitySource<'a> {
 impl<'a> From<&'a CardFace> for AbilitySource<'a> {
     fn from(face: &'a CardFace) -> Self {
         Self {
-            name: &face.name,
             mana_cost: &face.mana_cost,
             card_type: &face.card_type,
             abilities: &face.abilities,
