@@ -1,17 +1,12 @@
 //! Engine B — the **static ability-graph extractor** (offline candidate generator).
 //!
-//! This module is **purely additive** and changes no game behavior. It never
-//! calls `apply()`, never drives a `GameRunner`, and never touches a
-//! `GameState`. Given a list of card faces it builds a directed
+//! This module never calls `apply()`, never drives a `GameRunner`, and never
+//! touches a `GameState`. Given a list of card faces it builds a directed
 //! ability/resource graph, finds strongly-connected components (Tarjan SCC),
 //! and emits each component that holds a cycle as a **candidate cycle**. Whether a
 //! cycle pays for itself, gains, or makes progress is the confirmer's answer.
 //!
-//! It is the over-approximate, fast, card-list stage of the two-engine combo
-//! detector: Engine B (here) *proposes* candidates; Engine A
-//! ([`crate::analysis::detect_loop`], already shipped) is the sound, stateful
-//! stage that *confirms* them by driving the reducer. A candidate is
-//! **unconfirmed by construction** — it ignores targeting legality, timing
+//! A candidate is **unconfirmed by construction** — it ignores targeting legality, timing
 //! windows, "may" choices, and replacement interactions — so it is a
 //! [`CandidateCycle`], deliberately **never** a [`crate::analysis::LoopCertificate`]
 //! (whose soundness invariant requires a driven board-equality proof).
@@ -1521,10 +1516,9 @@ fn collect_effects_in_effect<'a>(
 // Node model
 // ---------------------------------------------------------------------------
 
-/// Whether every collected `Effect`/cost of a node (or every member node of a
-/// candidate) projected to a modeled `ResourceVector`, or at least one folded to
-/// [`Projection::Unmodeled`]. A typed candidate-confidence axis replacing a raw
-/// `bool` (CLAUDE.md "no raw bool" / R2) — self-documenting and extensible to
+/// Whether every collected `Effect`/cost of a node projected to a modeled
+/// `ResourceVector`, or at least one folded to [`Projection::Unmodeled`]. A typed
+/// flag replacing a raw `bool` (CLAUDE.md "no raw bool" / R2) — self-documenting and extensible to
 /// finer-grained confidence levels without touching call sites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelCompleteness {
@@ -1614,8 +1608,7 @@ pub struct AbilityNode {
     pub produces: BTreeSet<AxisKey>,
     /// Axes this node costs/needs + the trigger-event axis that fires it.
     pub requires: BTreeSet<AxisKey>,
-    /// Whether every collected effect/cost projected, or ≥1 was `Unmodeled`
-    /// (candidate-confidence flag).
+    /// Whether every collected effect/cost projected, or ≥1 was `Unmodeled`.
     pub completeness: ModelCompleteness,
 }
 
