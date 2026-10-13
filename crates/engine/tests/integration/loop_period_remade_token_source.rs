@@ -778,11 +778,16 @@ fn spawn_cycle(state: &mut GameState, answers: &Answers) {
 /// creatures or planeswalkers enter this turn, they enter as copies of the chosen creature.")
 /// from P0's hand on `chosen`, paid from the pool, and resolves it.
 fn cast_reflection(state: &mut GameState, reflection: ObjectId, chosen: ObjectId) {
-    let card_id = state.objects[&reflection].card_id;
+    cast_on(state, reflection, chosen);
+}
+
+/// Casts `spell` from P0's hand on `chosen`, paid from the pool, and resolves it.
+fn cast_on(state: &mut GameState, spell: ObjectId, chosen: ObjectId) {
+    let card_id = state.objects[&spell].card_id;
     act(
         state,
         GameAction::CastSpell {
-            object_id: reflection,
+            object_id: spell,
             card_id,
             targets: vec![],
             payment_mode: CastPaymentMode::Auto,
@@ -1517,6 +1522,57 @@ fn slivers_netted_while_one_is_sacrificed_are_offered_and_taken() {
     }
 }
 
+/// CR 111.7 + CR 732.2a: under Training Grounds ("Activated abilities of creatures you control
+/// cost {2} less to activate. This effect can't reduce the mana in that cost to less than one
+/// mana.") Sliver Queen's ability costs {1}, and Ashnod's Altar adds {C}{C} for the Sliver, which
+/// ceases to exist, so each period nets one mana and leaves no Sliver; it is offered at its first
+/// sacrifice, and a take performs its periods and marks nothing unbounded.
+#[test]
+fn a_sliver_made_and_sacrificed_for_more_mana_than_it_costs_is_offered_and_taken() {
+    let db = shared_card_db().expect("the card fixture");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let queen = scenario.add_real_card(P0, "Sliver Queen", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Training Grounds", Zone::Battlefield, db);
+    let altar = scenario.add_real_card(P0, "Ashnod's Altar", Zone::Battlefield, db);
+    let forest = scenario.add_basic_land(P0, ManaColor::Green);
+    let board = scenario.build().state().clone();
+    let answers = untargeted();
+    let make = |state: &mut GameState| make_sliver(state, queen, &answers);
+    let sacrifice = |state: &mut GameState| sacrifice_newest_sliver(state, altar, &answers);
+    let steps: [Step; 2] = [&make, &sacrifice];
+    let hand_period = |state: &mut GameState| steps.iter().for_each(|step| step(state));
+    for mode in MODES {
+        let context = format!("{mode:?}");
+        let mut live = in_mode(&board, mode);
+        tap_for_mana(&mut live, forest);
+        settle(&mut live, &answers);
+        offered_after_one_period(&mut live, &steps, &context);
+        let (certificate, _) = offer(&live);
+        assert_eq!(
+            certificate.unbounded,
+            [ResourceAxis::Mana(ManaType::Colorless)],
+            "{context}"
+        );
+        assert!(tokens(&live, "Sliver").is_empty(), "{context}");
+        for (count, taken, _) in taken_and_hand_driven(&live, &[1, 3], hand_period, &context) {
+            assert!(
+                taken.unbounded_resources.is_empty(),
+                "{context}, {count} cycles: {:?}",
+                taken.unbounded_resources
+            );
+            assert_eq!(
+                (
+                    tokens(&taken, "Sliver").len(),
+                    taken.players[0].mana_pool.total()
+                ),
+                (0, 2 + count as usize),
+                "{context}, {count} cycles"
+            );
+        }
+    }
+}
+
 /// Mystic Reflection cast on a Sliver that is then sacrificed waits to copy a creature only
 /// last-known information (CR 608.2h) describes, so the growing period that uses it up is
 /// refused, and the same periods without the cast are covered.
@@ -2090,5 +2146,98 @@ fn a_chosen_source_effect_naming_a_departed_dragon_keeps_the_period_refused() {
             covered.clone(),
             covered,
         ]
+    );
+}
+
+/// A token copy of Noble Vestige made by Cackling Counterpart ("Create a token that's a copy of
+/// target creature you control.") under Madrush Cyclops ("Creatures you control have haste.")
+/// shields P0 and is then sacrificed, so the shield's host has left and its last-known
+/// information (CR 608.2h) could be asked for, and the periods that leave such shields stay
+/// refused while the same periods without the activation are covered.
+#[test]
+fn a_shield_made_by_a_departed_token_keeps_the_period_refused() {
+    let db = shared_card_db().expect("the card fixture");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let vestige = scenario.add_real_card(P0, "Noble Vestige", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Madrush Cyclops", Zone::Battlefield, db);
+    let altar = scenario.add_real_card(P0, "Ashnod's Altar", Zone::Battlefield, db);
+    let counterparts =
+        [(); 5].map(|()| scenario.add_real_card(P0, "Cackling Counterpart", Zone::Hand, db));
+    let islands = [(); 15].map(|()| scenario.add_basic_land(P0, ManaColor::Blue));
+    let answers = Answers {
+        color: ManaType::Blue,
+        ..untargeted()
+    };
+    let mut board = in_mode(scenario.build().state(), LoopDetectionMode::Off);
+    for island in islands {
+        tap_for_mana(&mut board, island);
+        settle(&mut board, &answers);
+    }
+    // Casts a Counterpart on the nontoken Vestige; returns the token it makes.
+    let copy = |state: &mut GameState, counterpart: ObjectId| {
+        cast_on(state, counterpart, vestige);
+        *tokens(state, "Noble Vestige")
+            .last()
+            .expect("a token Vestige")
+    };
+    let first = copy(&mut board, counterparts[0]);
+    // Each frame with the tokens sacrificed up to it, oldest first.
+    let periods = |shielded: bool| {
+        let mut state = board.clone();
+        let mut token = first;
+        let mut sacrificed = Vec::new();
+        let frames: Vec<GameState> = counterparts[1..]
+            .iter()
+            .map(|counterpart| {
+                if shielded {
+                    activate_ability(&mut state, token);
+                    let shield = Answers {
+                        aim: Some(TargetRef::Player(P0)),
+                        ..answers.clone()
+                    };
+                    settle(&mut state, &shield);
+                }
+                let next = copy(&mut state, *counterpart);
+                tap_for_mana(&mut state, altar);
+                let paid = Answers {
+                    cost: Some(token),
+                    ..answers.clone()
+                };
+                settle(&mut state, &paid);
+                assert!(has_priority(&state) && state.stack.is_empty());
+                sacrificed.push(std::mem::replace(&mut token, next));
+                state.clone()
+            })
+            .collect();
+        (frames, sacrificed)
+    };
+    let refused = ObjectGrowthVerdict::ResourceRecurrence(None);
+    let covered = ObjectGrowthVerdict::ResourceRecurrence(Some(RecurrenceCover::History));
+
+    let (frames, hosts) = periods(true);
+    for (period, frame) in frames.iter().enumerate() {
+        assert_eq!(floating(frame), vec![SHIELD; period + 1]);
+        let sources: Vec<Option<ObjectId>> = frame
+            .pending_damage_replacements
+            .iter()
+            .map(|effect| effect.source_object)
+            .collect();
+        let departed: Vec<Option<ObjectId>> = hosts[..=period].iter().copied().map(Some).collect();
+        assert_eq!(sources, departed);
+        assert!(hosts[..=period]
+            .iter()
+            .all(|host| !frame.objects.contains_key(host)));
+        assert_eq!(tokens(frame, "Noble Vestige").len(), 1);
+    }
+    let (plain, _) = periods(false);
+    assert_eq!(
+        [
+            certified(&frames[..3], &counterparts),
+            certified(&frames[1..], &counterparts),
+            certified(&plain[..3], &counterparts),
+            certified(&plain[1..], &counterparts),
+        ],
+        [refused.clone(), refused, covered.clone(), covered]
     );
 }
