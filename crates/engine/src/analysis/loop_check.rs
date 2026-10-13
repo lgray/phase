@@ -56,8 +56,8 @@
 
 use crate::analysis::decision_template::{DecisionTemplate, IterationCount};
 use crate::analysis::resource::{
-    loop_states_cover_modulo_growth, loop_states_equal_modulo_resources, BoardDelta, CounterClass,
-    ObjectClass, ResourceAxis, ResourceVector,
+    loop_states_cover_modulo_growth, loop_states_equal_modulo_resources, BoardDelta, ResourceAxis,
+    ResourceVector,
 };
 use crate::types::game_state::GameState;
 use crate::types::player::PlayerId;
@@ -660,8 +660,8 @@ pub(crate) fn fallers_lives_pairwise_equal(frames: &[&GameState], fallers: &[Pla
 /// opponent loss condition; the corpus rows are two-player, so any non-controller
 /// player is the opponent.
 ///
-/// `state` supplies the library storage authority (`GameState::zone_storage_seat`);
-/// `None` is the stateless static analysis, whose seats are their own storage.
+/// `state` supplies the library storage authority (`GameState::zone_storage_seat`).
+/// With no state, each seat is its own storage.
 pub(crate) fn classify_win_kind(
     controller: PlayerId,
     delta: &ResourceVector,
@@ -689,17 +689,8 @@ pub(crate) fn classify_win_kind(
     {
         return WinKind::LethalDamage;
     }
-    // CR 704.5c: unbounded poison counters on any player. The live path feeds poison
-    // via `delta.poison`; the static `candidate_cycles_from_nodes` path feeds it via
-    // `delta.counters[(Poison, Player)]` (ability_graph.rs `add_counter`). This is a
-    // shared single-authority classifier, so honor BOTH sources — reading only one
-    // would silently degrade the other path's poison SCC to `Advantage`.
-    if delta.poison.values().any(|&n| n > 0)
-        || delta
-            .counters
-            .get(&(CounterClass::Poison, ObjectClass::Player))
-            .is_some_and(|&n| n > 0)
-    {
+    // CR 704.5c: unbounded poison counters on any player.
+    if delta.poison.values().any(|&n| n > 0) {
         return WinKind::PoisonLoss;
     }
     // CR 104.3c / CR 121.4: an unbounded *downward* library delta on a player
@@ -729,7 +720,7 @@ pub(crate) fn classify_win_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::resource::ResourceVector;
+    use crate::analysis::resource::{CounterClass, ObjectClass, ResourceVector};
     use crate::game::game_object::GameObject;
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};

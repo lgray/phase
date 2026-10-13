@@ -2756,17 +2756,14 @@ impl ResourceVector {
         ])
     }
 
-    /// CR 732.2a: **controller-scoped** net-progress — the single authority shared
-    /// by Engine A ([`crate::analysis::detect_loop`]) and Engine B
-    /// ([`crate::analysis::candidate_cycles`]). Returns true iff the cycle makes
+    /// CR 732.2a: **controller-scoped** net-progress. Returns true iff the cycle makes
     /// unbounded progress on ≥1 axis without leaving the loop's controller with an
     /// unsustainable net deficit on a *consumed* axis (their own life or mana).
     ///
     /// Distinct from [`Self::is_net_progress`] only in *who* the consumed-axis
     /// constraint applies to: the controller's life going negative is unsustainable
     /// (false), but an *opponent's* life/library going negative is the drain/mill win
-    /// (progress). Engine B layers an `unbounded_production` override on top of this
-    /// base check for dynamic production.
+    /// (progress).
     pub(crate) fn net_progress_for(&self, controller: PlayerId) -> bool {
         // CR 106.1: a loop that net-spends mana across the whole pool is not
         // sustainable. Mana is not attributed per player in the summed `mana`

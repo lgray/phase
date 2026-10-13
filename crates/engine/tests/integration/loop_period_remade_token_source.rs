@@ -285,7 +285,7 @@ fn pass_to_the_next_step(state: &mut GameState, answers: &Answers) {
 
 /// The top-level fields in which `taken`, read with detection off, and `reference` differ once
 /// each is serialized whole.
-fn differing_fields(taken: &GameState, reference: &GameState) -> BTreeSet<String> {
+pub(crate) fn differing_fields(taken: &GameState, reference: &GameState) -> BTreeSet<String> {
     let fields = |state: &GameState| match serde_json::to_value(state) {
         Ok(serde_json::Value::Object(fields)) => fields,
         other => panic!("a state serialized to {other:?}"),

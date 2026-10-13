@@ -3155,43 +3155,48 @@ fn a_hellkite_charger_period_is_offered_at_its_next_combat_and_taken() {
     }
 }
 
-/// CR 732.2a: without Bear Umbra the Charger's carried span spends Mountains nothing untaps, and
+/// CR 732.2a: without Bear Umbra the Charger's carried span spends Mountains nothing untaps;
 /// beside Moraug, Fury of Akoum ("Each creature you control gets +1/+0 for each time it has
-/// attacked this turn.") each attack grows the trigger's source; neither is offered.
+/// attacked this turn.") each attack grows the trigger's source; and paid through Mana Confluence
+/// ("{T}, Pay 1 life: Add one mana of any color.") it spends life nothing returns. None is
+/// offered, and the confirmer refuses each as named.
 #[test]
 fn hellkite_charger_boards_whose_period_does_not_recur_are_not_offered() {
     let db = shared_card_db().expect("card db");
-    for (mountains, umbra, others) in [
-        (14, false, &[][..]),
-        (7, true, &["Moraug, Fury of Akoum"][..]),
-    ] {
-        let (mut runner, charger) =
-            charger_board(mountains, umbra, others, LoopDetectionMode::Interactive, db);
-        let mut verdicts = Vec::new();
-        for combat in 2..=3 {
-            charger_until(
-                &mut runner,
-                charger,
-                |_| true,
-                |state| {
-                    is_offer(state)
-                        || (combats_begun(state) == combat && charger_trigger_top(state))
-                },
-            );
-            assert!(!is_offer(runner.state()), "{others:?}");
-            verdicts.extend(carried_verdicts(runner.state()));
-        }
-        assert!(!verdicts.is_empty(), "reach: {others:?} carries the span");
-        assert!(
-            verdicts.iter().all(Result::is_err),
-            "{others:?}: {verdicts:?}"
-        );
-        if !umbra {
+    let boards = [
+        (14, false, &[][..], OfferRefusal::NoRecurrence),
+        (
+            7,
+            true,
+            &["Moraug, Fury of Akoum"][..],
+            OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(None)),
+        ),
+        (6, true, &["Mana Confluence"][..], OfferRefusal::NoAxis),
+    ];
+    for (mountains, umbra, others, refusal) in boards {
+        for mode in BOTH_MODES {
+            let case = format!("{mountains} Mountains, {others:?}, {mode:?}");
+            let (mut runner, charger) = charger_board(mountains, umbra, others, mode, db);
+            let mut verdicts = Vec::new();
+            for combat in 2..=3 {
+                charger_until(
+                    &mut runner,
+                    charger,
+                    |_| true,
+                    |state| {
+                        is_offer(state)
+                            || (combats_begun(state) == combat && charger_trigger_top(state))
+                    },
+                );
+                assert!(!is_offer(runner.state()), "{case}");
+                verdicts.extend(carried_verdicts(runner.state()));
+            }
+            assert!(!verdicts.is_empty(), "reach: {case} carries the span");
             assert!(
                 verdicts
                     .iter()
-                    .all(|verdict| *verdict == Err(OfferRefusal::NoRecurrence)),
-                "{verdicts:?}"
+                    .all(|verdict| *verdict == Err(refusal.clone())),
+                "{case}: {verdicts:?}"
             );
         }
     }
@@ -4642,43 +4647,64 @@ fn an_aggravated_assault_period_paid_by_a_population_it_untaps_is_offered_and_ta
     ];
     for (board, power) in boards {
         for mode in BOTH_MODES {
-            let case = format!("{board:?}, {mode:?}");
-            let (mut runner, mut drive) =
-                assault_board(board, Phase::PreCombatMain, AssaultPay::Engine, mode, db);
-            assault_until(&mut runner, &mut drive, |state| {
-                is_offer(state) || combats_begun(state) > 6
-            });
-            let state = runner.state();
-            let n = carried_combat_offer(state, &case);
-            assert_eq!(combats_begun(state), 2, "{case}");
-            assert_eq!(state.objects[&drive.attacker].power, Some(power), "{case}");
-            assert_eq!(
-                n,
-                ((state.players[1].life + power - 1) / power) as u32,
-                "{case}"
-            );
+            for pay in [AssaultPay::Engine, AssaultPay::Hand] {
+                let case = format!("{board:?}, {mode:?}, {pay:?}");
+                let (mut runner, mut drive) =
+                    assault_board(board, Phase::PreCombatMain, pay, mode, db);
+                assault_until(&mut runner, &mut drive, |state| {
+                    is_offer(state) || combats_begun(state) > 6
+                });
+                let state = runner.state();
+                let n = carried_combat_offer(state, &case);
+                assert_eq!(combats_begun(state), 2, "{case}");
+                assert_eq!(state.objects[&drive.attacker].power, Some(power), "{case}");
+                assert_eq!(
+                    n,
+                    ((state.players[1].life + power - 1) / power) as u32,
+                    "{case}"
+                );
 
-            let events = take(&mut runner, n);
-            assert_eq!(
-                runner.state().waiting_for,
-                WaitingFor::GameOver { winner: Some(P0) },
-                "{case}"
-            );
-            assert!(
-                events.contains(&GameEvent::GameOver { winner: Some(P0) }),
-                "{case}"
-            );
+                let events = take(&mut runner, n);
+                assert_eq!(
+                    runner.state().waiting_for,
+                    WaitingFor::GameOver { winner: Some(P0) },
+                    "{case}"
+                );
+                assert!(
+                    events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+                    "{case}"
+                );
+            }
         }
     }
 }
 
-/// CR 732.2a: Aggravated Assault boards whose mana sources run down are carried and refused by the
-/// confirmer. Grim Hireling ("Whenever one or more creatures you control deal combat damage to a
-/// player, create two Treasure tokens.") and Old Gnawbone behind Grizzly Bears make two Treasures
-/// for the five spent, and behind Ornithopter none; Virtue of Courage ("Whenever a source you
-/// control deals noncombat damage to an opponent, …") and Smaug the Impenetrable ("Whenever Smaug
-/// is dealt noncombat damage, create that many Treasure tokens.") make nothing from combat damage
-/// dealt to a player; Bear Umbra untaps four Mountains for a cost of five; nothing untaps twenty.
+/// Adds to `verdicts` the confirmer's verdicts on the carried spans at `state`, at the first
+/// main-phase window of each combat that has any.
+fn gather_carried_verdicts(
+    state: &GameState,
+    gathered_at: &mut u32,
+    verdicts: &mut Vec<Result<Vec<String>, OfferRefusal>>,
+) {
+    if assault_window(state) && combats_begun(state) > *gathered_at {
+        let at_window = carried_verdicts(state);
+        if !at_window.is_empty() {
+            *gathered_at = combats_begun(state);
+            verdicts.extend(at_window);
+        }
+    }
+}
+
+/// CR 732.2a: Aggravated Assault boards whose mana sources or life run down are carried and refused
+/// by the confirmer. Grim Hireling ("Whenever one or more creatures you control deal combat damage
+/// to a player, create two Treasure tokens.") and Old Gnawbone behind Grizzly Bears make two
+/// Treasures for the five spent, and behind Ornithopter none; Virtue of Courage ("Whenever a source
+/// you control deals noncombat damage to an opponent, …") and Smaug the Impenetrable ("Whenever
+/// Smaug is dealt noncombat damage, create that many Treasure tokens.") make nothing from combat
+/// damage dealt to a player; Bear Umbra untaps four Mountains for a cost of five, the fifth mana a
+/// Treasure or a life paid to Mana Confluence ("{T}, Pay 1 life: Add one mana of any color.");
+/// nothing untaps twenty Mountains or makes twenty Treasures again. The confirmer refuses each
+/// with the kinds named, in that order.
 #[test]
 fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
     let db = shared_card_db().expect("card db");
@@ -4689,28 +4715,55 @@ fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
         mountains: 0,
         treasures: 20,
     };
+    let with_umbra = |others, treasures| AssaultBoard {
+        others,
+        attacker: "Spined Wurm",
+        aura: Some("Bear Umbra"),
+        mountains: 4,
+        treasures,
+    };
+    let no_cover = OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(None));
+    // A board whose sources run out ends P0's turn; one paying life is stopped at its ninth combat.
+    let spent = ([no_cover.clone(), OfferRefusal::IllegalReplayedPlay], P1);
     let boards = [
-        with_treasures(&["Grim Hireling"], "Spined Wurm"),
-        with_treasures(&["Old Gnawbone"], "Grizzly Bears"),
-        with_treasures(&["Old Gnawbone"], "Ornithopter"),
-        with_treasures(&["Virtue of Courage"], "Spined Wurm"),
-        with_treasures(&["Smaug the Impenetrable"], "Spined Wurm"),
-        AssaultBoard {
-            others: &[],
-            attacker: "Spined Wurm",
-            aura: Some("Bear Umbra"),
-            mountains: 4,
-            treasures: 6,
-        },
-        AssaultBoard {
-            others: &[],
-            attacker: "Spined Wurm",
-            aura: None,
-            mountains: 20,
-            treasures: 0,
-        },
+        (
+            with_treasures(&["Grim Hireling"], "Spined Wurm"),
+            spent.clone(),
+        ),
+        (
+            with_treasures(&["Old Gnawbone"], "Grizzly Bears"),
+            spent.clone(),
+        ),
+        (
+            with_treasures(&["Old Gnawbone"], "Ornithopter"),
+            spent.clone(),
+        ),
+        (
+            with_treasures(&["Virtue of Courage"], "Spined Wurm"),
+            spent.clone(),
+        ),
+        (
+            with_treasures(&["Smaug the Impenetrable"], "Spined Wurm"),
+            spent.clone(),
+        ),
+        (with_treasures(&[], "Spined Wurm"), spent.clone()),
+        (with_umbra(&[], 6), spent.clone()),
+        (
+            AssaultBoard {
+                others: &[],
+                attacker: "Spined Wurm",
+                aura: None,
+                mountains: 20,
+                treasures: 0,
+            },
+            spent,
+        ),
+        (
+            with_umbra(&["Mana Confluence"], 0),
+            ([no_cover, OfferRefusal::NoAxis], P0),
+        ),
     ];
-    for board in boards {
+    for (board, (refusals, stops_in_turn_of)) in boards {
         for mode in BOTH_MODES {
             let case = format!("{board:?}, {mode:?}");
             let (mut runner, mut drive) =
@@ -4720,28 +4773,355 @@ fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
             for _ in 0..4000 {
                 let state = runner.state();
                 assert!(!is_offer(state), "{case}");
-                if state.active_player != P0 {
+                if state.active_player != P0 || combats_begun(state) > 8 {
                     break;
                 }
-                if assault_window(state) && combats_begun(state) > gathered_at {
-                    gathered_at = combats_begun(state);
-                    verdicts.extend(carried_verdicts(state));
-                }
+                gather_carried_verdicts(state, &mut gathered_at, &mut verdicts);
                 assault_step(&mut runner, &mut drive);
             }
-            assert_eq!(runner.state().active_player, P1, "{case}: the turn ended");
+            assert_eq!(runner.state().active_player, stops_in_turn_of, "{case}");
             assert!(drive.activations >= 2, "reach: {case} activates twice");
             assert!(!verdicts.is_empty(), "reach: {case} carries the span");
-            assert!(
-                verdicts.iter().all(|verdict| matches!(
-                    verdict,
-                    Err(
-                        OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(None))
-                            | OfferRefusal::IllegalReplayedPlay
-                    )
-                )),
-                "{case}: {verdicts:?}"
+            verdicts.dedup();
+            assert_eq!(verdicts, refusals.clone().map(Err), "{case}");
+        }
+    }
+}
+
+/// A card of P0's that the period never uses: its name, its zone, and whether it stands tapped.
+#[derive(Clone, Copy, Debug)]
+struct Idle(&'static str, Zone, bool);
+
+/// Puts `card` in its zone under P0, a permanent there since before the turn.
+fn place_idle(state: &mut GameState, Idle(name, zone, tapped): Idle, db: &CardDatabase) {
+    let before = state.turn_number.saturating_sub(1);
+    let id = place(state, P0, name, db);
+    if zone != Zone::Battlefield {
+        remove_from_zone(state, id, Zone::Battlefield, P0);
+        add_to_zone(state, id, zone, P0);
+    }
+    let object = state.objects.get_mut(&id).expect("placed");
+    object.zone = zone;
+    object.tapped = tapped;
+    object.entered_battlefield_turn = (zone == Zone::Battlefield).then_some(before);
+    object.summoning_sick = false;
+}
+
+/// Where an offer stands and for how many cycles: the combats begun, the phase, P1's life and
+/// the count.
+type OfferMoment = (u32, Phase, i32, u32);
+
+/// The carried span offered on the recorded road at `state`, and its moment.
+fn carried_offer(state: &GameState, case: &str) -> (NamedSpan, OfferMoment) {
+    assert!(
+        is_offer(state),
+        "{case}: no offer, carrying {:?}",
+        carried(state)
+    );
+    let (span, count) = offer_of(state);
+    assert!(
+        matches!(span.source, SpanSource::Carried(_)),
+        "{case}: {span:?}"
+    );
+    assert_eq!(road(state), Some(OfferRoad::RecordedPeriod), "{case}");
+    let moment = (
+        combats_begun(state),
+        state.phase,
+        state.players[1].life,
+        fixed(&count),
+    );
+    (span, moment)
+}
+
+/// Old Gnawbone makes again the five Treasures a Spined Wurm's combat damage pays for.
+const GNAWBONE_BOARD: AssaultBoard<'static> = AssaultBoard {
+    others: &["Old Gnawbone"],
+    attacker: "Spined Wurm",
+    aura: None,
+    mountains: 0,
+    treasures: 5,
+};
+
+/// Bear Umbra on the attacking Spined Wurm untaps the five Mountains that pay.
+const UMBRA_BOARD: AssaultBoard<'static> = AssaultBoard {
+    others: &[],
+    attacker: "Spined Wurm",
+    aura: Some("Bear Umbra"),
+    mountains: 5,
+    treasures: 0,
+};
+
+/// `board` beside `idle`, driven from P0's precombat main until an offer stands, the turn ends or
+/// a seventh combat begins.
+fn assault_beside(
+    board: AssaultBoard,
+    pay: AssaultPay,
+    idle: Option<Idle>,
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> (GameRunner, AssaultDrive) {
+    let (mut runner, mut drive) = assault_board(board, Phase::PreCombatMain, pay, mode, db);
+    if let Some(idle) = idle {
+        place_idle(runner.state_mut(), idle, db);
+    }
+    assault_until(&mut runner, &mut drive, |state| {
+        is_offer(state) || state.active_player != P0 || combats_begun(state) > 6
+    });
+    (runner, drive)
+}
+
+/// The top-level serialized fields in which a take of `cycles` from the offer at `offered`
+/// differs from that many cycles driven by hand once the offer is declined.
+fn assault_take_differs(
+    offered: &GameState,
+    drive: AssaultDrive,
+    cycles: u32,
+) -> std::collections::BTreeSet<String> {
+    let combats = combats_begun(offered);
+    let taken = taken(offered, cycles);
+    let mut by_hand = GameRunner::from_state(offered.clone());
+    act(&mut by_hand, GameAction::DeclineShortcut);
+    by_hand.state_mut().loop_detection = LoopDetectionMode::Off;
+    let mut hand_drive = AssaultDrive {
+        activated_at: None,
+        ..drive
+    };
+    assault_until(&mut by_hand, &mut hand_drive, |state| {
+        combats_begun(state) == combats + cycles && assault_window(state)
+    });
+    crate::loop_period_remade_token_source::differing_fields(&taken, by_hand.state())
+}
+
+/// CR 732.2a: an Aggravated Assault period beside a card it never uses is offered where, and for
+/// as many cycles, as the same board without the card, counted to P1's lethal crossing
+/// (CR 704.5a), and an engine-paid take leaves what its cycles driven by hand leave. The cards: a
+/// tapped Mana Confluence or Forgotten Monument; Kain, Traitorous Dragoon, Cecil, Dark Knight and
+/// Namazu Trader, which neither attack nor enter; Carnival of Souls and Davvol, Evincar of Rath,
+/// with no creature entering; and an instant or sorcery left in a hand or a graveyard. Time Warp
+/// held beside Mountains reaches a turn (CR 500.7), since an added turn would untap them.
+#[test]
+fn a_period_beside_cards_it_never_uses_is_offered_as_it_is_without_them() {
+    let db = shared_card_db().expect("card db");
+    let untapped = |name| Idle(name, Zone::Battlefield, false);
+    let tapped = |name| Idle(name, Zone::Battlefield, true);
+    let in_hand = |name| Idle(name, Zone::Hand, false);
+    let in_graveyard = |name| Idle(name, Zone::Graveyard, false);
+    let (combat, turn) = (PeriodReach::Combat, PeriodReach::ExtraTurn);
+    let groups = [
+        (
+            GNAWBONE_BOARD,
+            AssaultPay::Engine,
+            vec![
+                (tapped("Mana Confluence"), combat),
+                (untapped("Kain, Traitorous Dragoon"), combat),
+                (untapped("Carnival of Souls"), combat),
+                (untapped("Davvol, Evincar of Rath"), combat),
+                (untapped("Namazu Trader"), combat),
+                (tapped("Forgotten Monument"), combat),
+                (in_graveyard("World at War"), combat),
+                (in_hand("Jeska's Will"), combat),
+                (in_hand("Time Warp"), combat),
+            ],
+        ),
+        (
+            GNAWBONE_BOARD,
+            AssaultPay::Hand,
+            vec![(tapped("Mana Confluence"), combat)],
+        ),
+        (
+            UMBRA_BOARD,
+            AssaultPay::Engine,
+            vec![
+                (tapped("Mana Confluence"), combat),
+                (untapped("Cecil, Dark Knight"), combat),
+                (untapped("Kain, Traitorous Dragoon"), combat),
+                (in_graveyard("Act of Treason"), combat),
+                (in_hand("Time Warp"), turn),
+            ],
+        ),
+    ];
+    for mode in BOTH_MODES {
+        for (board, pay, beside) in &groups {
+            let control = format!("{mode:?}, {pay:?}, {board:?}");
+            let (runner, drive) = assault_beside(*board, *pay, None, mode, db);
+            let state = runner.state();
+            let (_, without @ (_, _, life, count)) = carried_offer(state, &control);
+            let power = state.objects[&drive.attacker]
+                .power
+                .expect("the attacker's power");
+            assert_eq!(count, ((life + power - 1) / power) as u32, "{control}");
+            for &(idle, reach) in beside {
+                let case = format!("{control} beside {idle:?}");
+                let (runner, drive) = assault_beside(*board, *pay, Some(idle), mode, db);
+                let state = runner.state();
+                let (span, moment) = carried_offer(state, &case);
+                assert_eq!(moment, without, "{case}");
+                assert_eq!(
+                    (span.reach, span.cause),
+                    (reach, NamingCause::LegalNow),
+                    "{case}"
+                );
+                assert_eq!(state.players[0].life, 20, "{case}");
+                // A hand-paid take leaves other activation records than its cycles driven by hand.
+                if *pay == AssaultPay::Engine {
+                    let differs = assault_take_differs(state, drive, 3);
+                    assert!(differs.is_empty(), "{case}: {differs:?}");
+                }
+            }
+        }
+    }
+}
+
+/// CR 500.8 + CR 732.2a: Hellkite Charger wearing Bear Umbra with seven Mountains, beside World
+/// at War in the graveyard, an Aggravated Assault never activated, a tapped Mana Confluence or
+/// Time Warp in hand, is offered where, and for as many cycles, as without the card, counted to
+/// P1's lethal crossing (CR 704.5a), and a take leaves what its cycles driven by hand leave.
+#[test]
+fn a_hellkite_charger_period_beside_cards_it_never_uses_is_offered_as_it_is_without_them() {
+    let db = shared_card_db().expect("card db");
+    let offered = |idle: Option<Idle>, mode| {
+        let (mut runner, charger) = charger_board(7, true, &[], mode, db);
+        if let Some(idle) = idle {
+            place_idle(runner.state_mut(), idle, db);
+        }
+        charger_until(
+            &mut runner,
+            charger,
+            |_| true,
+            |state| is_offer(state) || state.active_player != P0 || combats_begun(state) > 6,
+        );
+        (runner, charger)
+    };
+    for mode in BOTH_MODES {
+        let control = format!("{mode:?}");
+        let (runner, charger) = offered(None, mode);
+        let state = runner.state();
+        let (_, without @ (_, _, life, count)) = carried_offer(state, &control);
+        let power = state.objects[&charger].power.expect("the Charger's power");
+        assert_eq!(count, ((life + power - 1) / power) as u32, "{control}");
+        for idle in [
+            Idle("World at War", Zone::Graveyard, false),
+            Idle("Aggravated Assault", Zone::Battlefield, false),
+            Idle("Mana Confluence", Zone::Battlefield, true),
+            Idle("Time Warp", Zone::Hand, false),
+        ] {
+            let case = format!("{mode:?} beside {idle:?}");
+            let (runner, charger) = offered(Some(idle), mode);
+            let state = runner.state();
+            let (span, moment) = carried_offer(state, &case);
+            assert_eq!(moment, without, "{case}");
+            assert_eq!(
+                (span.reach, span.cause),
+                (PeriodReach::Combat, NamingCause::TriggerTop),
+                "{case}"
             );
+            assert_eq!(state.players[0].life, 20, "{case}");
+
+            let combats = combats_begun(state);
+            let taken = taken(state, 3);
+            let mut by_hand = GameRunner::from_state(state.clone());
+            act(&mut by_hand, GameAction::DeclineShortcut);
+            by_hand.state_mut().loop_detection = LoopDetectionMode::Off;
+            charger_until(
+                &mut by_hand,
+                charger,
+                |_| true,
+                |state| combats_begun(state) == combats + 3 && charger_trigger_top(state),
+            );
+            let differs =
+                crate::loop_period_remade_token_source::differing_fields(&taken, by_hand.state());
+            assert!(differs.is_empty(), "{case}: {differs:?}");
+        }
+    }
+}
+
+/// CR 119.4 + CR 119.3 + CR 732.2a: Aggravated Assault paid by four Mountains and Mana Confluence
+/// ("{T}, Pay 1 life: Add one mana of any color.") beside Sinister Monolith ("At the beginning of
+/// combat on your turn, each opponent loses 1 life and you gain 1 life."): each cycle P0 pays 1
+/// life and gains 1, and P1 loses the attacker's combat damage and 1 more. The period is offered
+/// at its second combat, counted to P1's lethal crossing (CR 704.5a), and a take leaves what its
+/// cycles driven by hand leave.
+#[test]
+fn a_period_paying_life_its_own_trigger_regains_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    let board = AssaultBoard {
+        others: &["Mana Confluence", "Sinister Monolith"],
+        attacker: "Spined Wurm",
+        aura: Some("Bear Umbra"),
+        mountains: 4,
+        treasures: 0,
+    };
+    for mode in BOTH_MODES {
+        let case = format!("{mode:?}");
+        let (runner, drive) = assault_beside(board, AssaultPay::Engine, None, mode, db);
+        let state = runner.state();
+        let (span, (combats, phase, life, count)) = carried_offer(state, &case);
+        assert_eq!(
+            (combats, phase, span.reach, span.cause),
+            (
+                2,
+                Phase::PostCombatMain,
+                PeriodReach::Combat,
+                NamingCause::LegalNow
+            ),
+            "{case}"
+        );
+        assert_eq!(state.players[0].life, 20, "{case}");
+        let lost_each_cycle = state.objects[&drive.attacker]
+            .power
+            .expect("the attacker's power")
+            + 1;
+        assert_eq!(
+            count,
+            ((life + lost_each_cycle - 1) / lost_each_cycle) as u32,
+            "{case}"
+        );
+        let differs = assault_take_differs(state, drive, 3);
+        assert!(differs.is_empty(), "{case}: {differs:?}");
+    }
+}
+
+/// CR 505.1a + CR 732.2a: Neheb, the Eternal ("At the beginning of each of your postcombat main
+/// phases, add {R} for each 1 life your opponents have lost this turn.") attacking beside five
+/// Mountains, with Aggravated Assault first activated in the first postcombat main, is offered at
+/// the second combat's postcombat main, counted to P1's lethal crossing (CR 704.5a), with or
+/// without a Hill Giant that stays home, and a take leaves what its cycles driven by hand leave.
+#[test]
+fn an_aggravated_assault_period_paid_by_neheb_and_lands_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    for others in [&[][..], &["Hill Giant"][..]] {
+        let board = AssaultBoard {
+            others,
+            attacker: "Neheb, the Eternal",
+            aura: None,
+            mountains: 5,
+            treasures: 0,
+        };
+        for mode in BOTH_MODES {
+            let case = format!("{others:?}, {mode:?}");
+            let (mut runner, mut drive) =
+                assault_board(board, Phase::PreCombatMain, AssaultPay::Engine, mode, db);
+            // The precombat main passes without an activation.
+            drive.activated_at = Some(0);
+            assault_until(&mut runner, &mut drive, |state| {
+                is_offer(state) || state.active_player != P0 || combats_begun(state) > 6
+            });
+            let state = runner.state();
+            let (span, (combats, phase, life, count)) = carried_offer(state, &case);
+            assert_eq!(
+                (combats, phase, span.reach, span.cause),
+                (
+                    2,
+                    Phase::PostCombatMain,
+                    PeriodReach::Combat,
+                    NamingCause::LegalNow
+                ),
+                "{case}"
+            );
+            let power = state.objects[&drive.attacker].power.expect("Neheb's power");
+            assert_eq!(count, ((life + power - 1) / power) as u32, "{case}");
+            let differs = assault_take_differs(state, drive, 2);
+            assert!(differs.is_empty(), "{case}: {differs:?}");
         }
     }
 }
