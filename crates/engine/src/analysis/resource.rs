@@ -4694,6 +4694,11 @@ pub enum CoveredGrowth {
     PerformedOnly,
 }
 
+impl CoveredGrowth {
+    /// CR 732.2a: equalized history is not made by a mint, so only performing the period makes it.
+    const EQUALIZED_HISTORY: CoveredGrowth = CoveredGrowth::PerformedOnly;
+}
+
 /// Every condition of [`loop_states_cover_modulo_fodder_growth`] that refuses this pair, empty
 /// exactly when the cover certifies it, and what the cover admits as growth.
 // ponytail: every condition runs even after one refuses, one extra firewall scan per refused
@@ -4762,6 +4767,12 @@ pub(crate) fn fodder_growth_cover_refusals(
     // The growth-invariant non-object remainder, grown pile stripped. NOTE:
     // `GameState::PartialEq` compares only `objects.len()`, so stable-engine object CONTENT is
     // covered by `board_covers_modulo_fodder`'s `objects_content_eq` above, not here.
+    // CR 608.2h + CR 111.7: last-known records the history authority reads as unread are no
+    // part of the remainder; this comparison drops the stack, so it asks only when none was held.
+    let equalized_history = pf.stack.is_empty()
+        && cf.stack.is_empty()
+        && last_known_records_grow_unread(&pa, &pb)
+        && HistoryMember::LastKnownRecords.equalize(&mut pb, &pa);
     if !eq_except_growable(&pa, &pb, &growing) {
         refusals.push(FodderCoverRefusal::NonObjectRemainder);
     }
@@ -4788,6 +4799,8 @@ pub(crate) fn fodder_growth_cover_refusals(
     // CR 701.17b: no mint makes a certified departure, so only performing the period does.
     let growth = if keyword || delayed_trigger || other_controller || certified.is_some() {
         CoveredGrowth::PerformedOnly
+    } else if equalized_history {
+        CoveredGrowth::EQUALIZED_HISTORY
     } else {
         CoveredGrowth::Mintable
     };
@@ -4860,12 +4873,11 @@ pub(crate) fn resource_recurrence_covers(
     if departure {
         return Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure));
     }
-    // CR 732.2a: equalized history is not made by a mint, so only performing the period makes it.
     if history_covers(prior, current) {
-        return Some((CoveredGrowth::PerformedOnly, RecurrenceCover::History));
+        return Some((CoveredGrowth::EQUALIZED_HISTORY, RecurrenceCover::History));
     }
     turn_cycle_covers(prior, current, caster)
-        .then_some((CoveredGrowth::PerformedOnly, RecurrenceCover::TurnCycle))
+        .then_some((CoveredGrowth::EQUALIZED_HISTORY, RecurrenceCover::TurnCycle))
 }
 
 /// The equality or counter-growth disjunct of the no-mint cover.
@@ -4887,6 +4899,8 @@ macro_rules! history_members {
             $($pv,)*
             /// The tracked object set store (CR 608.2c), with its id counter and member causes.
             TrackedObjectSets,
+            /// The id-keyed last-known records of objects that left their zone (CR 608.2h).
+            LastKnownRecords,
         }
 
         impl HistoryMember {
@@ -4911,16 +4925,23 @@ macro_rules! history_members {
                             || sets
                             || causes
                     }
+                    HistoryMember::LastKnownRecords => {
+                        let records = equalize_field(&mut into.lki_cache, &from.lki_cache);
+                        equalize_field(&mut into.lki_copiable_values, &from.lki_copiable_values)
+                            || records
+                    }
                 }
             }
 
             /// Whether every read of this member is reached through an AST arm or legality gate the
-            /// scanner attributes to it; an unattributed member's growth always refuses.
+            /// scanner attributes to it; an unattributed member's growth refuses, unless
+            /// `history_covers_reading` judges the member by its own predicate.
             fn is_attributed(self) -> bool {
                 match self {
                     $(HistoryMember::$sv => $sa,)*
                     $(HistoryMember::$pv => $pa,)*
                     HistoryMember::TrackedObjectSets => true,
+                    HistoryMember::LastKnownRecords => false,
                 }
             }
         }
@@ -4952,9 +4973,6 @@ history_members! {
         HandCastFreePermissionsUsed => hand_cast_free_permissions_used: false,
         LandsPlayedThisTurn => lands_played_this_turn: false,
         LandsPlayedThisTurnByPlayer => lands_played_this_turn_by_player: false,
-        LkiByIncarnation => lki_by_incarnation: false,
-        LkiCache => lki_cache: false,
-        LkiCopiableValues => lki_copiable_values: false,
         ModalModesChosenThisTurn => modal_modes_chosen_this_turn: true,
         PendingSpellCostReductions => pending_spell_cost_reductions: false,
         PlayersAttackedThisTurn => players_attacked_this_turn: true,
@@ -5056,10 +5074,12 @@ fn history_covers_reading(prior: &GameState, current: &GameState, reads: History
     if grown.is_empty() && !collapsed {
         return false;
     }
-    if grown
-        .iter()
-        .any(|member| !member.is_attributed() || reads.reads(*member))
-    {
+    // A last-known record (CR 608.2h) is read by id from whatever holds the id, so the scanned
+    // reads cannot attribute it; its own predicate judges it below.
+    if grown.iter().any(|member| {
+        *member != HistoryMember::LastKnownRecords
+            && (!member.is_attributed() || reads.reads(*member))
+    }) {
         return false;
     }
     if grown.contains(&HistoryMember::TrackedObjectSets)
@@ -5067,7 +5087,108 @@ fn history_covers_reading(prior: &GameState, current: &GameState, reads: History
     {
         return false;
     }
+    if grown.contains(&HistoryMember::LastKnownRecords)
+        && !last_known_records_grow_unread(prior, current)
+    {
+        return false;
+    }
     covers_modulo_resources(prior, &copy)
+}
+
+/// CR 608.2h + CR 111.7: the period only added last-known records, each of an object that exists
+/// in neither frame, and the floating replacements not yet used up (CR 614.3, CR 615.3) that can
+/// name an object, which no comparison compares and which read a record by the id they hold, are
+/// the same in both frames. A caller whose comparison also drops the stack asks only while both
+/// stacks are empty.
+fn last_known_records_grow_unread(prior: &GameState, current: &GameState) -> bool {
+    let gone = |id: &ObjectId| !prior.objects.contains_key(id) && !current.objects.contains_key(id);
+    let naming = |frame| {
+        live_floating_replacement_defs(frame)
+            .map(|(_, def)| def)
+            .filter(|def| floating_replacement_can_name_object(def, [prior, current]))
+    };
+    prior
+        .lki_cache
+        .iter()
+        .all(|(id, record)| current.lki_cache.get(id) == Some(record))
+        && prior
+            .lki_copiable_values
+            .iter()
+            .all(|(id, values)| current.lki_copiable_values.get(id) == Some(values))
+        && current
+            .lki_cache
+            .keys()
+            .all(|id| prior.lki_cache.contains_key(id) || gone(id))
+        && current
+            .lki_copiable_values
+            .keys()
+            .all(|id| prior.lki_copiable_values.contains_key(id) || gone(id))
+        && naming(prior).eq(naming(current))
+}
+
+/// Whether a floating replacement holds anything that can name an object by id, and so ask for
+/// its last-known information (CR 608.2h): an ability, a cost, an object filter, a condition, a
+/// damage formula, a token template, a granter, or a host missing from a frame. No rest pattern,
+/// so a new field is classified before it compiles.
+fn floating_replacement_can_name_object(
+    def: &crate::types::ability::ReplacementDefinition,
+    frames: [&GameState; 2],
+) -> bool {
+    let crate::types::ability::ReplacementDefinition {
+        execute,
+        runtime_execute,
+        mode,
+        valid_card,
+        condition,
+        damage_modification,
+        damage_source_filter,
+        redirect_target,
+        additional_token_spec,
+        ensure_token_specs,
+        granting_object,
+        source_object,
+        // Event kinds, zones, players, scopes relative to the host or the event, fixed amounts,
+        // flags and a label.
+        event: _,
+        choice_authority: _,
+        description: _,
+        destination_zone: _,
+        active_zones: _,
+        damage_target_filter: _,
+        combat_scope: _,
+        draw_scope: _,
+        die_ignore_rule: _,
+        planeswalk_scope: _,
+        shield_kind: _,
+        quantity_modification: _,
+        token_owner_scope: _,
+        token_owner_redirect: _,
+        valid_player: _,
+        consume_on_apply: _,
+        is_consumed: _,
+        expiry: _,
+        mana_modification: _,
+        mana_replacement_scope: _,
+        counter_match: _,
+        enters_under: _,
+        source_controller: _,
+        origin: _,
+        counter_replacement_subject: _,
+    } = def;
+    execute.is_some()
+        || runtime_execute.is_some()
+        || !matches!(mode, crate::types::ability::ReplacementMode::Mandatory)
+        || valid_card.is_some()
+        || condition.is_some()
+        || damage_modification.is_some()
+        || damage_source_filter.is_some()
+        || redirect_target.is_some()
+        || additional_token_spec.is_some()
+        || ensure_token_specs.is_some()
+        || granting_object.is_some()
+        // A host both frames hold is read live, as an object the comparison compares.
+        || source_object
+            .is_some_and(|host| frames.iter().any(|frame| !frame.objects.contains_key(&host)))
 }
 
 /// [`history_covers`] for the integration suite.

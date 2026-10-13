@@ -7044,20 +7044,15 @@ pub(crate) fn certify_object_growth_frames(
     // frames.
     let (cs_n, cs_n1, cs_n2) = (normalize(s_n), normalize(s_n1), normalize(s_n2));
     // CR 732.2a: a token the period spent and made again is the same permanent to the board's
-    // recurrence, so each pair is compared without it and without the last-known record of the
-    // spent one; a period that mints nothing else is covered as one that mints nothing.
+    // recurrence, so each pair is compared without it; a period that mints nothing else is
+    // covered as one that mints nothing.
     let (first_remade, second_remade) = (remade_tokens(s_n, s_n1), remade_tokens(s_n1, s_n2));
     if !first_remade.is_empty() || !second_remade.is_empty() {
         let without = |prior: &GameState, current: &GameState, remade: &[(ObjectId, ObjectId)]| {
             let (spent, made): (Vec<ObjectId>, Vec<ObjectId>) = remade.iter().copied().unzip();
-            let mut current = crate::analysis::resource::frame_without(current, &made);
-            for id in &spent {
-                current.lki_cache.remove(id);
-                current.lki_copiable_values.remove(id);
-            }
             (
                 crate::analysis::resource::frame_without(prior, &spent),
-                current,
+                crate::analysis::resource::frame_without(current, &made),
             )
         };
         let first = without(&cs_n, &cs_n1, &first_remade);
