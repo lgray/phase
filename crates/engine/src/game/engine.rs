@@ -7038,7 +7038,7 @@ pub(crate) fn certify_object_growth_frames(
     crate::analysis::resource::ObjectGrowthVerdict,
     crate::analysis::resource::CoveredGrowth,
 ) {
-    use crate::analysis::resource::{CoveredGrowth, ObjectGrowthVerdict};
+    use crate::analysis::resource::{CoveredGrowth, ObjectGrowthVerdict, PairCover};
     let [s_n, s_n1, s_n2] = frames;
     // CR 400.7: normalize each frame BEFORE the cover fork so both arms share the normalized
     // frames.
@@ -7060,13 +7060,9 @@ pub(crate) fn certify_object_growth_frames(
             let second = without(&cs_n1, &cs_n2, &second_remade);
             let covers = |(prior, current): &(GameState, GameState)| {
                 crate::analysis::resource::resource_recurrence_covers(prior, current, caster)
-                    .map(|(_, cover)| cover)
             };
-            let cover = covers(&first).zip(covers(&second)).map(|(a, b)| a.max(b));
-            return (
-                ObjectGrowthVerdict::ResourceRecurrence(cover),
-                CoveredGrowth::PerformedOnly,
-            );
+            let (verdict, _) = PairCover::of_pairs(covers(&first), covers(&second));
+            return (verdict, CoveredGrowth::PerformedOnly);
         }
     }
     // CR 732.2a board recurrence on BOTH pairs — two disjoint recurrence shapes:
@@ -7095,18 +7091,7 @@ pub(crate) fn certify_object_growth_frames(
                 crate::analysis::resource::resource_recurrence_covers(&cs_n, &cs_n1, caster);
             let second =
                 crate::analysis::resource::resource_recurrence_covers(&cs_n1, &cs_n2, caster);
-            first.zip(second).map_or(
-                (
-                    ObjectGrowthVerdict::ResourceRecurrence(None),
-                    CoveredGrowth::Mintable,
-                ),
-                |((a, a_cover), (b, b_cover))| {
-                    (
-                        ObjectGrowthVerdict::ResourceRecurrence(Some(a_cover.max(b_cover))),
-                        a.max(b),
-                    )
-                },
-            )
+            PairCover::of_pairs(first, second)
         }
     }
 }

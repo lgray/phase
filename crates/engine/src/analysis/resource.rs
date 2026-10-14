@@ -4665,8 +4665,11 @@ pub enum ObjectGrowthVerdict {
     /// One homogeneous class was minted: each frame pair's fodder-cover refusals.
     FodderGrowth([Vec<FodderCoverRefusal>; 2]),
     /// Nothing was minted: the latest arm of the no-mint cover either pair needed, or `None` when
-    /// a pair does not recur.
+    /// a pair does not recur even with its spend set aside.
     ResourceRecurrence(Option<RecurrenceCover>),
+    /// CR 118.3: a pair of the no-mint cover recurs only with what its proposer spent across it
+    /// set aside, so the period is not shown to repeat and this never certifies.
+    Spend,
 }
 
 impl ObjectGrowthVerdict {
@@ -4674,6 +4677,7 @@ impl ObjectGrowthVerdict {
         match self {
             ObjectGrowthVerdict::FodderGrowth(pairs) => pairs.iter().all(Vec::is_empty),
             ObjectGrowthVerdict::ResourceRecurrence(cover) => cover.is_some(),
+            ObjectGrowthVerdict::Spend => false,
         }
     }
 }
@@ -4836,13 +4840,98 @@ pub enum RecurrenceCover {
     TurnCycle,
 }
 
-/// CR 732.2a: the no-mint arm's cover of one frame pair, with the growth it admits and the arm
-/// that admitted it. The pair covers when it is equal modulo projected resources or covers
-/// modulo preserved-`Generic` counter growth, or does so once the ids of a certified
-/// instructed departure are stripped from both frames, or once the history it grew that no
-/// live surface reads is equalized, or once the caster's own turns are; the offer is declinable
-/// and never crowns a `GameOver`.
+/// CR 732.2a: what the no-mint cover answers of one frame pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairCover {
+    /// The pair recurs: the growth it admits and the arm that admitted it.
+    Certified(CoveredGrowth, RecurrenceCover),
+    /// CR 118.3: the pair recurs only with what its proposer spent across it set aside.
+    Spend,
+}
+
+impl PairCover {
+    /// The verdict of a period's two pairs and the growth they admit: a pair that does not recur
+    /// refuses both, and a spend in either is a spend.
+    pub(crate) fn of_pairs(
+        first: Option<Self>,
+        second: Option<Self>,
+    ) -> (ObjectGrowthVerdict, CoveredGrowth) {
+        match (first, second) {
+            (None, _) | (_, None) => (
+                ObjectGrowthVerdict::ResourceRecurrence(None),
+                CoveredGrowth::Mintable,
+            ),
+            (Some(PairCover::Certified(a, a_cover)), Some(PairCover::Certified(b, b_cover))) => (
+                ObjectGrowthVerdict::ResourceRecurrence(Some(a_cover.max(b_cover))),
+                a.max(b),
+            ),
+            (Some(PairCover::Spend), Some(_)) | (Some(_), Some(PairCover::Spend)) => {
+                (ObjectGrowthVerdict::Spend, CoveredGrowth::PerformedOnly)
+            }
+        }
+    }
+}
+
+/// CR 732.2a: the no-mint arm's cover of one frame pair: the certifying arm that admits it, or,
+/// when none does, a spend where one admits it with what `caster` spent across it set aside. The
+/// offer is declinable and never crowns a `GameOver`.
 pub(crate) fn resource_recurrence_covers(
+    prior: &GameState,
+    current: &GameState,
+    caster: PlayerId,
+) -> Option<PairCover> {
+    if let Some((growth, cover)) = certifying_cover(prior, current, caster) {
+        return Some(PairCover::Certified(growth, cover));
+    }
+    let (prior, current) = without_spend(prior, current, caster)?;
+    certifying_cover(&prior, &current, caster).map(|_| PairCover::Spend)
+}
+
+/// CR 701.21a + CR 701.26a: the pair with what `caster` spent across it set aside: a permanent of
+/// its that left the battlefield, sacrificed or otherwise, is taken out of both frames, and one
+/// that became tapped is tapped in `prior`. `None` when it spent nothing.
+fn without_spend(
+    prior: &GameState,
+    current: &GameState,
+    caster: PlayerId,
+) -> Option<(GameState, GameState)> {
+    let on_battlefield = |state: &GameState, id: &ObjectId| {
+        state
+            .objects
+            .get(id)
+            .filter(|object| object.zone == Zone::Battlefield)
+            .map(|object| object.tapped)
+    };
+    let mine = prior
+        .objects
+        .iter()
+        .filter(|(_, object)| object.zone == Zone::Battlefield && object.controller == caster);
+    let (mut left, mut tapped) = (Vec::new(), Vec::new());
+    for (id, object) in mine {
+        match on_battlefield(current, id) {
+            None => left.push(*id),
+            Some(true) if !object.tapped => tapped.push(*id),
+            Some(_) => {}
+        }
+    }
+    if left.is_empty() && tapped.is_empty() {
+        return None;
+    }
+    let mut prior = frame_without(prior, &left);
+    for id in tapped {
+        if let Some(object) = prior.objects.get_mut(&id) {
+            object.tapped = true;
+        }
+    }
+    Some((prior, frame_without(current, &left)))
+}
+
+/// CR 732.2a: the certifying arm of the no-mint cover that admits a frame pair, with the growth
+/// it admits. The pair covers when it is equal modulo projected resources or covers modulo
+/// preserved-`Generic` counter growth, or does so once the ids of a certified instructed
+/// departure are stripped from both frames, or once the history it grew that no live surface
+/// reads is equalized, or once the caster's own turns are.
+fn certifying_cover(
     prior: &GameState,
     current: &GameState,
     caster: PlayerId,
@@ -24932,14 +25021,20 @@ mod tests {
         cover_library_card(&mut prior, 900, PlayerId(1));
         assert_eq!(
             resource_recurrence_covers(&prior, &prior.clone(), PlayerId(0)),
-            Some((CoveredGrowth::Mintable, RecurrenceCover::Equal)),
+            Some(PairCover::Certified(
+                CoveredGrowth::Mintable,
+                RecurrenceCover::Equal
+            )),
             "reach: the departure-free pair covers"
         );
 
         let (prior, current) = no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard);
         assert_eq!(
             resource_recurrence_covers(&prior, &current, PlayerId(0)),
-            Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure))
+            Some(PairCover::Certified(
+                CoveredGrowth::PerformedOnly,
+                RecurrenceCover::Departure
+            ))
         );
 
         let (prior, current) = no_mint_pair_with_departure(PlayerId(0), Zone::Graveyard);
@@ -24966,7 +25061,10 @@ mod tests {
         cover_library_card(&mut current, 901, PlayerId(1));
         assert_eq!(
             resource_recurrence_covers(&prior, &current, PlayerId(0)),
-            Some((CoveredGrowth::PerformedOnly, RecurrenceCover::Departure)),
+            Some(PairCover::Certified(
+                CoveredGrowth::PerformedOnly,
+                RecurrenceCover::Departure
+            )),
             "reach: a second, motionless library card does not disturb the cover"
         );
         current
@@ -24980,6 +25078,190 @@ mod tests {
             None,
             "the strip relieves only the certified ids"
         );
+    }
+
+    /// Two equal frames holding P0's untapped card 800 and untapped token 802, and P1's untapped
+    /// card 801.
+    fn spend_pair() -> (GameState, GameState) {
+        let mut prior = GameState::new_two_player(42);
+        battlefield_creature(&mut prior, 800, 0);
+        battlefield_creature(&mut prior, 801, 1);
+        token_on_battlefield(&mut prior, 802, true);
+        let current = prior.clone();
+        (prior, current)
+    }
+
+    fn set_tapped(state: &mut GameState, id: u64, tapped: bool) {
+        state
+            .objects
+            .get_mut(&ObjectId(id))
+            .expect("the permanent is live")
+            .tapped = tapped;
+    }
+
+    /// Moves P0's permanent `id` off the battlefield to `to`, or, with `to` `None`, out of the
+    /// game as a token that ceased to exist (CR 111.7).
+    fn leave_battlefield(state: &mut GameState, id: u64, to: Option<Zone>) {
+        use crate::game::zones::{add_to_zone, remove_from_zone};
+        let id = ObjectId(id);
+        remove_from_zone(state, id, Zone::Battlefield, PlayerId(0));
+        match to {
+            Some(zone) => {
+                add_to_zone(state, id, zone, PlayerId(0));
+                state.objects.get_mut(&id).expect("the card is live").zone = zone;
+            }
+            None => {
+                state.objects.remove(&id);
+            }
+        }
+    }
+
+    /// CR 118.3 + CR 701.21a + CR 701.26a: a pair no certifying arm admits is a spend when it
+    /// recurs once the caster's permanents that left the battlefield or became tapped are set
+    /// aside, whatever moved them; another player's permanent, an untap, or any other difference
+    /// leaves it refused.
+    #[test]
+    fn the_pair_question_answers_a_spend_only_for_the_casters_departed_or_tapped_permanents() {
+        let caster = PlayerId(0);
+        let (prior, current) = spend_pair();
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, caster),
+            Some(PairCover::Certified(
+                CoveredGrowth::Mintable,
+                RecurrenceCover::Equal
+            )),
+            "reach: the unspent pair covers"
+        );
+
+        type SpendMove = fn(&mut GameState);
+        let spent: [(&str, SpendMove); 4] = [
+            ("card tapped", |current| set_tapped(current, 800, true)),
+            ("card put into a graveyard", |current| {
+                leave_battlefield(current, 800, Some(Zone::Graveyard))
+            }),
+            ("token that ceased to exist", |current| {
+                leave_battlefield(current, 802, None)
+            }),
+            ("card tapped, beside its token exiled", |current| {
+                set_tapped(current, 800, true);
+                leave_battlefield(current, 802, Some(Zone::Exile));
+            }),
+        ];
+        for (how, spend) in spent {
+            let (prior, mut current) = spend_pair();
+            spend(&mut current);
+            assert_eq!(
+                resource_recurrence_covers(&prior, &current, caster),
+                Some(PairCover::Spend),
+                "the caster's permanent {how}"
+            );
+        }
+
+        let (prior, mut current) = spend_pair();
+        set_tapped(&mut current, 801, true);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, caster),
+            None,
+            "another player's permanent became tapped"
+        );
+
+        let (mut prior, current) = spend_pair();
+        set_tapped(&mut prior, 800, true);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, caster),
+            None,
+            "the caster's permanent became untapped"
+        );
+
+        let (prior, mut current) = spend_pair();
+        set_tapped(&mut current, 800, true);
+        current
+            .objects
+            .get_mut(&ObjectId(801))
+            .expect("the other permanent is live")
+            .counters
+            .insert(CounterType::Stun, 1);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, caster),
+            None,
+            "the remainder still differs"
+        );
+
+        // The remainder is put to every certifying arm, not to equality alone.
+        let (mut prior, mut current) = no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard);
+        for frame in [&mut prior, &mut current] {
+            battlefield_creature(frame, 800, 0);
+        }
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, caster),
+            Some(PairCover::Certified(
+                CoveredGrowth::PerformedOnly,
+                RecurrenceCover::Departure
+            )),
+            "reach: the departure arm admits the unspent pair"
+        );
+        set_tapped(&mut current, 800, true);
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, caster),
+            Some(PairCover::Spend),
+            "the departure arm admits the remainder"
+        );
+    }
+
+    /// CR 732.2a + CR 118.3: a period's two pairs are refused when either does not recur, a spend
+    /// when either recurs only with a spend set aside, and otherwise covered by the latest arm and
+    /// the larger growth either needed.
+    #[test]
+    fn two_pairs_combine_a_refusal_over_a_spend_over_a_certified_cover() {
+        use RecurrenceCover::{Equal, History};
+        let performed = PairCover::Certified(CoveredGrowth::PerformedOnly, Equal);
+        let history = PairCover::Certified(CoveredGrowth::Mintable, History);
+        let answers = [None, Some(performed), Some(history), Some(PairCover::Spend)];
+        let refused = || {
+            (
+                ObjectGrowthVerdict::ResourceRecurrence(None),
+                CoveredGrowth::Mintable,
+            )
+        };
+        let spend = || (ObjectGrowthVerdict::Spend, CoveredGrowth::PerformedOnly);
+        let covered =
+            |cover, growth| (ObjectGrowthVerdict::ResourceRecurrence(Some(cover)), growth);
+        // A row is the first pair's answer and a column the second's, each in `answers` order.
+        let expected = [
+            [refused(), refused(), refused(), refused()],
+            [
+                refused(),
+                covered(Equal, CoveredGrowth::PerformedOnly),
+                covered(History, CoveredGrowth::PerformedOnly),
+                spend(),
+            ],
+            [
+                refused(),
+                covered(History, CoveredGrowth::PerformedOnly),
+                covered(History, CoveredGrowth::Mintable),
+                spend(),
+            ],
+            [refused(), spend(), spend(), spend()],
+        ];
+        for (first, row) in answers.iter().zip(&expected) {
+            for (second, want) in answers.iter().zip(row) {
+                assert_eq!(
+                    &PairCover::of_pairs(*first, *second),
+                    want,
+                    "{first:?} then {second:?}"
+                );
+            }
+        }
+    }
+
+    /// CR 118.3: a spend verdict does not certify, beside a covered verdict that does.
+    #[test]
+    fn a_spend_verdict_does_not_certify() {
+        assert!(
+            ObjectGrowthVerdict::ResourceRecurrence(Some(RecurrenceCover::Equal)).certifies(),
+            "reach: a covered verdict certifies"
+        );
+        assert!(!ObjectGrowthVerdict::Spend.certifies());
     }
 
     /// Two frames a turn of `caster`'s apart, with `caster` drawing the library card at `drawn`.

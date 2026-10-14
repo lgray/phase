@@ -4734,7 +4734,8 @@ fn gather_carried_verdicts(
 /// damage dealt to a player; Bear Umbra untaps four Mountains for a cost of five, the fifth mana a
 /// Treasure or a life paid to Mana Confluence ("{T}, Pay 1 life: Add one mana of any color.");
 /// nothing untaps twenty Mountains or makes twenty Treasures again. The confirmer refuses each
-/// with the kinds named, in that order.
+/// with the kinds named, in that order; a period that recurs only with the Treasures or lands it
+/// spends set aside is refused as a spend (CR 118.3).
 #[test]
 fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
     let db = shared_card_db().expect("card db");
@@ -4754,7 +4755,14 @@ fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
     };
     let no_cover = OfferRefusal::Cover(ObjectGrowthVerdict::ResourceRecurrence(None));
     // A board whose sources run out ends P0's turn; one paying life is stopped at its ninth combat.
-    let spent = ([no_cover.clone(), OfferRefusal::IllegalReplayedPlay], P1);
+    let spent = (
+        vec![
+            no_cover.clone(),
+            OfferRefusal::Cover(ObjectGrowthVerdict::Spend),
+            OfferRefusal::IllegalReplayedPlay,
+        ],
+        P1,
+    );
     let boards = [
         (
             with_treasures(&["Grim Hireling"], "Spined Wurm"),
@@ -4790,7 +4798,7 @@ fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
         ),
         (
             with_umbra(&["Mana Confluence"], 0),
-            ([no_cover, OfferRefusal::NoAxis], P0),
+            (vec![no_cover, OfferRefusal::NoAxis], P0),
         ),
     ];
     for (board, (refusals, stops_in_turn_of)) in boards {
@@ -4813,7 +4821,8 @@ fn aggravated_assault_boards_whose_period_does_not_recur_are_not_offered() {
             assert!(drive.activations >= 2, "reach: {case} activates twice");
             assert!(!verdicts.is_empty(), "reach: {case} carries the span");
             verdicts.dedup();
-            assert_eq!(verdicts, refusals.clone().map(Err), "{case}");
+            let expected: Vec<_> = refusals.iter().cloned().map(Err).collect();
+            assert_eq!(verdicts, expected, "{case}");
         }
     }
 }
