@@ -27,7 +27,8 @@ use engine::game::visibility::filter_state_for_viewer;
 use engine::game::zones::{add_to_zone, remove_from_zone};
 use engine::game::{play_trace_view, NamedSpan, NamingCause, PeriodReach, SpanSource};
 use engine::types::ability::{
-    AbilityKind, CastingPermission, DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
+    AbilityKind, CastingPermission, ChosenAttribute, ContinuousModification,
+    DelayedTriggerCondition, Effect, ResolvedAbility, TargetRef,
 };
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
@@ -5223,6 +5224,517 @@ fn a_period_fed_by_an_each_opponent_drain_is_carried_and_refused() {
             verdicts.dedup();
             let refused: Vec<_> = refusals.iter().cloned().map(Err).collect();
             assert_eq!(verdicts, refused, "{case}");
+        }
+    }
+}
+
+/// Whether an object of P0's outside its library has a mana ability: one it functions with, one
+/// it is printed with, or one a static it is printed with grants.
+fn mana_ability_outside_library(state: &GameState) -> bool {
+    state.objects.values().any(|object| {
+        (object.owner == P0 || object.controller == P0)
+            && object.zone != Zone::Library
+            && (object.abilities.iter().any(is_mana_ability)
+                || object.base_abilities.iter().any(is_mana_ability)
+                || object
+                    .base_static_definitions
+                    .iter()
+                    .flat_map(|statik| &statik.modifications)
+                    .any(|modification| {
+                        matches!(
+                            modification,
+                            ContinuousModification::GrantAbility { definition }
+                                if is_mana_ability(definition)
+                        )
+                    }))
+    })
+}
+
+/// CR 505.1a + CR 500.8 + CR 732.2a: Aggravated Assault paid by Neheb, the Eternal alone ("At the
+/// beginning of each of your postcombat main phases, add {R} for each 1 life your opponents have
+/// lost this turn."), the main phase it adds being a postcombat main phase. A Spined Wurm attacks
+/// beside Neheb, or Neheb attacks and one Treasure pays the fifth mana of the first activation;
+/// at the offer nothing of P0's outside its library has a mana ability. The period is offered at
+/// the second combat's postcombat main, counted to P1's lethal crossing (CR 704.5a); a take
+/// leaves what its cycles driven by hand leave, and the whole count ends the game. A mana ability
+/// held anywhere there would be seen: a Mountain's or Llanowar Elves' ("{T}: Add {G}."), also
+/// under Frogify ("Enchanted creature loses all abilities …"); the one Cryptolith Rite grants
+/// ("Creatures you control have "{T}: Add one mana of any color.""); and the one Urborg, Tomb of
+/// Yawgmoth has on the battlefield for being a Swamp (CR 305.6).
+#[test]
+fn an_aggravated_assault_period_paid_by_neheb_alone_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    let boards = [
+        AssaultBoard {
+            others: &["Neheb, the Eternal"],
+            attacker: "Spined Wurm",
+            aura: None,
+            mountains: 0,
+            treasures: 0,
+        },
+        AssaultBoard {
+            others: &[],
+            attacker: "Neheb, the Eternal",
+            aura: None,
+            mountains: 0,
+            treasures: 1,
+        },
+    ];
+    for board in boards {
+        for mode in BOTH_MODES {
+            for pay in [AssaultPay::Engine, AssaultPay::Hand] {
+                let case = format!("{board:?}, {mode:?}, {pay:?}");
+                let (mut runner, mut drive) =
+                    assault_board(board, Phase::PreCombatMain, pay, mode, db);
+                assault_until(&mut runner, &mut drive, |state| {
+                    is_offer(state) || state.active_player != P0 || combats_begun(state) > 6
+                });
+                let state = runner.state();
+                let (span, (combats, phase, life, count)) = carried_offer(state, &case);
+                assert_eq!(
+                    (combats, phase, span.reach, span.cause),
+                    (
+                        2,
+                        Phase::PostCombatMain,
+                        PeriodReach::Combat,
+                        NamingCause::LegalNow
+                    ),
+                    "{case}"
+                );
+                assert!(!mana_ability_outside_library(state), "{case}");
+                let power = state.objects[&drive.attacker].power.expect("a power");
+                assert_eq!(count, ((life + power - 1) / power) as u32, "{case}");
+                let differs = assault_take_differs(state, drive, 3);
+                assert!(differs.is_empty(), "{case}: {differs:?}");
+
+                let events = take(&mut runner, count);
+                assert_eq!(
+                    runner.state().waiting_for,
+                    WaitingFor::GameOver { winner: Some(P0) },
+                    "{case}"
+                );
+                assert!(
+                    events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+                    "{case}"
+                );
+            }
+        }
+    }
+    for (name, zones) in [
+        ("Mountain", &[Zone::Hand][..]),
+        (
+            "Llanowar Elves",
+            &[Zone::Hand, Zone::Graveyard, Zone::Exile][..],
+        ),
+        (
+            "Cryptolith Rite",
+            &[Zone::Battlefield, Zone::Hand, Zone::Graveyard][..],
+        ),
+        (RETRACE_LAND, &[Zone::Battlefield][..]),
+    ] {
+        for zone in zones {
+            let idle = Some(Idle(name, *zone, false));
+            let mode = LoopDetectionMode::Interactive;
+            let (runner, _) = assault_beside(boards[0], AssaultPay::Engine, idle, mode, db);
+            assert!(
+                mana_ability_outside_library(runner.state()),
+                "{name} in {zone:?}"
+            );
+        }
+    }
+    let (mut runner, mut drive) = assault_board(
+        boards[0],
+        Phase::PreCombatMain,
+        AssaultPay::Engine,
+        LoopDetectionMode::Interactive,
+        db,
+    );
+    let state = runner.state_mut();
+    place_idle(state, Idle("Llanowar Elves", Zone::Battlefield, false), db);
+    let elves = in_zone(state, &state.battlefield, "Llanowar Elves").expect("placed");
+    let frogify = place(state, P0, "Frogify", db);
+    attach_to(state, frogify, elves);
+    assault_until(&mut runner, &mut drive, |state| {
+        is_offer(state) || state.active_player != P0 || combats_begun(state) > 6
+    });
+    let state = runner.state();
+    assert!(
+        !state.objects[&elves].abilities.iter().any(is_mana_ability),
+        "reach: Frogify takes the Elves' ability"
+    );
+    assert!(mana_ability_outside_library(state), "Elves under Frogify");
+}
+
+/// The land a retraced Waves of Aggression discards. It has no printed mana ability and only
+/// moves between hand and graveyard, so it never has the one a land on the battlefield has for
+/// the Swamp type it gives (CR 305.6).
+const RETRACE_LAND: &str = "Urborg, Tomb of Yawgmoth";
+
+/// One action of a retraced Waves of Aggression period: cast it from P0's graveyard once per
+/// main phase when the land is in hand and the pool holds its five mana, discard the land for it,
+/// attack P1 with `attacker` whenever it is untapped, and pass every other priority.
+fn waves_step(runner: &mut GameRunner, attacker: ObjectId, cast_at: &mut Option<u32>) {
+    let state = runner.state();
+    let action = match &state.waiting_for {
+        WaitingFor::Priority { .. } if assault_window(state) => {
+            let combats = combats_begun(state);
+            let waves = in_zone(state, &state.players[0].graveyard, "Waves of Aggression");
+            let land = in_zone(state, &state.players[0].hand, RETRACE_LAND);
+            match (waves, land) {
+                (Some(waves), Some(_))
+                    if *cast_at != Some(combats)
+                        && state.players[0].mana_pool.total() >= ASSAULT_COST =>
+                {
+                    *cast_at = Some(combats);
+                    GameAction::CastSpell {
+                        object_id: waves,
+                        card_id: state.objects[&waves].card_id,
+                        targets: vec![],
+                        payment_mode: CastPaymentMode::Auto,
+                    }
+                }
+                _ => GameAction::PassPriority,
+            }
+        }
+        WaitingFor::Priority { .. } | WaitingFor::ManaPayment { .. } => GameAction::PassPriority,
+        WaitingFor::PayCost { choices, .. } => GameAction::SelectCards {
+            cards: choices.clone(),
+        },
+        WaitingFor::DeclareAttackers { player, .. }
+            if *player == P0 && !state.objects[&attacker].tapped =>
+        {
+            GameAction::DeclareAttackers {
+                attacks: vec![(attacker, AttackTarget::Player(P1))],
+                bands: vec![],
+            }
+        }
+        WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+            attacks: vec![],
+            bands: vec![],
+        },
+        WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+            assignments: vec![],
+        },
+        WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+            order: (0..triggers.len()).collect(),
+        },
+        other => panic!("the Waves drive has no answer to {other:?}"),
+    };
+    act(runner, action);
+}
+
+/// CR 505.1a + CR 500.8 + CR 702.81a + CR 732.2a: Waves of Aggression ("Untap all creatures that
+/// attacked this turn. After this main phase, there is an additional combat phase followed by an
+/// additional main phase. Retrace") cast from the graveyard each postcombat main with the mana
+/// Neheb, the Eternal adds there, discarding the land Kirri, Talented Sprout ("At the beginning of
+/// each of your postcombat main phases, return target Plant, Treefolk, or land card from your
+/// graveyard to your hand.") returns there, while a Spined Wurm attacks. Nothing of P0's outside
+/// its library taps for mana. The period is offered at the second combat's postcombat main,
+/// counted to P1's lethal crossing (CR 704.5a); a take leaves what its cycles driven by hand
+/// leave, and the whole count ends the game. Without Kirri the land stays in the graveyard and
+/// nothing is offered.
+#[test]
+fn a_retraced_waves_of_aggression_period_paid_by_neheb_is_offered_and_taken() {
+    let db = shared_card_db().expect("card db");
+    let boards = [
+        (&["Kirri, Talented Sprout", "Neheb, the Eternal"][..], true),
+        (&["Neheb, the Eternal"][..], false),
+    ];
+    for (others, recurs) in boards {
+        for mode in BOTH_MODES {
+            let case = format!("{others:?}, {mode:?}");
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            scenario.with_life(P1, 200);
+            scenario.with_library_top(P0, &["Island"; 25]);
+            scenario.with_library_top(P1, &["Island"; 25]);
+            let mut permanents: Vec<ObjectId> = others
+                .iter()
+                .map(|name| scenario.add_real_card(P0, name, Zone::Battlefield, db))
+                .collect();
+            let attacker = scenario.add_real_card(P0, "Spined Wurm", Zone::Battlefield, db);
+            permanents.push(attacker);
+            scenario.add_real_card(P0, "Waves of Aggression", Zone::Graveyard, db);
+            scenario.add_real_card(P0, RETRACE_LAND, Zone::Hand, db);
+            let mut runner = scenario.build();
+            let state = runner.state_mut();
+            let before = state.turn_number.saturating_sub(1);
+            for id in permanents {
+                let object = state.objects.get_mut(&id).expect("placed");
+                object.entered_battlefield_turn = Some(before);
+                object.summoning_sick = false;
+            }
+            state.loop_detection = mode;
+            let mut cast_at = None;
+            let mut casts = 0;
+            for _ in 0..4000 {
+                let state = runner.state();
+                if is_offer(state) || state.active_player != P0 || combats_begun(state) > 6 {
+                    break;
+                }
+                let before = cast_at;
+                waves_step(&mut runner, attacker, &mut cast_at);
+                casts += u32::from(cast_at != before);
+            }
+            let state = runner.state().clone();
+            assert!(!mana_ability_outside_library(&state), "{case}");
+            if !recurs {
+                assert!(!is_offer(&state), "{case}");
+                assert_eq!(casts, 1, "reach: {case} casts Waves of Aggression once");
+                continue;
+            }
+            let (span, (combats, phase, life, count)) = carried_offer(&state, &case);
+            assert_eq!(
+                (combats, phase, span.reach, span.cause),
+                (
+                    2,
+                    Phase::PostCombatMain,
+                    PeriodReach::Combat,
+                    NamingCause::LegalNow
+                ),
+                "{case}"
+            );
+            let power = state.objects[&attacker].power.expect("a power");
+            assert_eq!(count, ((life + power - 1) / power) as u32, "{case}");
+
+            let taken = taken(&state, 3);
+            let mut by_hand = GameRunner::from_state(state.clone());
+            act(&mut by_hand, GameAction::DeclineShortcut);
+            by_hand.state_mut().loop_detection = LoopDetectionMode::Off;
+            let mut hand_cast_at = None;
+            for _ in 0..4000 {
+                let state = by_hand.state();
+                if combats_begun(state) == combats + 3
+                    && assault_window(state)
+                    && in_zone(state, &state.players[0].hand, RETRACE_LAND).is_some()
+                {
+                    break;
+                }
+                waves_step(&mut by_hand, attacker, &mut hand_cast_at);
+            }
+            let differs =
+                crate::loop_period_remade_token_source::differing_fields(&taken, by_hand.state());
+            assert!(differs.is_empty(), "{case}: {differs:?}");
+
+            let events = take(&mut runner, count);
+            assert_eq!(
+                runner.state().waiting_for,
+                WaitingFor::GameOver { winner: Some(P0) },
+                "{case}"
+            );
+            assert!(
+                events.contains(&GameEvent::GameOver { winner: Some(P0) }),
+                "{case}"
+            );
+        }
+    }
+}
+
+/// Aggravated Assault, an attacking Spined Wurm and `others` on P0's battlefield with no land,
+/// each Frontier Siege there with Khans chosen as it entered.
+fn siege_board(
+    others: &[&str],
+    mode: LoopDetectionMode,
+    db: &CardDatabase,
+) -> (GameRunner, AssaultDrive) {
+    let board = AssaultBoard {
+        others,
+        attacker: "Spined Wurm",
+        aura: None,
+        mountains: 0,
+        treasures: 0,
+    };
+    let (mut runner, drive) =
+        assault_board(board, Phase::PreCombatMain, AssaultPay::Hand, mode, db);
+    for (_, object) in runner.state_mut().objects.iter_mut() {
+        if object.name == "Frontier Siege" {
+            object
+                .chosen_attributes
+                .push(ChosenAttribute::Label("Khans".to_string()));
+        }
+    }
+    (runner, drive)
+}
+
+/// What an Aggravated Assault drive through P0's turn carried: the confirmer's verdicts on the
+/// carried spans, and each carried key's face and reach.
+type Carrying = (
+    Vec<Result<Vec<String>, OfferRefusal>>,
+    Vec<(Option<String>, PeriodReach)>,
+);
+
+/// Drives `drive` through P0's turn, which makes no offer.
+fn carried_through_turn(runner: &mut GameRunner, drive: &mut AssaultDrive, case: &str) -> Carrying {
+    let (mut verdicts, mut gathered_at, mut faces) = (Vec::new(), 0, Vec::new());
+    for _ in 0..4000 {
+        let state = runner.state();
+        assert!(!is_offer(state), "{case}");
+        if state.active_player != P0 || combats_begun(state) > 8 {
+            break;
+        }
+        gather_carried_verdicts(state, &mut gathered_at, &mut verdicts);
+        for span in carried(state) {
+            let key = (span.face, span.reach);
+            if !faces.contains(&key) {
+                faces.push(key);
+            }
+        }
+        assault_step(runner, drive);
+    }
+    assert_eq!(runner.state().active_player, P1, "{case}");
+    verdicts.dedup();
+    (verdicts, faces)
+}
+
+/// CR 505.1a + CR 500.8: what an added main phase does not feed is not carried, and what it
+/// feeds is. Glóin the Mighty ("At the beginning of your first main phase, add {R}{R}.") beside
+/// Aggravated Assault pays one activation with three Treasures, whoever taps them, and adds
+/// nothing in the main phase that activation adds; the combat phase Najeela, the Blade-Blossom
+/// would add ("{W}{U}{B}{R}{G}: … After this phase, there is an additional combat phase. Activate
+/// only during combat.") brings no main phase for Neheb, the Eternal, while a Hill Giant attacks.
+/// Neheb attacking alone beside Aggravated Assault adds four mana for its five: its trigger is
+/// carried as far as a combat and the period never comes round; with Time Warp ("Target player
+/// takes an extra turn after this one.") in hand it is carried as far as a turn (CR 500.7).
+/// Frontier Siege with Khans chosen ("At the beginning of each of your main phases, add {G}{G}.")
+/// beside Aggravated Assault adds two mana for its five: its trigger is carried as far as a
+/// combat.
+#[test]
+fn a_trigger_an_added_main_phase_does_not_feed_is_not_carried() {
+    let db = shared_card_db().expect("card db");
+    for mode in BOTH_MODES {
+        let board = AssaultBoard {
+            others: &["Glóin the Mighty"],
+            attacker: "Spined Wurm",
+            aura: None,
+            mountains: 0,
+            treasures: 3,
+        };
+        for pay in [AssaultPay::Engine, AssaultPay::Hand] {
+            let case = format!("Glóin, {mode:?}, {pay:?}");
+            let (mut runner, mut drive) = assault_board(board, Phase::Upkeep, pay, mode, db);
+            let (verdicts, faces) = carried_through_turn(&mut runner, &mut drive, &case);
+            assert_eq!(
+                drive.activations, 1,
+                "reach: {case}: Glóin's mana pays once"
+            );
+            assert_eq!(runner.state().players[1].life, 195, "reach: {case}");
+            assert_eq!((verdicts, faces), (vec![], vec![]), "{case}");
+        }
+
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_library_top(P0, &["Island"; 25]);
+        scenario.with_library_top(P1, &["Island"; 25]);
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        for name in [
+            "Najeela, the Blade-Blossom",
+            "Neheb, the Eternal",
+            "Hill Giant",
+        ] {
+            place_idle(state, Idle(name, Zone::Battlefield, false), db);
+        }
+        state.loop_detection = mode;
+        let on_battlefield = |name| in_zone(state, &state.battlefield, name).expect("placed");
+        // Najeela's ability is never activated: Neheb adds three mana, and no Warrior attacks.
+        let mut drive = AssaultDrive {
+            assault: on_battlefield("Najeela, the Blade-Blossom"),
+            attacker: on_battlefield("Hill Giant"),
+            pay: AssaultPay::Engine,
+            activated_at: None,
+            activations: 0,
+        };
+        let (verdicts, faces) = carried_through_turn(&mut runner, &mut drive, "Najeela");
+        assert_eq!(drive.activations, 0, "{mode:?}");
+        assert_eq!(
+            runner.state().players[1].life,
+            17,
+            "reach: {mode:?}: Neheb's trigger had three mana to add"
+        );
+        assert_eq!((verdicts, faces), (vec![], vec![]), "{mode:?}");
+
+        let board = AssaultBoard {
+            others: &[],
+            attacker: "Neheb, the Eternal",
+            aura: None,
+            mountains: 0,
+            treasures: 0,
+        };
+        for (held, reach) in [
+            (None, PeriodReach::Combat),
+            (Some("Time Warp"), PeriodReach::ExtraTurn),
+        ] {
+            let (mut runner, mut drive) =
+                assault_board(board, Phase::PreCombatMain, AssaultPay::Engine, mode, db);
+            if let Some(held) = held {
+                place_idle(runner.state_mut(), Idle(held, Zone::Hand, false), db);
+            }
+            let (verdicts, faces) = carried_through_turn(&mut runner, &mut drive, "Neheb alone");
+            assert_eq!(drive.activations, 0, "{mode:?}");
+            assert_eq!(
+                (verdicts, faces),
+                (
+                    vec![],
+                    vec![(Some("Neheb, the Eternal".to_string()), reach)]
+                ),
+                "{held:?}, {mode:?}"
+            );
+        }
+
+        let (mut runner, mut drive) = siege_board(&["Frontier Siege"], mode, db);
+        let (verdicts, faces) = carried_through_turn(&mut runner, &mut drive, "Frontier Siege");
+        assert_eq!(drive.activations, 0, "{mode:?}");
+        assert_eq!(runner.state().players[1].life, 195, "reach: {mode:?}");
+        assert_eq!(
+            (verdicts, faces),
+            (
+                vec![],
+                vec![(Some("Frontier Siege".to_string()), PeriodReach::Combat)]
+            ),
+            "{mode:?}"
+        );
+    }
+}
+
+/// CR 505.1a + CR 732.2a: an added main phase whose trigger pays too little is carried and
+/// refused by the confirmer's replay, which cannot pay for Aggravated Assault again once ten
+/// Treasures are spent, whoever taps them. Belbe, Corrupted Observer ("At the beginning of each
+/// postcombat main phase, the active player adds {C}{C} for each of your opponents who lost life
+/// this turn.") adds two colorless mana for a Spined Wurm's attack; Neheb, the Eternal adds none
+/// while an Ornithopter attacks.
+#[test]
+fn an_added_main_phase_that_pays_too_little_is_carried_and_refused() {
+    let db = shared_card_db().expect("card db");
+    let boards = [
+        ("Belbe, Corrupted Observer", "Spined Wurm", 190),
+        ("Neheb, the Eternal", "Ornithopter", 200),
+    ];
+    for (payer, attacker, life) in boards {
+        for mode in BOTH_MODES {
+            for pay in [AssaultPay::Engine, AssaultPay::Hand] {
+                let case = format!("{payer}, {mode:?}, {pay:?}");
+                let board = AssaultBoard {
+                    others: &[payer],
+                    attacker,
+                    aura: None,
+                    mountains: 0,
+                    treasures: 10,
+                };
+                let (mut runner, mut drive) =
+                    assault_board(board, Phase::PreCombatMain, pay, mode, db);
+                let (verdicts, faces) = carried_through_turn(&mut runner, &mut drive, &case);
+                assert_eq!(drive.activations, 2, "reach: {case}");
+                assert_eq!(runner.state().players[1].life, life, "reach: {case}");
+                assert!(
+                    faces.contains(&(Some(payer.to_string()), PeriodReach::Combat)),
+                    "{case}: {faces:?}"
+                );
+                assert_eq!(
+                    verdicts,
+                    vec![Err(OfferRefusal::IllegalReplayedPlay)],
+                    "{case}"
+                );
+            }
         }
     }
 }

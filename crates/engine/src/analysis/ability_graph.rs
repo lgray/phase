@@ -43,7 +43,7 @@ use crate::types::card::CardFace;
 use crate::types::card_type::{CardType, CoreType};
 use crate::types::counter::CounterMatch;
 use crate::types::mana::{ManaColor, ManaCost, ManaType};
-use crate::types::phase::{PhaseGroup, TurnSegment};
+use crate::types::phase::{Phase, PhaseGroup, TurnSegment};
 use crate::types::player::PlayerId;
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
@@ -128,6 +128,9 @@ pub enum AxisKey {
     /// CR 608.2n + CR 304.1 + CR 307.1: a card returned from a graveyard to a hand, where a
     /// resolved instant or sorcery must be before it can be cast again.
     ReturnToHand,
+    /// CR 500.8 + CR 505.1a: a main phase an effect adds to a turn, which is a postcombat main
+    /// phase. Has no `ResourceVector` axis; injected directly into a node's produces/requires sets.
+    MainPhase,
 }
 
 /// HIGH-2 compile-time drift gate: an exhaustive **no-wildcard** projection of
@@ -923,14 +926,27 @@ fn effect_projection(effect: &Effect) -> Projection {
             let (a, mag) = count_seed(count);
             b.add_extra_turn(a, mag);
         }
-        // CR 500.8: only an additional *combat* phase pumps a modeled axis; any
-        // other extra phase carries no countable resource ⇒ Unmodeled (M2).
-        Effect::AdditionalPhase { segment, count, .. } => {
-            if *segment == TurnSegment::Phase(PhaseGroup::Combat) {
+        // CR 500.8: an added combat phase pumps the combat axis, and an added main phase begins a
+        // postcombat main phase (CR 505.1a); any other added segment carries no modeled axis.
+        Effect::AdditionalPhase {
+            segment,
+            followed_by,
+            count,
+            ..
+        } => {
+            let combat = *segment == TurnSegment::Phase(PhaseGroup::Combat);
+            let main = std::iter::once(segment)
+                .chain(followed_by)
+                .any(|added| added.first_step() == Phase::PostCombatMain);
+            if !combat && !main {
+                return Projection::Unmodeled;
+            }
+            if combat {
                 let (a, mag) = count_seed(count);
                 b.add_combat(a, mag);
-            } else {
-                return Projection::Unmodeled;
+            }
+            if main {
+                b.produces.insert(AxisKey::MainPhase);
             }
         }
         // Conjure creates real cards; only a battlefield entry is a modeled axis
@@ -1380,12 +1396,19 @@ fn trigger_axis(trig: &TriggerDefinition) -> Option<AxisKey> {
     }
 }
 
-/// The event axes a trigger's node requires: its mode's axis, and for a damage-dealt trigger the
-/// axis of each kind of damage its definition watches.
+/// The event axes a trigger's node requires: its mode's axis; for a damage-dealt trigger the axis
+/// of each kind of damage its definition watches; and for a beginning-of-step trigger a
+/// postcombat main phase begins for, the main phase an effect adds as well.
 fn trigger_requirements(trig: &TriggerDefinition) -> BTreeSet<AxisKey> {
     let Some(axis) = trigger_axis(trig) else {
         return BTreeSet::new();
     };
+    // CR 505.1a: only a turn's first main phase is precombat, so an added main phase begins a
+    // postcombat main phase and never a precombat one. A trigger that stores no step is
+    // matched at the beginning of every step.
+    if trig.mode == TriggerMode::Phase && matches!(trig.phase, None | Some(Phase::PostCombatMain)) {
+        return BTreeSet::from([axis, AxisKey::MainPhase]);
+    }
     if axis != AxisKey::Damage {
         return BTreeSet::from([axis]);
     }
@@ -2252,7 +2275,8 @@ pub struct CandidateCycle {
 /// Map an [`AxisKey`] back to a named [`ResourceAxis`] at the candidate's
 /// sentinel players (§3.7 step 5). For mana, recover the seeded color from the
 /// first strictly-positive net slot (color survives the edge-key collapse), else
-/// the colorless family sentinel. `Tap`/`AnyCounter` have no `ResourceAxis`.
+/// the colorless family sentinel. `Tap`, `AnyCounter`, `ReturnToHand` and `MainPhase` have no
+/// `ResourceAxis`.
 fn axis_key_to_resource(key: &AxisKey, net: &ResourceVector) -> Option<ResourceAxis> {
     match key {
         AxisKey::Mana => {
@@ -2301,7 +2325,7 @@ fn axis_key_to_resource(key: &AxisKey, net: &ResourceVector) -> Option<ResourceA
         AxisKey::Ltb => Some(ResourceAxis::LtbTriggers),
         AxisKey::Death => Some(ResourceAxis::DeathTriggers),
         AxisKey::Sac => Some(ResourceAxis::SacTriggers),
-        AxisKey::Tap | AxisKey::AnyCounter | AxisKey::ReturnToHand => None,
+        AxisKey::Tap | AxisKey::AnyCounter | AxisKey::ReturnToHand | AxisKey::MainPhase => None,
     }
 }
 
@@ -3270,7 +3294,7 @@ mod tests {
         assert_eq!(combat.net.combat_phases, 1);
         assert!(combat.produces.contains(&AxisKey::Combat));
 
-        // A non-combat extra phase carries no modeled axis ⇒ Unmodeled (M2).
+        // An added step that is neither a combat phase nor a main phase carries no modeled axis.
         assert!(matches!(
             effect_projection(&Effect::AdditionalPhase {
                 recipient: crate::types::ability::ExtraPhaseRecipient::Controller,
@@ -3561,6 +3585,135 @@ mod tests {
         assert!(
             cycle_holds(&names, "Molten Lavamancer", AbilitySlot::Trigger(0)),
             "reach: a noncombat damage source closes the cycle the combat did not"
+        );
+    }
+
+    /// CR 505.1a + CR 500.8: a trigger a postcombat main phase begins for, whether it stores that
+    /// phase or stores none and fires in each main phase, requires the main phase an effect adds
+    /// as well as the turn that brings one; a trigger at the beginning of the precombat main
+    /// phase, of an upkeep or of combat does not.
+    #[test]
+    fn a_postcombat_main_trigger_requires_an_added_main_phase_as_well_as_a_turn() {
+        let requires = |name: &str| trigger_requirements(&face(name).triggers[0]);
+        for watcher in ["Neheb, the Eternal", "Frontier Siege", "Carpet of Flowers"] {
+            assert_eq!(
+                requires(watcher),
+                BTreeSet::from([AxisKey::ExtraTurn, AxisKey::MainPhase]),
+                "{watcher}"
+            );
+        }
+        for elsewhere in ["Glóin the Mighty", "Blinkmoth Urn", "Paradox Haze"] {
+            assert_eq!(
+                requires(elsewhere),
+                BTreeSet::from([AxisKey::ExtraTurn]),
+                "{elsewhere}"
+            );
+        }
+        assert_eq!(
+            requires("Sinister Monolith"),
+            BTreeSet::from([AxisKey::Combat])
+        );
+        assert_eq!(
+            requires("Lotus Cobra"),
+            BTreeSet::from([AxisKey::Etb]),
+            "a trigger that is not at the beginning of a step stores no step either"
+        );
+    }
+
+    /// CR 500.8: an effect that adds a main phase produces it, whether the main phase is the
+    /// segment it adds or follows the one it adds, and an effect adding a combat phase alone does
+    /// not; the added main phase is no resource axis.
+    #[test]
+    fn an_effect_adding_a_main_phase_produces_it() {
+        let adding = |segment: PhaseGroup, followed_by: Vec<PhaseGroup>| {
+            build_node(
+                ORIGIN,
+                &activated(Effect::AdditionalPhase {
+                    recipient: crate::types::ability::ExtraPhaseRecipient::Controller,
+                    segment: TurnSegment::Phase(segment),
+                    after: crate::types::ability::ExtraPhaseAnchor::this_main_phase(),
+                    followed_by: followed_by.into_iter().map(TurnSegment::Phase).collect(),
+                    count: fixed(1),
+                    attacker_restriction: None,
+                }),
+                None,
+            )
+        };
+        let both = adding(PhaseGroup::Combat, vec![PhaseGroup::PostcombatMain]);
+        assert_eq!(
+            both.produces,
+            BTreeSet::from([AxisKey::Combat, AxisKey::MainPhase])
+        );
+        assert_eq!(both.net.combat_phases, 1);
+        assert_eq!(
+            both.unbounded_production,
+            BTreeSet::new(),
+            "the added main phase names no resource"
+        );
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::MainPhase, &ResourceVector::default()),
+            None
+        );
+
+        for main in [PhaseGroup::PostcombatMain, PhaseGroup::PrecombatMain] {
+            let alone = adding(main, Vec::new());
+            assert_eq!(alone.produces, BTreeSet::from([AxisKey::MainPhase]));
+            assert_eq!(alone.completeness, ModelCompleteness::FullyModeled);
+        }
+
+        let combat = adding(PhaseGroup::Combat, Vec::new());
+        assert_eq!(combat.produces, BTreeSet::from([AxisKey::Combat]));
+
+        assert!(node_of("Aggravated Assault", AbilitySlot::Ability(0))
+            .produces
+            .contains(&AxisKey::MainPhase));
+        let najeela = node_of("Najeela, the Blade-Blossom", AbilitySlot::Ability(0));
+        assert!(najeela.produces.contains(&AxisKey::Combat), "reach");
+        assert!(!najeela.produces.contains(&AxisKey::MainPhase));
+    }
+
+    /// CR 505.1a: the main phase Aggravated Assault adds feeds Neheb, the Eternal's trigger at the
+    /// beginning of the postcombat main phase and Frontier Siege's at the beginning of each main
+    /// phase, and not Glóin the Mighty's at the beginning of the first main phase; the combat
+    /// phase Najeela, the Blade-Blossom adds feeds none of them; and the turn Time Warp adds
+    /// feeds Neheb's and Glóin's alike.
+    #[test]
+    fn a_postcombat_main_trigger_cycles_with_the_main_phase_that_feeds_it() {
+        let fed = |adder: &str, slot: AbilitySlot, watcher: &str| {
+            cycle_holds(&[adder, watcher], watcher, AbilitySlot::Trigger(0))
+                && cycle_holds(&[adder, watcher], adder, slot)
+        };
+        let assault = ("Aggravated Assault", AbilitySlot::Ability(0));
+        let najeela = ("Najeela, the Blade-Blossom", AbilitySlot::Ability(0));
+        assert!(fed(assault.0, assault.1, "Neheb, the Eternal"));
+        assert!(fed(assault.0, assault.1, "Frontier Siege"));
+        assert!(!fed(assault.0, assault.1, "Glóin the Mighty"));
+        assert!(!fed(najeela.0, najeela.1, "Neheb, the Eternal"));
+        assert!(
+            first_trigger_node("Lotus Cobra")
+                .produces
+                .contains(&AxisKey::Mana),
+            "reach: Lotus Cobra's landfall trigger produces the mana Aggravated Assault spends"
+        );
+        assert!(!fed(assault.0, assault.1, "Lotus Cobra"));
+
+        for watcher in ["Neheb, the Eternal", "Glóin the Mighty"] {
+            assert!(
+                first_trigger_node(watcher)
+                    .produces
+                    .contains(&AxisKey::Mana),
+                "reach: {watcher} produces the mana both adders spend"
+            );
+            assert!(
+                cycle_holds(&["Time Warp", watcher], watcher, AbilitySlot::Trigger(0)),
+                "{watcher}"
+            );
+        }
+        assert!(
+            node_of(najeela.0, najeela.1)
+                .requires
+                .contains(&AxisKey::Mana),
+            "reach: Najeela's ability spends mana"
         );
     }
 
