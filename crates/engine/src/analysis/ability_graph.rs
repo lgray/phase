@@ -1404,8 +1404,7 @@ fn trigger_requirements(trig: &TriggerDefinition) -> BTreeSet<AxisKey> {
         return BTreeSet::new();
     };
     // CR 505.1a: only a turn's first main phase is precombat, so an added main phase begins a
-    // postcombat main phase and never a precombat one. A trigger that stores no step is
-    // matched at the beginning of every step.
+    // postcombat main phase, which a trigger storing that step or no step is matched at.
     if trig.mode == TriggerMode::Phase && matches!(trig.phase, None | Some(Phase::PostCombatMain)) {
         return BTreeSet::from([axis, AxisKey::MainPhase]);
     }

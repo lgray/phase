@@ -5697,8 +5697,8 @@ fn a_trigger_an_added_main_phase_does_not_feed_is_not_carried() {
 }
 
 /// CR 505.1a + CR 732.2a: an added main phase whose trigger pays too little is carried and
-/// refused by the confirmer's replay, which cannot pay for Aggravated Assault again once ten
-/// Treasures are spent, whoever taps them. Belbe, Corrupted Observer ("At the beginning of each
+/// refused by the confirmer's replay, which cannot pay for Aggravated Assault a third time from
+/// ten Treasures, whoever taps them. Belbe, Corrupted Observer ("At the beginning of each
 /// postcombat main phase, the active player adds {C}{C} for each of your opponents who lost life
 /// this turn.") adds two colorless mana for a Spined Wurm's attack; Neheb, the Eternal adds none
 /// while an Ornithopter attacks.
