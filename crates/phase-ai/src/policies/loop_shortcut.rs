@@ -102,7 +102,7 @@
 
 use engine::analysis::decision_template::{DecisionPoint, DecisionTemplate, IterationCount};
 use engine::analysis::loop_check::LoopCertificate;
-use engine::analysis::resource::{AnnouncedLead, ChargeBound, PeriodicDelta};
+use engine::analysis::resource::{AnnouncedLead, ChargeBound, PeriodSignature, PeriodicDelta};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
@@ -432,7 +432,13 @@ fn cycles_to_proposer_elimination(
     proposer: PlayerId,
     declared: u32,
 ) -> Option<i64> {
-    let period = certificate.per_cycle.as_ref()?;
+    let period = match certificate.per_cycle.as_ref()? {
+        PeriodSignature::EveryRepetition(period) => period,
+        // A counted offer's suggestion stops short of its proposer's own departing repetition,
+        // and the suggestion is the only count this seat declares, so this estimate of one
+        // repetition times the count can only make it decline, never declare a fatal count.
+        PeriodSignature::OneRepetition(period) => period,
+    };
     let player = state.players.get(proposer.0 as usize)?;
 
     // CR 704.3 + CR 704.5a: the first repetition inside which the proposer can reach 0 or less
@@ -491,7 +497,7 @@ mod tests {
         PinnedDecision, Ranking, ReplayMode, ShortcutDecisionSchema, TargetPin, TargetSchedule,
     };
     use engine::analysis::loop_check::{LoopCertificate, WinKind};
-    use engine::analysis::resource::{BoardDelta, PeriodicDelta, ResourceVector};
+    use engine::analysis::resource::{BoardDelta, PeriodSignature, PeriodicDelta, ResourceVector};
     use engine::game::zones::create_object;
     use engine::types::ability::TargetRef;
     use engine::types::game_state::YieldTarget;
@@ -512,7 +518,8 @@ mod tests {
     fn cert() -> LoopCertificate {
         LoopCertificate {
             unbounded: vec![],
-            win_kind: WinKind::LethalDamage,
+            win_kind: Some(WinKind::LethalDamage),
+            win_kind_at: None,
             mandatory: false,
             residual_board_delta: BoardDelta::default(),
             per_cycle: None,
@@ -757,7 +764,7 @@ mod tests {
             proposer: P0,
             predicted_winner: None,
             certificate: LoopCertificate {
-                per_cycle: Some(period),
+                per_cycle: Some(PeriodSignature::EveryRepetition(period)),
                 ..cert()
             },
             schema: ShortcutDecisionSchema {
@@ -1142,6 +1149,7 @@ mod tests {
         let period = certificate_of(&state)
             .per_cycle
             .as_ref()
+            .and_then(engine::analysis::resource::PeriodSignature::every_repetition)
             .expect("REACH-GUARD: a certificate with no period makes every assertion vacuous");
         assert_eq!(
             period.delta.life.get(&P0),

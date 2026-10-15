@@ -3777,7 +3777,10 @@ export interface BoardDelta {
 /** Mirrors `engine::analysis::loop_check::LoopCertificate`. */
 export interface LoopCertificate {
   unbounded: ResourceAxis[];
-  win_kind: WinKind;
+  /** Absent when the certificate determines no outcome. */
+  win_kind?: WinKind;
+  /** The count whose take `win_kind` is the outcome of; absent for the loop as a whole. */
+  win_kind_at?: number;
   mandatory: boolean;
   residual_board_delta: BoardDelta;
 }
@@ -3883,7 +3886,8 @@ export interface ShortcutProposal {
   predicted_winner: PlayerId | null;
   count: IterationCount;
   unbounded: ResourceAxis[];
-  win_kind: WinKind;
+  win_kind?: WinKind;
+  win_kind_at?: number;
   shortened_by?: PlayerId;
   road: OfferRoad;
 }

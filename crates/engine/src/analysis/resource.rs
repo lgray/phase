@@ -844,7 +844,8 @@ mod map_key_pairs {
 
 /// CR 732.2a: the resource signature of ONE repetition of a certified loop — what the
 /// offer publishes so a bounded drive can check that each committed cycle actually
-/// conformed, and so the CR 704 count bound has a per-period magnitude to divide by.
+/// conformed, and so the CR 704 count bound has a per-period magnitude to divide by. An offer
+/// publishes it inside a [`PeriodSignature`], which says which repetitions it states.
 ///
 /// The `Vec` victim term (rather than a `BTreeMap` keyed by [`DecisionSlot`]) is
 /// deliberate: a struct map key hits exactly the `serde_json` restriction
@@ -943,6 +944,81 @@ pub struct PeriodicDelta {
     /// CR 514.1: the hand a turn-cycle period carries into each cleanup; `None` off that cover.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup: Option<CleanupPair>,
+}
+
+/// CR 732.2a: an offer's published per-period signature, by which repetitions it states. A
+/// reader that multiplies it by a count names the arm it multiplies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SignatureWire", into = "SignatureWire")]
+pub enum PeriodSignature {
+    /// The threshold authority's period: every repetition moves what it states, so a count's
+    /// consequence is it times the count.
+    EveryRepetition(PeriodicDelta),
+    /// The counting replay's period: what one performed repetition moved; a later one may move a
+    /// different amount, so no multiple of it is a count's consequence.
+    OneRepetition(PeriodicDelta),
+}
+
+impl PeriodSignature {
+    /// The signature a count's consequence is read from; a one-repetition signature has none.
+    pub fn every_repetition(&self) -> Option<&PeriodicDelta> {
+        match self {
+            PeriodSignature::EveryRepetition(period) => Some(period),
+            PeriodSignature::OneRepetition(_) => None,
+        }
+    }
+
+    /// How many retained frames one repetition spans, whichever repetitions the signature states.
+    pub fn frames_per_period(&self) -> u32 {
+        match self {
+            PeriodSignature::EveryRepetition(period) | PeriodSignature::OneRepetition(period) => {
+                period.frames_per_period
+            }
+        }
+    }
+}
+
+/// The wire shape of a [`PeriodSignature`]: the period's own fields, and `scope` only when it
+/// states one repetition, so a signature saved before the scope existed reads as every
+/// repetition's.
+#[derive(Serialize, Deserialize)]
+struct SignatureWire {
+    #[serde(flatten)]
+    period: PeriodicDelta,
+    #[serde(default, skip_serializing_if = "SignatureScope::is_every_repetition")]
+    scope: SignatureScope,
+}
+
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+enum SignatureScope {
+    #[default]
+    EveryRepetition,
+    OneRepetition,
+}
+
+impl SignatureScope {
+    fn is_every_repetition(&self) -> bool {
+        *self == SignatureScope::EveryRepetition
+    }
+}
+
+impl From<SignatureWire> for PeriodSignature {
+    fn from(wire: SignatureWire) -> Self {
+        match wire.scope {
+            SignatureScope::EveryRepetition => PeriodSignature::EveryRepetition(wire.period),
+            SignatureScope::OneRepetition => PeriodSignature::OneRepetition(wire.period),
+        }
+    }
+}
+
+impl From<PeriodSignature> for SignatureWire {
+    fn from(signature: PeriodSignature) -> Self {
+        let (period, scope) = match signature {
+            PeriodSignature::EveryRepetition(period) => (period, SignatureScope::EveryRepetition),
+            PeriodSignature::OneRepetition(period) => (period, SignatureScope::OneRepetition),
+        };
+        SignatureWire { period, scope }
+    }
 }
 
 /// CR 514.1: how a turn-cycle period moves its caster's hand toward the cleanup discard.
@@ -2003,7 +2079,7 @@ impl SlotCharge {
 /// PAIRED RATHER THAN TWO PARALLEL LISTS, for the reason
 /// [`EliminationBound::predicted_departure`] gives: a caller holding a seat set beside a loose
 /// index can compare the wrong one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PredictedDeparture {
     /// CR 732.2a: which repetition of the period this crossing falls on, counted from 1 — the
     /// same index a drive compares its own loop position against.
@@ -2765,19 +2841,19 @@ impl ResourceVector {
     /// (false), but an *opponent's* life/library going negative is the drain/mill win
     /// (progress).
     pub(crate) fn net_progress_for(&self, controller: PlayerId) -> bool {
-        // CR 106.1: a loop that net-spends mana across the whole pool is not
-        // sustainable. Mana is not attributed per player in the summed `mana`
-        // array, so any net-negative color is a controller-side deficit.
-        if self.mana.iter().any(|&n| n < 0) {
-            return false;
-        }
-        // CR 119: the controller losing life across the cycle is unsustainable.
-        for (pid, &n) in &self.life {
-            if *pid == controller && n < 0 {
-                return false;
-            }
-        }
-        !self.unbounded_axes_for(controller).is_empty()
+        self.progress_for(controller) && !self.life_falls_for(controller)
+    }
+
+    /// CR 106.1 + CR 732.2a: no color of mana falls and at least one axis grows without bound.
+    /// Mana is not attributed per player in the summed `mana` array, so any net-negative color
+    /// is a controller-side deficit.
+    pub(crate) fn progress_for(&self, controller: PlayerId) -> bool {
+        self.mana.iter().all(|&n| n >= 0) && !self.unbounded_axes_for(controller).is_empty()
+    }
+
+    /// CR 119.3: `controller`'s own life falls across the cycle.
+    pub(crate) fn life_falls_for(&self, controller: PlayerId) -> bool {
+        self.life.get(&controller).is_some_and(|&n| n < 0)
     }
 
     /// CR 732.2a + CR 704.5a: the unbounded axes of this delta with the
@@ -11994,6 +12070,7 @@ mod tests {
         let per_cycle = certificate
             .per_cycle
             .as_ref()
+            .and_then(crate::analysis::resource::PeriodSignature::every_repetition)
             .expect("a bounded offer publishes the per-period signature its bound was divided by");
 
         assert!(
@@ -19162,10 +19239,11 @@ mod tests {
         // The ACTUAL wire payload: the `WaitingFor` variant that carries it.
         let cert = LoopCertificate {
             unbounded: vec![],
-            win_kind: WinKind::LethalDamage,
+            win_kind: Some(WinKind::LethalDamage),
+            win_kind_at: None,
             mandatory: false,
             residual_board_delta: BoardDelta::default(),
-            per_cycle: Some(populated),
+            per_cycle: Some(PeriodSignature::EveryRepetition(populated.clone())),
         };
         let offer = WaitingFor::LoopShortcut {
             proposer: PlayerId(0),
@@ -19202,6 +19280,27 @@ mod tests {
             !shipped_json.contains("per_cycle"),
             "an offer stating no per-period signature must be byte-identical to BASE; got \
              {shipped_json}"
+        );
+
+        // CR 732.2a: a signature's scope rides beside the period's own fields, named only for
+        // one repetition, so a signature saved before the scope reads as every repetition's.
+        let period_json = serde_json::to_value(&populated).expect("serializes");
+        let every = PeriodSignature::EveryRepetition(populated.clone());
+        assert_eq!(
+            serde_json::to_value(&every).expect("serializes"),
+            period_json
+        );
+        assert_eq!(
+            serde_json::from_value::<PeriodSignature>(period_json.clone()).expect("decodes"),
+            every
+        );
+        let one = PeriodSignature::OneRepetition(populated);
+        let one_json = serde_json::to_value(&one).expect("serializes");
+        assert_eq!(one_json["scope"], "OneRepetition");
+        assert_eq!(one_json["delta"], period_json["delta"]);
+        assert_eq!(
+            serde_json::from_value::<PeriodSignature>(one_json).expect("decodes"),
+            one
         );
     }
 
@@ -19322,16 +19421,17 @@ mod tests {
             predicted_winner: Some(PlayerId(0)),
             count: IterationCount::UntilLethal,
             unbounded: vec![],
-            win_kind: WinKind::LethalDamage,
+            win_kind: Some(WinKind::LethalDamage),
+            win_kind_at: None,
             template: None,
-            per_cycle: Some(PeriodicDelta {
+            per_cycle: Some(PeriodSignature::EveryRepetition(PeriodicDelta {
                 frames_per_period: 2,
                 delta,
                 victim_slot: vec![],
                 declarable_victims: vec![],
                 seat_life_charge: vec![],
                 cleanup: None,
-            }),
+            })),
             shortened_by: None,
             published_declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
