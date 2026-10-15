@@ -2864,7 +2864,7 @@ impl ResourceVector {
     /// `unbounded_components` only reports positive life (lifegain), so a pure
     /// drain loop would otherwise name no axis. Single authority shared by Engine
     /// A and Engine B.
-    pub(crate) fn unbounded_axes_for(&self, controller: PlayerId) -> Vec<ResourceAxis> {
+    pub fn unbounded_axes_for(&self, controller: PlayerId) -> Vec<ResourceAxis> {
         let mut out: Vec<ResourceAxis> = self
             .unbounded_components()
             .into_iter()
