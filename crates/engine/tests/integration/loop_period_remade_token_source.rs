@@ -692,7 +692,8 @@ fn the_bats_capture_sacrificing_its_newest_treasure_is_offered_a_bounded_shortcu
 }
 
 /// CR 111.7: with the Devil's damage aimed at an opponent nothing makes a Treasure, so each
-/// cycle spends one of the stock and no shortcut is offered.
+/// cycle sacrifices by hand a Treasure the next cycle's replay no longer finds, and every span
+/// is refused (phase-rs/phase#9928).
 #[test]
 fn a_treasure_stock_spent_without_remaking_is_not_offered() {
     let (board, _) = bats_capture();

@@ -6389,69 +6389,79 @@ fn a_period_costing_life_is_counted_until_a_floor_holds_the_life_total() {
 /// Add {R}.") beside Sinister Monolith ("At the beginning of combat on your turn, each opponent
 /// loses 1 life and you gain 1 life."). Each Ogre activation after the first inside a main phase
 /// is a period of its own, offered at the payments P0's life leaves; the carried combat span,
-/// whose hand activations the replay would make in a later step, is never offered.
+/// whose hand activations the replay would make in a later step, is never offered. Without the
+/// Monolith nothing returns life and nothing is carried.
 #[test]
 fn a_period_fed_by_an_each_opponent_drain_is_offered_inside_its_step() {
     let db = shared_card_db().expect("card db");
-    let board = AssaultBoard {
-        others: &["Treasonous Ogre", "Sinister Monolith"],
-        attacker: "Spined Wurm",
-        aura: None,
-        mountains: 0,
-        treasures: 0,
-    };
-    for mode in BOTH_MODES {
-        let (mut runner, mut drive) =
-            assault_board(board, Phase::PreCombatMain, AssaultPay::Hand, mode, db);
-        runner.state_mut().players[0].life = 80;
-        let state = runner.state();
-        let ogre = state
-            .battlefield
-            .iter()
-            .copied()
-            .find(|id| state.objects[id].name == "Treasonous Ogre")
-            .expect("the Ogre");
-        let mut offers = Vec::new();
-        for _ in 0..4000 {
+    let boards = [
+        (&["Treasonous Ogre", "Sinister Monolith"][..], true),
+        (&["Treasonous Ogre"][..], false),
+    ];
+    for (others, carries) in boards {
+        let board = AssaultBoard {
+            others,
+            attacker: "Spined Wurm",
+            aura: None,
+            mountains: 0,
+            treasures: 0,
+        };
+        for mode in BOTH_MODES {
+            let case = format!("{others:?}, {mode:?}");
+            let (mut runner, mut drive) =
+                assault_board(board, Phase::PreCombatMain, AssaultPay::Hand, mode, db);
+            runner.state_mut().players[0].life = 80;
             let state = runner.state();
-            if state.active_player != P0 || game_over(state) {
-                break;
+            let ogre = state
+                .battlefield
+                .iter()
+                .copied()
+                .find(|id| state.objects[id].name == "Treasonous Ogre")
+                .expect("the Ogre");
+            let (mut offers, mut most_carried) = (Vec::new(), 0);
+            for _ in 0..4000 {
+                let state = runner.state();
+                if state.active_player != P0 || game_over(state) {
+                    break;
+                }
+                most_carried = most_carried.max(carried(state).len());
+                if let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for {
+                    assert_eq!(
+                        play_trace_view(state)
+                            .and_then(|view| view.offered)
+                            .map(|span| span.source),
+                        Some(SpanSource::Window),
+                        "{case}"
+                    );
+                    let life = i64::from(state.players[0].life);
+                    offers.push((life, schema.deliverable_capacity));
+                    act(&mut runner, GameAction::DeclineShortcut);
+                    continue;
+                }
+                if assault_window(state)
+                    && drive.activated_at != Some(combats_begun(state))
+                    && state.players[0].mana_pool.total() < ASSAULT_COST
+                    && state.players[0].life > 3
+                {
+                    let ability_index = ability(state, ogre, true);
+                    act(
+                        &mut runner,
+                        GameAction::ActivateAbility {
+                            source_id: ogre,
+                            ability_index,
+                        },
+                    );
+                } else {
+                    assault_step(&mut runner, &mut drive);
+                }
             }
-            if let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for {
-                assert_eq!(
-                    play_trace_view(state)
-                        .and_then(|view| view.offered)
-                        .map(|span| span.source),
-                    Some(SpanSource::Window),
-                    "{mode:?}"
-                );
-                let life = i64::from(state.players[0].life);
-                offers.push((life, schema.deliverable_capacity));
-                act(&mut runner, GameAction::DeclineShortcut);
-                continue;
+            assert!(drive.activations >= 2, "reach: {case} activates twice");
+            assert_eq!(most_carried > 0, carries, "{case} carries {most_carried}");
+            assert!(!offers.is_empty(), "{case}");
+            for (life, count) in offers {
+                // CR 119.4: three life is paid while three is left.
+                assert_eq!(i64::from(count), (life / 3).min(25), "{case} at {life}");
             }
-            if assault_window(state)
-                && drive.activated_at != Some(combats_begun(state))
-                && state.players[0].mana_pool.total() < ASSAULT_COST
-                && state.players[0].life > 3
-            {
-                let ability_index = ability(state, ogre, true);
-                act(
-                    &mut runner,
-                    GameAction::ActivateAbility {
-                        source_id: ogre,
-                        ability_index,
-                    },
-                );
-            } else {
-                assault_step(&mut runner, &mut drive);
-            }
-        }
-        assert!(drive.activations >= 2, "reach: {mode:?} activates twice");
-        assert!(!offers.is_empty(), "{mode:?}");
-        for (life, count) in offers {
-            // CR 119.4: three life is paid while three is left.
-            assert_eq!(i64::from(count), (life / 3).min(25), "{mode:?} at {life}");
         }
     }
 }

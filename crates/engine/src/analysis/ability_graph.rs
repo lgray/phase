@@ -1540,7 +1540,7 @@ fn collect_effects_in_effect<'a>(
 
 /// Whether every collected `Effect`/cost of a node projected to a modeled
 /// `ResourceVector`, or at least one folded to [`Projection::Unmodeled`]. A typed
-/// flag replacing a raw `bool` (CLAUDE.md "no raw bool" / R2) — self-documenting and extensible to
+/// flag — self-documenting and extensible to
 /// finer-grained confidence levels without touching call sites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelCompleteness {
