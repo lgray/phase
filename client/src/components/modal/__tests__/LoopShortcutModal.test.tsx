@@ -723,7 +723,7 @@ describe("LoopShortcutModal", () => {
     );
     render(<DeclareShortcutModal />);
     expect(screen.getByText("Repeat at most 2 times.")).toBeInTheDocument();
-    expect(screen.queryByText(/^This loop/)).toBeNull();
+    expect(screen.queryByText(/^This loop|comboShortcut\.winKind/)).toBeNull();
 
     cleanup();
     seed(

@@ -165,8 +165,9 @@ pub(crate) struct Confirmation {
     /// The printed identity of each triggered ability the first replayed cycle resolved, in order.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) performed: Vec<String>,
-    /// CR 704.5a + CR 732.2a: a loss period's bounded offer, as the threshold authority measured
-    /// it on the replayed frames; `None` on the unbounded road.
+    /// CR 732.2a: the offer at its stated count — a loss period's as the threshold authority
+    /// measured it on the replayed frames (CR 704.5a), or a spend period's as the counting replay
+    /// performed it; `None` on the unbounded road.
     pub(crate) bounded: Option<BoundedOfferParts>,
 }
 

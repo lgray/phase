@@ -7433,7 +7433,8 @@ fn try_offer_object_growth_shortcut(
         let confirmation = super::period_confirm::confirm(state, span).ok()?;
         Some((span, confirmation))
     })?;
-    // CR 704.5a + CR 732.2a: a loss period is offered at the threshold authority's count.
+    // CR 732.2a: a period is offered at its stated count — the threshold authority's for a loss
+    // period (CR 704.5a), the counting replay's for a spend.
     if let Some((certificate, schema, declaration)) = confirmation.bounded {
         super::play_trace::note_offered(state, span);
         return Some((certificate, schema, confirmation.period, declaration));
