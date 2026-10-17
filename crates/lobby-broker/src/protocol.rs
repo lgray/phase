@@ -60,15 +60,19 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 145 — `ConfirmedPeriod` gains `performance` and `counted_by` (`CountedBy::Replay { departures }`, CR
+/// 146 — `ConfirmedPeriod` gains `performance` and `counted_by` (`CountedBy::Replay { departures }`, CR
 ///      732.2a: the offer's count is the repetitions the counting replay performed,
 ///      with the seats that left in each) and `PredictedDeparture` serializes inside
 ///      it, carried in `WaitingFor::LoopShortcut` and `ShortcutProposal`; their
 ///      `per_cycle` signature may carry `"scope": "OneRepetition"`, and their
-///      `win_kind` becomes optional beside a new optional `win_kind_at`. A v144
+///      `win_kind` becomes optional beside a new optional `win_kind_at`. A v145
 ///      peer drops the field and would take such an offer as the threshold
-///      authority's. Full-game peers and P2P move in lockstep (wire 127); no lobby
+///      authority's. Full-game peers and P2P move in lockstep (wire 128); no lobby
 ///      carrier names it.
+/// 145 — `ParentTargetMissingReason` gains `SearchLibrary` (CR 701.23b),
+///      serialized on `ResolvedAbility.parent_target_missing_reason`; a v144
+///      peer cannot parse the tag. P2P moves in lockstep (wire 127); lobby
+///      messages unchanged.
 ///
 /// 144 — One-time boons (#7495) add serialized `GameState` tags, and the
 ///      perpetual P/T edit is retyped. `Effect::CreateBoon` (with its granted
@@ -1098,7 +1102,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 145;
+pub const PROTOCOL_VERSION: u32 = 146;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
