@@ -3085,9 +3085,18 @@ fn certified_bounded_cycle_offer<'a>(
         // disjunct instead of discarding it. Semantics are byte-for-byte the `||` it
         // replaces: the equality arm is still evaluated first and `_pinned` still runs only
         // when it fails. The two disjuncts are mutually exclusive — equality compares the
-        // stack exactly (constant depth) while cover's item (2) forces strictly growing depth
-        // — so "which disjunct" is a total function with no both-matched case.
-        let cert = if crate::analysis::resource::loop_states_equal_modulo_resources(prior, state) {
+        // stack exactly but for the published answers (constant depth) while cover's item (2)
+        // forces strictly growing depth — so "which disjunct" is a total function with no
+        // both-matched case. Equality leaves the published answers out because they are the
+        // declaration's per-repetition choices, not part of what repeats (CR 732.2a), which is
+        // what lets the minimal period certify under an alternating answer history.
+        let cert = if crate::analysis::resource::loop_states_equal_modulo_published_answers(
+            prior,
+            ring_live[idx],
+            state,
+            proposer,
+            &slots,
+        ) {
             Some(PeriodCertification::BoardEqualOnly)
         } else if crate::analysis::resource::loop_states_cover_modulo_growth_pinned(
             prior,
@@ -3418,21 +3427,21 @@ fn bounded_offer_tail(
     // so the bound cannot be divided by anything other than what the certificate states.
     periodic.seat_life_charge = frame_wise.seat_life_charges(&charged);
     // (7b) THE DECLARATION, BEFORE THE SCHEMA. The cascade below is DECLARATION-RELATIVE, so the
-    // pins have to exist before there is a count to publish. `pin_journalled_declaration` reads
-    // the journal alone and stamps nothing, which is exactly what makes taking it here
-    // non-circular: the publisher's own count is stamped onto it at step (10), after this
-    // producer has decided what that count is.
-    let pins = pin_journalled_declaration(state, proposer, &points);
+    // pins have to exist before there is a count to publish. `pin_journalled_declaration` pins
+    // each charged slot to its observed aim and every other point from the journal, and stamps
+    // nothing, which is exactly what makes taking it here non-circular: the declaration's own
+    // count is stamped onto it at step (10), after this producer has decided what that count is.
+    let pins = pin_journalled_declaration(state, proposer, &points, &charged);
 
     // (7c) THE CASCADE, TAKEN TWICE — once under the offer's OWN declaration and once under a
     // WITNESS, because CR 732.2a's two questions are not one question.
     //
-    // The SUGGESTION must be a count the offer's own published declaration can drive: the declare
-    // handler resolves `template: None` to exactly that declaration, and the AI's own candidate
-    // carries it, so publishing a suggestion it cannot drive would have the engine refuse its own
-    // offer. The CEILING answers CR 732.2a's "may be legally taken", which quantifies
-    // EXISTENTIALLY — what SOME legal declaration may specify. Those are different numbers and
-    // the schema carries two fields for them.
+    // The OWN count is what the offer's published declaration (the observation) drives, and it
+    // is stamped onto that declaration. The SUGGESTION is a count its suggested declaration
+    // drives (the count roles are stated on `ShortcutDecisionSchema::suggested_declaration`).
+    // The CEILING answers CR 732.2a's "may be legally taken", which quantifies EXISTENTIALLY —
+    // what SOME legal declaration may specify. Those are different numbers and the schema
+    // carries separate fields for them.
     //
     // The charge is `PeriodicDelta::declared_seat_life_charges`' and NOT the published divisor.
     // The divisor charges every reachable seat its full magnitude in every repetition, so a
@@ -3457,11 +3466,11 @@ fn bounded_offer_tail(
     // asks: what SOME conforming declaration may take from a seat. An over-charge there only
     // LOWERS a published count, which is the direction a ceiling must fail in.
     //
-    // And both with no announced lead, where the consumption seam reads each charged slot's lead
-    // off the board the drive starts from. The own declaration pins one aim at every index, where
-    // a lead changes nothing; the witness read without one reaches each later segment no later
-    // than a drive does, so its crossings land no later than a drive's and the ceiling it backs is
-    // no higher.
+    // And both with this board's own lead, the same one the declare and consumption seams read:
+    // a trigger already on the stack resolves the target it latched at the first repetition
+    // (CR 603.3d + CR 601.2c), which under an alternating answer history is not the observed aim.
+    let leading = leading_announcement_aims(state, proposer);
+    let lead = crate::analysis::resource::AnnouncedLead::LeadingRepetition(&leading);
     let own = periodic
         .elimination_cascade(
             state,
@@ -3470,25 +3479,27 @@ fn bounded_offer_tail(
             pins.as_ref(),
             &points,
             crate::analysis::resource::ChargeBound::Ceiling,
-            crate::analysis::resource::AnnouncedLead::None,
+            lead,
         )
         .map(|cascade| truncate_to_declared_seats(cascade, pins.as_ref(), state))
         .filter(|cascade| cascade.count >= 1)
         .ok_or(BoundedOfferRefusal::NoNarrowedLegalCount)?;
     // The witness needs a published declaration to re-aim and a charged slot to re-aim; without
-    // either it is `None` and the ceiling degenerates to the suggestion — today's shape.
-    let witness_bound = pins
+    // either it is `None` and the ceiling degenerates to the own count.
+    let witness = pins
         .as_ref()
-        .and_then(|observed| periodic.piecewise_witness(state, proposer, observed, &points))
+        .and_then(|observed| periodic.piecewise_witness(state, proposer, observed, &points, lead));
+    let witness_bound = witness
+        .as_ref()
         .and_then(|witness| {
             periodic.elimination_cascade(
                 state,
                 proposer,
-                Some(&witness),
+                Some(witness),
                 pins.as_ref(),
                 &points,
                 crate::analysis::resource::ChargeBound::Ceiling,
-                crate::analysis::resource::AnnouncedLead::None,
+                lead,
             )
         })
         .map_or(0, |cascade| cascade.count);
@@ -3526,22 +3537,25 @@ fn bounded_offer_tail(
     // hands the constructor `Some(..)` and `schema.is_bounded()` is true by construction for every
     // offer it mints.
     //
-    // `Fixed(own.count)` is the SUGGESTION — the count the offer's own published declaration
-    // drives. `Some(measured_bound)` is the CEILING the declare handler enforces, which rejects
-    // any `Fixed(n)` above it and rejects `UntilLethal` outright, both already shipped. Either
-    // number handed here may EXCEED the engine's repetition budget, since nothing above clamps
-    // them; the constructor is the single site that applies that budget, and it narrows the
-    // suggestion to the capacity it derives, so `deliverable_capacity >= iteration_count` survives
-    // the clamp. The points go in as the frame source built them: the ring's from its certified
-    // touch, the replay's from the choices its confirmed cycle recorded.
-    let schema = build_shortcut_schema(
+    // `Fixed(measured_bound)` is handed in as the SUGGESTION, the witness's count when the witness
+    // wins, and step (11) lowers it to the own count when no witness is published.
+    // `Some(measured_bound)` is the CEILING the declare handler enforces, which rejects any
+    // `Fixed(n)` above it and rejects `UntilLethal` outright, both already shipped. Either number
+    // handed here may EXCEED the engine's repetition budget, since nothing above clamps them; the
+    // constructor is the single site that applies that budget, and it narrows the suggestion to
+    // the capacity it derives, so `deliverable_capacity >= iteration_count` survives the clamp.
+    // The own count is clamped to that capacity too, so the budget bounds every published count.
+    // The points go in as the frame source built them: the ring's from its certified touch, the
+    // replay's from the choices its confirmed cycle recorded.
+    let mut schema = build_shortcut_schema(
         points,
-        IterationCount::Fixed(own.count),
+        IterationCount::Fixed(measured_bound),
         Some(measured_bound),
     );
-    // (10) The DECLARATION the engine can already specify for this offer, read out of the same
-    // journal step (7b) read and now STAMPED with the published suggestion and VALIDATED against
-    // the schema that publishes it. Taken again here rather than carried from (7b) because
+    let own_count = IterationCount::Fixed(own.count.min(schema.deliverable_capacity));
+    // (10) The DECLARATION the engine can already specify for this offer, pinned as step (7b)
+    // pinned it and now STAMPED with its own count and VALIDATED at that count against the
+    // schema that publishes it. Taken again here rather than carried from (7b) because
     // publication is the half that needs a schema, and the journal read is deterministic: this
     // returns `Some` over exactly the pins (7b) charged, or `None` where the publisher's own gate
     // refuses them — the latent arm this function's doc already scopes.
@@ -3551,7 +3565,55 @@ fn bounded_offer_tail(
         &schema,
         certificate.per_cycle.as_ref(),
         recorded,
+        &charged,
+        &own_count,
     );
+    // (11) The SUGGESTION: the witness, stamped and validated at `iteration_count`, published only
+    // where it drives further than the declaration's own count and conforms there.
+    let suggestion = witness
+        .filter(|_| witness_bound > own.count)
+        .zip(declaration.as_ref())
+        .and_then(|(mut witness, published)| {
+            witness.replay = crate::analysis::decision_template::ReplayMode::Scheduled {
+                count: schema.iteration_count.clone(),
+            };
+            crate::analysis::decision_template::declaration_conforms(
+                &schema,
+                &witness,
+                shortcut_validated_range(&schema.iteration_count, Some(&witness)),
+                crate::analysis::decision_template::AimContext {
+                    proposer,
+                    per_cycle: certificate.per_cycle.as_ref(),
+                    published: Some(published),
+                },
+                recorded,
+                state,
+            )
+            .then_some(witness)
+        });
+    match suggestion {
+        Some(witness) => schema.suggested_declaration = Some(witness),
+        None => schema.iteration_count = own_count,
+    }
+    // The interaction layer reads no `GameState`, so the lead it splits a preview by is
+    // snapshotted here, on the published points only.
+    schema.leading_aims = leading
+        .iter()
+        .filter_map(|decision| {
+            use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget};
+            let ConcreteDecision::Targets { slot, targets } = decision else {
+                return None;
+            };
+            let [ConcreteTarget::Player(seat)] = targets.as_slice() else {
+                return None;
+            };
+            schema
+                .points
+                .iter()
+                .any(|point| point.slot == *slot)
+                .then(|| (slot.clone(), *seat))
+        })
+        .collect();
     Ok((certificate, schema, declaration))
 }
 
@@ -3561,7 +3623,7 @@ fn bounded_offer_tail(
 /// `build_bounded_declaration` pins a single-seat ranking. Once that seat departs the pin no longer
 /// names a living seat, `PeriodicDelta::declared_seat_life_charges` reads it as unknown and
 /// fail-closed ("both lands and leaves"), and an unguarded cascade would keep charging every other
-/// seat the reserved dip and publish a SUGGESTION that declaration cannot drive.
+/// seat the reserved dip and publish an own count that declaration cannot drive.
 ///
 /// INCLUSIVE, and that is a decision rather than an off-by-one: the entry meeting the pins is the
 /// one the pinned seat departs on, which the declaration DOES drive. Dropping it publishes the
@@ -3639,21 +3701,23 @@ fn truncate_to_declared_seats(
 /// # PUBLISHED IS VALIDATED — `is_some()` means "the declare handler will take this"
 ///
 /// `ai_support::candidates` gates its `DeclareShortcut` candidate on `declaration.is_some()`
-/// and hands this very template to `handle_declare_shortcut`, which validates it. So the
+/// and, where the offer publishes no suggested declaration, hands this very template to
+/// `handle_declare_shortcut`, which validates it. So the
 /// publisher must not be able to emit anything that handler would refuse: step (5) runs the
 /// SHARED [`crate::analysis::decision_template::declaration_conforms`] — the same coverage +
 /// value-legality predicate that handler and the human ingress run — rather than a third
 /// derivation of `required` alongside theirs.
 ///
-/// The range is `shortcut_validated_range(&schema.iteration_count, ..)`, i.e. this offer's own
-/// SUGGESTION. Since the suggestion and the ceiling became separate fields that is NOT the widest
-/// count a declarer may name — `deliverable_capacity` is, and it can be larger. `validate_pins`
-/// re-checks `0..range`, so passing here implies passing at every shorter `Fixed(n)`; what makes
-/// the narrower range sound above the suggestion is that `handle_declare_shortcut` re-validates
-/// through the same authority at the count actually named.
+/// The range is `shortcut_validated_range(own_count, ..)`, i.e. this declaration's OWN count,
+/// which bounds every count it drives; `iteration_count` belongs to the suggestion (see
+/// `ShortcutDecisionSchema::suggested_declaration`). That is NOT the widest count a declarer may
+/// name — `deliverable_capacity` is, and it can be larger. `validate_pins` re-checks `0..range`,
+/// so passing here implies passing at every shorter `Fixed(n)`; what makes the narrower range
+/// sound above it is that `handle_declare_shortcut` re-validates through the same authority at
+/// the count actually named.
 ///
-/// The published declaration satisfies the AIM conjunct at the published count BY CONSTRUCTION:
-/// `truncate_to_declared_seats` cuts the suggestion at the repetition this declaration's own aim
+/// The published declaration satisfies the AIM conjunct at its own count BY CONSTRUCTION:
+/// `truncate_to_declared_seats` cuts the own count at the repetition this declaration's own aim
 /// departs on, so no repetition inside it aims past a crossing. That is a statement about this
 /// declaration at this count, and about no other declaration at the same count.
 ///
@@ -3685,24 +3749,27 @@ fn build_bounded_declaration(
     schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
     per_cycle: Option<&crate::analysis::resource::PeriodSignature>,
     recorded: Option<&[crate::analysis::decision_template::PinnedDecision]>,
+    observed_aims: &[crate::analysis::resource::SlotCharge],
+    own_count: &crate::analysis::decision_template::IterationCount,
 ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
     use crate::analysis::decision_template::ReplayMode;
-    let mut template = pin_journalled_declaration(state, proposer, &schema.points)?;
-    // (4) The published SUGGESTION is stamped here, by the step that knows it, rather than inside
-    // the pinning authority above: the count is the producer's answer and the pins are the
-    // journal's, and nothing reads this copy (see `analysis::decision_template::resolve`'s doc).
+    let mut template = pin_journalled_declaration(state, proposer, &schema.points, observed_aims)?;
+    // (4) The declaration's OWN count is stamped here, by the step that knows it, rather than
+    // inside the pinning authority above: the count is the producer's answer and the pins are the
+    // observation's, and nothing reads this copy (see `analysis::decision_template::resolve`'s
+    // doc).
     template.replay = ReplayMode::Scheduled {
-        count: schema.iteration_count.clone(),
+        count: own_count.clone(),
     };
     // (5) VALIDATE BEFORE PUBLISHING — the same authority `handle_declare_shortcut` accepts
     // under. See this function's "Published is validated" doc section for why the range is the
-    // schema's OWN count and why this is not a third derivation.
+    // declaration's OWN count and why this is not a third derivation.
     // `published` is the template under validation: at this seam the declaration the offer is
     // about to publish and the declaration the aim walk measures against ARE the same one.
     crate::analysis::decision_template::declaration_conforms(
         schema,
         &template,
-        shortcut_validated_range(&schema.iteration_count, Some(&template)),
+        shortcut_validated_range(own_count, Some(&template)),
         crate::analysis::decision_template::AimContext {
             proposer,
             per_cycle,
@@ -3714,13 +3781,16 @@ fn build_bounded_declaration(
     .then_some(template)
 }
 
-/// CR 732.2a: the PINS the offer's own declaration carries — the proposer's answer at each
-/// published point, read out of the same journal the detection window populated, and nothing
-/// else.
+/// CR 732.2a: the PINS the offer's own declaration carries — at a charged slot, the seat its
+/// announcement that resolved in the certified window aimed at (`SlotCharge::aimed_at`, the aim
+/// whose loss the period measured; `None` there withdraws the whole template), and at every other
+/// published point the proposer's answer, read out of the same journal the detection window
+/// populated.
 ///
 /// Split from the publish gate above because the two halves are settled by different things. The
-/// pins are settled by the published `points` alone; the count stamped onto the template is the
-/// producer's own published suggestion, which is not a fact about what the proposer answered.
+/// pins are settled by the published `points` and the observation alone; the count stamped onto
+/// the template is the declaration's own count, which is not a fact about what the proposer
+/// answered.
 /// Keeping them apart is what lets a caller take the declaration BEFORE a schema exists to stamp
 /// from, with no second declaration authority and no circularity.
 ///
@@ -3731,6 +3801,7 @@ fn pin_journalled_declaration(
     state: &GameState,
     proposer: PlayerId,
     points: &[crate::analysis::decision_template::DecisionPoint],
+    observed_aims: &[crate::analysis::resource::SlotCharge],
 ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
     use crate::analysis::decision_template::{
         DecisionGroupKey, DecisionKind, DecisionPointKind, DecisionTemplate, LoopAnswer,
@@ -3742,10 +3813,26 @@ fn pin_journalled_declaration(
     }
     let mut decisions = Vec::with_capacity(points.len());
     for point in points {
-        // (2) The journal read, under the PROPOSER's own key — the same key
-        // `record_trigger_target_answer` and the `DecideOptionalEffect` arm write under.
-        let LoopAnswer::Uniform(value) = state.loop_answer(&point.slot, proposer)? else {
-            return None;
+        // (2) A charged slot's observed aim, else the journal read, under the PROPOSER's own key —
+        // the same key `record_trigger_target_answer` and the `DecideOptionalEffect` arm write
+        // under.
+        let observed = observed_aims
+            .iter()
+            .find(|charge| charge.slot == point.slot)
+            .map(|charge| {
+                charge.aimed_at.and_then(|seat| {
+                    announced_target_pins(state, &[TargetRef::Player(seat)])
+                        .map(LoopAnswerValue::Targets)
+                })
+            });
+        let value = match observed {
+            Some(value) => value?,
+            None => {
+                let LoopAnswer::Uniform(value) = state.loop_answer(&point.slot, proposer)? else {
+                    return None;
+                };
+                value
+            }
         };
         // (3) The wildcard-free (kind, value) match.
         decisions.push(match (&point.kind, value) {
@@ -3783,7 +3870,7 @@ fn pin_journalled_declaration(
         });
     }
     // (4) The template. `ReplayMode::Static` is the UNSTAMPED shape: the driving count comes off
-    // `GameAction::DeclareShortcut`, and the publisher above stamps the offer's own suggestion
+    // `GameAction::DeclareShortcut`, and the publisher above stamps the declaration's own count
     // onto this copy, which nothing reads.
     Some(DecisionTemplate {
         owner: proposer,
@@ -4175,6 +4262,40 @@ pub(crate) fn entry_publishes_pin_slots(
         may: announced.may,
         legal_targets,
     })
+}
+
+/// CR 603.3d + CR 601.2c: the targets each announced target slot whose trigger already sits on
+/// `state`'s stack latched when it was put there — the aim that slot resolves at a drive's first repetition
+/// ([`crate::analysis::resource::AnnouncedLead`]). The single lead authority the offer, declare
+/// and consumption seams read off the board each asks about, through the same acceptance
+/// authority ([`entry_announces`]) the charged slots are minted by.
+pub(crate) fn leading_announcement_aims(
+    state: &GameState,
+    proposer: PlayerId,
+) -> Vec<crate::analysis::decision_template::ConcreteDecision> {
+    use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget};
+    let touch = crate::analysis::resource::certified_period_touch(
+        &[],
+        state,
+        crate::analysis::resource::PeriodCertification::ResourceSignatureOnly,
+    );
+    touch
+        .announced
+        .iter()
+        .filter_map(|(frame, entry)| {
+            let slot = entry_announces(frame, entry, proposer)?.target?.slot;
+            let targets = entry
+                .ability()?
+                .targets
+                .iter()
+                .map(|t| match t {
+                    TargetRef::Player(p) => ConcreteTarget::Player(*p),
+                    TargetRef::Object(o) => ConcreteTarget::Object(*o),
+                })
+                .collect();
+            Some(ConcreteDecision::Targets { slot, targets })
+        })
+        .collect()
 }
 
 /// CR 601.2c + CR 603.5 (reached for a triggered ability via CR 603.3d): what ONE stack
@@ -4651,16 +4772,20 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
 ///
 /// # THE OBSERVED AIM, and when it is withdrawn
 ///
-/// Beside the reach, each charge carries the seat the window observed the announcement NAME
-/// ([`crate::analysis::resource::SlotCharge::aimed_at`], CR 601.2c reached for a triggered
-/// ability via CR 603.3d), read from the announcing entry's own `ability().targets`. It is
-/// `Some(seat)` only when that slice is exactly one `TargetRef::Player` whose seat lies in
-/// THAT frame's projected reach; every other shape — no target, an object target, several
-/// targets, or a seat the frame's own legality authority excludes — yields `None`.
+/// Beside the reach, each charge carries the seat whose loss the period measured
+/// ([`crate::analysis::resource::SlotCharge::aimed_at`]): the target of the slot's announcement
+/// that RESOLVED inside the window ([`crate::analysis::resource::PeriodTouch::resolved`],
+/// CR 608.1, CR 608.2 + CR 119.3), read from that entry's own `ability().targets`. It is NOT
+/// read off the announcements made in the window: under an alternating answer history the
+/// announcement in flight at the window's end names a different seat from the one whose loss
+/// the window measured. It is `Some(seat)` only when that slice is exactly one
+/// `TargetRef::Player` whose seat lies in the charge's reach; every other shape — no target, an
+/// object target, several targets, or a seat outside the reach — yields `None`, and so does a
+/// slot with no resolved announcement in the window, which measured no loss.
 ///
-/// WITHDRAWAL, not first-wins: on a repeated slot the reach unions, and the aim is set to
-/// `None` the moment a later frame's aim differs from the one recorded. "Agree or nothing" is
-/// the fail-closed direction, because an aim can only ever REDUCE a charge.
+/// WITHDRAWAL, not first-wins: the aim is set to `None` the moment a later resolved
+/// announcement of the same slot names a different seat. "Agree or nothing" is the fail-closed
+/// direction, because an aim can only ever REDUCE a charge.
 ///
 /// # THE UPSTREAM INVARIANT the reach-scoped operator depends on
 ///
@@ -4729,34 +4854,48 @@ pub(crate) fn bounded_cycle_charged_targets_for_window(
             .collect();
         reaches.sort_unstable();
         reaches.dedup();
-        // CR 601.2c (reached for a triggered ability via CR 603.3d): the seat this frame's
-        // announcement actually NAMED, read from the announcing entry rather than re-derived.
-        // The catch-all arm is the fail-CLOSED one: a shape this reader does not understand —
-        // and a seat outside the frame's own legal set, which is no attribution at all — is
-        // `None` rather than a guess.
-        let aimed_at = match entry.ability().map(|ability| ability.targets.as_slice()) {
-            Some([TargetRef::Player(seat)]) if reaches.contains(seat) => Some(*seat),
-            _ => None,
-        };
-        // UNION the reach, WITHDRAW a disagreeing aim. `position` (not `iter_mut().find`) so
-        // the immutable probe's borrow ends before the `None` arm pushes.
+        // UNION the reach. `position` (not `iter_mut().find`) so the immutable probe's borrow
+        // ends before the `None` arm pushes.
         match charged.iter().position(|charge| charge.slot == target.slot) {
             Some(i) => {
                 let seats = &mut charged[i].reaches;
                 seats.extend(reaches);
                 seats.sort_unstable();
                 seats.dedup();
-                if charged[i].aimed_at != aimed_at {
-                    charged[i].aimed_at = None;
-                }
             }
             None => charged.push(SlotCharge {
                 slot: target.slot,
                 magnitude,
                 reaches,
-                aimed_at,
+                aimed_at: None,
             }),
         }
+    }
+    // CR 608.1 + CR 608.2 + CR 119.3: the aim is read off the announcements that RESOLVED in the
+    // window, agree-or-nothing; a slot none of whose announcements resolved measured no loss.
+    for charge in &mut charged {
+        let mut aim: Option<Option<PlayerId>> = None;
+        for (frame, entry) in &touch.resolved {
+            let Some(target) = entry_announces(frame, entry, proposer).and_then(|a| a.target)
+            else {
+                continue;
+            };
+            if target.slot != charge.slot {
+                continue;
+            }
+            // The catch-all arm is the fail-CLOSED one: a shape this reader does not understand,
+            // or a seat outside the charge's reach, is no attribution at all.
+            let seen = match entry.ability().map(|ability| ability.targets.as_slice()) {
+                Some([TargetRef::Player(seat)]) if charge.reaches.contains(seat) => Some(*seat),
+                _ => None,
+            };
+            aim = Some(match aim {
+                None => seen,
+                Some(prev) if prev == seen => prev,
+                Some(_) => None,
+            });
+        }
+        charge.aimed_at = aim.flatten();
     }
     charged
 }
@@ -4807,6 +4946,8 @@ fn build_shortcut_schema(
         })
         .sum();
     ShortcutDecisionSchema {
+        suggested_declaration: None,
+        leading_aims: Vec::new(),
         iteration_count,
         measured_repetition_bound,
         deliverable_capacity,
@@ -4945,8 +5086,8 @@ fn shortcut_consumption_bound(
     // `consumption_seat_life_charges` keeps its job wherever the divisor is what is wanted.
     let template = proposal.template.as_ref();
     // CR 732.2a: the declaration the offer PUBLISHED stands in the charge authority's `observed`
-    // role — the aim the reserved charge subtracted, and the one a leading charged slot resolves —
-    // while `template` stands in the declaration role. Passed as it stands: both reads below answer
+    // role — the aim the reserved charge subtracted — while `template` stands in the declaration
+    // role. Passed as it stands: both reads below answer
     // an absent one on their refusing side, and standing `template` in for it would put one
     // declaration back into both roles.
     let published = proposal.published_declaration.as_ref();
@@ -4960,21 +5101,10 @@ fn shortcut_consumption_bound(
     // CR 601.2c + CR 603.3d: a charged slot leads only where its trigger was put on the stack, its
     // target chosen, before the shortcut was proposed. The drive answers a target prompt raised
     // inside cycle `i` with the declaration at index `i`, so a slot announced on this pre-drive
-    // stack resolves the published aim at the first repetition, and a slot announced inside the
-    // drive resolves the declaration from it. Which slots lead is read off this board, through
-    // the acceptance authority the charged slots were minted by, over the announcements
-    // `certified_period_touch` seeds from this stack when there is no window.
-    let touch = crate::analysis::resource::certified_period_touch(
-        &[],
-        state,
-        crate::analysis::resource::PeriodCertification::ResourceSignatureOnly,
-    );
-    let announced: Vec<crate::analysis::decision_template::DecisionSlot> = touch
-        .announced
-        .iter()
-        .filter_map(|(frame, entry)| entry_announces(frame, entry, proposal.proposer)?.target)
-        .map(|target| target.slot)
-        .collect();
+    // stack resolves the target its trigger latched at the first repetition, and a slot
+    // announced inside the drive resolves the declaration from it. Which slots lead, and on what,
+    // is read off this board by `leading_announcement_aims`.
+    let announced = leading_announcement_aims(state, proposal.proposer);
     let lead = crate::analysis::resource::AnnouncedLead::LeadingRepetition(&announced);
     // The DRIVABILITY question, so the charge stream is read at `ChargeBound::Ceiling`:
     // `shortcut_count_is_drivable` refuses every count above what this re-derives, and an
@@ -5393,6 +5523,7 @@ fn apply_until_lethal_shortcut(
                         .per_cycle
                         .as_ref()
                         .map(crate::analysis::resource::PeriodSignature::frames_per_period),
+                    DepartureStop::EndsRepetition,
                 ) {
                     CycleOutcome::Recurred { state: s, .. } => running = *s,
                     CycleOutcome::CrossLethal {
@@ -5649,7 +5780,8 @@ enum CycleOutcome {
         winner: Option<PlayerId>,
         events: Vec<GameEvent>,
     },
-    /// CR 800.4a: a seat LEFT THE GAME mid-drive while the game continued ⇒ `state` is the
+    /// CR 800.4a: a seat LEFT THE GAME mid-drive while the game continued, and the caller asked a
+    /// departure to end the repetition ([`DepartureStop::EndsRepetition`]) ⇒ `state` is the
     /// board at the first priority window after the removal, `events` its accumulated events.
     ///
     /// Named for the departure and not for a loss condition: CR 704.3 + CR 117.5 run the
@@ -5664,6 +5796,19 @@ enum CycleOutcome {
     },
     /// Runaway beat cap, an unpinned prompt, or an engine error ⇒ abort to manual play.
     Abort,
+}
+
+/// CR 800.4a: whether a seat leaving the game inside a driven repetition ends that repetition.
+/// A player leaving does not end the game while two or more remain, so a departure inside a
+/// repetition the declared count is followed by is not an ending point: that repetition runs to
+/// its own boundary, and the next starts in phase with the period the count was derived from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepartureStop {
+    /// The departure is the drive's ending point ([`CycleOutcome::SeatLeft`]): an unsigned
+    /// drive, a declared count's final repetition, or a drive to lethal.
+    EndsRepetition,
+    /// The repetition runs to its own boundary and its departure is judged where it recurs.
+    CompletesRepetition,
 }
 
 /// CR 800.4a: how many seats are still in the game. A COUNT, not a set — the drive's
@@ -5743,6 +5888,7 @@ fn drive_one_shortcut_cycle(
     iteration: crate::analysis::decision_template::IterationIndex,
     cycle_beat_cap: usize,
     frames_per_period: Option<u32>,
+    departure: DepartureStop,
 ) -> CycleOutcome {
     let mut work = committed.clone();
     priority::reset_priority(&mut work);
@@ -5784,7 +5930,8 @@ fn drive_one_shortcut_cycle(
             // this return is the first priority window AT OR AFTER the sweep that removed the
             // seat — an ending point reached rather than manufactured.
             //
-            // AHEAD OF BOTH `Priority` arms, and the reason is TOTALITY, not preference. A
+            // Under `DepartureStop::EndsRepetition` this arm sits AHEAD OF BOTH `Priority` arms,
+            // and the reason is TOTALITY, not preference. A
             // removal can be first observed at either beat kind, and both occur. Placed after
             // the active-player settle arm, a removal observed at the active player's own beat
             // would instead be handed to that arm, which re-runs its recurrence check on a
@@ -5796,10 +5943,17 @@ fn drive_one_shortcut_cycle(
             // priority. A departure first observed at a non-priority prompt is answered from
             // the pins as usual and classified at the next priority beat, which is the first
             // LEGAL ending point at or after the removal.
+            //
+            // Under `CompletesRepetition` the departure is not an ending point: this arm stands
+            // aside, the repetition runs to its own boundary in the arms below, and the caller's
+            // `Recurred` arm judges the departure against its predicted cascade and the period
+            // over the seats still in the game.
             Ok(PriorityPassPipelineOutcome {
                 waiting_for: WaitingFor::Priority { .. },
                 ..
-            }) if seats_in_game(&work) < seats_at_entry => {
+            }) if departure == DepartureStop::EndsRepetition
+                && seats_in_game(&work) < seats_at_entry =>
+            {
                 ev.append(&mut beat_events);
                 return CycleOutcome::SeatLeft {
                     state: Box::new(work),
@@ -6505,6 +6659,13 @@ fn materialize_fixed_shortcut(
             i,
             cycle_beat_cap,
             per_cycle.map(crate::analysis::resource::PeriodSignature::frames_per_period),
+            // CR 800.4a: a signed drive's non-final repetition completes past a departure, so
+            // every later repetition stays in phase with the period the count was derived from.
+            if per_cycle.is_none() || i + 1 == n {
+                DepartureStop::EndsRepetition
+            } else {
+                DepartureStop::CompletesRepetition
+            },
         ) {
             CycleOutcome::Recurred {
                 state: s,
@@ -6649,6 +6810,11 @@ fn materialize_fixed_shortcut(
             // read. Deliberately NOT the last committed board — a headroom already spent by
             // earlier cycles would relieve to a REMAINING-cycles figure, while the conjunct
             // below compares against the drive's ABSOLUTE index.
+            //
+            // Reached only where the drive asked a departure to end the repetition: an unsigned
+            // drive, or the declared count's FINAL repetition. A departure inside an earlier
+            // repetition of a signed drive completes that repetition (`DepartureStop`) and is
+            // discriminated in the `Recurred` arm above.
             //
             // NO CONFORMANCE CHECK HERE, and that is the decision rather than an omission.
             // `PeriodicDelta::conforms` protects the REMAINING repetitions of a bound derived
@@ -8052,9 +8218,13 @@ fn handle_declare_shortcut(
         | crate::analysis::decision_template::IterationCount::UntilLethal => {}
     }
     // A `template: None` declaration is not "no pins" — it is "no OVERRIDE of the pins this
-    // offer already published". Resolve it against the offer's own engine-issued declaration so
-    // the manual ingress and `ai_support::candidates` (which reads the identical field) declare
-    // the SAME proposal against the SAME offer. Until this line existed the engine published a
+    // offer already published". Resolve it against the offer's SUGGESTION
+    // (`ShortcutDecisionSchema::suggestion`: the suggested declaration, else the published one) so
+    // the manual ingress and `ai_support::candidates` (which reads the identical accessor) declare
+    // the SAME proposal against the SAME offer. A restored save's suggestion is a client ingress
+    // like its declaration, so it passes the same owner firewall and `declaration_conforms`
+    // below. `proposal.published_declaration` stays the published declaration, the observation
+    // the charge model reads. Until this line existed the engine published a
     // declaration on the offer and then discarded it here, so the AI — which sends
     // `Some(declaration)` — was accepted while the browser, which sends `None`, was refused on
     // one and the same offer. No rules citation is minted here: the block immediately below
@@ -8085,7 +8255,7 @@ fn handle_declare_shortcut(
     // even with a non-empty schema, both non-bounded mints hard-code `declaration: None`, and a
     // restored save may carry `None`. Pinned by
     // `a_template_free_declaration_is_admitted_only_by_the_proposers_own_period`.
-    let template = template.or_else(|| offer.declaration.cloned());
+    let template = template.or_else(|| offer.schema.suggestion(offer.declaration).cloned());
     // CR 732.2a + CR 603.5: the declared template's `owner` is CLIENT-SUPPLIED — the
     // `GameAction::DeclareShortcut { template }` payload arrives here verbatim — and it is
     // the comparand `inject_pinned_answer` uses to decide WHOSE CR 603.5 choice a pin may
@@ -20283,8 +20453,16 @@ mod bounded_declaration_tests {
                 "reach-guard: the CR 603.5 answer must be journalled before the consumer runs"
             );
 
-            let declaration = build_bounded_declaration(&state, PROPOSER, &schema, None, None)
-                .expect("both published points are answered, so the declaration is complete");
+            let declaration = build_bounded_declaration(
+                &state,
+                PROPOSER,
+                &schema,
+                None,
+                None,
+                &[],
+                &schema.iteration_count,
+            )
+            .expect("both published points are answered, so the declaration is complete");
             assert_eq!(
                 declaration.decisions[0],
                 PinnedDecision::MayChoice {
@@ -20374,7 +20552,16 @@ mod bounded_declaration_tests {
             LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(AIMED)])),
         );
         assert!(
-            build_bounded_declaration(&control, PROPOSER, &control_schema, None, None).is_some(),
+            build_bounded_declaration(
+                &control,
+                PROPOSER,
+                &control_schema,
+                None,
+                None,
+                &[],
+                &control_schema.iteration_count
+            )
+            .is_some(),
             "CONTROL: a fully-answered two-kind schema DOES publish a declaration — without this \
              a consumer that refused everything would pass all four cases below"
         );
@@ -20421,7 +20608,16 @@ mod bounded_declaration_tests {
             );
 
             assert!(
-                build_bounded_declaration(&state, PROPOSER, &schema, None, None).is_none(),
+                build_bounded_declaration(
+                    &state,
+                    PROPOSER,
+                    &schema,
+                    None,
+                    None,
+                    &[],
+                    &schema.iteration_count
+                )
+                .is_none(),
                 "CR 732.2a: {kind:?} has no `LoopAnswerValue` shape, so the declaration must \
                  refuse rather than pin a guess or silently drop the point"
             );
@@ -20464,7 +20660,16 @@ mod bounded_declaration_tests {
             "reach-guard: the journal is NON-empty, so the refusal below is the point set's"
         );
         assert!(
-            build_bounded_declaration(&state, PROPOSER, &empty, None, None).is_none(),
+            build_bounded_declaration(
+                &state,
+                PROPOSER,
+                &empty,
+                None,
+                None,
+                &[],
+                &empty.iteration_count
+            )
+            .is_none(),
             "CR 732.2a: an offer that publishes no choice states no declaration"
         );
     }
@@ -20611,7 +20816,16 @@ mod bounded_declaration_tests {
 
             // ── HALF 2: the PUBLISHER's verdict must be the same one ──
             assert_eq!(
-                build_bounded_declaration(&state, PROPOSER, &schema, None, None).is_some(),
+                build_bounded_declaration(
+                    &state,
+                    PROPOSER,
+                    &schema,
+                    None,
+                    None,
+                    &[],
+                    &schema.iteration_count
+                )
+                .is_some(),
                 handler_accepts,
                 "[{label}] CR 732.2a: `declaration.is_some()` is read as 'the declare handler \
                  will accept this'. A template the handler refuses must NOT be published, and a \
@@ -20653,7 +20867,16 @@ mod bounded_declaration_tests {
             ]
         };
         let published = |recorded: Option<&[PinnedDecision]>| {
-            build_bounded_declaration(&state, PROPOSER, &schema, None, recorded).is_some()
+            build_bounded_declaration(
+                &state,
+                PROPOSER,
+                &schema,
+                None,
+                recorded,
+                &[],
+                &schema.iteration_count,
+            )
+            .is_some()
         };
         assert!(
             published(None),
@@ -20969,8 +21192,15 @@ mod stage2_injector_tests {
 
         // `None`: this row is about the injector arm on a board-recurring targeted loop, so
         // it drives under the same no-signature delimiter every pre-bounded offer uses.
-        let outcome =
-            drive_one_shortcut_cycle(&committed, &boundary, Some(&template), 0, cap, None);
+        let outcome = drive_one_shortcut_cycle(
+            &committed,
+            &boundary,
+            Some(&template),
+            0,
+            cap,
+            None,
+            DepartureStop::EndsRepetition,
+        );
         let CycleOutcome::SeatLeft { state, .. } = outcome else {
             panic!(
                 "CR 800.4a: a staggered wipe stops at the FIRST removal, not at the second; \
@@ -21035,8 +21265,15 @@ mod stage2_injector_tests {
         let (committed, boundary, template, cap) = two_drainer_rig();
 
         // (a) REACH-GUARD: the drive really does remove a seat on this rig.
-        let outcome =
-            drive_one_shortcut_cycle(&committed, &boundary, Some(&template), 0, cap, None);
+        let outcome = drive_one_shortcut_cycle(
+            &committed,
+            &boundary,
+            Some(&template),
+            0,
+            cap,
+            None,
+            DepartureStop::EndsRepetition,
+        );
         let CycleOutcome::SeatLeft { state: driven, .. } = outcome else {
             panic!("reach-guard: this rig's drive must remove a seat, or (b) proves nothing");
         };
@@ -21154,9 +21391,15 @@ mod stage2_injector_tests {
         );
 
         // (b) REACH-GUARD: cycle 0 still removes a seat, with survivors.
-        let CycleOutcome::SeatLeft { state: driven, .. } =
-            drive_one_shortcut_cycle(&committed, &boundary, Some(&sched), 0, cap, None)
-        else {
+        let CycleOutcome::SeatLeft { state: driven, .. } = drive_one_shortcut_cycle(
+            &committed,
+            &boundary,
+            Some(&sched),
+            0,
+            cap,
+            None,
+            DepartureStop::EndsRepetition,
+        ) else {
             panic!("reach-guard: the respelled pins must drive the sibling row's removal")
         };
         let gone: Vec<PlayerId> = driven
@@ -21180,7 +21423,15 @@ mod stage2_injector_tests {
 
         // (c) THE DISCRIMINATOR: the cycle the fallback gives up WOULD have crowned. Without
         //     this leg, (d) is satisfied by any drive that merely stops.
-        let follow = drive_one_shortcut_cycle(&driven, &boundary, Some(&sched), 1, cap, None);
+        let follow = drive_one_shortcut_cycle(
+            &driven,
+            &boundary,
+            Some(&sched),
+            1,
+            cap,
+            None,
+            DepartureStop::EndsRepetition,
+        );
         assert!(
             matches!(follow, CycleOutcome::CrossLethal { winner: Some(w), .. } if w == P0),
             "reach-guard: driving on past the removal reaches the crown that (d) says this \

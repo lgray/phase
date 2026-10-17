@@ -6532,6 +6532,8 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
             per_cycle: None,
         },
         schema: ShortcutDecisionSchema {
+            suggested_declaration: None,
+            leading_aims: Vec::new(),
             iteration_count: IterationCount::Fixed(2),
             // This producer measured no CR 704 threshold — `Default` carries the absence and
             // a capacity at the global cap.
@@ -6767,6 +6769,8 @@ fn loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_s
             per_cycle: None,
         },
         schema: ShortcutDecisionSchema {
+            suggested_declaration: None,
+            leading_aims: Vec::new(),
             iteration_count: IterationCount::Fixed(2),
             measured_repetition_bound: None,
             deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
@@ -8096,6 +8100,8 @@ fn stage_sequenced_offer(
             per_cycle: None,
         },
         schema: ShortcutDecisionSchema {
+            suggested_declaration: None,
+            leading_aims: Vec::new(),
             iteration_count,
             // The pair a producer publishes: `None` is an offer that measured nothing, which is
             // what keeps `handle_declare_shortcut`'s `UntilLethal` arm reachable below.

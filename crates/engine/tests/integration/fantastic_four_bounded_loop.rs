@@ -8510,12 +8510,9 @@ fn a_later_segment_aiming_the_preannounced_victim_within_its_headroom_is_admitte
 /// **The reported departure is the one this declaration's own aims produce.** CR 732.2a +
 /// CR 102.1: for a declaration BOTH readings of the charge model refuse, the departure
 /// `AimViolation::AimsAtDepartedSeat` carries is the repetitions this declaration aims ELSEWHERE
-/// before that seat's own segment plus that seat's own published headroom — while the published
-/// ceiling reports the headroom alone, on the same board, for the same declaration.
-///
-/// Read at the authority itself, because both production entries return a `bool` here and the two
-/// readings agree on it: the REASON is the only place they differ, and a repair whose verdict is
-/// right for the wrong reason is what this row refuses.
+/// before that seat's own segment plus that seat's own published headroom. The published ceiling
+/// reports the same departure on this board: the seat's observed loss is wholly the charged
+/// slot's, so the ceiling relieves it for the repetitions aimed elsewhere (CR 119.3).
 ///
 /// # Both sides derived, neither spelled
 ///
@@ -8523,9 +8520,6 @@ fn a_later_segment_aiming_the_preannounced_victim_within_its_headroom_is_admitte
 /// first crossing under the SAME declaration and the SAME published observation, read through the
 /// same public producer at [`ChargeBound::Ceiling`] over the board's own life total. The relation
 /// asserted is the derived one; no count, seat or repetition is written down.
-///
-/// Failing leg: restore `ChargeBound::Ceiling` at the aim conjunct ⇒ the reported departure
-/// collapses onto the ceiling comparand and both equalities below fail.
 #[test]
 fn the_reported_departure_counts_the_repetitions_aimed_elsewhere_first() {
     use engine::analysis::decision_template::{
@@ -8623,15 +8617,9 @@ fn the_reported_departure_counts_the_repetitions_aimed_elsewhere_first() {
          two readings are not being compared on one refusal",
     );
     assert_eq!(
-        ceiling, preannounced,
-        "the ceiling charges this seat at every repetition the declaration aims elsewhere, so it \
-         reports the headroom ALONE; got {ceiling}"
-    );
-    assert!(
-        ceiling < departure,
-        "and the two readings differ on this declaration, which is what makes the departure above \
-         a measurement of the repair rather than of an arithmetic both directions share; \
-         ceiling={ceiling} attributable={departure}"
+        ceiling, departure,
+        "CR 119.3: the seat's observed loss is wholly the charged slot's, so the ceiling relieves \
+         it for the repetitions aimed elsewhere and crosses where the declaration's own aims do"
     );
 }
 
@@ -8957,10 +8945,10 @@ fn an_accept_at_the_capacity_delivers_an_opponent_crossing_and_empties_the_propo
     );
 }
 
-/// **A departure coinciding with the pre-announced seat's ceiling crossing is the
-/// declaration's own.** CR 732.2a + CR 704.5a: on a board where the first segment's seat crosses at
-/// the repetition a charge at every repetition would take the pre-announced seat, the whole count
-/// commits and only the aimed seat leaves.
+/// **A departure coinciding with the pre-announced seat's crossing under a charge at every
+/// repetition is the declaration's own.** CR 732.2a + CR 704.5a: on a board where the first
+/// segment's seat crosses at the repetition a charge at every repetition would take the
+/// pre-announced seat, the whole count commits and only the aimed seat leaves.
 #[test]
 fn a_departure_coinciding_with_the_announced_seats_ceiling_crossing_commits_the_whole_count() {
     let mut unaltered = f4_at_offer();
@@ -9014,6 +9002,18 @@ fn a_departure_coinciding_with_the_announced_seats_ceiling_crossing_commits_the_
 
     f4_declare_allocation(&mut state, &offer, count, &segments);
     let proposal = accepted_proposal(&state).clone();
+    // CR 603.3d + CR 601.2c: the in-flight trigger latched the pre-announced seat.
+    let lead: Vec<engine::analysis::decision_template::ConcreteDecision> = charged
+        .iter()
+        .map(
+            |slot| engine::analysis::decision_template::ConcreteDecision::Targets {
+                slot: slot.clone(),
+                targets: vec![engine::analysis::decision_template::ConcreteTarget::Player(
+                    offer.preannounced,
+                )],
+            },
+        )
+        .collect();
     let announced_crossing = |bound| {
         PeriodicDelta::first_life_crossing(
             per_cycle.declared_seat_life_charges(
@@ -9023,7 +9023,7 @@ fn a_departure_coinciding_with_the_announced_seats_ceiling_crossing_commits_the_
                 &points,
                 &state,
                 bound,
-                AnnouncedLead::LeadingRepetition(&charged),
+                AnnouncedLead::LeadingRepetition(&lead),
             ),
             f4_life(&state, announced),
             count,
@@ -9034,9 +9034,10 @@ fn a_departure_coinciding_with_the_announced_seats_ceiling_crossing_commits_the_
             announced_crossing(ChargeBound::Ceiling),
             announced_crossing(ChargeBound::Attributable)
         ),
-        (Some(crossing), None),
-        "the ceiling direction names the pre-announced seat at that repetition, and the \
-         declaration's own aims never take it"
+        (None, None),
+        "CR 119.3: the seat's observed loss is wholly the charged slot's, so neither direction \
+         charges it for the repetitions the declaration aims elsewhere, and its own aims never \
+         take it"
     );
 
     let losses = f4_accept_window(&mut state);
@@ -9232,6 +9233,14 @@ fn the_drive_template_and_the_published_declaration_are_carried_apart() {
         (vec![first], vec![offer.preannounced]),
         "the two roles name different seats at the charged slot"
     );
+    // CR 603.3d + CR 601.2c: the in-flight trigger latched the pre-announced seat.
+    let lead: Vec<ConcreteDecision> = charged
+        .iter()
+        .map(|slot| ConcreteDecision::Targets {
+            slot: slot.clone(),
+            targets: vec![ConcreteTarget::Player(offer.preannounced)],
+        })
+        .collect();
     let first_crossing = |observed: &DecisionTemplate| {
         PeriodicDelta::first_life_crossing(
             per_cycle.declared_seat_life_charges(
@@ -9241,7 +9250,7 @@ fn the_drive_template_and_the_published_declaration_are_carried_apart() {
                 &points,
                 &state,
                 ChargeBound::Attributable,
-                AnnouncedLead::LeadingRepetition(&charged),
+                AnnouncedLead::LeadingRepetition(&lead),
             ),
             f4_life(&state, first),
             count,
@@ -9488,7 +9497,10 @@ pub(crate) fn f4_cascade_spanning_window() -> (GameState, u32, u32) {
         "reach-guard: the accepted count must CONTAIN the crossing, else it spans no cascade; \
          crossing={crossing} count={count}"
     );
-    let segments = [(offer.preannounced, crossing), (other, count - crossing)];
+    let segments = [
+        (offer.preannounced, crossing - 1),
+        (other, count - crossing + 1),
+    ];
     let action = resolve_interaction_response(
         &state,
         offer.proposer,

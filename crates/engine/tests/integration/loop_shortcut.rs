@@ -1848,6 +1848,8 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         index: 0,
     };
     let schema = ShortcutDecisionSchema {
+        suggested_declaration: None,
+        leading_aims: Vec::new(),
         iteration_count: IterationCount::UntilLethal,
         // This producer measured no CR 704 threshold — `Default` carries the absence and a
         // capacity at the global cap.
@@ -4510,6 +4512,8 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
         index: 0,
     };
     let schema = ShortcutDecisionSchema {
+        suggested_declaration: None,
+        leading_aims: Vec::new(),
         iteration_count: IterationCount::UntilLethal,
         // This producer measured no CR 704 threshold — `Default` carries the absence and a
         // capacity at the global cap.
@@ -7427,6 +7431,8 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
         trigger_description: None,
     };
     let schema = ShortcutDecisionSchema {
+        suggested_declaration: None,
+        leading_aims: Vec::new(),
         iteration_count: IterationCount::UntilLethal,
         measured_repetition_bound: None,
         deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
@@ -14835,6 +14841,8 @@ fn g1_declare_verdict(
         legal_targets.push(TargetRef::Object(obj_b));
     }
     let schema = ShortcutDecisionSchema {
+        suggested_declaration: None,
+        leading_aims: Vec::new(),
         iteration_count: count.clone(),
         // This producer measured no CR 704 threshold — `Default` carries the absence and a
         // capacity at the global cap.
@@ -16293,6 +16301,8 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
         predicted_winner: None,
         certificate: synthetic_lethal_cert(),
         schema: ShortcutDecisionSchema {
+            suggested_declaration: None,
+            leading_aims: Vec::new(),
             iteration_count: IterationCount::Fixed(3),
             measured_repetition_bound: Some(3),
             deliverable_capacity: 3,

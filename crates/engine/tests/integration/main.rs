@@ -1907,6 +1907,7 @@ mod there_are_no_permanents_state_trigger;
 mod they_gain_keyword_anaphor;
 mod thranduil_graveyard_granted_abilities;
 mod three_blind_mice;
+mod three_opponent_drain_shortcut;
 mod token_storm_scaling_gate;
 mod token_zone_change_index;
 mod tomb_cradle_atropal_deathtouch_runtime;
