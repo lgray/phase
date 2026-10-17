@@ -214,7 +214,7 @@ export class NativeEngineVersionMismatchError extends Error {
  * 145 — ConfirmedPeriod gains counted_by (CR 732.2a: a loop offer counted by
  *      replaying its period, with the seats that left in each repetition, a
  *      per_cycle scope stating one repetition, and an optional win_kind with
- *      the count it is decided at), carried in
+ *      the count it is decided at) and performance, carried in
  *      WaitingFor::LoopShortcut — see PROTOCOL_VERSION's own `/// 145` entry in
  *      crates/lobby-broker/src/protocol.rs. Wire 127 moves with it.
  * 144 — One-time boons (#7495): new Effect.CreateBoon / Effect.NoteNumber tags,

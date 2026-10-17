@@ -3346,7 +3346,7 @@ mod tests {
         }
     }
 
-    /// v145: `ConfirmedPeriod` gains `counted_by` (CR 732.2a counted loop offers),
+    /// v145: `ConfirmedPeriod` gains `counted_by` (CR 732.2a counted loop offers) and `performance`,
     /// and a loop offer's `win_kind` becomes optional; a v144 peer drops the field
     /// or cannot parse the offer, so it must be refused before it receives v145 state.
     ///

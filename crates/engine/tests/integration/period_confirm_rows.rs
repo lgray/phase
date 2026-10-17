@@ -20,7 +20,9 @@ use engine::game::keywords::effective_foretell_cost;
 use engine::game::log::resolve_log_entries;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::perf_counters::play_trace_counters;
-use engine::game::period_confirm::{confirm_for_tests, performed_for_tests, OfferRefusal};
+use engine::game::period_confirm::{
+    confirm_for_tests, performed_for_tests, OfferRefusal, PeriodPerformance,
+};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::visibility::filter_state_for_viewer;
@@ -738,6 +740,13 @@ pub(crate) fn board_c_offered(member: BoardCMember) -> Option<food_chain_board::
 fn road(state: &GameState) -> Option<OfferRoad> {
     match &state.waiting_for {
         WaitingFor::LoopShortcut { road, .. } => Some(*road),
+        _ => None,
+    }
+}
+
+fn performance(state: &GameState) -> Option<PeriodPerformance> {
+    match &state.waiting_for {
+        WaitingFor::LoopShortcut { period, .. } => period.performance(),
         _ => None,
     }
 }
@@ -1854,6 +1863,10 @@ fn a_sprout_swarm_ramp_up_is_offered_once_its_forests_are_spent() {
     }
     assert_eq!(saprolings(runner.state()), 3, "reach: each cast resolved");
     assert_eq!(road(runner.state()), Some(OfferRoad::RecordedPeriod));
+    assert_eq!(
+        performance(runner.state()),
+        Some(PeriodPerformance::UsesTheStack)
+    );
 }
 
 /// CR 732.3: the same board with Murder cast in response to the third Sprout Swarm: the span
@@ -5987,14 +6000,30 @@ fn a_period_paying_its_controllers_life_is_offered_at_its_hand_count() {
             HandStop::GameEnds,
         ),
     ];
+    let mut performances = Vec::new();
     for (case, card, lands, lives, pick, offer, stop) in in_step {
-        assert_counted_offer(
+        let offers = assert_counted_offer(
             case,
             &in_step_hand(card, 0, lands, lives, pick),
             offer,
             stop,
         );
+        performances.push((case, offers.iter().map(performance).collect::<Vec<_>>()));
     }
+    // CR 605.3a + CR 603.3: the Ogre's repetition is its mana ability alone; the Coinsmith's
+    // activates a non-mana ability.
+    let mana_only = vec![Some(PeriodPerformance::ManaAbilitiesOnly); BOTH_MODES.len()];
+    let stack = vec![Some(PeriodPerformance::UsesTheStack); BOTH_MODES.len()];
+    assert_eq!(
+        performances,
+        [
+            ("Ogre from 20", mana_only.clone()),
+            ("Ogre from 21", mana_only),
+            ("Coinsmith", stack.clone()),
+            ("Coinsmith, P1 at 3", stack.clone()),
+            ("Coinsmith, P0 at 3", stack),
+        ]
+    );
 }
 
 /// CR 104.3b + CR 704.5a + CR 732.2a: the Mana Confluence period with P0 at 19 life at the offer

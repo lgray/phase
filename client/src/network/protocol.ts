@@ -107,8 +107,8 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *
  * Bumps to date:
  *  127 — game_setup and state_update carry GameState whose loop offers may carry
- *       ConfirmedPeriod counted_by (CR 732.2a). Bumped in lockstep with full-game
- *       protocol 145.
+ *       ConfirmedPeriod counted_by and performance (CR 732.2a). Bumped in
+ *       lockstep with full-game protocol 145.
  *  126 — game_setup and state_update carry GameState, whose one-time boons
  *       (#7495) add Effect.CreateBoon / Effect.NoteNumber, the HasBoon
  *       conditions, and WaitingFor.ChooseTokenHost, and whose perpetual P/T

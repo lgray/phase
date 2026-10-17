@@ -60,7 +60,7 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
-/// 145 — `ConfirmedPeriod` gains `counted_by` (`CountedBy::Replay { departures }`, CR
+/// 145 — `ConfirmedPeriod` gains `performance` and `counted_by` (`CountedBy::Replay { departures }`, CR
 ///      732.2a: the offer's count is the repetitions the counting replay performed,
 ///      with the seats that left in each) and `PredictedDeparture` serializes inside
 ///      it, carried in `WaitingFor::LoopShortcut` and `ShortcutProposal`; their

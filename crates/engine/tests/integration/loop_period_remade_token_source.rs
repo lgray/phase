@@ -17,6 +17,7 @@ use engine::analysis::resource::{
 use engine::database::card_db::CardDatabase;
 use engine::game::engine::{apply, certify_object_growth_frames_for_tests};
 use engine::game::mana_abilities::is_mana_ability;
+use engine::game::period_confirm::PeriodPerformance;
 use engine::game::scenario::{GameScenario, P0};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::{play_trace_view, NamingCause};
@@ -522,6 +523,15 @@ fn a_treasure_remade_by_damage_on_smaug_is_offered_and_taken() {
         assert_eq!(
             certificate.unbounded,
             [ResourceAxis::Mana(ManaType::Red)],
+            "{mode:?}"
+        );
+        // CR 603.3: the Treasure the next repetition sacrifices is made by a resolving trigger.
+        let WaitingFor::LoopShortcut { period, .. } = &live.waiting_for else {
+            unreachable!("offer")
+        };
+        assert_eq!(
+            period.performance(),
+            Some(PeriodPerformance::UsesTheStack),
             "{mode:?}"
         );
         take(&mut live, TAKEN);

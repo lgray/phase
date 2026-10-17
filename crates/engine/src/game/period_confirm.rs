@@ -101,6 +101,38 @@ pub struct ConfirmedPeriod {
     /// Which authority counted the period's offer.
     #[serde(default, skip_serializing_if = "CountedBy::is_threshold")]
     counted_by: CountedBy,
+    /// How one repetition is performed; `None` when no plays were read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    performance: Option<PeriodPerformance>,
+}
+
+/// CR 605.3a + CR 605.3b: whether a period's repetition is made only of mana abilities, which its
+/// player may activate while paying a cost (CR 601.2g) and which resolve without the stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PeriodPerformance {
+    /// Every play is a mana ability and nothing resolves from the stack.
+    ManaAbilitiesOnly,
+    /// A play is a spell or a non-mana ability, or a triggered ability resolves, which waits for
+    /// priority (CR 603.3), so no cost's payment performs it.
+    UsesTheStack,
+}
+
+impl PeriodPerformance {
+    fn of(body: &[TraceEntry]) -> Self {
+        let uses_the_stack = body.iter().any(|entry| match &entry.kind {
+            EntryKind::Play { locus, .. } => match locus {
+                PlayLocus::Mana(..) => false,
+                PlayLocus::Cast(_) | PlayLocus::Activate(..) | PlayLocus::Unread => true,
+            },
+            EntryKind::Resolution { .. } => true,
+            EntryKind::Answer { .. } => false,
+        });
+        if uses_the_stack {
+            Self::UsesTheStack
+        } else {
+            Self::ManaAbilitiesOnly
+        }
+    }
 }
 
 /// CR 732.2a: which authority states the count of a confirmed period's offer; its take answers to
@@ -136,6 +168,10 @@ impl ConfirmedPeriod {
 
     pub fn choices(&self) -> &[PinnedDecision] {
         &self.choices
+    }
+
+    pub fn performance(&self) -> Option<PeriodPerformance> {
+        self.performance
     }
 
     /// CR 732.2a: the answers a take of this period performs, which a declaration must agree
@@ -823,6 +859,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         return Err(refusal);
     }
     let items = period_items(entries, span, frame);
+    let performance = Some(PeriodPerformance::of(&body));
     #[cfg(feature = "test-support")]
     crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
     let _probe = SimulationProbeGuard::enter();
@@ -961,6 +998,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
                     reach: span.reach,
                     choices,
                     counted_by: CountedBy::Replay { departures },
+                    performance,
                 },
                 frames: pair,
                 delta,
@@ -978,6 +1016,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
             reach: span.reach,
             choices,
             counted_by,
+            performance,
         },
         frames: Box::new([s_n1, replay]),
         delta,
