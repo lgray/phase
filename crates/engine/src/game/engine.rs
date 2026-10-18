@@ -5865,7 +5865,8 @@ fn shortcut_drive_period(
 /// that has not bounded it must not call this — an unchecked `Fixed(4e9)` becomes a
 /// four-billion-iteration validation loop. `handle_declare_shortcut` discharges it by running
 /// the `MAX_SHORTCUT_CYCLES` / `deliverable_capacity` match above its pin-validation block;
-/// `build_bounded_declaration` by passing the schema's own `iteration_count`; the interaction
+/// `build_bounded_declaration` and `bounded_offer_tail`'s suggestion check by passing a survived
+/// count clamped to `deliverable_capacity`; the interaction
 /// decoder by the count-spec projection, which computes
 /// `max = schema.deliverable_capacity.min(MAX_SHORTCUT_CYCLES)` and admits only that window.
 ///
@@ -5918,7 +5919,7 @@ enum CycleOutcome {
     Abort,
 }
 
-/// CR 800.4a: whether a seat leaving the game inside a driven repetition ends that repetition.
+/// CR 800.4 + CR 732.2c: whether a seat leaving the game inside a driven repetition ends that repetition.
 /// A player leaving does not end the game while two or more remain, so a departure inside a
 /// repetition the declared count is followed by is not an ending point: that repetition runs to
 /// its own boundary, and the next starts in phase with the period the count was derived from.
@@ -6779,7 +6780,7 @@ fn materialize_fixed_shortcut(
             i,
             cycle_beat_cap,
             per_cycle.map(crate::analysis::resource::PeriodSignature::frames_per_period),
-            // CR 800.4a: a signed drive's non-final repetition completes past a departure, so
+            // CR 800.4 + CR 732.2c: a signed drive's non-final repetition completes past a departure, so
             // every later repetition stays in phase with the period the count was derived from.
             if per_cycle.is_none() || i + 1 == n {
                 DepartureStop::EndsRepetition
