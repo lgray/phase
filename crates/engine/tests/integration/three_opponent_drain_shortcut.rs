@@ -891,6 +891,25 @@ fn latched_triggers_buried_under_the_chain_do_not_lead() {
     tenacity_slot(schema);
     assert_eq!(schema.iteration_count, IterationCount::Fixed(7));
     assert_eq!(schema.leading_aims, vec![]);
+    assert_eq!(
+        schedule(schema.suggested_declaration.as_ref().expect("suggested")),
+        (
+            TargetSchedule::Piecewise(vec![(0, rank(P1)), (2, rank(P2)), (5, rank(P3))]),
+            IterationCount::Fixed(7)
+        )
+    );
+    let mut probe = state.clone();
+    let preview = dialog(&mut probe).preview;
+    let at = |count| {
+        drained(
+            preview
+                .iter()
+                .find(|p| p.count == count)
+                .expect("a preview element"),
+        )
+    };
+    assert_eq!(at(1), vec![(1, -2)], "the in-drive announcement hits P1");
+    assert_eq!(at(7), vec![(1, -4), (2, -6), (3, -4)]);
     assert_every_opponent_eliminated(&accept_suggested(&state), "buried");
 }
 
