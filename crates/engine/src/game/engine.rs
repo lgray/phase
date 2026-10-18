@@ -3610,15 +3610,6 @@ fn bounded_offer_tail(
         )
     });
     let witness_bound = witness_cascade.as_ref().map_or(0, |cascade| cascade.count);
-    // CR 104.2a + CR 704.5a / CR 704.5b / CR 704.5c: the most repetitions of the witness the
-    // proposer survives — its whole cascade, or the repetition before the proposer's own
-    // crossing, which can only be the cascade's last entry.
-    let witness_safe = witness_cascade
-        .as_ref()
-        .map_or(0, |cascade| match cascade.entries.last() {
-            Some(entry) if entry.seats.contains(&proposer) => entry.repetition.saturating_sub(1),
-            _ => cascade.count,
-        });
     // THE LARGER OF THE TWO, and that is not an optimisation. `handle_declare_shortcut` refuses
     // any `Fixed(n)` above `deliverable_capacity`, so a ceiling below the suggestion would have it
     // refuse the offer's own suggestion; and nothing about the witness's greedy aim guarantees its
@@ -3661,7 +3652,7 @@ fn bounded_offer_tail(
     // handed here may EXCEED the engine's repetition budget, since nothing above clamps them; the
     // constructor is the single site that applies that budget, and it narrows the suggestion to
     // the capacity it derives, so `deliverable_capacity >= iteration_count` survives the clamp.
-    // The own count is clamped to that capacity too, so the budget bounds every published count.
+    // Every published count is `EliminationCascade::survived_count`'s, clamped to that capacity.
     // The points go in as the frame source built them: the ring's from its certified touch, the
     // replay's from the choices its confirmed cycle recorded.
     let mut schema = build_shortcut_schema(
@@ -3669,7 +3660,8 @@ fn bounded_offer_tail(
         IterationCount::Fixed(measured_bound),
         Some(measured_bound),
     );
-    let own_count = IterationCount::Fixed(own.count.min(schema.deliverable_capacity));
+    let own_survived = own.survived_count(proposer, schema.deliverable_capacity);
+    let own_count = IterationCount::Fixed(own_survived);
     // (10) The DECLARATION the engine can already specify for this offer, pinned as step (7b)
     // pinned it and now STAMPED with its own count and VALIDATED at that count against the
     // schema that publishes it. Taken again here rather than carried from (7b) because
@@ -3688,10 +3680,12 @@ fn bounded_offer_tail(
     // (11) The SUGGESTION: the witness at the most repetitions the proposer survives, within the
     // capacity, cut to the segments that count reaches, stamped and validated at that count, and
     // published only where it drives further than the declaration's own count and conforms there.
-    let suggested_count = witness_safe.min(schema.deliverable_capacity);
+    let suggested_count = witness_cascade.as_ref().map_or(0, |cascade| {
+        cascade.survived_count(proposer, schema.deliverable_capacity)
+    });
     let suggested = IterationCount::Fixed(suggested_count);
     let suggestion = witness
-        .filter(|_| suggested_count > own.count)
+        .filter(|_| suggested_count > own_survived)
         .zip(declaration.as_ref())
         .and_then(|(mut witness, published)| {
             witness.cut_schedules_at(&suggested);

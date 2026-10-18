@@ -2221,6 +2221,19 @@ pub(crate) struct EliminationCascade {
     pub(crate) entries: Vec<PredictedDeparture>,
 }
 
+impl EliminationCascade {
+    /// CR 104.2a + CR 704.5a / CR 704.5b / CR 704.5c: the most repetitions `proposer` survives,
+    /// within `capacity` — the sole producer of every count a bounded offer publishes.
+    pub(crate) fn survived_count(&self, proposer: PlayerId, capacity: u32) -> u32 {
+        // The walk stops at the proposer's crossing, so it can only be the last entry.
+        let survived = match self.entries.last() {
+            Some(entry) if entry.seats.contains(&proposer) => entry.repetition.saturating_sub(1),
+            _ => self.count,
+        };
+        survived.min(capacity)
+    }
+}
+
 /// CR 704.5a + CR 732.2a: everything [`ResourceVector::elimination_bounds`] computes — the
 /// largest legal repetition count, and the CR 704 threshold crossing that count spends.
 ///

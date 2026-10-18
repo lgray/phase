@@ -9644,11 +9644,6 @@ fn the_f4_offer_suggests_the_most_repetitions_its_proposer_survives() {
     use engine::analysis::decision_template::{
         AnnouncementSubject, PinnedDecision, Ranking, ReplayMode, TargetPin, TargetSchedule,
     };
-    use engine::game::interaction::resolve_interaction_response;
-    use engine::types::interaction::{
-        InteractionResponse, InteractionShortcutDecision, InteractionShortcutPin,
-        InteractionSubmission,
-    };
 
     let mut state = f4_at_offer();
     let (_, _, schema) = offer_parts(&state);
@@ -9697,7 +9692,25 @@ fn the_f4_offer_suggests_the_most_repetitions_its_proposer_survives() {
         template: Some(suggestion),
     }));
 
-    let offer = f4_allocation_offer(&mut state);
+    f4_accept_suggested(&mut state);
+    let out: Vec<bool> = state.players.iter().map(|p| p.is_eliminated).collect();
+    let lives: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+    assert_eq!(out, vec![false, true, true, false]);
+    assert_eq!(lives[3], 30);
+    assert_eq!(state.library_of(P0).len(), 0);
+    assert!(!matches!(state.waiting_for, WaitingFor::GameOver { .. }));
+}
+
+/// AcceptSuggested with an empty `Targets` pin through the interaction ingress, then every
+/// opponent accepts.
+fn f4_accept_suggested(state: &mut GameState) {
+    use engine::game::interaction::resolve_interaction_response;
+    use engine::types::interaction::{
+        InteractionResponse, InteractionShortcutDecision, InteractionShortcutPin,
+        InteractionSubmission,
+    };
+
+    let offer = f4_allocation_offer(state);
     let mut pins = offer.other_pins.clone();
     pins.push(InteractionShortcutPin {
         group: offer.target_group,
@@ -9705,7 +9718,7 @@ fn the_f4_offer_suggests_the_most_repetitions_its_proposer_survives() {
         amounts: Vec::new(),
     });
     let action = resolve_interaction_response(
-        &state,
+        state,
         offer.proposer,
         &InteractionSubmission {
             interaction_id: offer.interaction_id.clone(),
@@ -9716,17 +9729,109 @@ fn the_f4_offer_suggests_the_most_repetitions_its_proposer_survives() {
         },
     )
     .expect("AcceptSuggested with an empty pin is admitted");
-    apply(&mut state, offer.proposer, action).expect("the declaration is dispatched");
+    apply(state, offer.proposer, action).expect("the declaration is dispatched");
+    assert!(accept_all_opponents(state) > 0, "the respond window opens");
+}
+
+/// The F4 dump standing at its offer with P0's library holding `cards` there. The unmodified
+/// drive reaches the offer holding 87 and draws from the top, so the cut comes off the bottom.
+fn f4_library_at_offer(cards: usize) -> GameState {
+    use engine::types::zones::Zone;
+    let mut state = load_f4();
+    let library = state.library_of(P0);
+    let cut: Vec<ObjectId> = library
+        .iter()
+        .skip(library.len() + cards - 87)
+        .copied()
+        .collect();
+    for id in cut {
+        engine::game::zones::move_to_zone(&mut state, id, Zone::Exile, &mut Vec::new());
+    }
+    drive_f4_to_offer(&mut state, 400).expect("reach-guard: the cut board still offers");
+    assert_eq!(
+        state.library_of(P0).len(),
+        cards,
+        "reach-guard: library at the offer"
+    );
+    state
+}
+
+/// The F4 dump standing at its offer with P1 at 100 life there (37 on the unmodified drive).
+fn f4_p1_at_100_at_offer() -> GameState {
+    let mut state = f4_with_life(P1, |life| life + 63);
+    drive_f4_to_offer(&mut state, 400).expect("reach-guard: the edited board still offers");
+    assert_eq!(
+        f4_life(&state, P1),
+        100,
+        "reach-guard: P1's life at the offer"
+    );
+    state
+}
+
+/// CR 704.5b: Human Torch's controller draws once per repetition, so with 30 cards left the
+/// offer suggests 30, and taking it leaves P0 in the game with an empty library.
+#[test]
+fn a_library_shorter_than_the_cascade_bounds_the_suggestion_at_its_last_card() {
+    let mut state = f4_library_at_offer(30);
+    let (_, _, schema) = offer_parts(&state);
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(30));
+    f4_accept_suggested(&mut state);
+    assert!(!f4_eliminated(&state, P0));
+    assert_eq!(state.library_of(P0).len(), 0);
+}
+
+/// CR 704.5b: with P1 at 100, P0's 87 cards run out before any opponent leaves, so the offer
+/// suggests 87 and taking it leaves P0 in the game.
+#[test]
+fn a_life_total_the_library_cannot_reach_bounds_the_suggestion_at_the_last_card() {
+    let mut state = f4_p1_at_100_at_offer();
+    let (_, _, schema) = offer_parts(&state);
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(87));
+    f4_accept_suggested(&mut state);
+    assert!(!f4_eliminated(&state, P0));
+    assert_eq!(state.library_of(P0).len(), 0);
+}
+
+/// CR 704.5b: the AI's bounded declare candidate is the count its proposer survives.
+#[test]
+fn the_ai_declare_candidate_stops_at_the_proposers_last_card() {
+    let mut state = f4_library_at_offer(30);
+    let declares: Vec<GameAction> = engine::ai_support::legal_actions(&state)
+        .into_iter()
+        .filter(|action| matches!(action, GameAction::DeclareShortcut { .. }))
+        .collect();
+    let [declare @ GameAction::DeclareShortcut { count, .. }] = declares.as_slice() else {
+        panic!("the AI has one bounded declare candidate, got {declares:?}");
+    };
+    assert_eq!(*count, IterationCount::Fixed(30));
+    apply(&mut state, P0, declare.clone()).expect("the AI's candidate is dispatched");
     assert!(
         accept_all_opponents(&mut state) > 0,
         "the respond window opens"
     );
-    let out: Vec<bool> = state.players.iter().map(|p| p.is_eliminated).collect();
-    let lives: Vec<i32> = state.players.iter().map(|p| p.life).collect();
-    assert_eq!(out, vec![false, true, true, false]);
-    assert_eq!(lives[3], 30);
-    assert_eq!(state.library_of(P0).len(), 0);
-    assert!(!matches!(state.waiting_for, WaitingFor::GameOver { .. }));
+    assert!(!f4_eliminated(&state, P0));
+}
+
+/// CR 704.5b: where no suggestion is published, the count the offer publishes is its own
+/// declaration's stamp, and that stamp is the last repetition the proposer survives.
+#[test]
+fn a_fallback_offer_publishes_its_own_declaration_at_the_count_the_proposer_survives() {
+    for (label, state, survived) in [
+        ("library 30", f4_library_at_offer(30), 30),
+        ("P1 at 100", f4_p1_at_100_at_offer(), 87),
+    ] {
+        let (_, _, schema) = offer_parts(&state);
+        assert!(
+            schema.suggested_declaration.is_none(),
+            "[{label}] reach-guard: the offer falls back to its own declaration"
+        );
+        assert_eq!(published_declaration_count(&state), survived, "[{label}]");
+        assert_eq!(
+            schema.iteration_count,
+            IterationCount::Fixed(survived),
+            "[{label}]"
+        );
+    }
 }
 
 /// CR 732.2b: a template-free declaration resolves to the offer's suggestion, and a responder
