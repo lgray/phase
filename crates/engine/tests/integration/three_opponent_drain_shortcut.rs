@@ -20,21 +20,24 @@ use engine::analysis::decision_template::{
     PinnedDecision, Ranking, ReplayMode, ShortcutDecisionSchema, TargetPin, TargetSchedule,
 };
 use engine::analysis::loop_check::ShortcutResponse;
+use engine::game::combat::AttackTarget;
 use engine::game::engine::apply;
 use engine::game::interaction::{
     bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
     InteractionSubmitError,
 };
+use engine::game::scenario::GameScenario;
 use engine::game::visibility::filter_state_for_viewer;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
-use engine::types::game_state::{GameState, PersistedGameState, WaitingFor};
+use engine::types::game_state::{GameState, LoopDetectionMode, PersistedGameState, WaitingFor};
 use engine::types::interaction::{
     AmountAssignment, InteractionChoiceId, InteractionId, InteractionOpportunityResponse,
     InteractionReasonCode, InteractionResponse, InteractionResponseSpec, InteractionSessionId,
     InteractionShortcutCountSpec, InteractionShortcutDecision, InteractionShortcutPin,
     InteractionShortcutPreview, InteractionSubmission,
 };
+use engine::types::phase::Phase;
 use engine::types::PlayerId;
 
 use crate::loop_shortcut::{gunzip_dump, restore_dump};
@@ -70,6 +73,17 @@ pub(crate) fn load_fc() -> GameState {
 /// (the last one repeats), and an offer reached before `min_answers` answers is declined.
 fn drive_to_offer(mut state: GameState, answers: &[PlayerId], min_answers: usize) -> GameState {
     apply(&mut state, P0, GameAction::DeclineShortcut).expect("S opens on a declinable offer");
+    play_to_offer(state, answers, min_answers, false)
+}
+
+/// `drive_to_offer` without S's decline: every lifelinker attacks P1, who blocks each with one
+/// of its creatures iff `blocked`, and simultaneous triggers keep their offered order.
+fn play_to_offer(
+    mut state: GameState,
+    answers: &[PlayerId],
+    min_answers: usize,
+    blocked: bool,
+) -> GameState {
     let mut answered = 0;
     for _ in 0..200 {
         match state.waiting_for.clone() {
@@ -81,6 +95,58 @@ fn drive_to_offer(mut state: GameState, answers: &[PlayerId], min_answers: usize
             }
             WaitingFor::Priority { player } => {
                 apply(&mut state, player, GameAction::PassPriority).expect("pass");
+            }
+            WaitingFor::DeclareAttackers { player, .. } => {
+                let attacks = state
+                    .battlefield
+                    .iter()
+                    .copied()
+                    .filter(|id| state.objects[id].name.starts_with("Lifelinker"))
+                    .map(|id| (id, AttackTarget::Player(P1)))
+                    .collect();
+                apply(
+                    &mut state,
+                    player,
+                    GameAction::DeclareAttackers {
+                        attacks,
+                        bands: vec![],
+                    },
+                )
+                .expect("the lifelinkers attack");
+            }
+            WaitingFor::DeclareBlockers { player, .. } => {
+                let attackers: Vec<_> = state
+                    .combat
+                    .as_ref()
+                    .map(|c| c.attackers.iter().map(|a| a.object_id).collect())
+                    .unwrap_or_default();
+                let assignments = if blocked {
+                    state
+                        .battlefield
+                        .iter()
+                        .copied()
+                        .filter(|id| state.objects[id].controller == player)
+                        .zip(attackers)
+                        .collect()
+                } else {
+                    vec![]
+                };
+                apply(
+                    &mut state,
+                    player,
+                    GameAction::DeclareBlockers { assignments },
+                )
+                .expect("legal blocks");
+            }
+            WaitingFor::OrderTriggers { player, triggers } => {
+                apply(
+                    &mut state,
+                    player,
+                    GameAction::OrderTriggers {
+                        order: (0..triggers.len()).collect(),
+                    },
+                )
+                .expect("the offered order");
             }
             WaitingFor::TriggerTargetSelection { player, .. } => {
                 let seat = *answers.get(answered).or(answers.last()).expect("a script");
@@ -612,6 +678,20 @@ fn authored_orders_are_admitted_exactly_where_every_aim_lands() {
 /// A preview element's count, allocation and per-seat life lines.
 type ExpectedElement = (u32, &'static [(PlayerId, u32)], &'static [(u8, i32)]);
 
+/// The opponents' life losses a preview element states, by seat.
+fn drained(preview: &InteractionShortcutPreview) -> Vec<(u8, i32)> {
+    let mut drained: Vec<(u8, i32)> = preview
+        .entries
+        .iter()
+        .filter_map(|e| match e.player {
+            Some(seat) if seat != P0.0 && e.amount < 0 => Some((seat, e.amount)),
+            _ => None,
+        })
+        .collect();
+    drained.sort();
+    drained
+}
+
 /// Every published preview element states the suggestion's prefix, the victims that prefix
 /// drains with the in-flight hit on P2 (CR 603.3d), and is itself admitted.
 #[test]
@@ -642,16 +722,7 @@ fn each_preview_element_states_the_suggestions_prefix_and_its_victims() {
             .map(|a| (dialog.seat(&a.choice_id), a.amount))
             .collect();
         assert_eq!(stated, allocation, "count {count}: allocation");
-        let mut drained: Vec<(u8, i32)> = preview
-            .entries
-            .iter()
-            .filter_map(|e| match e.player {
-                Some(seat) if seat != P0.0 && e.amount < 0 => Some((seat, e.amount)),
-                _ => None,
-            })
-            .collect();
-        drained.sort();
-        assert_eq!(drained, victims, "count {count}: victims");
+        assert_eq!(drained(preview), victims, "count {count}: victims");
         submit(
             &state,
             &dialog,
@@ -706,6 +777,121 @@ fn a_responder_shortening_the_eliminating_order_stops_at_its_iteration() {
     assert!(state.players[1].is_eliminated);
     assert_eq!([state.players[2].life, state.players[3].life], [6, 1]);
     assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
+}
+
+/// The drain with `lifelinkers` 2/2 lifelinkers, each with a 0/5 of P1's to block it; the
+/// opponents start at 9/6/3 and each repetition moves 2.
+fn combat_board(lifelinkers: usize) -> GameState {
+    let mut scenario = GameScenario::new_n_player(4, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    for (seat, life) in [(P0, 20), (P1, 9), (P2, 6), (P3, 3)] {
+        scenario.with_life(seat, life);
+    }
+    scenario.add_enchantment_from_oracle(
+        P0,
+        "Exquisite Blood",
+        "Whenever an opponent loses life, you gain that much life.",
+    );
+    scenario.add_creature_from_oracle(
+        P0,
+        "Enduring Tenacity",
+        4,
+        3,
+        "Whenever you gain life, target opponent loses that much life.",
+    );
+    for i in 0..lifelinkers {
+        scenario
+            .add_creature(P0, &format!("Lifelinker {i}"), 2, 2)
+            .lifelink();
+        scenario.add_vanilla(P1, 0, 5);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    runner.state().clone()
+}
+
+/// The seats the Tenacity triggers on the stack latched, bottom to top.
+fn latched(state: &GameState) -> Vec<PlayerId> {
+    state
+        .stack
+        .iter()
+        .filter_map(|entry| match entry.ability()?.targets.as_slice() {
+            [TargetRef::Player(seat)] => Some(*seat),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_every_opponent_eliminated(state: &GameState, label: &str) {
+    assert_eq!(
+        state.waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "{label}"
+    );
+    assert!(
+        [P1, P2, P3]
+            .iter()
+            .all(|p| state.players[p.0 as usize].is_eliminated),
+        "{label}: {:?}",
+        opponents_life(state)
+    );
+}
+
+/// The blocked board at its offer: the top Tenacity trigger on P1 leads, and the suggestion
+/// eliminates every opponent. 9 = 4 hits on P1 (the lead's included), 3 on P2, 2 on P3.
+fn assert_top_trigger_on_p1_leads(state: &GameState, label: &str) {
+    assert_eq!(opponents_life(state), [7, 6, 3], "{label}: offer board");
+    let (schema, _) = offer(state);
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(9), "{label}");
+    assert_eq!(
+        schema.leading_aims,
+        vec![(tenacity_slot(schema), P1)],
+        "{label}: the top entry is the lead"
+    );
+    let mut probe = state.clone();
+    let preview = dialog(&mut probe).preview;
+    let first = preview
+        .iter()
+        .find(|p| p.count == 1)
+        .expect("a one-repetition element");
+    assert_eq!(drained(first), vec![(1, -2)], "{label}: the lead hits P1");
+    assert_every_opponent_eliminated(&accept_suggested(state), label);
+}
+
+/// CR 405.5 + CR 608.1: of two Tenacity triggers latched by simultaneous lifelink damage, only
+/// the top one (on P1) resolves before the next announcement; the buried one (on P3) never leads.
+#[test]
+fn only_the_top_latched_trigger_leads() {
+    let state = play_to_offer(combat_board(2), &[P3, P1, P1], 0, true);
+    assert_eq!(latched(&state), vec![P3, P1]);
+    assert_top_trigger_on_p1_leads(&state, "two latched");
+}
+
+#[test]
+fn a_single_latched_trigger_on_top_leads() {
+    let state = play_to_offer(combat_board(1), &[P1, P1], 0, true);
+    assert_eq!(latched(&state), vec![P1]);
+    assert_top_trigger_on_p1_leads(&state, "one latched");
+}
+
+/// CR 405.2 + CR 405.5: with a Blood trigger on top, each resolution puts the next Tenacity
+/// trigger above the latched ones, so none of them resolves while the loop runs and none leads.
+/// 7 = 2 hits on P1, 3 on P2, 2 on P3.
+#[test]
+fn latched_triggers_buried_under_the_chain_do_not_lead() {
+    let state = play_to_offer(combat_board(2), &[P3, P1, P1], 0, false);
+    assert_eq!(opponents_life(&state), [3, 6, 3]);
+    assert_eq!(latched(&state), vec![P3, P1]);
+    let top = state.stack.back().expect("the chain is on the stack");
+    assert!(
+        top.ability().expect("a trigger").targets.is_empty(),
+        "a Blood trigger is on top"
+    );
+    let (schema, _) = offer(&state);
+    tenacity_slot(schema);
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(7));
+    assert_eq!(schema.leading_aims, vec![]);
+    assert_every_opponent_eliminated(&accept_suggested(&state), "buried");
 }
 
 #[test]

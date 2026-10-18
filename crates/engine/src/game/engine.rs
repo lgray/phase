@@ -3576,7 +3576,7 @@ fn bounded_offer_tail(
     // LOWERS a published count, which is the direction a ceiling must fail in.
     //
     // And both with this board's own lead, the same one the declare and consumption seams read:
-    // a trigger already on the stack resolves the target it latched at the first repetition
+    // the trigger on top of the stack resolves the target it latched at the first repetition
     // (CR 603.3d + CR 601.2c), which under an alternating answer history is not the observed aim.
     let leading = leading_announcement_aims(state, proposer);
     let lead = crate::analysis::resource::AnnouncedLead::LeadingRepetition(&leading);
@@ -4384,26 +4384,24 @@ pub(crate) fn entry_publishes_pin_slots(
     })
 }
 
-/// CR 603.3d + CR 601.2c: the targets each announced target slot whose trigger already sits on
-/// `state`'s stack latched when it was put there — the aim that slot resolves at a drive's first repetition
+/// CR 603.3d + CR 601.2c: the targets the TOP stack entry latched when it was put there, if it
+/// announces a target slot — the aim that slot resolves at a drive's first repetition
 /// ([`crate::analysis::resource::AnnouncedLead`]). The single lead authority the offer, declare
 /// and consumption seams read off the board each asks about, through the same acceptance
 /// authority ([`entry_announces`]) the charged slots are minted by.
+///
+/// Only the top entry: it resolves next (CR 405.5 + CR 608.1), and every announcement it causes
+/// goes above anything buried beneath it (CR 405.2), so a buried entry never resolves first.
 pub(crate) fn leading_announcement_aims(
     state: &GameState,
     proposer: PlayerId,
 ) -> Vec<crate::analysis::decision_template::ConcreteDecision> {
     use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget};
-    let touch = crate::analysis::resource::certified_period_touch(
-        &[],
-        state,
-        crate::analysis::resource::PeriodCertification::ResourceSignatureOnly,
-    );
-    touch
-        .announced
-        .iter()
-        .filter_map(|(frame, entry)| {
-            let slot = entry_announces(frame, entry, proposer)?.target?.slot;
+    state
+        .stack
+        .back()
+        .and_then(|entry| {
+            let slot = entry_announces(state, entry, proposer)?.target?.slot;
             let targets = entry
                 .ability()?
                 .targets
@@ -4415,6 +4413,7 @@ pub(crate) fn leading_announcement_aims(
                 .collect();
             Some(ConcreteDecision::Targets { slot, targets })
         })
+        .into_iter()
         .collect()
 }
 

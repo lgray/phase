@@ -440,8 +440,8 @@ pub struct ShortcutDecisionSchema {
     ///   published, else the published declaration's own count.
     #[serde(default)]
     pub suggested_declaration: Option<DecisionTemplate>,
-    /// CR 603.3d + CR 601.2c: for each published target slot whose trigger is already on the
-    /// stack at the offer, the seat it latched — the aim its first repetition resolves. A
+    /// CR 603.3d + CR 601.2c: when the top stack entry at the offer is a published target slot's
+    /// trigger, the seat it latched — the aim its first repetition resolves. A
     /// snapshot for `game::interaction`, which reads no `GameState`; the engine's own seams
     /// re-read it off the board they ask about (`game::engine::leading_announcement_aims`).
     #[serde(default)]
@@ -1703,7 +1703,7 @@ pub enum AimViolation {
 /// Repetitions are counted from 1 and read at iteration index `repetition - 1`, the convention
 /// `truncate_to_declared_seats` shares. The board's own lead
 /// (`game::engine::leading_announcement_aims`, the same one the consumption seam reads) decides
-/// where an aim LANDS: a slot whose trigger is already on the stack resolves its declared aim at
+/// where an aim LANDS: a slot whose trigger is on top of the stack resolves its declared aim at
 /// `repetition` one repetition later (CR 603.3d + CR 601.2c), and CR 608.2b re-checks the target
 /// there, so the seat must survive to that landing — or, for an aim the count never resolves, to
 /// the count's last repetition.
