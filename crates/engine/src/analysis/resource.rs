@@ -2214,7 +2214,7 @@ pub(crate) struct EliminationCascade {
     /// own repetition, or the lower cleanup hand bound of a turn-cycle period (CR 514.1),
     /// because CR 704.3's sweep at that crossing is itself a place a player has
     /// priority and therefore an ending point CR 732.2a admits.
-    pub(crate) count: u32,
+    count: u32,
     /// Every crossing, in departure order. Empty only when the cleanup's hand bound ends the
     /// count before any crossing (CR 514.1); otherwise a cascade with no entry is the outer
     /// absence ([`PeriodicDelta::elimination_cascade`] returns `None`).
@@ -2231,6 +2231,20 @@ impl EliminationCascade {
             _ => self.count,
         };
         survived.min(capacity)
+    }
+
+    /// The raw count, which may cost the proposer the game — read only by the offer's ceiling.
+    pub(crate) fn capacity_count(&self) -> u32 {
+        self.count
+    }
+
+    /// The cascade cut after entry `last`, its count becoming that entry's repetition.
+    pub(crate) fn truncated_through(mut self, last: usize) -> Self {
+        self.entries.truncate(last + 1);
+        if let Some(entry) = self.entries.last() {
+            self.count = entry.repetition;
+        }
+        self
     }
 }
 

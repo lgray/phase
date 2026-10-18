@@ -9736,6 +9736,18 @@ fn f4_accept_suggested(state: &mut GameState) {
 /// The F4 dump standing at its offer with P0's library holding `cards` there. The unmodified
 /// drive reaches the offer holding 87 and draws from the top, so the cut comes off the bottom.
 fn f4_library_at_offer(cards: usize) -> GameState {
+    let mut state = f4_library_cut(cards);
+    drive_f4_to_offer(&mut state, 400).expect("reach-guard: the cut board still offers");
+    assert_eq!(
+        state.library_of(P0).len(),
+        cards,
+        "reach-guard: library at the offer"
+    );
+    state
+}
+
+/// The undriven F4 dump with P0's library cut so that `cards` remain at the offer beat.
+fn f4_library_cut(cards: usize) -> GameState {
     use engine::types::zones::Zone;
     let mut state = load_f4();
     let library = state.library_of(P0);
@@ -9747,13 +9759,45 @@ fn f4_library_at_offer(cards: usize) -> GameState {
     for id in cut {
         engine::game::zones::move_to_zone(&mut state, id, Zone::Exile, &mut Vec::new());
     }
-    drive_f4_to_offer(&mut state, 400).expect("reach-guard: the cut board still offers");
-    assert_eq!(
-        state.library_of(P0).len(),
-        cards,
-        "reach-guard: library at the offer"
-    );
     state
+}
+
+/// CR 704.5b + CR 732.2a: with no card left at the offer beat, the proposer survives no
+/// repetition, so no shortcut is offered and the loop is played by hand until P0's next draw.
+#[test]
+fn a_proposer_who_survives_no_repetition_is_offered_no_shortcut() {
+    let mut state = f4_library_cut(0);
+    for _ in 0..400 {
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }),
+            "no offer is minted"
+        );
+        assert!(
+            !engine::ai_support::legal_actions(&state)
+                .iter()
+                .any(|action| matches!(action, GameAction::DeclareShortcut { .. })),
+            "the AI has no bounded declare candidate"
+        );
+        if f4_eliminated(&state, P0) || f4_drive_one_beat(&mut state).is_err() {
+            break;
+        }
+    }
+    assert!(
+        f4_eliminated(&state, P0),
+        "reach-guard: the hand-played loop reaches P0's draw from an empty library"
+    );
+}
+
+/// CR 704.5b: the paired control — one card left at the offer beat is one repetition offered,
+/// and taking it leaves P0 in the game.
+#[test]
+fn a_proposer_with_one_card_left_is_offered_one_repetition() {
+    let mut state = f4_library_at_offer(1);
+    let (_, _, schema) = offer_parts(&state);
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(1));
+    f4_accept_suggested(&mut state);
+    assert!(!f4_eliminated(&state, P0));
+    assert_eq!(state.library_of(P0).len(), 0);
 }
 
 /// The F4 dump standing at its offer with P1 at 100 life there (37 on the unmodified drive).

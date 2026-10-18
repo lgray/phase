@@ -2884,9 +2884,9 @@ pub enum BoundedOfferRefusal {
     /// (6) A per-iteration choice the cycle opens is not specified by a published slot.
     UnspecifiedChoiceWindow,
     /// (7) `elimination_cascade` measured no CR 704 threshold at all and no cleanup bound, or
-    /// measured one under which no repetition is legal. Both grounds refuse here, because both
-    /// leave this producer with nothing to state: its whole claim is a threshold it measured
-    /// inside the loop.
+    /// measured one under which the proposer survives no repetition. Both grounds refuse here,
+    /// because both leave this producer with nothing to state: its whole claim is a threshold it
+    /// measured inside the loop.
     NoNarrowedLegalCount,
 }
 
@@ -3566,10 +3566,10 @@ fn bounded_offer_tail(
     // ONE conjunct at ONE site, over the reduction's own answer: the ABSENCE means no living seat
     // is consumed, so this producer measured nothing and belongs to another seam. A cascade
     // publishes `0` only when a turn-cycle period's cleanup bound allows no repetition
-    // (CR 514.1), and the `count >= 1` filter below refuses that offer. This is also what makes
-    // `schema.is_bounded()` true BY CONSTRUCTION for every offer this function mints. NO UPPER
-    // END: a threshold above the engine's repetition budget is still a measured threshold, and the
-    // budget is the schema constructor's to apply.
+    // (CR 514.1), and the survived-count refusal in step (9) refuses that offer. This is also
+    // what makes `schema.is_bounded()` true BY CONSTRUCTION for every offer this function mints.
+    // NO UPPER END: a threshold above the engine's repetition budget is still a measured
+    // threshold, and the budget is the schema constructor's to apply.
     //
     // BOTH cascades below are read at `ChargeBound::Ceiling`, which is the question this seam
     // asks: what SOME conforming declaration may take from a seat. An over-charge there only
@@ -3591,7 +3591,6 @@ fn bounded_offer_tail(
             lead,
         )
         .map(|cascade| truncate_to_declared_seats(cascade, pins.as_ref(), state))
-        .filter(|cascade| cascade.count >= 1)
         .ok_or(BoundedOfferRefusal::NoNarrowedLegalCount)?;
     // The witness needs a published declaration to re-aim and a charged slot to re-aim; without
     // either it is `None` and the ceiling degenerates to the own count.
@@ -3609,14 +3608,17 @@ fn bounded_offer_tail(
             lead,
         )
     });
-    let witness_bound = witness_cascade.as_ref().map_or(0, |cascade| cascade.count);
+    let witness_bound = witness_cascade.as_ref().map_or(
+        0,
+        crate::analysis::resource::EliminationCascade::capacity_count,
+    );
     // THE LARGER OF THE TWO, and that is not an optimisation. `handle_declare_shortcut` refuses
     // any `Fixed(n)` above `deliverable_capacity`, so a ceiling below the suggestion would have it
     // refuse the offer's own suggestion; and nothing about the witness's greedy aim guarantees its
     // count exceeds the own-declaration count. Both members are legal declarations, so the max
     // keeps "the ceiling is what SOME legal declaration may specify" true and keeps
     // `deliverable_capacity >= iteration_count` true by construction rather than by luck.
-    let measured_bound = own.count.max(witness_bound);
+    let measured_bound = own.capacity_count().max(witness_bound);
 
     // (8) The certificate, with the two fields the bounded class states differently from
     // Path A's spelled out at the site rather than mutated after the fact.
@@ -3661,6 +3663,11 @@ fn bounded_offer_tail(
         Some(measured_bound),
     );
     let own_survived = own.survived_count(proposer, schema.deliverable_capacity);
+    // CR 704.5a / CR 704.5b / CR 704.5c + CR 732.2a: no offer when the proposer survives no
+    // repetition of its own declaration, the count that declaration would be stamped at.
+    if own_survived == 0 {
+        return Err(BoundedOfferRefusal::NoNarrowedLegalCount);
+    }
     let own_count = IterationCount::Fixed(own_survived);
     // (10) The DECLARATION the engine can already specify for this offer, pinned as step (7b)
     // pinned it and now STAMPED with its own count and VALIDATED at that count against the
@@ -3785,15 +3792,10 @@ fn truncate_to_declared_seats(
         }
         })
     };
-    let Some(cut) = cascade.entries.iter().position(names_a_seat_of) else {
-        return cascade;
-    };
-    let mut entries = cascade.entries;
-    entries.truncate(cut + 1);
-    let count = entries
-        .last()
-        .map_or(cascade.count, |entry| entry.repetition);
-    crate::analysis::resource::EliminationCascade { count, entries }
+    match cascade.entries.iter().position(names_a_seat_of) {
+        Some(cut) => cascade.truncated_through(cut),
+        None => cascade,
+    }
 }
 
 /// CR 732.2a: the declaration THIS offer can already state, derived from what the proposer
@@ -5262,7 +5264,7 @@ fn shortcut_consumption_bound(
                 .collect()
         });
     ConsumptionDerivation::Measured(ConsumptionBound {
-        ceiling: ceiling.count,
+        ceiling: ceiling.capacity_count(),
         entries,
     })
 }
@@ -25533,7 +25535,7 @@ mod bounded_offer_conjunct_tests {
 
     /// STEP (7) `NoNarrowedLegalCount`, the MEASURED-ZERO ground. `elimination_bounds` returning
     /// 0 states that TWO OR MORE seats cross on the first iteration, so no repetition is legal at
-    /// all, and the gate's `count >= 1` conjunct refuses it rather than minting a `Fixed(0)` offer
+    /// all, and the gate refuses its survived count of 0 rather than minting a `Fixed(0)` offer
     /// whose acceptance would commit nothing while spending the CR 732.2b window.
     ///
     /// A board where a SINGLE seat has zero headroom is a different answer: the bound reaches
@@ -25554,8 +25556,8 @@ mod bounded_offer_conjunct_tests {
     /// function is called directly, in the `analysis::resource` battery: its case (g) is the
     /// single zero-headroom seat publishing `1`, and its two-tied-seats arm is the `0`.
     ///
-    /// REVERT-PROBE: delete the relief's `+ 1` ⇒ ⓑ's board publishes `0`, the gate's
-    /// `count >= 1` conjunct refuses it, and ⓑ FAILS while ⓐ stays green.
+    /// REVERT-PROBE: delete the relief's `+ 1` ⇒ ⓑ's board survives `0`, the gate refuses it,
+    /// and ⓑ FAILS while ⓐ stays green.
     #[test]
     fn a_bound_of_zero_mints_no_bounded_offer() {
         // ⓐ POSITIVE CONTROL: a full library certifies and narrows to a legal count.

@@ -224,10 +224,9 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // unbounded half specifically, and it goes RED via `na()` if this arm is moved back
             // below.
             //
-            // Not reachable from today's generator either way (it emits only the published
-            // capacity, and the load seam refuses a capacity of 0), so no
-            // scoring that can occur today is reordered. The arm states the scoring arm's OWN
-            // precondition rather than leaving it to an invariant maintained a crate away.
+            // No engine producer publishes `Fixed(0)`, so the generator's own candidate never
+            // reaches this arm. The arm states the scoring arm's OWN precondition rather than
+            // leaving it to an invariant maintained a crate away.
             (_, IterationCount::Fixed(0)) => PolicyVerdict::reject(PolicyReason::new(
                 "loop_shortcut_bounded_declare_zero_count",
             )),
