@@ -3535,8 +3535,9 @@ fn scheduled_announcements(
 /// the count.
 ///
 /// The one place that rule is expressed, for every pin kind. An until-lethal proposal names no
-/// count to partition, so it declares an ORDER and no segment. `None` is a start past the count,
-/// which is a partition nobody could have declared.
+/// count to partition, so it declares an ORDER and no segment. The projection cuts every step
+/// the count does not reach before asking (`DecisionTemplate::cut_schedules_at`), so each segment
+/// is positive; `None` is a start past the count, which is a partition nobody could have declared.
 fn declared_segments(starts: &[u32], declared_count: Option<u32>) -> Option<Vec<u32>> {
     let Some(count) = declared_count else {
         return Some(Vec::new());
@@ -3619,7 +3620,10 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
     };
     // The single hidden-information authority has already set this to `None` for a viewer who
     // may not see the declaration, so an identity that authority dropped is unreachable here.
-    let template = proposal.template.as_ref()?;
+    let mut template = proposal.template.clone()?;
+    // CR 732.2a: a template-free declaration resolves to a suggestion cut at a larger count, and a
+    // shortening lowers the count under the same template, so the steps past it are cut here.
+    template.cut_schedules_at(&proposal.count);
     // The proposal's LIVE count as a degenerate one-point window — the proposer's declaration
     // until a responder shortens, and that responder's named place afterwards (CR 732.2b), which
     // is what the seats still queued are being asked about. Nothing on this path samples a count
@@ -3747,7 +3751,7 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
             points,
             candidates,
             suggestion: None,
-            leading_aims: Vec::new(),
+            leading_aims: proposal.leading_aims.clone(),
         },
         segments,
     })

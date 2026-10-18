@@ -2262,12 +2262,26 @@ impl ResourceVector {
     /// [`Self::generic_triggers`]) are left at their `Default` (zero/empty); the
     /// harness feeds them from the event stream.
     pub fn snapshot(state: &GameState) -> ResourceVector {
+        Self::snapshot_among(state, |_| true, |_| true)
+    }
+
+    /// [`ResourceVector::snapshot`] with the seat-pooled axes summed over the seats `in_game`
+    /// keeps and the battlefield objects `kept` keeps (CR 800.4a).
+    /// The seat-keyed maps keep every seat, because `conforms_in` re-scopes them after its lift.
+    fn snapshot_among(
+        state: &GameState,
+        in_game: impl Fn(PlayerId) -> bool,
+        kept: impl Fn(&GameObject) -> bool,
+    ) -> ResourceVector {
         let mut v = ResourceVector::default();
 
         // CR 106.1: floating mana, summed across every player's pool.
         for player in &state.players {
-            for (i, color) in MANA_INDEX.iter().enumerate() {
-                v.mana[i] += player.mana_pool.count_color(*color) as i64;
+            let pooled = in_game(player.id);
+            if pooled {
+                for (i, color) in MANA_INDEX.iter().enumerate() {
+                    v.mana[i] += player.mana_pool.count_color(*color) as i64;
+                }
             }
             // CR 119.1: per-player life.
             v.life.insert(player.id, player.life as i64);
@@ -2278,7 +2292,7 @@ impl ResourceVector {
             // player loses) — mirrors the per-player `life`/`library_delta` maps above.
             v.poison.insert(player.id, player.poison_counters as i64);
             // CR 122.1: energy reserve.
-            if player.energy > 0 {
+            if pooled && player.energy > 0 {
                 v.counters.insert(
                     (CounterClass::Energy, ObjectClass::Player),
                     player.energy as i64,
@@ -2289,7 +2303,7 @@ impl ResourceVector {
         // CR 122.1: counters on battlefield objects, keyed by counter kind and
         // the bearer's object class.
         for id in &state.battlefield {
-            let Some(object) = state.objects.get(id) else {
+            let Some(object) = state.objects.get(id).filter(|object| kept(object)) else {
                 continue;
             };
             let class = object_class(object.card_types.core_types.as_slice());
@@ -2370,10 +2384,30 @@ impl ResourceVector {
     /// created and destroyed inside the period is not counted — an under-report, which
     /// understates the preview and leaves the conformance comparison symmetric.
     pub(crate) fn period(before: &GameState, after: &GameState) -> ResourceVector {
-        let mut v = Self::delta(&Self::snapshot(before), &Self::snapshot(after));
+        Self::period_among(before, after, |_| true)
+    }
+
+    /// CR 800.4a: [`ResourceVector::period`] measured over the seats `in_game` keeps, so a
+    /// repetition a seat departs on is compared without what that departure removed.
+    pub(crate) fn period_among(
+        before: &GameState,
+        after: &GameState,
+        in_game: impl Fn(PlayerId) -> bool + Copy,
+    ) -> ResourceVector {
+        // CR 800.4a: an object leaves the comparison iff the departure took it off the
+        // battlefield — its owner left, or a departed seat still controlled it once the control
+        // effects giving it that control ended (it was exiled); a reverted object stays.
+        let kept = |object: &GameObject| {
+            in_game(object.owner)
+                && (in_game(object.controller) || after.battlefield.contains(&object.id))
+        };
+        let mut v = Self::delta(
+            &Self::snapshot_among(before, in_game, kept),
+            &Self::snapshot_among(after, in_game, kept),
+        );
         v.tokens_created = crate::game::engine::minted_battlefield_ids(before, after)
             .into_iter()
-            .filter(|id| after.objects.get(id).is_some_and(|o| o.is_token))
+            .filter(|id| after.objects.get(id).is_some_and(|o| o.is_token && kept(o)))
             .count() as i64;
         v
     }
@@ -9202,6 +9236,120 @@ mod tests {
         assert!(
             loop_states_equal_modulo_resources(&a, &b),
             "same board with only monotone resources differing must be modulo-resources equal (CR 732.2a net-progress loop point)"
+        );
+    }
+
+    fn plus_one_total(v: &ResourceVector) -> i64 {
+        v.counters
+            .iter()
+            .filter(|((class, _), _)| *class == CounterClass::Plus1Plus1)
+            .map(|(_, n)| *n)
+            .sum()
+    }
+
+    /// CR 800.4a: a seat's departure takes its counters with it, so the scoped period drops
+    /// them and keeps a surviving seat's.
+    #[test]
+    fn period_among_drops_a_departed_seats_objects() {
+        let mut before = GameState::new_two_player(7);
+        let kept = battlefield_creature(&mut before, 500, 0);
+        let gone = battlefield_creature(&mut before, 501, 1);
+        before
+            .objects
+            .get_mut(&gone)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        let mut after = before.clone();
+        after
+            .objects
+            .get_mut(&kept)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        after.battlefield.retain(|id| *id != gone);
+        let full = ResourceVector::period(&before, &after);
+        let scoped = ResourceVector::period_among(&before, &after, |seat| seat != PlayerId(1));
+        assert_eq!(plus_one_total(&full), 0);
+        assert_eq!(plus_one_total(&scoped), 1);
+    }
+
+    /// CR 800.4a, through the real `eliminate_player`: a survivor's object the leaver stole
+    /// reverts and stays, and a survivor's object that entered under the leaver is exiled, so
+    /// neither moves the scoped +1/+1 total.
+    #[test]
+    fn period_among_follows_the_departures_own_order() {
+        use crate::types::ability::{ContinuousModification, Duration, TargetFilter};
+        let depart = |before: &GameState| {
+            let mut after = before.clone();
+            crate::game::elimination::eliminate_player(&mut after, PlayerId(1), &mut Vec::new());
+            after
+        };
+        let survivor_object = |state: &mut GameState, name: &str| {
+            let id = crate::game::zones::create_object(
+                state,
+                CardId(1),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&id).unwrap().card_types.core_types = vec![CoreType::Creature];
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .counters
+                .insert(CounterType::Plus1Plus1, 1);
+            id
+        };
+        let scoped = |before: &GameState, after: &GameState| {
+            plus_one_total(&ResourceVector::period_among(before, after, |seat| {
+                seat != PlayerId(1)
+            }))
+        };
+
+        let mut stolen = GameState::new(crate::types::format::FormatConfig::free_for_all(), 3, 7);
+        let id = survivor_object(&mut stolen, "Stolen Bear");
+        stolen.add_transient_continuous_effect(
+            id,
+            PlayerId(1),
+            Duration::Permanent,
+            TargetFilter::SpecificObject { id },
+            vec![ContinuousModification::ChangeController],
+            None,
+        );
+        crate::game::layers::mark_layers_full(&mut stolen);
+        crate::game::layers::evaluate_layers(&mut stolen);
+        assert_eq!(stolen.objects[&id].controller, PlayerId(1));
+        let after = depart(&stolen);
+        assert!(after.battlefield.contains(&id) && after.objects[&id].controller == PlayerId(0));
+        assert_eq!(
+            scoped(&stolen, &after),
+            0,
+            "a reverted object stays on both sides"
+        );
+
+        let mut entered = GameState::new(crate::types::format::FormatConfig::free_for_all(), 3, 7);
+        let id = survivor_object(&mut entered, "Entered Under P1");
+        crate::game::zones::apply_battlefield_entry_controller_override(
+            &mut entered,
+            &mut Vec::new(),
+            id,
+            PlayerId(1),
+        );
+        crate::game::layers::mark_layers_full(&mut entered);
+        crate::game::layers::evaluate_layers(&mut entered);
+        assert_eq!(entered.objects[&id].controller, PlayerId(1));
+        let after = depart(&entered);
+        assert!(after.exile.contains(&id));
+        assert_eq!(
+            plus_one_total(&ResourceVector::period(&entered, &after)),
+            -1
+        );
+        assert_eq!(
+            scoped(&entered, &after),
+            0,
+            "an exiled object leaves both sides"
         );
     }
 
@@ -19762,6 +19910,7 @@ mod tests {
             })),
             shortened_by: None,
             published_declaration: None,
+            leading_aims: Vec::new(),
             road: crate::analysis::loop_check::OfferRoad::Ring,
             period: Default::default(),
         };

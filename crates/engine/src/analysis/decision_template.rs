@@ -137,6 +137,25 @@ pub struct DecisionTemplate {
     pub key: DecisionGroupKey,
 }
 
+impl DecisionTemplate {
+    /// CR 732.2a: this template as a declaration of `count` states it — a `Piecewise` segment
+    /// starting at or past `count` names no repetition the count reaches, so it is dropped.
+    pub(crate) fn cut_schedules_at(&mut self, count: &IterationCount) {
+        let IterationCount::Fixed(count) = *count else {
+            return;
+        };
+        for decision in &mut self.decisions {
+            if let PinnedDecision::Targets { targets, .. } = decision {
+                for pin in targets {
+                    if let TargetPin::Scheduled(TargetSchedule::Piecewise(steps)) = pin {
+                        steps.retain(|(start, _)| *start < count);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// CR 732.2a: WHICH CHOICE a [`DecisionSlot`] names, typed rather than numbered. One
 /// variant per choice point a producer constructs a slot for, and the set is closed by
 /// [`pin_answers_point`]'s exhaustive, wildcard-free ([`PinnedDecision`] x
@@ -413,8 +432,10 @@ pub struct ShortcutDecisionSchema {
     ///   the charge model reads; its `replay` stamp is its OWN count — how far it drives, clamped
     ///   to [`ShortcutDecisionSchema::deliverable_capacity`] — and it is validated at that count;
     /// * this declaration is the witness `game::engine::bounded_offer_tail` builds, stamped and
-    ///   validated at [`ShortcutDecisionSchema::iteration_count`]. Published only when the
-    ///   witness count exceeds the own count and the witness conforms there;
+    ///   validated at [`ShortcutDecisionSchema::iteration_count`]: the most repetitions of it the
+    ///   proposer survives (its whole cascade, or one short of the proposer's own crossing —
+    ///   CR 704.5a / CR 704.5b / CR 704.5c), capped at the capacity. Published only when that count exceeds the own
+    ///   count and the witness conforms there;
     /// * [`ShortcutDecisionSchema::iteration_count`] is this declaration's count when one is
     ///   published, else the published declaration's own count.
     #[serde(default)]

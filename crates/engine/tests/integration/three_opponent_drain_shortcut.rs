@@ -48,7 +48,7 @@ const HIT: i32 = 3;
 
 const FC_FILE: &str = "exquisite_blood_tenacity_alternating_offer_4p.json.gz";
 
-fn load_s() -> GameState {
+pub(crate) fn load_s() -> GameState {
     restore_dump(&gunzip_dump(include_bytes!(
         "../fixtures/exquisite_blood_tenacity_three_opponents_4p.json.gz"
     )))
@@ -61,7 +61,7 @@ fn fc_path() -> std::path::PathBuf {
 }
 
 // Read at run time: the regenerator lives in this binary, so it must build without F-C.
-fn load_fc() -> GameState {
+pub(crate) fn load_fc() -> GameState {
     let gz = std::fs::read(fc_path()).expect("F-C is committed beside S");
     restore_dump(&gunzip_dump(&gz))
 }
@@ -609,13 +609,16 @@ fn authored_orders_are_admitted_exactly_where_every_aim_lands() {
     );
 }
 
+/// A preview element's count, allocation and per-seat life lines.
+type ExpectedElement = (u32, &'static [(PlayerId, u32)], &'static [(u8, i32)]);
+
 /// Every published preview element states the suggestion's prefix, the victims that prefix
 /// drains with the in-flight hit on P2 (CR 603.3d), and is itself admitted.
 #[test]
 fn each_preview_element_states_the_suggestions_prefix_and_its_victims() {
     let mut state = load_fc();
     let dialog = dialog(&mut state);
-    let expected: [(u32, &[(PlayerId, u32)], &[(u8, i32)]); 8] = [
+    let expected: [ExpectedElement; 8] = [
         (1, &[(P1, 1)], &[(2, -3)]),
         (2, &[(P1, 2)], &[(1, -3), (2, -3)]),
         (3, &[(P1, 3)], &[(1, -6), (2, -3)]),

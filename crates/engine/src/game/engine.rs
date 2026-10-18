@@ -3489,20 +3489,27 @@ fn bounded_offer_tail(
     let witness = pins
         .as_ref()
         .and_then(|observed| periodic.piecewise_witness(state, proposer, observed, &points, lead));
-    let witness_bound = witness
+    let witness_cascade = witness.as_ref().and_then(|witness| {
+        periodic.elimination_cascade(
+            state,
+            proposer,
+            Some(witness),
+            pins.as_ref(),
+            &points,
+            crate::analysis::resource::ChargeBound::Ceiling,
+            lead,
+        )
+    });
+    let witness_bound = witness_cascade.as_ref().map_or(0, |cascade| cascade.count);
+    // CR 104.2a + CR 704.5a / CR 704.5b / CR 704.5c: the most repetitions of the witness the
+    // proposer survives — its whole cascade, or the repetition before the proposer's own
+    // crossing, which can only be the cascade's last entry.
+    let witness_safe = witness_cascade
         .as_ref()
-        .and_then(|witness| {
-            periodic.elimination_cascade(
-                state,
-                proposer,
-                Some(witness),
-                pins.as_ref(),
-                &points,
-                crate::analysis::resource::ChargeBound::Ceiling,
-                lead,
-            )
-        })
-        .map_or(0, |cascade| cascade.count);
+        .map_or(0, |cascade| match cascade.entries.last() {
+            Some(entry) if entry.seats.contains(&proposer) => entry.repetition.saturating_sub(1),
+            _ => cascade.count,
+        });
     // THE LARGER OF THE TWO, and that is not an optimisation. `handle_declare_shortcut` refuses
     // any `Fixed(n)` above `deliverable_capacity`, so a ceiling below the suggestion would have it
     // refuse the offer's own suggestion; and nothing about the witness's greedy aim guarantees its
@@ -3537,8 +3544,9 @@ fn bounded_offer_tail(
     // hands the constructor `Some(..)` and `schema.is_bounded()` is true by construction for every
     // offer it mints.
     //
-    // `Fixed(measured_bound)` is handed in as the SUGGESTION, the witness's count when the witness
-    // wins, and step (11) lowers it to the own count when no witness is published.
+    // `Fixed(measured_bound)` is handed in as the SUGGESTION and step (11) sets the published one.
+    // The ceiling still counts a witness the proposer does not survive, since
+    // `deliverable_capacity = max(own, witness_bound)`.
     // `Some(measured_bound)` is the CEILING the declare handler enforces, which rejects any
     // `Fixed(n)` above it and rejects `UntilLethal` outright, both already shipped. Either number
     // handed here may EXCEED the engine's repetition budget, since nothing above clamps them; the
@@ -3568,19 +3576,23 @@ fn bounded_offer_tail(
         &charged,
         &own_count,
     );
-    // (11) The SUGGESTION: the witness, stamped and validated at `iteration_count`, published only
-    // where it drives further than the declaration's own count and conforms there.
+    // (11) The SUGGESTION: the witness at the most repetitions the proposer survives, within the
+    // capacity, cut to the segments that count reaches, stamped and validated at that count, and
+    // published only where it drives further than the declaration's own count and conforms there.
+    let suggested_count = witness_safe.min(schema.deliverable_capacity);
+    let suggested = IterationCount::Fixed(suggested_count);
     let suggestion = witness
-        .filter(|_| witness_bound > own.count)
+        .filter(|_| suggested_count > own.count)
         .zip(declaration.as_ref())
         .and_then(|(mut witness, published)| {
+            witness.cut_schedules_at(&suggested);
             witness.replay = crate::analysis::decision_template::ReplayMode::Scheduled {
-                count: schema.iteration_count.clone(),
+                count: suggested.clone(),
             };
             crate::analysis::decision_template::declaration_conforms(
                 &schema,
                 &witness,
-                shortcut_validated_range(&schema.iteration_count, Some(&witness)),
+                shortcut_validated_range(&suggested, Some(&witness)),
                 crate::analysis::decision_template::AimContext {
                     proposer,
                     per_cycle: certificate.per_cycle.as_ref(),
@@ -3592,7 +3604,10 @@ fn bounded_offer_tail(
             .then_some(witness)
         });
     match suggestion {
-        Some(witness) => schema.suggested_declaration = Some(witness),
+        Some(witness) => {
+            schema.iteration_count = suggested;
+            schema.suggested_declaration = Some(witness);
+        }
         None => schema.iteration_count = own_count,
     }
     // The interaction layer reads no `GameState`, so the lead it splits a preview by is
@@ -6724,7 +6739,11 @@ fn materialize_fixed_shortcut(
                         .map(|p| p.id)
                         .collect();
                     if !pd.conforms_in(
-                        &crate::analysis::resource::ResourceVector::period(&committed, &s),
+                        &crate::analysis::resource::ResourceVector::period_among(
+                            &committed,
+                            &s,
+                            |seat| still_in_game.contains(&seat),
+                        ),
                         pins,
                         &still_in_game,
                     ) {
@@ -8355,6 +8374,7 @@ fn handle_declare_shortcut(
         // Bound here, while the offer carrying it is still in scope: the answer journal it was
         // pinned from does not survive to the consumption seam that reads it.
         published_declaration: offer.declaration.cloned(),
+        leading_aims: offer.schema.leading_aims.clone(),
         road: offer.road,
         period: offer.period.clone(),
     };
@@ -21300,6 +21320,7 @@ mod stage2_injector_tests {
             per_cycle: None,
             shortened_by: None,
             published_declaration: None,
+            leading_aims: Vec::new(),
             road: crate::analysis::loop_check::OfferRoad::Ring,
             period: Default::default(),
         };
@@ -21451,6 +21472,7 @@ mod stage2_injector_tests {
             per_cycle: None,
             shortened_by: None,
             published_declaration: None,
+            leading_aims: Vec::new(),
             road: crate::analysis::loop_check::OfferRoad::Ring,
             period: Default::default(),
         };
