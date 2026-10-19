@@ -398,7 +398,8 @@ pub fn linked_exile_cards_for_source(
 }
 
 /// CR 607.2a + CR 400.7: The cards linked to a trigger bound to `source`: its
-/// departure snapshot plus what that incarnation exiled after it departed.
+/// latched snapshot plus the linked-exile LKI recorded for that incarnation
+/// (its departure pile and what it exiled after departing).
 pub fn linked_exile_pile(
     state: &GameState,
     source: &TriggerSourceContext,
