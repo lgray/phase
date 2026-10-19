@@ -15883,6 +15883,12 @@ fn apply_non_priority_pass_action(
         // battlefield-permanent selection. Publish a fresh tracked set so the
         // downstream `PayCost { ScaledMana }` and the `IfYouDo`/`Untap` tail
         // resolve against exactly this selection, then resume the chain.
+        //
+        // CR 115.10a + CR 608.2d: the same prompt also carries a described
+        // damage recipient ("a creature or player", no "target") — see
+        // `effects::deal_damage::parked_recipient_pool`. That pick is bound to
+        // the parked damage instruction instead of being published, and may be a
+        // player.
         (
             WaitingFor::ChooseObjectsSelection {
                 player,
@@ -15905,41 +15911,63 @@ fn apply_non_priority_pass_action(
                     max.map_or(String::new(), |maximum| format!(" and at most {maximum}"))
                 )));
             }
-            // Validate all selected targets are distinct objects in the eligible set.
-            let mut selected_objects = HashSet::with_capacity(selected_count);
+            // The prompt belongs to a parked described damage instruction only when
+            // the active continuation is that instruction, still holding exactly
+            // the pool this prompt offers. A tracked-set producer's prompt never
+            // matches: its parked continuation is some other instruction, even one
+            // whose own candidate set would be identical.
+            let recipient_pool = state
+                .active_ability_continuation()
+                .and_then(|continuation| {
+                    effects::deal_damage::parked_recipient_pool(&continuation.chain)
+                })
+                .filter(|pool| *pool == eligible_set);
+            // Validate all selected targets are distinct members of the eligible set;
+            // a player is a legal pick only for a damage recipient.
+            let mut selected: HashSet<TargetRef> = HashSet::with_capacity(selected_count);
             for t in &targets {
                 if !eligible_set.contains(t) {
                     return Err(EngineError::InvalidAction(
                         "Selected target not eligible for object selection".to_string(),
                     ));
                 }
-                let TargetRef::Object(id) = t else {
+                if recipient_pool.is_none() && matches!(t, TargetRef::Player(_)) {
                     return Err(EngineError::InvalidAction(
                         "Object selection accepts battlefield objects only".to_string(),
                     ));
-                };
-                if !selected_objects.insert(*id) {
+                }
+                if !selected.insert(t.clone()) {
                     return Err(EngineError::InvalidAction(
                         "Duplicate object in object selection".to_string(),
                     ));
                 }
             }
-            let ids: Vec<ObjectId> = targets
-                .iter()
-                .map(|target| match target {
-                    TargetRef::Object(id) => *id,
-                    TargetRef::Player(_) => unreachable!("validated as objects above"),
-                })
-                .collect();
-            // CR 608.2c: Always allocate a fresh tracked set — a player-chosen
-            // "those creatures" set is a new resolution scope. An empty
-            // selection yields an empty fresh set (size 0).
-            effects::publish_fresh_tracked_set(state, ids);
-            events.push(GameEvent::EffectResolved {
-                kind: crate::types::ability::EffectKind::ChooseObjectsIntoTrackedSet,
-                source_id: ObjectId(0), // Source not tracked through choice state
-                subject: None,
-            });
+            if recipient_pool.is_some() {
+                // CR 608.2d: the pick is chosen while the instruction is applied, so
+                // it is bound unpinned (never announced as a target) as the parked
+                // damage node's recipient. Nothing is published: this is not a
+                // tracked-set selection.
+                if let Some(frame) = state.active_ability_continuation_frame_mut() {
+                    frame.pending.chain.set_unpinned_targets(targets);
+                }
+            } else {
+                let ids: Vec<ObjectId> = targets
+                    .iter()
+                    .map(|target| match target {
+                        TargetRef::Object(id) => *id,
+                        TargetRef::Player(_) => unreachable!("validated as objects above"),
+                    })
+                    .collect();
+                // CR 608.2c: Always allocate a fresh tracked set — a player-chosen
+                // "those creatures" set is a new resolution scope. An empty
+                // selection yields an empty fresh set (size 0).
+                effects::publish_fresh_tracked_set(state, ids);
+                events.push(GameEvent::EffectResolved {
+                    kind: crate::types::ability::EffectKind::ChooseObjectsIntoTrackedSet,
+                    source_id: ObjectId(0), // Source not tracked through choice state
+                    subject: None,
+                });
+            }
             state.waiting_for = WaitingFor::Priority { player: p };
             state.priority_player = p;
             // CR 608.2: restore the triggering event so the stashed
@@ -23319,7 +23347,7 @@ mod stage2_injector_tests {
 
         assert_eq!(
             producers.len() + readers.len() + in_test,
-            53,
+            54,
             "CR 603.5 prompt census drifted. A new PRODUCER must have its recipient bound \
              somewhere — the mint's conjunct (a) covers exactly ONE of them. A new READER is \
              the benign case (U4's own consumption arm was one).\n\
@@ -23327,9 +23355,9 @@ mod stage2_injector_tests {
         );
         assert_eq!(
             (producers.len(), readers.len(), in_test),
-            (4, 11, 38),
+            (4, 11, 39),
             "the partition, not just the total: four PRODUCTION producers, eleven PRODUCTION \
-             readers (including the two new optional-subject projection reads), and 38 \
+             readers (including the two new optional-subject projection reads), and 39 \
              `#[cfg(test)]` lines.\nproducers={producers:#?}\n\
              readers={readers:#?}"
         );
