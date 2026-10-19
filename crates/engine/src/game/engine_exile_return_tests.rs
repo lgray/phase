@@ -1041,10 +1041,10 @@ fn haytham_kenway_per_opponent_exile_returns_when_source_leaves() {
     assert!(state.exile_links.is_empty(), "exile link must be consumed");
 }
 
-/// CR 607.2a + CR 610.3: Two-trigger exile-return cards link the ETB
-/// exile to the LTB return text. Journey to Nowhere has no explicit
-/// "until" text on the ETB trigger, so the parser synthesis must still
-/// create an `UntilSourceLeaves` exile link for the runtime return path.
+/// CR 607.2a + CR 607.3: Two-trigger exile-return cards link the ETB exile to
+/// the LTB return text. Journey to Nowhere's ETB exile records a
+/// `TrackedBySource` link, and the exiled creature returns only when the LTB
+/// trigger resolves, not when Journey leaves.
 #[test]
 fn journey_to_nowhere_two_trigger_oracle_returns_exiled_creature() {
     use crate::game::ability_utils::build_resolved_from_def;
@@ -1091,11 +1091,7 @@ fn journey_to_nowhere_two_trigger_oracle_returns_exiled_creature() {
         .execute
         .as_deref()
         .expect("trigger.execute");
-    assert_eq!(
-        execute_def.duration,
-        Some(crate::types::ability::Duration::UntilHostLeavesPlay),
-        "parser synthesis must make the ETB exile create an exile link"
-    );
+    assert_eq!(execute_def.duration, None, "the ETB exile has no duration");
 
     let mut resolved = build_resolved_from_def(execute_def, journey_id, PlayerId(0));
     resolved.targets = vec![TargetRef::Object(creature_id)];
@@ -1124,12 +1120,7 @@ fn journey_to_nowhere_two_trigger_oracle_returns_exiled_creature() {
     assert!(state.exile_links.iter().any(|link| {
         link.exiled_id == creature_id
             && link.source_id == journey_id
-            && matches!(
-                link.kind,
-                crate::types::game_state::ExileLinkKind::UntilSourceLeaves {
-                    return_zone: Zone::Battlefield
-                }
-            )
+            && matches!(link.kind, ExileLinkKind::TrackedBySource)
     }));
 
     let mut events: Vec<GameEvent> = Vec::new();
@@ -1147,14 +1138,33 @@ fn journey_to_nowhere_two_trigger_oracle_returns_exiled_creature() {
     .unwrap();
 
     assert!(state.players[0].graveyard.contains(&journey_id));
+    assert!(
+        state
+            .stack
+            .back()
+            .is_some_and(|entry| entry.source_id == journey_id
+                && matches!(
+                    entry.kind,
+                    crate::types::game_state::StackEntryKind::TriggeredAbility { .. }
+                )),
+        "Journey's LTB trigger must be pending"
+    );
+    assert!(
+        state.exile.contains(&creature_id),
+        "the creature stays exiled until the LTB trigger resolves"
+    );
+
+    let mut events = Vec::new();
+    crate::game::stack::resolve_top(state, &mut events);
+
     assert!(state.battlefield.contains(&creature_id));
+    assert_eq!(state.objects[&creature_id].controller, PlayerId(1));
     assert!(!state.exile.contains(&creature_id));
     assert!(state.exile_links.is_empty());
 }
 
 /// CR 603.2 + CR 603.3: A creature returned to the battlefield by an
-/// "until this leaves" exile-return (Fiend Hunter's leaves-the-battlefield
-/// trigger) enters the battlefield, so its OWN enters-the-battlefield trigger
+/// "until this leaves" exile-return enters the battlefield, so its OWN enters-the-battlefield trigger
 /// must fire. Regression test for issue #3673: Wall of Omens, returned when
 /// Fiend Hunter dies, was not drawing a card because `check_exile_returns`
 /// appended the enter event without scanning it for triggers.
