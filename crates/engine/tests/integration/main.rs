@@ -1936,6 +1936,7 @@ mod tomb_veils_of_fear_life_loss_runtime;
 mod torch_the_tower_die_exile;
 mod tracked_set_anaphor_source;
 mod trench_behemoth_landfall_force_attack;
+mod trigger_batch_after_sba;
 mod trigger_construction_cursor_release;
 mod trigger_index_readiness;
 mod trigger_index_stale_entry_panics;

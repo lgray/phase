@@ -181,11 +181,9 @@ fn linked_exile_for_context(
             // as the objects the trigger latched; a card that left exile after the
             // trigger latched its pile (a CR 610.3 return, for one) is not "the exiled
             // card", including when another effect exiled it again.
-            source
-                .linked_exile_snapshot
-                .iter()
+            crate::game::players::linked_exile_pile(state, source)
+                .into_iter()
                 .filter(|linked| linked.is_still_exiled(state))
-                .cloned()
                 .collect()
         })
         .unwrap_or_else(|| crate::game::players::linked_exile_cards_for_source(state, ctx.source))
@@ -10111,8 +10109,7 @@ pub(crate) fn resolve_player_count(
                                     )
                                 },
                                 |source| {
-                                    source
-                                        .linked_exile_snapshot
+                                    crate::game::players::linked_exile_pile(state, source)
                                         .iter()
                                         .any(|linked| linked.owner == p.id)
                                 },
@@ -21448,6 +21445,62 @@ mod tests {
 
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), source), 5);
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(1), source), 4);
+    }
+
+    /// CR 607.2a + CR 113.7a: the owner scope of a trigger bound to a departed
+    /// incarnation counts owners of cards that incarnation exiled after departing.
+    #[test]
+    fn player_count_owners_of_cards_exiled_by_source_reads_bound_incarnation_lki() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Graveyard,
+        );
+        let exiled = create_object(
+            &mut state,
+            CardId(31),
+            PlayerId(1),
+            "Exiled 31".to_string(),
+            Zone::Exile,
+        );
+        let trigger_source = crate::game::triggers::trigger_source_context_for_latch(
+            &state,
+            &state.objects[&source],
+        );
+        assert!(trigger_source.linked_exile_snapshot.is_empty());
+        let departed = trigger_source.identity.reference.incarnation;
+        state.linked_exile_lki.insert(
+            source,
+            vec![crate::types::game_state::LinkedExileLki {
+                departed,
+                successor: departed,
+                snapshot: vec![crate::types::game_state::LinkedExileSnapshot {
+                    exiled_id: exiled,
+                    owner: PlayerId(1),
+                    mana_value: 0,
+                    incarnation: state.objects[&exiled].incarnation,
+                }],
+            }],
+        );
+        let mut ability = ResolvedAbility::new(
+            Effect::TargetOnly {
+                target: TargetFilter::Any,
+            },
+            Vec::new(),
+            source,
+            PlayerId(0),
+        );
+        ability.set_trigger_source_recursive(trigger_source);
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::PlayerCount {
+                filter: PlayerFilter::OwnersOfCardsExiledBySource,
+            },
+        };
+
+        assert_eq!(resolve_quantity_with_targets(&state, &expr, &ability), 1);
     }
 
     #[test]
