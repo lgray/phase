@@ -410,7 +410,7 @@ fn exile_return_end_to_end_through_pipeline() {
 }
 
 /// CR 730.3c: An "exile until this leaves" effect (Banisher Priest, Banishing
-/// Light, Oblivion Ring) that exiles a MERGED Mutate permanent must, when it
+/// Light) that exiles a MERGED Mutate permanent must, when it
 /// leaves and its `UntilSourceLeaves` return fires, bring back ALL of the
 /// component cards the merged permanent split into — not just the tracked
 /// survivor. Regression test for the implicit-return path (companion to the
@@ -1164,10 +1164,11 @@ fn journey_to_nowhere_two_trigger_oracle_returns_exiled_creature() {
 }
 
 /// CR 603.2 + CR 603.3: A creature returned to the battlefield by an
-/// "until this leaves" exile-return enters the battlefield, so its OWN enters-the-battlefield trigger
-/// must fire. Regression test for issue #3673: Wall of Omens, returned when
-/// Fiend Hunter dies, was not drawing a card because `check_exile_returns`
-/// appended the enter event without scanning it for triggers.
+/// "until this leaves" exile-return enters the battlefield, so its OWN
+/// enters-the-battlefield trigger must fire. Regression test for issue #3673:
+/// Wall of Omens, returned when Fiend Hunter dies, was not drawing a card
+/// because `check_exile_returns` appended the enter event without scanning it
+/// for triggers.
 #[test]
 fn exile_return_fires_returned_creatures_etb_trigger() {
     use crate::game::scenario::{GameScenario, P0};
@@ -1176,9 +1177,9 @@ fn exile_return_fires_returned_creatures_etb_trigger() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
-    // Fiend Hunter on P0's battlefield (source of the exile). We register the
-    // UntilSourceLeaves link directly rather than resolving Fiend Hunter's ETB
-    // exile — the return path, not the exile path, is under test here.
+    // Fiend Hunter on P0's battlefield (source of the exile). We register an
+    // UntilSourceLeaves link directly; the return path, not the exile path, is
+    // under test here.
     let hunter_id = scenario.add_creature(P0, "Fiend Hunter", 1, 3).id();
 
     // Wall of Omens, owned by P0, with its real ETB draw trigger. It is placed

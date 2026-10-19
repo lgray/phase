@@ -19,18 +19,31 @@
 //!   Worldgorger Dragon: "Flying, trample / When this creature enters, exile all
 //!    other permanents you control. When this creature leaves the battlefield,
 //!    return the exiled cards to the battlefield under their owners' control."
+//!   Admonition Angel: "Flying / Landfall — Whenever a land you control enters,
+//!    you may exile target nonland permanent other than this creature. When
+//!    this creature leaves the battlefield, return all cards exiled with it to
+//!    the battlefield under their owners' control."
+//!   Swords to Plowshares: "Exile target creature. Its controller gains life
+//!    equal to its power."
+//!   Mind Raker: "Devoid (This card has no color.) When this creature enters,
+//!    you may put a card an opponent owns from exile into that player's
+//!    graveyard. If you do, each opponent discards a card."
+//!   Reanimate: "Put target creature card from a graveyard onto the battlefield
+//!    under your control. You lose life equal to that card's mana value."
+//!   Unsummon: "Return target creature to its owner's hand."
 //! Ruling (Fiend Hunter, 2018-12-07): if Fiend Hunter leaves the battlefield
 //! before its first ability resolves, its second ability "will trigger and do
 //! nothing. Then its first ability will resolve and exile the target creature
 //! indefinitely."
 
+use engine::game::merge::{merge_object_onto, MergeSide};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::ability::{Effect, EffectKind, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{GameState, LoopDetectionMode, StackEntryKind, WaitingFor};
-use engine::types::identifiers::ObjectId;
+use engine::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -350,5 +363,179 @@ fn worldgorger_animate_dead_loop_keeps_stack_bounded_with_detection_off() {
     assert!(
         stack_max <= 1,
         "the stack must not grow per cycle, reached {stack_max}"
+    );
+}
+
+/// Mutates `rider` onto `host` on the battlefield (CR 730.2); mutate casting is
+/// not under test.
+fn merge(runner: &mut GameRunner, rider: ObjectId, host: ObjectId) {
+    let state = runner.state_mut();
+    let mut events = Vec::new();
+    merge_object_onto(state, rider, host, MergeSide::Top, &mut events);
+    state.battlefield.retain(|&id| id != rider);
+}
+
+fn assert_returned_unmerged(state: &GameState, ids: &[ObjectId], label: &str) {
+    for id in ids {
+        let obj = &state.objects[id];
+        assert_eq!(obj.zone, Zone::Battlefield, "{label}: {id:?} returns");
+        assert_eq!(obj.controller, P1, "{label}: {id:?} under its owner");
+        assert!(
+            obj.merged_components.is_empty() && obj.split_from_merge_survivor.is_none(),
+            "{label}: {id:?} returns as a separate, unmerged object (CR 730.3)"
+        );
+    }
+}
+
+/// R9 — CR 607.2a + CR 730.3c: Oblivion Ring's LTB finds every object its
+/// exiled merged permanent became, and only those: Journey to Nowhere's merged
+/// pile, co-located in exile, stays there.
+#[test]
+fn class_ltb_return_brings_back_every_merged_component_of_its_own_pile() {
+    let db = shared_card_db().expect("integration card fixture must load");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let host_a = scenario.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
+    let rider_a = scenario.add_real_card(P1, "Gemrazer", Zone::Battlefield, db);
+    let host_b = scenario.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
+    let rider_b = scenario.add_real_card(P1, "Gemrazer", Zone::Battlefield, db);
+    let ring = scenario.add_real_card(P0, "Oblivion Ring", Zone::Hand, db);
+    let journey = scenario.add_real_card(P0, "Journey to Nowhere", Zone::Hand, db);
+    let disenchant = scenario.add_real_card(P0, "Disenchant", Zone::Hand, db);
+    let mut mana = pool(3, ManaType::White);
+    mana.extend(pool(4, ManaType::Colorless));
+    scenario.with_mana_pool(P0, mana);
+    let mut runner = scenario.build();
+    merge(&mut runner, rider_a, host_a);
+    merge(&mut runner, rider_b, host_b);
+
+    drop(runner.cast(ring).commit());
+    drive_to_empty_stack(&mut runner, true, Some(host_a), |_| {});
+    drop(runner.cast(journey).commit());
+    drive_to_empty_stack(&mut runner, true, Some(host_b), |_| {});
+    for id in [host_a, rider_a, host_b, rider_b] {
+        assert_eq!(runner.state().objects[&id].zone, Zone::Exile);
+    }
+
+    drop(runner.cast(disenchant).target_object(ring).commit());
+    drive_to_empty_stack(&mut runner, true, None, |_| {});
+
+    let state = runner.state();
+    assert_returned_unmerged(state, &[host_a, rider_a], "Oblivion Ring's pile");
+    assert_eq!(state.objects[&host_b].zone, Zone::Exile);
+    assert_eq!(
+        state.objects[&rider_b].zone,
+        Zone::Exile,
+        "a pile linked to another source is not found"
+    );
+    assert!(
+        state
+            .exile_links
+            .iter()
+            .any(|link| link.exiled_id == host_b && link.source_id == journey),
+        "Journey's link survives the Ring's return"
+    );
+}
+
+/// R10 — CR 607.2a + CR 730.3c: Admonition Angel's "return all cards exiled
+/// with it" brings back every component of a merged permanent it exiled.
+#[test]
+fn admonition_angel_return_brings_back_every_merged_component() {
+    let db = shared_card_db().expect("integration card fixture must load");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let host = scenario.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
+    let rider = scenario.add_real_card(P1, "Gemrazer", Zone::Battlefield, db);
+    let angel = scenario.add_real_card(P0, "Admonition Angel", Zone::Battlefield, db);
+    let plains = scenario.add_real_card(P0, "Plains", Zone::Hand, db);
+    let unsummon = scenario.add_real_card(P0, "Unsummon", Zone::Hand, db);
+    scenario.with_mana_pool(P0, pool(1, ManaType::Blue));
+    let mut runner = scenario.build();
+    merge(&mut runner, rider, host);
+
+    let card_id = runner.state().objects[&plains].card_id;
+    runner
+        .act(GameAction::PlayLand {
+            object_id: plains,
+            card_id,
+        })
+        .expect("land play accepted");
+    drive_to_empty_stack(&mut runner, true, Some(host), |_| {});
+    assert_eq!(runner.state().objects[&host].zone, Zone::Exile);
+    assert_eq!(runner.state().objects[&rider].zone, Zone::Exile);
+
+    drop(runner.cast(unsummon).target_object(angel).commit());
+    drive_to_empty_stack(&mut runner, true, None, |_| {});
+
+    let state = runner.state();
+    assert_eq!(state.objects[&angel].zone, Zone::Hand);
+    assert_returned_unmerged(state, &[host, rider], "Admonition Angel's pile");
+}
+
+/// R11 — CR 400.7 + CR 607.2a + CR 730.3c: a component split from a merged
+/// permanent is found only through the survivor's incarnation that split it.
+/// Once that survivor changes zones again (graveyard, battlefield, then a
+/// second, linked exile), the linked return brings back the survivor alone.
+#[test]
+fn linked_return_leaves_component_of_a_survivor_that_changed_zones_again() {
+    let db = shared_card_db().expect("integration card fixture must load");
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let host = scenario.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
+    let rider = scenario.add_real_card(P1, "Gemrazer", Zone::Battlefield, db);
+    let angel = scenario.add_real_card(P0, "Admonition Angel", Zone::Battlefield, db);
+    let swords = scenario.add_real_card(P0, "Swords to Plowshares", Zone::Hand, db);
+    let raker = scenario.add_real_card(P0, "Mind Raker", Zone::Hand, db);
+    let reanimate = scenario.add_real_card(P0, "Reanimate", Zone::Hand, db);
+    let plains = scenario.add_real_card(P0, "Plains", Zone::Hand, db);
+    let unsummon = scenario.add_real_card(P0, "Unsummon", Zone::Hand, db);
+    let mut mana = pool(1, ManaType::White);
+    mana.extend(pool(2, ManaType::Black));
+    mana.extend(pool(1, ManaType::Blue));
+    mana.extend(pool(3, ManaType::Colorless));
+    scenario.with_mana_pool(P0, mana);
+    let mut runner = scenario.build();
+    merge(&mut runner, rider, host);
+
+    drop(runner.cast(swords).target_object(host).commit());
+    drive_to_empty_stack(&mut runner, true, Some(host), |_| {});
+    let state = runner.state();
+    assert_eq!(state.objects[&rider].zone, Zone::Exile);
+    assert_eq!(
+        state.objects[&rider].split_from_merge_survivor,
+        Some(ObjectIncarnationRef::from_object(&state.objects[&host])),
+        "the rider is pinned to the survivor's exile incarnation"
+    );
+
+    drop(runner.cast(raker).commit());
+    drive_to_empty_stack(&mut runner, true, Some(host), |_| {});
+    assert_eq!(runner.state().objects[&host].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&rider].zone, Zone::Exile);
+
+    drop(runner.cast(reanimate).target_object(host).commit());
+    drive_to_empty_stack(&mut runner, true, Some(host), |_| {});
+    assert_eq!(runner.state().objects[&host].zone, Zone::Battlefield);
+
+    let card_id = runner.state().objects[&plains].card_id;
+    runner
+        .act(GameAction::PlayLand {
+            object_id: plains,
+            card_id,
+        })
+        .expect("land play accepted");
+    drive_to_empty_stack(&mut runner, true, Some(host), |_| {});
+    assert_eq!(runner.state().objects[&host].zone, Zone::Exile);
+
+    drop(runner.cast(unsummon).target_object(angel).commit());
+    drive_to_empty_stack(&mut runner, true, None, |_| {});
+
+    let state = runner.state();
+    assert_eq!(state.objects[&angel].zone, Zone::Hand);
+    assert_eq!(state.objects[&host].zone, Zone::Battlefield);
+    assert_eq!(state.objects[&host].controller, P1);
+    assert_eq!(
+        state.objects[&rider].zone,
+        Zone::Exile,
+        "the rider split from an earlier incarnation of the survivor (CR 400.7)"
     );
 }

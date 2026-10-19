@@ -3473,6 +3473,9 @@ mod tests {
         }
     }
 
+    /// v153: `GameObject::split_from_merge_survivor` retypes to
+    /// `ObjectIncarnationRef` (CR 400.7); a v152 peer cannot decode the populated
+    /// field, so it must be refused before it receives v153 state.
     /// v152: `ShortcutDecisionSchema` gains `suggested_declaration` and
     /// `leading_aims`, and `ShortcutProposal` gains `leading_aims`; a v151 peer
     /// drops them, so it must be refused before it receives v152 state.
@@ -3717,8 +3720,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_152_for_shortcut_suggestion() {
-        assert_eq!(PROTOCOL_VERSION, 152);
+    fn protocol_version_is_153_for_split_backlink_incarnation() {
+        assert_eq!(PROTOCOL_VERSION, 153);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3729,7 +3732,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_152_for_shortcut_suggestion` stays
+    /// `protocol_version_is_153_for_split_backlink_incarnation` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

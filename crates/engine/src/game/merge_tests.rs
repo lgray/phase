@@ -11,7 +11,7 @@
 use crate::game::merge::*;
 use crate::game::scenario::{GameScenario, P0};
 use crate::types::events::GameEvent;
-use crate::types::identifiers::ObjectId;
+use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -453,7 +453,7 @@ fn exile_records_component_backlink_and_continuity_return_collects_all() {
     assert_eq!(state.objects.get(&rider).unwrap().zone, Zone::Exile);
     assert_eq!(
         state.objects.get(&rider).unwrap().split_from_merge_survivor,
-        Some(host),
+        Some(ObjectIncarnationRef::from_object(&state.objects[&host])),
         "absorbed component records the survivor it split from (CR 730.3c)"
     );
 
@@ -535,7 +535,7 @@ fn split_component_backlink_clears_on_non_battlefield_zone_move() {
     crate::game::zones::move_to_zone(&mut state, host, Zone::Exile, &mut events);
     assert_eq!(
         state.objects.get(&rider).unwrap().split_from_merge_survivor,
-        Some(host),
+        Some(ObjectIncarnationRef::from_object(&state.objects[&host])),
         "component records the survivor back-link when split into exile"
     );
 
