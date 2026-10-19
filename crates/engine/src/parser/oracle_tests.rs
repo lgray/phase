@@ -26359,7 +26359,7 @@ fn mass_exile_ltb_return_with_entry_modifier_is_not_paired() {
         .effect;
     assert!(
         matches!(
-            ltb_effect,
+            &**ltb_effect,
             Effect::ChangeZone {
                 target: TargetFilter::TrackedSet { .. },
                 ..

@@ -573,9 +573,10 @@ pub(crate) fn restore_pre_merge_tokenness_for_leave(state: &mut GameState, merge
 /// Given the objects a *continuity* reference resolved to, append each survivor's
 /// co-departed sibling components that are still co-located in the same zone, in
 /// deterministic id order. The caller (the `ChangeZone` return loop, or
-/// `ChangeZoneAll`'s linked-exile return) then applies its move to the whole pile; the components return as separate, non-merged
-/// objects (CR 730.3 — merging is not re-established) and their back-links clear
-/// on battlefield entry.
+/// `ChangeZoneAll`'s linked-exile return) then applies its move to the whole
+/// pile; the components return as separate, non-merged objects (CR 730.3 —
+/// merging is not re-established) and their back-links clear on battlefield
+/// entry.
 ///
 /// This is a no-op unless `target_filter` is a continuity reference AND a
 /// resolved object is a former merged survivor with co-located components. In
