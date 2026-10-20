@@ -1173,16 +1173,28 @@ fn accepted(proposed: GameState) -> GameState {
 /// ones its recorded period performs. One whose template answers a recorded "may" the other way is
 /// handed back with nothing taken, through the persisted codec and through bare serde; the
 /// proposal as declared is taken through both, Preston, the Vanisher making one token a
-/// repetition and Soul's Attendant's taken "you may gain 1 life" gaining 1.
+/// repetition and Soul's Attendant's taken "you may gain 1 life" gaining 1 for each take the
+/// period recorded.
 #[test]
 fn a_restored_proposal_is_taken_only_on_its_periods_recorded_answers() {
     use crate::period_confirm_rows::reloaded;
     const COUNT: u32 = 3;
-    for (board, life_gained) in [(Board::B, 0), (Board::BAttendant, COUNT as i32)] {
+    for board in [Board::B, Board::BAttendant] {
         let Some((drive, _)) = offered(board) else {
             return;
         };
         let offer = drive.state().clone();
+        // Soul's Attendant: each "may" the period recorded as taken gains 1 life per repetition.
+        let takes = attendant_answers(&offer)
+            .iter()
+            .filter(|(_, take)| *take == MayChoiceOption::Take)
+            .count();
+        assert_eq!(
+            takes > 0,
+            matches!(board, Board::BAttendant),
+            "{board:?}: reach guard: only the Attendant board's period takes a gain"
+        );
+        let life_gained = (COUNT as usize * takes) as i32;
         let recorded = recorded_declaration(&offer, |_| false);
         let flipped = recorded_declaration(&offer, |slot| {
             slot.point == ChoicePoint::MayGate
@@ -1329,8 +1341,19 @@ fn a_repeated_may_is_declared_per_occurrence() {
             return;
         };
         let offer = drive.state().clone();
-        for declared in [[Take, Take], [Take, Decline], [Decline, Decline]] {
-            if declared == recorded {
+        let period: [MayChoiceOption; 2] = attendant_answers(&offer)
+            .iter()
+            .map(|(_, take)| *take)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("the period asks Soul's Attendant twice");
+        for declared in [
+            [Take, Take],
+            [Take, Decline],
+            [Decline, Take],
+            [Decline, Decline],
+        ] {
+            if declared == period {
                 continue;
             }
             let mut refused = GameRunner::from_state(offer.clone());
@@ -1349,7 +1372,7 @@ fn a_repeated_may_is_declared_per_occurrence() {
 
         drive.take_declared(
             IterationCount::Fixed(COUNT),
-            Some(declaring_attendant(&offer, recorded)),
+            Some(declaring_attendant(&offer, period)),
         );
         let taken = drive.state();
         assert!(
@@ -1362,7 +1385,7 @@ fn a_repeated_may_is_declared_per_occurrence() {
             token_count(&offer) + COUNT as usize,
             "{recorded:?}: tokens"
         );
-        let takes = recorded.iter().filter(|answer| **answer == Take).count();
+        let takes = period.iter().filter(|answer| **answer == Take).count();
         assert_eq!(
             taken.players[0].life,
             offer.players[0].life + (COUNT as usize * takes) as i32,
