@@ -371,8 +371,17 @@ struct Choice {
 
 struct Snapshot {
     stack: Vec<String>,
+    controllers: Vec<PlayerId>,
     descriptions: Vec<String>,
     deferred: usize,
+}
+
+/// The queue at one step: the open wait, its length, and whether any context
+/// serializes a `batch_origin` (only `Ordinary` is elided).
+struct QueueStep {
+    kind: &'static str,
+    deferred: usize,
+    origin_tagged: bool,
 }
 
 #[derive(Default)]
@@ -381,6 +390,7 @@ struct Trace {
     choices: Vec<Choice>,
     priorities: Vec<Snapshot>,
     watched_zones: Vec<Zone>,
+    queue_steps: Vec<QueueStep>,
 }
 
 impl Trace {
@@ -485,6 +495,13 @@ fn drive(runner: &mut GameRunner, answers: &Answers) -> Trace {
             trace.watched_zones.push(state.objects[&id].zone);
         }
         let waiting = state.waiting_for.clone();
+        trace.queue_steps.push(QueueStep {
+            kind: waiting.variant_name(),
+            deferred: state.deferred_triggers.len(),
+            origin_tagged: serde_json::to_string(&state.deferred_triggers)
+                .expect("queue serializes")
+                .contains("batch_origin"),
+        });
         if !matches!(
             waiting,
             WaitingFor::Priority { .. }
@@ -507,6 +524,7 @@ fn drive(runner: &mut GameRunner, answers: &Answers) -> Trace {
             WaitingFor::Priority { .. } => {
                 trace.priorities.push(Snapshot {
                     stack: stack_labels(state),
+                    controllers: state.stack.iter().map(|entry| entry.controller).collect(),
                     descriptions: state
                         .stack
                         .iter()
@@ -679,6 +697,18 @@ fn state_trigger_joins_a_batch_with_targeted_members_once() {
                 .map(|s| s.stack.iter().filter(|x| *x == "Emperor Crocodile").count())
                 .max();
             assert_eq!(most_crocodiles, Some(1), "{mode:?} reverse={reverse_order}");
+            // CR 603.3b: a placed boundary's re-parked tail is ordinary work.
+            assert!(
+                trace
+                    .queue_steps
+                    .iter()
+                    .any(|step| step.kind == "TriggerTargetSelection" && step.deferred > 0),
+                "{mode:?} reverse={reverse_order}"
+            );
+            assert!(
+                trace.queue_steps.iter().all(|step| !step.origin_tagged),
+                "{mode:?} reverse={reverse_order}"
+            );
         }
     }
 }
@@ -1482,5 +1512,102 @@ fn sba_event_trigger_waits_behind_a_replacement_choice() {
         let after = control.after("ReplacementChoice");
         assert_eq!(after.stack, names(&["Wormfang Newt"]), "{mode:?}");
         assert_eq!(after.deferred, 0, "{mode:?}");
+    }
+}
+
+fn life(r: &GameRunner, player: PlayerId) -> i32 {
+    r.state()
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .expect("player")
+        .life
+}
+
+fn eliminated(r: &GameRunner, player: PlayerId) -> bool {
+    r.state()
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .expect("player")
+        .is_eliminated
+}
+
+/// Three players; P1 at 1 life controls Sheoldred. P0's Electrolyze deals 1 to
+/// P1 and 1 to P2's Grizzly Bears, or, with `p0_sheoldred`, to P0's Doomed
+/// Traveler beside P0's own Sheoldred; then P0 draws.
+fn elimination_board(mode: LoopDetectionMode, p0_sheoldred: bool) -> (Trace, GameRunner) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = GameScenario::new_n_player(3, 42);
+    sc.at_phase(Phase::PreCombatMain);
+    sc.with_life(P1, 1);
+    sc.add_real_card(P1, "Sheoldred, the Apocalypse", Zone::Battlefield, db);
+    let second = if p0_sheoldred {
+        sc.add_real_card(P0, "Sheoldred, the Apocalypse", Zone::Battlefield, db);
+        sc.add_real_card(P0, "Doomed Traveler", Zone::Battlefield, db)
+    } else {
+        sc.add_real_card(PlayerId(2), "Grizzly Bears", Zone::Battlefield, db)
+    };
+    let electrolyze = sc.add_real_card(P0, "Electrolyze", Zone::Hand, db);
+    for _ in 0..3 {
+        sc.add_real_card(P0, "Island", Zone::Library, db);
+    }
+    let mut mana = pool(1, ManaType::Red);
+    mana.extend(pool(1, ManaType::Blue));
+    mana.extend(pool(1, ManaType::Colorless));
+    sc.with_mana_pool(P0, mana);
+    let mut r = start(sc, mode);
+    drop(
+        r.cast(electrolyze)
+            .target_player(P1)
+            .target_object(second)
+            .distribute_among(&[(TargetRef::Player(P1), 1), (TargetRef::Object(second), 1)])
+            .commit(),
+    );
+    let trace = drive(&mut r, &Answers::default());
+    (trace, r)
+}
+
+/// CR 800.4a + CR 800.4d: P1 leaves the game in the state-based actions after
+/// P0's draw, so P1's Sheoldred trigger from that draw is never put on the stack.
+#[test]
+fn eliminated_players_trigger_never_reaches_the_stack() {
+    for mode in MODES {
+        let (trace, r) = elimination_board(mode, false);
+        assert!(eliminated(&r, P1), "{mode:?}");
+        let p0 = r.state().players.iter().find(|p| p.id == P0).expect("P0");
+        assert!(
+            p0.hand.iter().any(|id| name_of(r.state(), *id) == "Island"),
+            "{mode:?}"
+        );
+        assert!(!trace.ever_stacked("Sheoldred, the Apocalypse"), "{mode:?}");
+        assert_eq!(life(&r, P0), 20, "{mode:?}");
+    }
+}
+
+/// CR 603.3b + CR 800.4d: P0's draw and Doomed Traveler's death triggered with
+/// no priority between them, so they are one P0 batch while P1, eliminated in
+/// the same state-based actions, places nothing.
+#[test]
+fn elimination_keeps_the_survivors_batch_whole() {
+    for mode in MODES {
+        let (trace, r) = elimination_board(mode, true);
+        assert!(eliminated(&r, P1), "{mode:?}");
+        let prompt = trace.the_prompt();
+        assert_eq!(prompt.player, P0, "{mode:?}");
+        assert_eq!(
+            sorted(prompt.sources.clone()),
+            names(&["Doomed Traveler", "Sheoldred, the Apocalypse"]),
+            "{mode:?}"
+        );
+        assert_eq!(prompt.ai_orders, 2, "{mode:?}");
+        assert!(
+            trace
+                .priorities
+                .iter()
+                .all(|s| !s.controllers.contains(&P1)),
+            "{mode:?}"
+        );
+        assert_eq!(life(&r, P0), 22, "{mode:?}");
     }
 }

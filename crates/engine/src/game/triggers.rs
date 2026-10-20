@@ -189,9 +189,10 @@ pub(crate) enum DeferredTriggerBatchOrigin {
     #[default]
     Ordinary,
     StateBasedActionChoice,
-    /// CR 117.5 + CR 603.3b: a priority boundary's own batch, parked behind a
-    /// wait that is not SBA-owned and placed at the next settle to `Priority`.
-    /// It never selects the `Any` answer scope.
+    /// CR 117.5 + CR 603.3b: a priority boundary's own batch, queued from
+    /// collection until its pass settles to `Priority` (the same pass, or a
+    /// later one behind a wait that is not SBA-owned). It never selects the
+    /// `Any` answer scope.
     PriorityBoundary,
 }
 
@@ -8387,17 +8388,41 @@ pub(crate) fn collect_triggers_into_deferred(state: &mut GameState, events: &[Ga
     state.deferred_triggers.extend(pending);
 }
 
-/// CR 117.5 + CR 603.3b: park a priority boundary's held batch behind an open
-/// wait, stamping why it is parked so the next settle can take it by origin.
-pub(crate) fn park_held_trigger_batch(
+/// CR 117.5 + CR 603.3b: the boundary's queued batch waits behind `origin`'s
+/// wait; every `PriorityBoundary` context belongs to the boundary being built.
+pub(crate) fn stamp_priority_boundary_batch(
     state: &mut GameState,
-    mut held: Vec<PendingTriggerContext>,
     origin: DeferredTriggerBatchOrigin,
 ) {
-    for context in &mut held {
+    for context in &mut state.deferred_triggers {
+        if matches!(
+            context.batch_origin,
+            DeferredTriggerBatchOrigin::PriorityBoundary
+        ) {
+            context.batch_origin = origin;
+        }
+    }
+}
+
+/// Stamp `origin` on every queued context from `first` on.
+pub(crate) fn stamp_deferred_triggers_from(
+    state: &mut GameState,
+    first: usize,
+    origin: DeferredTriggerBatchOrigin,
+) {
+    for context in &mut state.deferred_triggers[first..] {
         context.batch_origin = origin;
     }
-    state.deferred_triggers.extend(held);
+}
+
+/// True while a priority boundary's batch is queued for its settle to take.
+pub(crate) fn has_priority_boundary_batch(state: &GameState) -> bool {
+    state.deferred_triggers.iter().any(|context| {
+        matches!(
+            context.batch_origin,
+            DeferredTriggerBatchOrigin::PriorityBoundary
+        )
+    })
 }
 
 /// CR 117.5 + CR 603.3b: take the parked `PriorityBoundary` partition out of
@@ -8444,9 +8469,7 @@ pub(crate) fn collect_parked_triggers_into_deferred(
 ) {
     let first_new_context = state.deferred_triggers.len();
     collect_triggers_into_deferred(state, events);
-    for context in &mut state.deferred_triggers[first_new_context..] {
-        context.batch_origin = origin;
-    }
+    stamp_deferred_triggers_from(state, first_new_context, origin);
 }
 
 /// True when this pipeline entry resumes a completed SBA batch that was parked
@@ -8492,14 +8515,7 @@ pub(crate) fn take_sba_choice_trigger_batch(
     preexisting_len: usize,
 ) -> Vec<PendingTriggerContext> {
     // The boundary is only meaningful while the pre-answer prefix is still
-    // intact. It is, for two structural reasons, both of which a future edit
-    // could silently break:
-    //   * the only other drain in this pipeline pass
-    //     (`drain_deferred_triggers_after_stack_object_announcement`) sits in
-    //     the `if` arm whose `else if` contains this call, so the two are
-    //     mutually exclusive; and
-    //   * the exile-return `split_off` removes a SUFFIX, from an index captured
-    //     later in the pass than this boundary, so it cannot touch the prefix.
+    // intact.
     // Assert rather than trust: a shrunk queue means indices no longer identify
     // the pre-answer contexts, and misclassifying an answer-generated context as
     // pre-existing would strand it (the regression this signature exists to

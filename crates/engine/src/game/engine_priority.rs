@@ -237,9 +237,6 @@ fn run_post_action_pipeline_core(
     let announced_cast_batch = seam_drain_policy == DeferredTriggerDrainPolicy::ResolutionSafe
         && matches!(state.waiting_for, WaitingFor::Priority { .. })
         && triggers::deferred_triggers_hold_announced_casts(state);
-    // CR 117.5 + CR 603.3b: this pass's triggers, held visible as waiting until
-    // its SBAs are done and the boundary's one batch is placed.
-    let mut held: Vec<triggers::PendingTriggerContext> = Vec::new();
 
     // CR 603.2: Triggered abilities trigger at the moment the event occurs.
     // Scan for triggers BEFORE SBAs so that objects still on the battlefield
@@ -376,7 +373,7 @@ fn run_post_action_pipeline_core(
             // abilities that triggered on the action's events never go on the
             // stack.
             if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                hold_pass_triggers(state, &mut held, &filtered_events);
+                hold_pass_triggers(state, &filtered_events);
             } else {
                 triggers::process_triggers(state, &filtered_events);
             }
@@ -415,7 +412,7 @@ fn run_post_action_pipeline_core(
     // the loss without sending the still-entering permanent to the graveyard.
     while matches!(state.waiting_for, WaitingFor::Priority { .. }) {
         let events_before = events.len();
-        sba::check_state_based_actions_with_waiting_triggers(state, events, &held);
+        sba::check_state_based_actions(state, events);
         if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
             // CR 603.3b + CR 903.9a: an SBA batch can open a resumable
             // non-priority choice (for example, a commander-zone return choice)
@@ -448,11 +445,9 @@ fn run_post_action_pipeline_core(
                     origin,
                 );
             }
-            // CR 117.5 + CR 603.3b: the boundary's held triggers wait behind the
+            // CR 117.5 + CR 603.3b: the boundary's queued batch waits behind the
             // choice with the SBA batch, under the same origin.
-            if state.game_end.is_none() {
-                triggers::park_held_trigger_batch(state, std::mem::take(&mut held), origin);
-            }
+            triggers::stamp_priority_boundary_batch(state, origin);
             break;
         }
         if events.len() > events_before {
@@ -475,7 +470,7 @@ fn run_post_action_pipeline_core(
             {
                 triggers::collect_triggers_into_deferred(state, &sba_events);
             } else {
-                hold_pass_triggers(state, &mut held, &sba_events);
+                hold_pass_triggers(state, &sba_events);
             }
             if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                 break;
@@ -520,68 +515,65 @@ fn run_post_action_pipeline_core(
         // CR 603.3b: Exile-return triggers also join a terminal batch so they
         // cannot be ordered before the final cast trigger is collected, and
         // join the batch of a resolution whose final part ran in this pass.
-        if !matches!(state.waiting_for, WaitingFor::Priority { .. })
-            || state.pending_resolution_completion.is_some()
-            || announced_cast_batch
-            || final_part_ran
+        triggers::collect_triggers_into_deferred(state, &unconsumed_exile_return_events);
+        // CR 117.5 + CR 603.3b: at a priority boundary they, with whatever the
+        // returns queued, are that boundary's batch.
+        if matches!(state.waiting_for, WaitingFor::Priority { .. })
+            && state.pending_resolution_completion.is_none()
+            && !announced_cast_batch
+            && !final_part_ran
         {
-            triggers::collect_triggers_into_deferred(state, &unconsumed_exile_return_events);
-        } else {
-            let mut normal_pending = state
-                .deferred_triggers
-                .split_off(deferred_trigger_count_before_exile_returns);
-            normal_pending.extend(triggers::collect_triggers_for_batch(
+            triggers::stamp_deferred_triggers_from(
                 state,
-                &unconsumed_exile_return_events,
-            ));
-            held.extend(normal_pending);
+                deferred_trigger_count_before_exile_returns,
+                triggers::DeferredTriggerBatchOrigin::PriorityBoundary,
+            );
         }
     }
 
     // CR 117.5 + CR 603.3b + CR 603.8: a pass that settles at Priority places
-    // ONE batch: the queue its arm may drain, the parked boundary partition,
-    // this pass's held triggers, its delayed triggers and the state triggers.
+    // ONE batch: the boundary partition, the queue its arm may drain, its
+    // delayed triggers and the state triggers.
     // Each arm only selects which queued contexts may join; placement is the
     // single `place_priority_batch` call.
     let completion_settled = settle_pending_resolution_completion(state, events);
     if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
         let mut answer_delayed_events: Option<&[GameEvent]> = None;
-        let mut batch = Vec::new();
-        if completion_settled {
-            if triggers::stack_object_announcement_drain_allowed(state) {
-                batch = std::mem::take(&mut state.deferred_triggers);
-            }
-        } else if deferred_trigger_batch_was_sba_choice_parked
-            && !state.deferred_triggers.is_empty()
-        {
-            // CR 603.3b: the SBA-choice partition, its answer's triggers and
-            // whatever the queue may drain here are one batch, since no player
-            // received priority between them.
-            batch = triggers::take_sba_choice_trigger_batch(state, deferred_triggers_before_answer);
-            if triggers::can_drain_deferred_triggers(state, drain_policy) {
-                batch.append(&mut state.deferred_triggers);
-            }
-            // CR 603.12: the `Any` scope over an empty slice would expire every
-            // live reflexive delayed trigger, so only real answer events select it.
-            if !delayed_trigger_events.is_empty() {
-                answer_delayed_events = Some(&delayed_trigger_events);
-            }
+        let sba_choice_answer = !completion_settled
+            && deferred_trigger_batch_was_sba_choice_parked
+            && !state.deferred_triggers.is_empty();
+        // CR 603.3b: the SBA-choice partition and its answer's triggers are one
+        // batch. Taken first: its positional prefix must not shrink.
+        let mut batch = if sba_choice_answer {
+            triggers::take_sba_choice_trigger_batch(state, deferred_triggers_before_answer)
         } else {
+            Vec::new()
+        };
+        // CR 117.5 + CR 603.3b: the boundary's own partition joins ungated, and
+        // its ownership is consumed before any whole-queue take below.
+        batch.append(&mut triggers::take_priority_boundary_batch(state));
+        let queue_drains = if completion_settled {
+            triggers::stack_object_announcement_drain_allowed(state)
+        } else if sba_choice_answer {
+            triggers::can_drain_deferred_triggers(state, drain_policy)
+        } else if announced_cast_batch {
             // CR 603.3: the observers of spells cast and announced during a
             // finished resolution go on the stack above those spells.
-            let policy = if announced_cast_batch {
-                DeferredTriggerDrainPolicy::SettledPriority
-            } else {
-                drain_policy
-            };
-            if triggers::can_drain_deferred_triggers(state, policy) {
-                batch = std::mem::take(&mut state.deferred_triggers);
-            }
+            triggers::can_drain_deferred_triggers(
+                state,
+                DeferredTriggerDrainPolicy::SettledPriority,
+            )
+        } else {
+            triggers::can_drain_deferred_triggers(state, drain_policy)
+        };
+        if queue_drains {
+            batch.append(&mut state.deferred_triggers);
         }
-        // Runs after `take_sba_choice_trigger_batch`, whose positional prefix
-        // must not shrink first.
-        batch.append(&mut triggers::take_priority_boundary_batch(state));
-        batch.append(&mut held);
+        // CR 603.12: the `Any` scope over an empty slice would expire every
+        // live reflexive delayed trigger, so only real answer events select it.
+        if sba_choice_answer && !delayed_trigger_events.is_empty() {
+            answer_delayed_events = Some(&delayed_trigger_events);
+        }
         // CR 104.1: once the game has ended nothing more triggers.
         if state.game_end.is_none() {
             let delayed_input = unclaimed_delayed_trigger_input(
@@ -603,15 +595,6 @@ fn run_post_action_pipeline_core(
         }
     }
 
-    // CR 117.5 + CR 603.3b: a boundary batch that reached no placement waits
-    // behind the open wait as this boundary's own batch.
-    if !held.is_empty() && state.game_end.is_none() {
-        triggers::park_held_trigger_batch(
-            state,
-            std::mem::take(&mut held),
-            triggers::DeferredTriggerBatchOrigin::PriorityBoundary,
-        );
-    }
     if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
         if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
             match_flow::handle_game_over_transition(state);
@@ -739,15 +722,15 @@ fn parked_batch_origin(waiting_for: &WaitingFor) -> triggers::DeferredTriggerBat
 
 /// CR 117.5 + CR 603.3b: hold a pass's triggers for the boundary's one batch.
 /// A resolving spell that still owes its final part owns their placement.
-fn hold_pass_triggers(
-    state: &mut GameState,
-    held: &mut Vec<triggers::PendingTriggerContext>,
-    events: &[GameEvent],
-) {
+fn hold_pass_triggers(state: &mut GameState, events: &[GameEvent]) {
     if super::stack::resolving_spell_owes_final_part(state) {
         triggers::collect_triggers_into_deferred(state, events);
     } else {
-        held.extend(triggers::collect_triggers_for_batch(state, events));
+        triggers::collect_parked_triggers_into_deferred(
+            state,
+            events,
+            triggers::DeferredTriggerBatchOrigin::PriorityBoundary,
+        );
     }
 }
 

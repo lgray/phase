@@ -792,9 +792,12 @@ fn drain_or_clear_deferred_triggers_after_elimination(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
 ) {
+    // CR 117.5 + CR 603.3b: a queued boundary batch is placed whole by the
+    // post-action pass that owns it, at its settle to priority.
     if state.deferred_triggers.is_empty()
         || state.pending_trigger.is_some()
         || state.pending_trigger_order.is_some()
+        || super::triggers::has_priority_boundary_batch(state)
     {
         return;
     }
