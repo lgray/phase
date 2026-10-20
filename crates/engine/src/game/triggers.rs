@@ -7125,9 +7125,8 @@ fn ring_level_four_ability(source_id: ObjectId, controller: PlayerId) -> Resolve
 /// CR 603.3b: Process triggered abilities waiting to be put on the stack.
 pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
     // CR 603.3 + CR 603.3b + CR 608.2n: while an instant or sorcery owes its final
-    // part (a copy entry's replayed enters event, CR 614.12a, among others), what
-    // triggers waits in the queue for the resolution's batch instead of being put
-    // on the stack now.
+    // part, what triggers waits in the queue for the resolution's batch instead
+    // of being put on the stack now.
     if super::stack::resolving_spell_owes_final_part(state) {
         collect_triggers_into_deferred(state, events);
         return;
@@ -10838,49 +10837,19 @@ pub(crate) fn resolution_frame_is_live_off_priority(state: &GameState) -> bool {
 
 /// Which deferred-trigger drain, if any, a post-action seam owns.
 ///
-/// Every variant still goes through `resolution_completion_can_settle`, so the
-/// complete carrier census is shared; the policy decides only whether this seam
-/// drains at all and whether a `Spell` entry may remain on the stack while it
-/// does. Replacing the two historic booleans — `engine_priority`'s
-/// `skip_deferred_trigger_drain` and this module's `allow_spell_on_stack` —
-/// with one enum keeps those two independent axes from being recombined
-/// accidentally at a new seam.
+/// The gate distinguishes only `Skip`: both draining variants admit the same
+/// queue behind the shared carrier census, and differ only in whether
+/// `engine_priority`'s pass may select its announced-cast batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeferredTriggerDrainPolicy {
     /// This seam owns no drain. Its caller has already drained the batch, or it
     /// is a mid-continuation owner that must not.
     Skip,
-    /// CR 603.3b + issue #1793: drain only once no `Spell` entry remains on the
-    /// stack, so parked observers cannot offer ordering mid-resolution.
+    /// An ordinary post-action seam; its pass may select the announced-cast batch.
     ResolutionSafe,
-    /// CR 601.2h + CR 602.2b + CR 603.3: a passive announced stack object may
-    /// still be on the stack; its cost/cast observers, the settled batch a
-    /// direct mana root converges into, and the batch of a resolution whose
-    /// CR 608.2n final part just ran, drain above it.
+    /// A seam that settles an already-announced batch; its pass never selects
+    /// the announced-cast batch.
     SettledPriority,
-}
-
-impl DeferredTriggerDrainPolicy {
-    fn allows_spell_on_stack(self) -> bool {
-        match self {
-            DeferredTriggerDrainPolicy::Skip | DeferredTriggerDrainPolicy::ResolutionSafe => false,
-            DeferredTriggerDrainPolicy::SettledPriority => true,
-        }
-    }
-
-    /// CR 608.2n + CR 117.5 + CR 603.3: the policy for a pass in which a paused
-    /// instant or sorcery's final part ran. Its resolution is over, so the batch
-    /// it completes is settled and drains above a spell still on the stack, like
-    /// `SettledPriority`; a seam that owns no drain keeps owning none.
-    pub(super) fn after_spell_final_part(self) -> Self {
-        match self {
-            DeferredTriggerDrainPolicy::Skip => DeferredTriggerDrainPolicy::Skip,
-            DeferredTriggerDrainPolicy::ResolutionSafe
-            | DeferredTriggerDrainPolicy::SettledPriority => {
-                DeferredTriggerDrainPolicy::SettledPriority
-            }
-        }
-    }
 }
 
 pub(super) fn can_drain_deferred_triggers(
@@ -10901,20 +10870,8 @@ pub(super) fn can_drain_deferred_triggers(
     if super::stack::resolving_spell_owes_final_part(state) {
         return false;
     }
-    // CR 603.3b + issue #1793: observer triggers parked during a spell's
-    // resolution must wait until that spell leaves the stack — draining while
-    // a `Spell` entry remains would offer ordering mid player_scope iteration.
-    // A completed resolution's batch is admitted through `after_spell_final_part`;
-    // a resolution still under way keeps a live continuation or frame, which
-    // `resolution_completion_can_settle` refuses under every policy.
-    if !policy.allows_spell_on_stack()
-        && state
-            .stack
-            .iter()
-            .any(|entry| matches!(entry.kind, StackEntryKind::Spell { .. }))
-    {
-        return false;
-    }
+    // CR 405.5 + CR 608.1: a spell waiting below has not begun to resolve, so it
+    // does not hold the batch.
     true
 }
 
@@ -10923,9 +10880,7 @@ pub(super) fn can_drain_deferred_triggers(
 /// finished (a parked context triggered by the casting of a spell still on the
 /// stack, such as a cast copy latched when its announcement completed), so the
 /// post-action boundary must put the whole queue, together with the action's
-/// fresh observers, on the stack as one batch above those spells: the
-/// post-announcement drain, not the resolution-safe one that holds observers
-/// until a resolving spell leaves the stack (issue #1793).
+/// fresh observers, on the stack as one batch above those spells.
 pub(super) fn deferred_triggers_hold_announced_casts(state: &GameState) -> bool {
     state.resolving_stack_entry.is_none()
         && state.resolution_stack.is_empty()
@@ -10973,8 +10928,8 @@ pub(crate) fn drain_deferred_trigger_queue(
 /// spell or ability announcement was paused go on the stack at the first
 /// priority point after that stack object is fully announced, even though that
 /// spell or ability itself is still on the stack. Resolution-time callers must
-/// keep using `drain_deferred_trigger_queue`, whose spell-on-stack guard
-/// prevents mid-resolution drains.
+/// keep using `drain_deferred_trigger_queue`, whose gate refuses a resolution
+/// under way.
 pub(crate) fn drain_deferred_triggers_after_stack_object_announcement(
     state: &mut GameState,
     events_out: &mut Vec<GameEvent>,
@@ -41590,50 +41545,30 @@ pub mod tests {
         ));
     }
 
-    /// CR 608.2n + CR 117.5 + CR 603.3 + issue #1793: once a resolution's final
-    /// part has run, its batch may drain above a spell still on the stack; a
-    /// resolution still under way (a live continuation) stays refused even
-    /// under that admitting policy, and a seam that owns no drain keeps none.
+    /// CR 608.2n + CR 405.5 + issue #1793: a batch waits while the resolving
+    /// sorcery owes its final part or a continuation is live, and drains above a
+    /// spell below once neither holds.
     #[test]
     fn a_finished_spells_batch_may_drain_above_a_spell_but_not_mid_resolution() {
         use crate::types::game_state::PendingContinuation;
 
-        let mut state = setup();
-        state.deferred_triggers = vec![
-            make_draw_pending_trigger(&mut state, "Watcher A", PlayerId(0)),
-            make_draw_pending_trigger(&mut state, "Watcher B", PlayerId(0)),
-        ];
-        let below_card = CardId(state.next_object_id);
-        let below = create_object(
-            &mut state,
-            below_card,
-            PlayerId(0),
-            "Spell Below".to_string(),
-            Zone::Stack,
-        );
-        state.stack.push_back(crate::types::game_state::StackEntry {
-            id: below,
-            source_id: below,
-            controller: PlayerId(0),
-            kind: StackEntryKind::Spell {
-                card_id: CardId(below.0),
-                ability: None,
-                casting_variant: crate::types::game_state::CastingVariant::Normal,
-                actual_mana_spent: 0,
-            },
-        });
+        let mut state = drain_policy_fixture(true);
+        let spell = install_resolving_sorcery_carrier(&mut state);
+        state.resolving_spell_final_part =
+            Some(crate::types::game_state::OwedSpellFinalPart { spell });
         state.waiting_for = WaitingFor::Priority {
             player: PlayerId(0),
         };
+        assert!(
+            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
+            "an owed final part holds the batch"
+        );
 
-        assert!(!can_drain_deferred_triggers(
-            &state,
-            DeferredTriggerDrainPolicy::ResolutionSafe
-        ));
-        assert!(can_drain_deferred_triggers(
-            &state,
-            DeferredTriggerDrainPolicy::ResolutionSafe.after_spell_final_part()
-        ));
+        state.resolving_spell_final_part = None;
+        assert!(
+            can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
+            "the finished resolution's batch drains above the spell below"
+        );
 
         state.park_ability_continuation(PendingContinuation::new(
             Box::new(ResolvedAbility::new(
@@ -41647,18 +41582,9 @@ pub mod tests {
             )),
             &state,
         ));
-        assert!(!can_drain_deferred_triggers(
-            &state,
-            DeferredTriggerDrainPolicy::ResolutionSafe.after_spell_final_part()
-        ));
-
-        assert_eq!(
-            DeferredTriggerDrainPolicy::Skip.after_spell_final_part(),
-            DeferredTriggerDrainPolicy::Skip
-        );
-        assert_eq!(
-            DeferredTriggerDrainPolicy::SettledPriority.after_spell_final_part(),
-            DeferredTriggerDrainPolicy::SettledPriority
+        assert!(
+            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
+            "a live continuation holds the batch"
         );
     }
 
@@ -42656,18 +42582,12 @@ pub mod tests {
         state
     }
 
-    /// Plan v23 Step 5, "replace the existing two drain booleans inside the
-    /// shared core with private `DeferredTriggerDrainPolicy`".
-    ///
-    /// `engine_priority`'s `skip_deferred_trigger_drain` and this module's
-    /// `allow_spell_on_stack` were two independent axes carried as two
-    /// unrelated booleans. The enum has to keep them independent — collapsing
-    /// them (making `Skip` drain, or letting `ResolutionSafe` tolerate a
-    /// `Spell` entry) flips exactly one assertion below — while leaving the
-    /// shared carrier census in `resolution_completion_can_settle` in front of
-    /// every variant.
+    /// `Skip` owns no drain; the draining policies hold a resolution under way
+    /// and admit a batch above a spell that has not begun to resolve.
     #[test]
-    fn deferred_trigger_drain_policy_separates_the_skip_and_spell_on_stack_axes() {
+    fn deferred_trigger_drain_policy_holds_a_resolution_under_way_not_a_spell_below() {
+        use crate::types::game_state::PendingContinuation;
+
         // Positive reach guard: with no spell on the stack, the resolution-safe
         // policy really admits this batch.
         let state = drain_policy_fixture(false);
@@ -42683,20 +42603,40 @@ pub mod tests {
             "Skip must not drain even when every other gate is open"
         );
 
-        // CR 603.3b + issue #1793: a `Spell` entry blocks the resolution-safe
-        // policy and only the resolution-safe policy.
-        let state = drain_policy_fixture(true);
-        assert!(
-            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
-            "ResolutionSafe must refuse to order observers above a spell on the stack"
-        );
+        // CR 405.5: a spell below has not begun to resolve.
+        let mut state = drain_policy_fixture(true);
+        for policy in [
+            DeferredTriggerDrainPolicy::ResolutionSafe,
+            DeferredTriggerDrainPolicy::SettledPriority,
+        ] {
+            assert!(
+                can_drain_deferred_triggers(&state, policy),
+                "{policy:?} drains above the passive spell"
+            );
+        }
 
-        // CR 601.2h + CR 602.2b: the post-announcement policy drains the same
-        // batch above the same spell.
-        assert!(
-            can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::SettledPriority),
-            "SettledPriority drains above the passive announced spell"
-        );
+        // CR 608.2 + issue #1793: a resolution under way holds the batch.
+        state.park_ability_continuation(PendingContinuation::new(
+            Box::new(ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                vec![],
+                ObjectId(9999),
+                PlayerId(0),
+            )),
+            &state,
+        ));
+        for policy in [
+            DeferredTriggerDrainPolicy::ResolutionSafe,
+            DeferredTriggerDrainPolicy::SettledPriority,
+        ] {
+            assert!(
+                !can_drain_deferred_triggers(&state, policy),
+                "{policy:?} must hold a resolution under way"
+            );
+        }
 
         // Every policy still runs behind the shared carrier census: a live
         // triggered-mana sidecar rejects both draining variants.

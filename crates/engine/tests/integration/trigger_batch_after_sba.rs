@@ -353,6 +353,8 @@ struct Answers {
     accept_optional: bool,
     /// An object whose zone is recorded at every step.
     watch: Option<ObjectId>,
+    /// The `ChooseOneOfBranch` branch whose description contains this; else 0.
+    branch: Option<&'static str>,
 }
 
 struct Prompt {
@@ -592,6 +594,15 @@ fn drive(runner: &mut GameRunner, answers: &Answers) -> Trace {
                 accept: answers.accept_optional,
             },
             WaitingFor::CastOffer { .. } => GameAction::DecideOptionalEffect { accept: false },
+            WaitingFor::ChooseOneOfBranch {
+                branch_descriptions,
+                ..
+            } => GameAction::ChooseBranch {
+                index: answers
+                    .branch
+                    .and_then(|wanted| branch_descriptions.iter().position(|d| d.contains(wanted)))
+                    .unwrap_or(0),
+            },
             other => panic!("unhandled prompt {}", other.variant_name()),
         };
         runner.act(action).expect("action accepted");
@@ -999,41 +1010,99 @@ fn phenomenon_stays_until_its_encounter_trigger_leaves_the_stack() {
     }
 }
 
-/// CR 603.2c: Clone entering as a copy of Wormfang Newt under P1's Elesh Norn
-/// puts each of its enters and leaves triggers on the stack once.
+/// Clone (P0) entering as a copy of P1's Wormfang Newt under P1's Elesh Norn,
+/// with Shock (at P1) below when `spell_below`.
+fn clone_copy_board(
+    mode: LoopDetectionMode,
+    spell_below: bool,
+    reverse_order: bool,
+) -> (Trace, GameRunner, ObjectId) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario();
+    let island = sc.add_real_card(P0, "Island", Zone::Battlefield, db);
+    let clone = sc.add_real_card(P0, "Clone", Zone::Hand, db);
+    sc.add_real_card(P1, "Elesh Norn, Grand Cenobite", Zone::Battlefield, db);
+    let newt = sc.add_real_card(P1, "Wormfang Newt", Zone::Battlefield, db);
+    let mut mana = pool(1, ManaType::Blue);
+    mana.extend(pool(3, ManaType::Colorless));
+    let shock = spell_below.then(|| {
+        sc.add_real_card(P0, "Leyline of Anticipation", Zone::Battlefield, db);
+        mana.extend(pool(1, ManaType::Red));
+        sc.add_real_card(P0, "Shock", Zone::Hand, db)
+    });
+    sc.with_mana_pool(P0, mana);
+    let mut r = start(sc, mode);
+    if let Some(shock) = shock {
+        drop(r.cast(shock).target_player(P1).commit());
+    }
+    drop(r.cast(clone).commit());
+    let trace = drive(
+        &mut r,
+        &Answers {
+            pick: vec![newt],
+            reverse_order,
+            ..Answers::default()
+        },
+    );
+    (trace, r, island)
+}
+
+/// CR 614.12a + CR 117.5 + CR 603.3b: Clone's copy choice is made before it
+/// enters, so the copy's enters trigger and the leaves trigger of its
+/// state-based death are one batch, each once (CR 603.2c), in P0's order.
 #[test]
-fn clone_copy_triggers_each_once() {
+fn clone_copy_triggers_share_one_prompt() {
     for mode in MODES {
-        let db = shared_card_db().expect("card db");
-        let mut sc = scenario();
-        sc.add_real_card(P0, "Island", Zone::Battlefield, db);
-        let clone = sc.add_real_card(P0, "Clone", Zone::Hand, db);
-        sc.add_real_card(P1, "Elesh Norn, Grand Cenobite", Zone::Battlefield, db);
-        let newt = sc.add_real_card(P1, "Wormfang Newt", Zone::Battlefield, db);
-        let mut mana = pool(1, ManaType::Blue);
-        mana.extend(pool(3, ManaType::Colorless));
-        sc.with_mana_pool(P0, mana);
-        let mut r = start(sc, mode);
-        drop(r.cast(clone).commit());
-        let trace = drive(
-            &mut r,
-            &Answers {
-                pick: vec![newt],
-                ..Answers::default()
-            },
+        let mut enters_on_top_per_answer = Vec::new();
+        for reverse in [false, true] {
+            let (trace, r, island) = clone_copy_board(mode, false, reverse);
+            let prompt = trace.the_prompt();
+            assert_eq!(prompt.player, P0, "{mode:?}");
+            assert_eq!(
+                prompt.sources,
+                names(&["Wormfang Newt", "Wormfang Newt"]),
+                "{mode:?}"
+            );
+            assert_eq!(prompt.ai_orders, 2, "{mode:?}");
+            let placed = &trace.first_ability_stack().descriptions;
+            assert_eq!(placed.len(), 2, "{mode:?}: {placed:?}");
+            let enters_on_top = placed[1].contains("enters");
+            assert!(
+                placed[usize::from(!enters_on_top)].contains("leaves"),
+                "{mode:?}: {placed:?}"
+            );
+            // CR 607.2a: the leaves trigger returns only what the enters trigger exiled.
+            let island_zone = if enters_on_top {
+                Zone::Battlefield
+            } else {
+                Zone::Exile
+            };
+            assert_eq!(r.state().objects[&island].zone, island_zone, "{mode:?}");
+            enters_on_top_per_answer.push(enters_on_top);
+        }
+        assert_ne!(
+            enters_on_top_per_answer[0], enters_on_top_per_answer[1],
+            "{mode:?}: the answer decides the order"
         );
-        let placed = &trace.first_ability_stack().descriptions;
-        assert_eq!(placed.len(), 2, "{mode:?}: {placed:?}");
+    }
+}
+
+/// CR 117.5 + CR 603.3b + CR 405.5: the same batch goes on the stack above a
+/// spell that has not begun to resolve.
+#[test]
+fn clone_copy_triggers_join_above_a_spell() {
+    for mode in MODES {
+        let (trace, _, _) = clone_copy_board(mode, true, false);
+        let prompt = trace.the_prompt();
+        assert_eq!(prompt.player, P0, "{mode:?}");
+        assert_eq!(prompt.sources.len(), 2, "{mode:?}");
+        let after = trace.after("CopyTargetChoice");
         assert_eq!(
-            placed.iter().filter(|d| d.contains("enters")).count(),
-            1,
+            after.stack,
+            names(&["Shock (spell)", "Clone", "Clone"]),
             "{mode:?}"
         );
-        assert_eq!(
-            placed.iter().filter(|d| d.contains("leaves")).count(),
-            1,
-            "{mode:?}"
-        );
+        assert_eq!(after.deferred, 0, "{mode:?}");
     }
 }
 
@@ -1398,12 +1467,16 @@ fn declined_commander_choice_places_the_parked_batch() {
 
 /// Banisher Priest exiles P1's Adaptive Automaton; Lightning Bolt kills the
 /// Priest (Shock below when `spell_below`), and the Automaton returns into its
-/// as-enters creature-type choice while Grave Pact's trigger waits.
-fn exit_park_board(mode: LoopDetectionMode, spell_below: bool) -> Trace {
+/// as-enters creature-type choice while Grave Pact's trigger waits. P0 also
+/// controls Soul Warden when `warden`.
+fn exit_park_board(mode: LoopDetectionMode, spell_below: bool, warden: bool) -> Trace {
     let db = shared_card_db().expect("card db");
     let mut sc = scenario();
     let priest = sc.add_real_card(P0, "Banisher Priest", Zone::Hand, db);
     sc.add_real_card(P0, "Grave Pact", Zone::Battlefield, db);
+    if warden {
+        sc.add_real_card(P0, "Soul Warden", Zone::Battlefield, db);
+    }
     let automaton = sc.add_real_card(P1, "Adaptive Automaton", Zone::Battlefield, db);
     sc.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
     let shock = sc.add_real_card(P0, "Shock", Zone::Hand, db);
@@ -1442,7 +1515,7 @@ fn exit_park_board(mode: LoopDetectionMode, spell_below: bool) -> Trace {
 #[test]
 fn boundary_batch_waits_behind_an_exile_return_choice() {
     for mode in MODES {
-        let trace = exit_park_board(mode, true);
+        let trace = exit_park_board(mode, true, false);
         assert_eq!(
             trace.choice("NamedChoice").stack,
             names(&["Shock (spell)"]),
@@ -1456,7 +1529,7 @@ fn boundary_batch_waits_behind_an_exile_return_choice() {
         );
         assert_eq!(after.deferred, 0, "{mode:?}");
 
-        let control = exit_park_board(mode, false);
+        let control = exit_park_board(mode, false, false);
         let after = control.after("NamedChoice");
         assert_eq!(after.stack, names(&["Grave Pact"]), "{mode:?}");
         assert_eq!(after.deferred, 0, "{mode:?}");
@@ -1609,5 +1682,256 @@ fn elimination_keeps_the_survivors_batch_whole() {
             "{mode:?}"
         );
         assert_eq!(life(&r, P0), 22, "{mode:?}");
+    }
+}
+
+/// P1's Soul Warden and Blood Artist under P1's Elesh Norn; P0's Denry Klin
+/// enters with a first strike counter and dies to the state-based action.
+fn denry_board(mode: LoopDetectionMode, spell_below: bool) -> Trace {
+    let db = shared_card_db().expect("card db");
+    let mut sc = scenario();
+    let denry = sc.add_real_card(P0, "Denry Klin, Editor in Chief", Zone::Hand, db);
+    sc.add_real_card(P1, "Elesh Norn, Grand Cenobite", Zone::Battlefield, db);
+    sc.add_real_card(P1, "Soul Warden", Zone::Battlefield, db);
+    sc.add_real_card(P1, "Blood Artist", Zone::Battlefield, db);
+    let mut mana = pool(1, ManaType::White);
+    mana.extend(pool(1, ManaType::Blue));
+    mana.extend(pool(2, ManaType::Colorless));
+    let shock = spell_below.then(|| {
+        sc.add_real_card(P0, "Leyline of Anticipation", Zone::Battlefield, db);
+        mana.extend(pool(1, ManaType::Red));
+        sc.add_real_card(P0, "Shock", Zone::Hand, db)
+    });
+    sc.with_mana_pool(P0, mana);
+    let mut r = start(sc, mode);
+    if let Some(shock) = shock {
+        drop(r.cast(shock).target_player(P1).commit());
+    }
+    drop(r.cast(denry).commit());
+    drive(
+        &mut r,
+        &Answers {
+            branch: Some("first strike"),
+            ..Answers::default()
+        },
+    )
+}
+
+/// CR 614.12a + CR 603.3b + CR 101.4: Denry Klin's enters observers and the
+/// dies observer of its state-based death are one batch: P0's trigger first,
+/// then P1 orders its two, above any spell below.
+#[test]
+fn enters_with_counter_choice_joins_the_dies_batch() {
+    for mode in MODES {
+        for spell_below in [false, true] {
+            let trace = denry_board(mode, spell_below);
+            let prompt = trace.the_prompt();
+            assert_eq!(prompt.player, P1, "{mode:?} {spell_below}");
+            assert_eq!(
+                sorted(prompt.sources.clone()),
+                names(&["Blood Artist", "Soul Warden"]),
+                "{mode:?} {spell_below}"
+            );
+            let first = trace.after("ChooseOneOfBranch");
+            let base = usize::from(spell_below);
+            if spell_below {
+                assert_eq!(first.stack[0], "Shock (spell)", "{mode:?}");
+            }
+            assert_eq!(
+                first.stack[base], "Denry Klin, Editor in Chief",
+                "{mode:?} {spell_below}"
+            );
+            assert_eq!(
+                first.controllers[base..],
+                [P0, P1, P1],
+                "{mode:?} {spell_below}"
+            );
+        }
+    }
+}
+
+/// CR 608.2n + CR 603.3b: Zombify returns Clone, which copies P1's Newt under
+/// P1's Elesh Norn; the copy's batch goes above the Shock below Zombify.
+#[test]
+fn reanimated_clone_joins_the_final_part_batch() {
+    for mode in MODES {
+        let db = shared_card_db().expect("card db");
+        let mut sc = scenario();
+        sc.add_real_card(P0, "Island", Zone::Battlefield, db);
+        sc.add_real_card(P0, "Leyline of Anticipation", Zone::Battlefield, db);
+        let clone = sc.add_real_card(P0, "Clone", Zone::Graveyard, db);
+        let zombify = sc.add_real_card(P0, "Zombify", Zone::Hand, db);
+        let shock = sc.add_real_card(P0, "Shock", Zone::Hand, db);
+        sc.add_real_card(P1, "Elesh Norn, Grand Cenobite", Zone::Battlefield, db);
+        let newt = sc.add_real_card(P1, "Wormfang Newt", Zone::Battlefield, db);
+        let mut mana = pool(1, ManaType::Black);
+        mana.extend(pool(1, ManaType::Red));
+        mana.extend(pool(3, ManaType::Colorless));
+        sc.with_mana_pool(P0, mana);
+        let mut r = start(sc, mode);
+        drop(r.cast(shock).target_player(P1).commit());
+        drop(r.cast(zombify).target_object(clone).commit());
+        let trace = drive(
+            &mut r,
+            &Answers {
+                pick: vec![newt],
+                ..Answers::default()
+            },
+        );
+        let prompt = trace.the_prompt();
+        assert_eq!(prompt.player, P0, "{mode:?}");
+        assert_eq!(prompt.sources.len(), 2, "{mode:?}");
+        assert_eq!(
+            trace.after("CopyTargetChoice").stack,
+            names(&["Shock (spell)", "Clone", "Clone"]),
+            "{mode:?}"
+        );
+    }
+}
+
+/// CR 704.5j + CR 614.12a + CR 603.3b: Clone copying P0's Aerid Konstrari
+/// opens the legend rule; the copy's enters trigger waits through the choice
+/// and joins the dies triggers of its answer.
+#[test]
+fn clone_copying_a_legend_joins_the_legend_answer_batch() {
+    for mode in MODES {
+        let db = shared_card_db().expect("card db");
+        let mut sc = scenario();
+        let aerid = sc.add_real_card(P0, "Aerid Konstrari", Zone::Battlefield, db);
+        sc.add_real_card(P0, "Blood Artist", Zone::Battlefield, db);
+        let clone = sc.add_real_card(P0, "Clone", Zone::Hand, db);
+        let mut mana = pool(1, ManaType::Blue);
+        mana.extend(pool(3, ManaType::Colorless));
+        sc.with_mana_pool(P0, mana);
+        let mut r = start(sc, mode);
+        drop(r.cast(clone).commit());
+        let trace = drive(
+            &mut r,
+            &Answers {
+                pick: vec![aerid],
+                ..Answers::default()
+            },
+        );
+        assert!(trace.choice("ChooseLegend").stack.is_empty(), "{mode:?}");
+        let prompt = trace.the_prompt();
+        assert_eq!(prompt.player, P0, "{mode:?}");
+        assert_eq!(
+            sorted(prompt.sources.clone()),
+            names(&["Aerid Konstrari", "Aerid Konstrari", "Blood Artist"]),
+            "{mode:?}"
+        );
+        assert_eq!(prompt.ai_orders, 6, "{mode:?}");
+    }
+}
+
+/// CR 610.3 + CR 603.3b: Soul Warden's trigger from the returned Automaton's
+/// entry and Grave Pact's from the Priest's death are one P0 batch, above any
+/// spell below.
+#[test]
+fn exile_return_observer_joins_the_boundary_batch() {
+    for mode in MODES {
+        for spell_below in [false, true] {
+            let trace = exit_park_board(mode, spell_below, true);
+            let prompt = trace.the_prompt();
+            assert_eq!(prompt.player, P0, "{mode:?} {spell_below}");
+            assert_eq!(
+                sorted(prompt.sources.clone()),
+                names(&["Grave Pact", "Soul Warden"]),
+                "{mode:?} {spell_below}"
+            );
+            if spell_below {
+                let after = trace.after("NamedChoice");
+                assert_eq!(after.stack[0], "Shock (spell)", "{mode:?}");
+                assert_eq!(
+                    sorted(after.stack[1..].to_vec()),
+                    names(&["Grave Pact", "Soul Warden"]),
+                    "{mode:?}"
+                );
+                assert_eq!(after.deferred, 0, "{mode:?}");
+            }
+        }
+    }
+}
+
+/// Syphon Mind in a three-player game; P0 controls Waste Not and Megrim; each
+/// opponent holds Lightning Bolt and Shock. P0's Shock at P1 is below when
+/// `spell_below`.
+fn syphon_board(mode: LoopDetectionMode, spell_below: bool) -> (Trace, GameRunner) {
+    let db = shared_card_db().expect("card db");
+    let mut sc = GameScenario::new_n_player(3, 7);
+    sc.at_phase(Phase::PreCombatMain);
+    let syphon = sc.add_real_card(P0, "Syphon Mind", Zone::Hand, db);
+    sc.add_real_card(P0, "Waste Not", Zone::Battlefield, db);
+    sc.add_real_card(P0, "Megrim", Zone::Battlefield, db);
+    for opponent in [P1, PlayerId(2)] {
+        sc.add_real_card(opponent, "Lightning Bolt", Zone::Hand, db);
+        sc.add_real_card(opponent, "Shock", Zone::Hand, db);
+    }
+    for _ in 0..6 {
+        sc.add_real_card(P0, "Island", Zone::Library, db);
+    }
+    let mut mana = pool(1, ManaType::Black);
+    mana.extend(pool(3, ManaType::Colorless));
+    let shock = spell_below.then(|| {
+        sc.add_real_card(P0, "Leyline of Anticipation", Zone::Battlefield, db);
+        mana.extend(pool(1, ManaType::Red));
+        sc.add_real_card(P0, "Shock", Zone::Hand, db)
+    });
+    sc.with_mana_pool(P0, mana);
+    let mut r = start(sc, mode);
+    if let Some(shock) = shock {
+        drop(r.cast(shock).target_player(P1).commit());
+    }
+    drop(r.cast(syphon).commit());
+    let trace = drive(&mut r, &Answers::default());
+    (trace, r)
+}
+
+/// CR 608.2 + CR 603.3 + CR 603.3b (issue #1793): no player receives priority
+/// while Syphon Mind resolves, so its four discard triggers wait and go on the
+/// stack together afterwards, P0 ordering them, above any spell below.
+#[test]
+fn syphon_mind_orders_its_batch_after_resolution() {
+    for mode in MODES {
+        for spell_below in [false, true] {
+            let (trace, r) = syphon_board(mode, spell_below);
+            let last_discard = trace
+                .queue_steps
+                .iter()
+                .rposition(|step| step.kind == "DiscardChoice")
+                .expect("a discard choice");
+            assert!(
+                !trace.queue_steps[..last_discard]
+                    .iter()
+                    .any(|step| step.kind == "OrderTriggers"),
+                "{mode:?} {spell_below}: ordering offered mid-resolution"
+            );
+            let prompt = trace.the_prompt();
+            assert_eq!(prompt.player, P0, "{mode:?} {spell_below}");
+            assert_eq!(
+                sorted(prompt.sources.clone()),
+                names(&["Megrim", "Megrim", "Waste Not", "Waste Not"]),
+                "{mode:?} {spell_below}"
+            );
+            assert_eq!(prompt.ai_orders, 24, "{mode:?} {spell_below}");
+            assert_eq!(r.state().players[0].hand.len(), 4, "{mode:?} {spell_below}");
+            let p1_life = if spell_below { 16 } else { 18 };
+            assert_eq!(life(&r, P1), p1_life, "{mode:?} {spell_below}");
+            assert_eq!(life(&r, PlayerId(2)), 18, "{mode:?} {spell_below}");
+            if spell_below {
+                let discard = trace
+                    .choices
+                    .iter()
+                    .rfind(|choice| choice.kind == "DiscardChoice")
+                    .expect("a discard choice");
+                let after = &trace.priorities[discard.priorities_before];
+                assert_eq!(after.stack[0], "Shock (spell)", "{mode:?}");
+                assert_eq!(
+                    sorted(after.stack[1..].to_vec()),
+                    names(&["Megrim", "Megrim", "Waste Not", "Waste Not"]),
+                    "{mode:?}"
+                );
+            }
+        }
     }
 }

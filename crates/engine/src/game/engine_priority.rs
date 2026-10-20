@@ -70,9 +70,8 @@ pub(crate) fn run_post_action_pipeline_from(
 /// is that root's own exact reconstructed wait, and it is exhaustively validated
 /// here rather than trusted.
 ///
-/// It differs from the ordinary wrappers in exactly three ways: the drain policy
-/// permits a passive announced spell to remain on the stack (the batch below it
-/// is fully settled, so its observers belong above it); the carried recipient
+/// It differs from the ordinary wrappers in exactly three ways: its drain policy
+/// does not select the announced-cast batch; the carried recipient
 /// governs the no-choice stack-growth exit and is persisted before any ordering
 /// or construction step can pause; and its own return is a finisher call, which
 /// is Round-20 seam 7 — this wrapper must never hand back a non-prompt
@@ -187,21 +186,6 @@ fn run_post_action_pipeline_core(
     // scan below; the final part's triggers wait for this pass's batch.
     let final_part_ran = super::engine::run_spell_final_part_if_due(state, events)
         || final_part_boundary == SpellFinalPartBoundary::RanBeforePass;
-    // CR 608.2n + CR 117.5 + CR 603.3: once the final part has run the resolution
-    // is over, so the batch it completes goes on the stack above any spell still
-    // below it (that spell has not begun to resolve, CR 405.5). The #1793 guard
-    // is for a resolution still under way, which never reaches this point.
-    //
-    // CR 603.3b: batch ownership is read from the policy the pass was entered
-    // with: `after_spell_final_part` shifts `ResolutionSafe` to `SettledPriority`
-    // for the drain, and a batch of announced casts latched by the resolution
-    // that just finished belongs to the same pass whose final part ran.
-    let seam_drain_policy = drain_policy;
-    let drain_policy = if final_part_ran {
-        drain_policy.after_spell_final_part()
-    } else {
-        drain_policy
-    };
 
     // CR 117.3c + CR 117.5: the wait a completed no-choice pass hands back. With
     // no carried recipient this is exactly baseline's active-player wait.
@@ -234,7 +218,7 @@ fn run_post_action_pipeline_core(
     // resolution are put on the stack with this action's fresh observers as
     // ONE batch, above the cast spells; the fresh observers join the queue
     // instead of being dispatched ahead of it.
-    let announced_cast_batch = seam_drain_policy == DeferredTriggerDrainPolicy::ResolutionSafe
+    let announced_cast_batch = drain_policy == DeferredTriggerDrainPolicy::ResolutionSafe
         && matches!(state.waiting_for, WaitingFor::Priority { .. })
         && triggers::deferred_triggers_hold_announced_casts(state);
 
@@ -554,15 +538,6 @@ fn run_post_action_pipeline_core(
         batch.append(&mut triggers::take_priority_boundary_batch(state));
         let queue_drains = if completion_settled {
             triggers::stack_object_announcement_drain_allowed(state)
-        } else if sba_choice_answer {
-            triggers::can_drain_deferred_triggers(state, drain_policy)
-        } else if announced_cast_batch {
-            // CR 603.3: the observers of spells cast and announced during a
-            // finished resolution go on the stack above those spells.
-            triggers::can_drain_deferred_triggers(
-                state,
-                DeferredTriggerDrainPolicy::SettledPriority,
-            )
         } else {
             triggers::can_drain_deferred_triggers(state, drain_policy)
         };

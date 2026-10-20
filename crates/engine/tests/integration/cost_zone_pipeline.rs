@@ -24,9 +24,10 @@ use engine::types::counter::CounterType;
 use engine::types::events::{GameEvent, PlayerActionKind};
 use engine::types::game_state::{
     BatchCompletion, CastPaymentMode, CollectEvidenceResume, ExileLinkKind, GameState,
-    ManaAbilityCostParentLifecycle, ManaAbilityCostResolutionMode, ManaAbilityResume, ManaChoice,
-    PayCostKind, PendingCast, PendingCostMoveCompletion, PendingCostMoveResume, PendingReplacement,
-    PersistedGameState, StackEntryKind, WaitingFor, ZoneDeliveryExileTracking,
+    LoopDetectionMode, ManaAbilityCostParentLifecycle, ManaAbilityCostResolutionMode,
+    ManaAbilityResume, ManaChoice, PayCostKind, PendingCast, PendingCostMoveCompletion,
+    PendingCostMoveResume, PendingReplacement, PersistedGameState, StackEntryKind, WaitingFor,
+    ZoneDeliveryExileTracking,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
@@ -39,6 +40,8 @@ use engine::types::triggers::TriggerMode;
 use engine::types::zones::{EtbTapState, Zone};
 use serde_json::Value;
 use std::sync::Arc;
+
+const MODES: [LoopDetectionMode; 2] = [LoopDetectionMode::Off, LoopDetectionMode::Interactive];
 
 fn redirect_moved_to(destination: Zone, redirected_to: Zone) -> ReplacementDefinition {
     ReplacementDefinition::new(ReplacementEvent::Moved)
@@ -15740,7 +15743,7 @@ fn accepted_opponent_may_mana_body_pauses_on_the_nonactivator_and_resumes_the_fr
 /// on two competing graveyard-to-Exile redirects (index 0 sends them to Hand);
 /// `a` and `c` are delivered to Exile. The watcher is a Murktide-class
 /// "leaves your graveyard" trigger.
-fn delve_commit_with_parking_fuel(selected: &str) -> ([Zone; 4], u32) {
+fn delve_commit_with_parking_fuel(selected: &str, mode: LoopDetectionMode) -> ([Zone; 4], u32) {
     let watcher_text = "Flying\nWhenever an instant or sorcery card leaves your graveyard, put a +1/+1 counter on this creature.";
     let delve_text = "Delve (Each card you exile from your graveyard while casting this spell pays for {1}.)\nDraw three cards.";
     let mut scenario = GameScenario::new();
@@ -15783,6 +15786,7 @@ fn delve_commit_with_parking_fuel(selected: &str) -> ([Zone; 4], u32) {
         )],
     );
     let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
     let card_id = runner.state().objects[&spell].card_id;
     runner
         .act(GameAction::CastSpell {
@@ -15821,6 +15825,22 @@ fn delve_commit_with_parking_fuel(selected: &str) -> ([Zone; 4], u32) {
     );
     assert!(matches!(waiting_for, WaitingFor::Priority { player: P0 }));
     assert_eq!(runner.state().objects[&spell].zone, Zone::Stack);
+    // CR 601.2h + CR 603.3 + CR 117.5: drain gate admits watcher triggers below a
+    // waiting spell — each fuel's trigger is above it at the first priority.
+    let state = runner.state();
+    let names: Vec<&str> = state
+        .stack
+        .iter()
+        .map(|entry| state.objects[&entry.source_id].name.as_str())
+        .collect();
+    assert!(
+        state.deferred_triggers.is_empty(),
+        "{mode:?}: {:?}",
+        state.deferred_triggers.len()
+    );
+    let mut expected = vec!["Delve Spell"];
+    expected.extend(std::iter::repeat_n("Graveyard Watcher", selected.len()));
+    assert_eq!(names, expected, "{mode:?}");
     for _ in 0..12 {
         if runner.state().stack.is_empty() {
             break;
@@ -15845,52 +15865,62 @@ fn delve_commit_with_parking_fuel(selected: &str) -> ([Zone; 4], u32) {
 /// leaves the graveyard as part of the cast, so its trigger is not lost.
 #[test]
 fn commit_parking_on_second_fuel_keeps_first_fuels_leaves_graveyard_trigger() {
-    let (zones, counters) = delve_commit_with_parking_fuel("ab");
-    assert_eq!(
-        zones,
-        [Zone::Exile, Zone::Hand, Zone::Graveyard, Zone::Graveyard]
-    );
-    assert_eq!(counters, 2);
+    for mode in MODES {
+        let (zones, counters) = delve_commit_with_parking_fuel("ab", mode);
+        assert_eq!(
+            zones,
+            [Zone::Exile, Zone::Hand, Zone::Graveyard, Zone::Graveyard]
+        );
+        assert_eq!(counters, 2);
+    }
 }
 
 /// Sibling of the above: the parking fuel comes first, so the span the park
 /// covers is empty and the delivered second fuel triggers normally.
 #[test]
 fn commit_parking_on_first_fuel_keeps_second_fuels_leaves_graveyard_trigger() {
-    let (zones, counters) = delve_commit_with_parking_fuel("bc");
-    assert_eq!(
-        zones,
-        [Zone::Graveyard, Zone::Hand, Zone::Exile, Zone::Graveyard]
-    );
-    assert_eq!(counters, 2);
+    for mode in MODES {
+        let (zones, counters) = delve_commit_with_parking_fuel("bc", mode);
+        assert_eq!(
+            zones,
+            [Zone::Graveyard, Zone::Hand, Zone::Exile, Zone::Graveyard]
+        );
+        assert_eq!(counters, 2);
+    }
 }
 
 /// CR 603.2 + CR 616.1: a commit that parks on its second fuel after resuming
 /// from the first keeps the triggers of both parked fuel.
 #[test]
 fn commit_two_parking_fuel_keeps_both_fuels_leaves_graveyard_trigger() {
-    let (zones, counters) = delve_commit_with_parking_fuel("bd");
-    assert_eq!(
-        zones,
-        [Zone::Graveyard, Zone::Hand, Zone::Graveyard, Zone::Hand]
-    );
-    assert_eq!(counters, 2);
+    for mode in MODES {
+        let (zones, counters) = delve_commit_with_parking_fuel("bd", mode);
+        assert_eq!(
+            zones,
+            [Zone::Graveyard, Zone::Hand, Zone::Graveyard, Zone::Hand]
+        );
+        assert_eq!(counters, 2);
+    }
 }
 
 #[test]
 fn commit_four_fuel_with_two_parks_triggers_for_every_fuel() {
-    let (zones, counters) = delve_commit_with_parking_fuel("abcd");
-    assert_eq!(zones, [Zone::Exile, Zone::Hand, Zone::Exile, Zone::Hand]);
-    assert_eq!(counters, 4);
+    for mode in MODES {
+        let (zones, counters) = delve_commit_with_parking_fuel("abcd", mode);
+        assert_eq!(zones, [Zone::Exile, Zone::Hand, Zone::Exile, Zone::Hand]);
+        assert_eq!(counters, 4);
+    }
 }
 
 /// Control: one park among three fuel, so the resume never parks again.
 #[test]
 fn commit_with_one_parking_fuel_among_three_triggers_for_every_fuel() {
-    let (zones, counters) = delve_commit_with_parking_fuel("abc");
-    assert_eq!(
-        zones,
-        [Zone::Exile, Zone::Hand, Zone::Exile, Zone::Graveyard]
-    );
-    assert_eq!(counters, 3);
+    for mode in MODES {
+        let (zones, counters) = delve_commit_with_parking_fuel("abc", mode);
+        assert_eq!(
+            zones,
+            [Zone::Exile, Zone::Hand, Zone::Exile, Zone::Graveyard]
+        );
+        assert_eq!(counters, 3);
+    }
 }
