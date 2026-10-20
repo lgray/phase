@@ -2504,10 +2504,10 @@ fn drain_pending_change_zone_iteration(state: &mut GameState, events: &mut Vec<G
             source_id,
             subject: None,
         });
-        // CR 603.2 + CR 603.3b: the resume settled the iteration. When the move
-        // landed us back at Priority (no further replacement choice), B1-drain the
-        // deferred observer triggers parked during earlier pause segments plus the
-        // ones this resume produced; otherwise leave them parked for the next drain.
+        // CR 603.2 + CR 603.3b: the resume settled the iteration. Park the
+        // observer triggers this resume produced beside those parked during
+        // earlier pause segments; the post-action pipeline places them with
+        // the boundary's one batch.
         let trigger_events: Vec<GameEvent> = events[events_before_drain..]
             .iter()
             .filter(|ev| {
@@ -2518,12 +2518,7 @@ fn drain_pending_change_zone_iteration(state: &mut GameState, events: &mut Vec<G
             })
             .cloned()
             .collect();
-        if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-            crate::game::triggers::collect_triggers_into_deferred(state, &trigger_events);
-            crate::game::triggers::drain_deferred_trigger_queue(state, events);
-        } else {
-            crate::game::triggers::collect_triggers_into_deferred(state, &trigger_events);
-        }
+        crate::game::triggers::collect_triggers_into_deferred(state, &trigger_events);
     }
 }
 

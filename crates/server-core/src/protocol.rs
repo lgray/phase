@@ -3473,6 +3473,10 @@ mod tests {
         }
     }
 
+    /// v155: `PendingTriggerContext::batch_origin` gains `PriorityBoundary`
+    /// (CR 117.5 + CR 603.3b); a v154 peer cannot decode the variant, so it
+    /// must be refused before it receives v155 state.
+    ///
     /// v154: `GameObject::split_from_merge_survivor` retypes to
     /// `ObjectIncarnationRef` (CR 400.7); a v153 peer cannot decode the populated
     /// field, so it must be refused before it receives v154 state.
@@ -3726,8 +3730,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_154_for_split_backlink_incarnation() {
-        assert_eq!(PROTOCOL_VERSION, 154);
+    fn protocol_version_is_155_for_priority_boundary_batch() {
+        assert_eq!(PROTOCOL_VERSION, 155);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3738,7 +3742,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_154_for_split_backlink_incarnation` stays
+    /// `protocol_version_is_155_for_priority_boundary_batch` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {

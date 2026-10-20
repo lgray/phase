@@ -215,6 +215,9 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 155 — PendingTriggerContext.batch_origin gains PriorityBoundary (a priority
+ *      boundary's trigger batch parked behind a non-SBA wait, CR 117.5 +
+ *      CR 603.3b); a v154 peer cannot decode the variant. Wire 137 moves with it.
  * 154 — GameObject.split_from_merge_survivor retypes from a bare ObjectId to
  *      ObjectIncarnationRef (CR 400.7); a v153 peer cannot decode the populated
  *      field. Wire 136 moves with it.
@@ -932,7 +935,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 154;
+export const PROTOCOL_VERSION = 155;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

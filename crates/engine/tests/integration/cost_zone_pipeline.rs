@@ -4121,11 +4121,9 @@ fn effect_pay_cost_auto_tap_redirect_serializes_exact_cost_and_trailing_effect_o
 /// boundary: OT watches the frame's own tap, OL watches the RIDER's life gain.
 ///
 /// With settlement before the resume, the frame's batch is exactly its own tap
-/// events, so OT is a one-member batch that needs no CR 603.3b ordering prompt,
-/// and the rider's life-gain event is not part of the frame at all. Restoring
-/// baseline's resume-then-settle order sweeps the rider's event into the same
-/// completed-frame batch, producing a two-member group and an `OrderTriggers`
-/// prompt — the exact durable-state difference this slice owns.
+/// events, and the rider's life-gain event is not part of the frame at all.
+/// OT and OL triggered with no priority between them, so they are placed as one
+/// CR 603.3b batch.
 #[test]
 fn durable_ledger_effect_pay_cost_root_settles_before_its_resume_runs_the_rider() {
     let (mut scenario, source) = mana_self_exile_cost_redirect_witness();
@@ -4208,17 +4206,28 @@ fn durable_ledger_effect_pay_cost_root_settles_before_its_resume_runs_the_rider(
         .act(GameAction::ChooseReplacement { index: 0 })
         .expect("the redirected source cost resumes the exact outer effect cost");
 
-    // The frame settled BEFORE the rider ran, so its batch is exactly OT.
-    assert!(
-        !matches!(resumed.waiting_for, WaitingFor::OrderTriggers { .. }),
-        "a one-member completed-frame batch needs no CR 603.3b ordering prompt, got {:?}",
-        resumed.waiting_for
-    );
+    let WaitingFor::OrderTriggers { player, triggers } = &resumed.waiting_for else {
+        panic!(
+            "OT and OL wait together for their controller's order, got {:?}",
+            resumed.waiting_for
+        );
+    };
+    assert_eq!(*player, P0);
+    let mut ordered: Vec<ObjectId> = triggers.iter().map(|t| t.source_id).collect();
+    ordered.sort();
+    let mut expected = vec![observer_t, observer_l];
+    expected.sort();
+    assert_eq!(ordered, expected, "the batch is exactly OT and OL");
     assert_eq!(
         runner.state().players[P0.0 as usize].life,
         life_before + 1,
         "the rider ran exactly once, after the frame settled"
     );
+    runner
+        .act(GameAction::OrderTriggers {
+            order: (0..triggers.len()).collect(),
+        })
+        .expect("ordering accepted");
     let stacked: Vec<ObjectId> = runner
         .state()
         .stack

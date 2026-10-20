@@ -746,8 +746,8 @@ pub(super) fn park_cast_during_resolution_cast_observers(
 /// captured BEFORE the continuation drain so that continuation-produced events
 /// are excluded.
 ///
-/// Returns `Some(WaitingFor)` only in the B1 settled case when a drained
-/// deferred trigger itself needs player input; the caller must propagate it.
+/// Returns `Some` in the B1 settled case; the post-action pipeline places the
+/// collected triggers with that boundary's one batch (CR 603.3b).
 fn batch_or_drain_observer_triggers(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
@@ -764,9 +764,9 @@ fn batch_or_drain_observer_triggers(
 ) -> Option<ResolutionChoiceOutcome> {
     if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
         // B1: this action settled. Merge this slice's observer triggers into
-        // the parked queue before draining — otherwise the last segment's
-        // triggers (e.g. the final Syphon Mind opponent discard) never enter
-        // `deferred_triggers` and are lost when ordering runs (issue #1793).
+        // the parked queue for the pipeline's batch — otherwise the last
+        // segment's triggers (e.g. the final Syphon Mind opponent discard) never
+        // enter `deferred_triggers` and are lost when ordering runs (issue #1793).
         let trigger_events: Vec<GameEvent> = events[event_slice_start..event_slice_end]
             .iter()
             .filter(|ev| {
@@ -787,9 +787,6 @@ fn batch_or_drain_observer_triggers(
             )
             .collect();
         super::triggers::collect_triggers_into_deferred(state, &trigger_events);
-        if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
-            return Some(ResolutionChoiceOutcome::WaitingFor(wf));
-        }
         Some(ResolutionChoiceOutcome::WaitingForWithInlineTriggers(
             state.waiting_for.clone(),
         ))
@@ -6041,8 +6038,8 @@ pub(super) fn handle_resolution_choice(
             // discard (e.g. Shorikai's "then create a Pilot creature token")
             // emits ZoneChanged/TokenCreated during `finish_with_continuation`.
             // Collect BOTH the discard slice and the continuation slice into
-            // `deferred_triggers` before a single drain — the discard slice must
-            // stay bounded to the move itself, but an early drain after only the
+            // `deferred_triggers` before the pipeline's one placement — the discard
+            // slice must stay bounded to the move itself, but an early drain after only the
             // discard slice would return `WaitingForWithInlineTriggers` and skip
             // the continuation slice entirely (issue #4245).
             for (start, end) in [
@@ -6063,9 +6060,6 @@ pub(super) fn handle_resolution_choice(
             }
 
             if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
-                    return Ok(ResolutionChoiceOutcome::WaitingFor(wf));
-                }
                 return Ok(ResolutionChoiceOutcome::WaitingForWithInlineTriggers(
                     waiting_for,
                 ));

@@ -323,14 +323,10 @@ impl Drive {
 fn offered(board: Board) -> Option<(Drive, Vec<Apply>)> {
     let mut drive = start(board)?;
     let mut applies = drive.drive_to_window();
-    // Soul's Attendant's trigger lands above Preston's, so that board passes one recurrence window
-    // before its offer stands.
-    if let Board::BAttendant = board {
-        if !is_offer(drive.state()) {
-            let action = drive.next_action();
-            applies.push(drive.apply(action));
-            applies.extend(drive.drive_to_window());
-        }
+    while !is_offer(drive.state())
+        && !matches!(drive.state().waiting_for, WaitingFor::GameOver { .. })
+    {
+        applies.extend(drive.drive_to_window());
     }
     let state = drive.state();
     assert!(
@@ -1300,7 +1296,7 @@ fn offered_asking_attendant_twice(answers: [MayChoiceOption; 2]) -> Option<Drive
     }
     assert_eq!(
         attendant_answers(drive.state()),
-        [(0, answers[0]), (1, answers[1])],
+        [(0, answers[1]), (1, answers[0])],
         "reach guard: the period asks Soul's Attendant twice, each its own occurrence"
     );
     Some(drive)
