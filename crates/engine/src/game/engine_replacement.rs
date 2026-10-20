@@ -2823,10 +2823,7 @@ pub(super) fn replay_deferred_entry_events(
     if matches!(state.waiting_for, WaitingFor::DistributeAmong { .. }) {
         return Ok(Some(state.waiting_for.clone()));
     }
-    // CR 603.3b (#531): propagate an OrderTriggers pause raised above. Without this, multiple simultaneously-fired ETB observers on one
-    // entry (e.g., two constellation triggers, or Wedding Announcement's token
-    // + Ocelot Pride's life-gain rider on a copy entry) would silently fall
-    // through to Priority.
+    // CR 603.3b (#531): propagate an OrderTriggers pause `drain_pending_continuation` raised.
     if matches!(state.waiting_for, WaitingFor::OrderTriggers { .. }) {
         return Ok(Some(state.waiting_for.clone()));
     }
