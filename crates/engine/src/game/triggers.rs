@@ -8456,8 +8456,8 @@ pub(crate) fn collect_unclaimed_delayed_trigger_contexts(
     state.deferred_triggers.split_off(first_new_context)
 }
 
-/// Collect the triggers of a completed SBA batch that paused on a player
-/// choice, stamped with the origin the pipeline chose for that wait.
+/// Collect `events`' triggers into the queue stamped `origin`: a priority
+/// boundary's own batch, or an SBA batch parked behind a choice.
 ///
 /// The marker is a narrow scheduling ownership record, not a general queue
 /// heuristic: `StateBasedActionChoice` is stamped only for the closed set of
