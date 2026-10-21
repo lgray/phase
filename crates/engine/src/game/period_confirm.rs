@@ -863,7 +863,9 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     #[cfg(feature = "test-support")]
     crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
     let _probe = SimulationProbeGuard::enter();
-    let s_n = crate::game::visibility::proposer_hidden_view(frame, holder);
+    let mut s_n = crate::game::visibility::proposer_hidden_view(frame, holder);
+    // CR 732.2a: the replay takes only the period's own passes; a standing auto-pass takes more.
+    s_n.auto_pass.clear();
     let end = FrameEnd::of(&s_n, holder, span.reach);
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
@@ -1136,6 +1138,7 @@ pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, Offe
     let items = period_items(play_trace::span_entries(state, span)?, span, state);
     let mut frame = state.clone();
     frame.waiting_for = WaitingFor::Priority { player: holder };
+    frame.auto_pass.clear();
     let _probe = SimulationProbeGuard::enter();
     let frame = crate::game::visibility::proposer_hidden_view(&frame, holder);
     let end = FrameEnd::of(&frame, holder, span.reach);

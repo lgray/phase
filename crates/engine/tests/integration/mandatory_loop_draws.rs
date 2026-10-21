@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use engine::game::perf_counters::play_trace_counters;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::actions::{GameAction, PriorityYieldOp, ReplacementAutoChoice};
@@ -716,4 +717,30 @@ fn full_yield_drive_returns(board: Board) -> Option<(Terminal, usize, usize)> {
         .expect("spawn the drive");
     rx.recv_timeout(Duration::from_secs(TIMEOUT_SECS))
         .unwrap_or_else(|err| panic!("an Interactive full-yield action never returned ({err:?})"))
+}
+
+/// CR 117.4 + CR 732.2a: a period confirmed on a frame where its holder stands on an auto-pass
+/// is replayed one recorded pass at a time, so each triggered ability the replay resolves takes
+/// a pass from both players, each its own action.
+#[test]
+fn a_standing_auto_pass_does_not_pass_inside_a_confirm_replay() {
+    let before = play_trace_counters();
+    let Some(run) = run(
+        snarecaster(May::Remembered { accept: false }),
+        LoopDetectionMode::Interactive,
+        Drive::UntilTurnBoundary,
+        12,
+    ) else {
+        return;
+    };
+    let counted = play_trace_counters().since(before);
+    assert_eq!(run.terminal, Terminal::BeatsExhausted);
+    assert!(
+        counted.confirm_drives > 0 && counted.resolution_hooks_in_probe > 0,
+        "reach: a replay resolved triggered abilities ({counted:?})"
+    );
+    assert!(
+        2 * counted.resolution_hooks_in_probe <= counted.probe_entries,
+        "a replayed action passed for its holder as well ({counted:?})"
+    );
 }

@@ -10290,11 +10290,6 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
             {
                 emit_resolution_halt(state, result);
             }
-            // A replay that inherited the standing passes would otherwise pay this capped
-            // drive again at every step it replays; the halt hands its steps back to it.
-            if in_simulation_probe() {
-                state.auto_pass.clear();
-            }
             break;
         }
         iteration += 1;
