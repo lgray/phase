@@ -1393,6 +1393,7 @@ pub(super) fn apply_action_boundary_with_stack_limit(
         }
     }
     let trace_snapshot = super::play_trace::begin_action(state, semantic_owner, &action);
+    let answered = super::play_trace::answered_choice(&action, &state.waiting_for);
     let result = apply_action_boundary_core(
         state,
         authenticated_actor,
@@ -1401,7 +1402,13 @@ pub(super) fn apply_action_boundary_with_stack_limit(
         stack_resolution_limit,
         true,
     )
-    .and_then(|raw| finish_action_boundary(state, raw, mode));
+    .and_then(|raw| {
+        // CR 104.4b: recorded before this action's own auto-pass drive samples the loop.
+        if let Some(answer) = answered.filter(|_| raw.result.disposition.is_applied()) {
+            state.record_loop_decision(answer);
+        }
+        finish_action_boundary(state, raw, mode)
+    });
     let disposition = result.as_ref().ok().map(|result| result.disposition);
     super::play_trace::end_action(state, trace_snapshot, disposition);
     result
@@ -2620,6 +2627,11 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         // `state`, which is why the verdict is carried out of the scan and acted on below: a
         // mutation inside the walk would be a borrow-check error rather than a walk that keeps
         // comparing against a state it already changed.
+        // `mandatory` already rules out an out at the current position (CR 732.5).
+        let current_marks = crate::types::game_state::LoopDecisionMarks {
+            tally: state.loop_decision_tally,
+            out: crate::types::game_state::PriorityOut::Absent,
+        };
         let drawn = !priors.is_empty() && {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
             let ring_live: Vec<&GameState> = priors.iter().map(|sample| &sample.live).collect();
@@ -2654,6 +2666,13 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                             ))
                             && delta.is_net_progress()
                             && has_no_loss_axis(&delta)))
+                    // CR 104.4b: a period holding an optional action, a decision or an out is
+                    // no draw.
+                    && crate::types::game_state::LoopDecisionProfile::of_window(
+                        priors[idx..].iter().map(|sample| &sample.marks),
+                        &current_marks,
+                    )
+                    .is_forced()
             })
         };
         if drawn {
@@ -9832,7 +9851,7 @@ fn priority_player_has_meaningful_action(state: &GameState) -> bool {
 /// `waiting_for`). Conservative: if anyone has a meaningful action this returns
 /// `false` and the cascade falls through to the existing halt (priority preserved) —
 /// fail-safe toward the status quo, never a wrong win.
-fn no_living_player_has_meaningful_priority_action(state: &GameState) -> bool {
+pub(crate) fn no_living_player_has_meaningful_priority_action(state: &GameState) -> bool {
     // Metered in the BODY, not per call site: the reconcile match's `On` arm and the
     // bridge's own first statement both reach it, and a per-call-site pair would leave the
     // `On` one dead on an `Interactive` drive.
@@ -10244,7 +10263,8 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
     const FINGERPRINT_AFTER_ITERS: usize = 32;
     const MAX_LOOP_WINDOW: usize = 128;
     let mut mandatory_iters = 0usize;
-    let mut loop_window: VecDeque<(u64, GameState)> = VecDeque::new();
+    let mut loop_window: VecDeque<(u64, GameState, crate::types::game_state::LoopDecisionMarks)> =
+        VecDeque::new();
 
     let max_iterations = auto_pass_loop_max_iterations(state);
     let mut iteration = 0usize;
@@ -10269,6 +10289,11 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                 && !priority_player_has_meaningful_action(state)
             {
                 emit_resolution_halt(state, result);
+            }
+            // A replay that inherited the standing passes would otherwise pay this capped
+            // drive again at every step it replays; the halt hands its steps back to it.
+            if in_simulation_probe() {
+                state.auto_pass.clear();
             }
             break;
         }
@@ -10343,25 +10368,30 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                             return advanced;
                         }
 
-                        // CR 104.4b: detect a repeating mandatory loop. Every
-                        // iteration here is mandatory by construction (a
-                        // meaningful action would have broken the loop), so the
-                        // window never spans an optional action. A cheap
-                        // fingerprint pre-filters; a true repeat is CONFIRMED by
-                        // deep state equality before any draw, so a fingerprint
-                        // collision can never cause a wrongful draw.
+                        // CR 104.4b: detect a repeating mandatory loop. A stored
+                        // answer or saved order can apply inside the window, so a
+                        // repeat draws only over a period whose decision profile is
+                        // forced. A cheap fingerprint pre-filters; a true repeat is
+                        // CONFIRMED by deep state equality before any draw, so a
+                        // fingerprint collision can never cause a wrongful draw.
                         mandatory_iters += 1;
                         if mandatory_iters >= FINGERPRINT_AFTER_ITERS
                             && matches!(result.waiting_for, WaitingFor::Priority { .. })
                         {
                             let fingerprint = state.loop_fingerprint();
                             let normalized = state.normalize_for_loop();
-                            if loop_window.iter().any(|(fp, prior)| {
+                            let marks = state.loop_decision_marks();
+                            if loop_window.iter().enumerate().any(|(at, (fp, prior, _))| {
                                 *fp == fingerprint
                                     && crate::types::game_state::loop_states_equal(
                                         &normalized,
                                         prior,
                                     )
+                                    && crate::types::game_state::LoopDecisionProfile::of_window(
+                                        loop_window.iter().skip(at).map(|(_, _, marks)| marks),
+                                        &marks,
+                                    )
+                                    .is_forced()
                             }) {
                                 // CR 104.4b + CR 732.4: a mandatory action
                                 // repeated a prior state with no way to stop — a
@@ -10400,7 +10430,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                             if loop_window.len() == MAX_LOOP_WINDOW {
                                 loop_window.pop_front();
                             }
-                            loop_window.push_back((fingerprint, normalized));
+                            loop_window.push_back((fingerprint, normalized, marks));
                         }
 
                         if stack_empty_or_grew || session_finished {
@@ -17249,6 +17279,8 @@ pub(super) fn begin_pending_trigger_target_selection(
                     .is_some_and(|key| state.may_trigger_same_card_choice_available(key));
                 if let Some(ref key) = may_trigger_key {
                     if let Some(choice) = state.may_trigger_auto_choice_for_live_prompt(key) {
+                        // CR 603.5: the remembered answer is the controller's optional choice.
+                        state.record_loop_decision(super::play_trace::AnswerOptionality::Optional);
                         match choice {
                             AutoMayChoice::Decline => {
                                 drop_mid_construction_pending_trigger(state);
@@ -23367,7 +23399,7 @@ mod stage2_injector_tests {
 
         assert_eq!(
             producers.len() + readers.len() + in_test,
-            54,
+            56,
             "CR 603.5 prompt census drifted. A new PRODUCER must have its recipient bound \
              somewhere — the mint's conjunct (a) covers exactly ONE of them. A new READER is \
              the benign case (U4's own consumption arm was one).\n\
@@ -23375,9 +23407,9 @@ mod stage2_injector_tests {
         );
         assert_eq!(
             (producers.len(), readers.len(), in_test),
-            (4, 11, 39),
+            (4, 11, 41),
             "the partition, not just the total: four PRODUCTION producers, eleven PRODUCTION \
-             readers (including the two new optional-subject projection reads), and 39 \
+             readers (including the two new optional-subject projection reads), and 41 \
              `#[cfg(test)]` lines.\nproducers={producers:#?}\n\
              readers={readers:#?}"
         );
@@ -24755,6 +24787,7 @@ mod bounded_offer_conjunct_tests {
                 .push_back(std::sync::Arc::new(crate::types::LoopDetectSample {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
+                    marks: Default::default(),
                 }));
         }
         state
@@ -25497,7 +25530,11 @@ mod bounded_offer_conjunct_tests {
                 let mut live = s.live.clone();
                 inject(&mut normalized);
                 inject(&mut live);
-                Arc::new(LoopDetectSample { normalized, live })
+                Arc::new(LoopDetectSample {
+                    normalized,
+                    live,
+                    marks: Default::default(),
+                })
             })
             .collect();
         state.loop_detect_ring = frames;
@@ -27675,7 +27712,7 @@ mod legacy_copy_announcement_tests {
 #[cfg(test)]
 mod mandatory_draw_unmeasured_axis_tests {
     use super::*;
-    use crate::game::scenario::{GameScenario, P1};
+    use crate::game::scenario::{GameScenario, P0, P1};
     use crate::types::game_state::LoopDetectionMode;
     use crate::types::player::PlayerCounterKind;
     use std::sync::Arc;
@@ -27692,14 +27729,20 @@ mod mandatory_draw_unmeasured_axis_tests {
         prior.objects.get_mut(&creature).unwrap().damage_marked = 1;
         let mut current = prior.clone();
         change(&mut current, creature);
+        draws_from(&prior, current)
+    }
+
+    /// Runs Path B on `current` with the ring `[prior, own sample]`.
+    fn draws_from(prior: &GameState, mut current: GameState) -> bool {
         let sample = |state: &GameState| {
             Arc::new(crate::types::LoopDetectSample {
                 normalized: state.normalize_for_loop(),
                 live: state.clone(),
+                marks: state.loop_decision_marks(),
             })
         };
         let own = sample(&current);
-        current.loop_detect_ring = [sample(&prior), own].into_iter().collect();
+        current.loop_detect_ring = [sample(prior), own].into_iter().collect();
         assert!(
             no_living_player_has_meaningful_priority_action(&current),
             "reach guard: the loop is mandatory"
@@ -27751,5 +27794,179 @@ mod mandatory_draw_unmeasured_axis_tests {
             }),
             "net progress over a player counter that grew unmeasured"
         );
+    }
+
+    #[derive(Clone, Copy)]
+    enum LifeReplacements {
+        None,
+        OptionalPrevention,
+        TwoOrdered,
+    }
+
+    /// Runs Path B across one life gain through the replacement pipeline, under a choice
+    /// remembered before the prior was sampled.
+    fn draws_across_a_life_gain(replacements: LifeReplacements) -> bool {
+        use crate::types::ability::{QuantityModification, ReplacementDefinition, ReplacementMode};
+        use crate::types::actions::ReplacementAutoChoice;
+        use crate::types::replacements::ReplacementEvent;
+        let (modifications, mode, remember) = match replacements {
+            LifeReplacements::None => (vec![], ReplacementMode::Mandatory, None),
+            LifeReplacements::OptionalPrevention => (
+                vec![QuantityModification::Prevent],
+                ReplacementMode::Optional { decline: None },
+                Some(ReplacementAutoChoice::Optional { index: 0 }),
+            ),
+            LifeReplacements::TwoOrdered => (
+                vec![
+                    QuantityModification::Times { factor: 2 },
+                    QuantityModification::Plus { value: 1 },
+                ],
+                ReplacementMode::Mandatory,
+                Some(ReplacementAutoChoice::Order { order: vec![0, 1] }),
+            ),
+        };
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        for modification in modifications {
+            scenario
+                .add_creature(P0, "Life modifier", 1, 1)
+                .with_replacement_definition(
+                    ReplacementDefinition::new(ReplacementEvent::GainLife)
+                        .quantity_modification(modification)
+                        .mode(mode.clone()),
+                );
+        }
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(P0, "Life spell", true, "You gain 1 life.")
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(spell).resolve();
+        if let Some(choice) = remember {
+            runner
+                .act(GameAction::ChooseReplacementAndRemember { choice })
+                .expect("the first life gain remembers its replacement choice");
+        }
+        let mut prior = runner.state().clone();
+        prior.loop_detection = LoopDetectionMode::Interactive;
+        let mut current = prior.clone();
+        crate::game::effects::life::apply_life_gain(&mut current, P0, 1, &mut Vec::new())
+            .expect("reach: the remembered choice applies without a prompt");
+        draws_from(&prior, current)
+    }
+
+    /// CR 104.4b + CR 603.5 + CR 616.1: a period over a remembered optional replacement, or a
+    /// remembered order of replacements, holds a choice and is no draw.
+    #[test]
+    fn a_remembered_replacement_choice_in_the_period_is_no_draw() {
+        assert!(
+            draws_across_a_life_gain(LifeReplacements::None),
+            "control: the same life gain with no replacement to choose draws"
+        );
+        assert!(
+            !draws_across_a_life_gain(LifeReplacements::OptionalPrevention),
+            "a remembered optional prevention is an optional action"
+        );
+        assert!(
+            !draws_across_a_life_gain(LifeReplacements::TwoOrdered),
+            "a remembered order of two replacements is a decision"
+        );
+    }
+}
+
+#[cfg(test)]
+mod loop_decision_record_tests {
+    use super::*;
+    use crate::game::scenario::{GameRunner, GameScenario, P0};
+    use crate::types::game_state::{AutoMayChoice, LoopDecisionTally};
+
+    const SHADRIX_SILVERQUILL: &str = "Flying, double strike\n\
+At the beginning of combat on your turn, you may choose two. Each mode must target a different player.\n\
+• Target player creates a 2/1 white and black Inkling creature token with flying.\n\
+• Target player draws a card and loses 1 life.\n\
+• Target player puts a +1/+1 counter on each creature they control.";
+
+    fn shadrix() -> GameRunner {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.add_creature_from_oracle(P0, "Shadrix Silverquill", 2, 5, SHADRIX_SILVERQUILL);
+        scenario.build()
+    }
+
+    /// Passes into combat and returns the key of Shadrix's prompted "may".
+    fn prompted_may(runner: &mut GameRunner) -> crate::types::game_state::MayTriggerAutoChoiceKey {
+        runner.pass_both_players();
+        let WaitingFor::OptionalEffectChoice {
+            may_trigger_key: Some(key),
+            ..
+        } = runner.state().waiting_for.clone()
+        else {
+            panic!(
+                "reach: Shadrix's begin-combat trigger prompts, got {:?}",
+                runner.state().waiting_for
+            );
+        };
+        key
+    }
+
+    /// CR 104.4b + CR 603.5: a prompted answer is recorded at the action boundary; passing
+    /// priority records nothing.
+    #[test]
+    fn a_prompted_answer_is_recorded_at_the_action_boundary() {
+        let mut runner = shadrix();
+        prompted_may(&mut runner);
+        assert_eq!(
+            runner.state().loop_decision_tally,
+            LoopDecisionTally::default()
+        );
+        runner
+            .act(GameAction::DecideOptionalEffect { accept: false })
+            .expect("the may can be declined");
+        assert_eq!(
+            runner.state().loop_decision_tally,
+            LoopDecisionTally {
+                optional: 1,
+                decision: 0
+            }
+        );
+    }
+
+    /// CR 603.5: a remembered decline is recorded where it drops the trigger.
+    #[test]
+    fn a_remembered_decline_is_recorded_where_it_drops_the_trigger() {
+        let key = prompted_may(&mut shadrix());
+        let mut remembered = shadrix();
+        remembered
+            .state_mut()
+            .set_may_trigger_auto_choice(key, AutoMayChoice::Decline);
+        remembered.pass_both_players();
+        assert!(
+            !matches!(
+                remembered.state().waiting_for,
+                WaitingFor::OptionalEffectChoice { .. }
+            ),
+            "reach: the remembered decline opens no prompt"
+        );
+        assert_eq!(remembered.state().loop_decision_tally.optional, 1);
+    }
+
+    /// CR 603.5: a remembered answer to an optional modal trigger is recorded where it is
+    /// applied.
+    #[test]
+    fn a_remembered_modal_may_answer_is_recorded_where_it_applies() {
+        let key = prompted_may(&mut shadrix());
+        let mut remembered = shadrix();
+        remembered
+            .state_mut()
+            .set_may_trigger_auto_choice(key, AutoMayChoice::Accept);
+        remembered.pass_both_players();
+        assert!(
+            matches!(
+                remembered.state().waiting_for,
+                WaitingFor::AbilityModeChoice { .. }
+            ),
+            "reach: the remembered accept skips to the modes, got {:?}",
+            remembered.state().waiting_for
+        );
+        assert_eq!(remembered.state().loop_decision_tally.optional, 1);
     }
 }

@@ -17592,6 +17592,7 @@ mod tests {
                 .push_back(std::sync::Arc::new(crate::types::LoopDetectSample {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
+                    marks: Default::default(),
                 }));
         }
         state
@@ -19506,6 +19507,7 @@ mod tests {
                     crate::types::LoopDetectSample {
                         normalized: frame.normalize_for_loop(),
                         live: frame.loop_detect_live_sample(),
+                        marks: Default::default(),
                     },
                 ));
             }
@@ -22998,6 +23000,7 @@ mod tests {
                 .push_back(std::sync::Arc::new(LoopDetectSample {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
+                    marks: Default::default(),
                 }));
         }
         state

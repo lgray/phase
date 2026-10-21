@@ -4640,7 +4640,7 @@ fn collect_latched_batched_zone_triggers(
         record_matched_batched_zone_change_replay(state, &matched);
         let trigger_context =
             PendingTriggerContext::batched(matched.pending, matched.trigger_events);
-        if !pending_trigger_is_auto_inert_noop(state, &trigger_context) {
+        if !drop_auto_inert_noop_trigger(state, &trigger_context) {
             pending.push(trigger_context);
         }
     }
@@ -4926,7 +4926,7 @@ fn collect_pending_triggers_with_collection(
                 registered_this_event.insert((obj_id, matched.trig_idx));
                 let trigger_context =
                     PendingTriggerContext::batched(matched.pending, matched.trigger_events);
-                if pending_trigger_is_auto_inert_noop(state, &trigger_context) {
+                if drop_auto_inert_noop_trigger(state, &trigger_context) {
                     continue;
                 }
                 pending.push(trigger_context);
@@ -6855,11 +6855,11 @@ fn filter_auto_inert_noop_triggers(
 ) -> Vec<PendingTriggerContext> {
     pending
         .into_iter()
-        .filter(|ctx| !pending_trigger_is_auto_inert_noop(state, ctx))
+        .filter(|ctx| !drop_auto_inert_noop_trigger(state, ctx))
         .collect()
 }
 
-fn pending_trigger_is_auto_inert_noop(state: &mut GameState, ctx: &PendingTriggerContext) -> bool {
+fn drop_auto_inert_noop_trigger(state: &mut GameState, ctx: &PendingTriggerContext) -> bool {
     let pending = &ctx.pending;
     if !pending.ability.optional {
         return false;
@@ -6876,7 +6876,12 @@ fn pending_trigger_is_auto_inert_noop(state: &mut GameState, ctx: &PendingTrigge
         origin,
     };
     match state.may_trigger_auto_choice_for_live_prompt(&key) {
-        Some(AutoMayChoice::Decline) => true,
+        Some(AutoMayChoice::Decline) => {
+            // CR 603.5: the remembered decline is the controller's optional choice.
+            state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Optional);
+            true
+        }
+        // CR 603.3d: no legal target means no choice was offered, so nothing is recorded.
         Some(AutoMayChoice::Accept) => pending_trigger_has_no_legal_resolution_targets(state, ctx),
         None => false,
     }
@@ -8066,7 +8071,9 @@ fn begin_trigger_ordering(
             g.ordered = true;
         } else if apply_trigger_order_template(state, g) {
             // CR 603.3b: an ephemeral (coverage-only) or persistent (permute-once)
-            // template covered this order-dependent group ⇒ no re-prompt.
+            // template covered this order-dependent group ⇒ no re-prompt, but the
+            // order is still the controller's choice.
+            state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Mandatory);
             g.ordered = true;
         }
     }

@@ -1212,6 +1212,23 @@ fn answer_optionality(prompt: &WaitingFor, answer: Answer) -> AnswerOptionality 
     }
 }
 
+/// CR 104.4b: the loop decision `action` answers at `prompt`; `None` for a play, a pass, a
+/// setting, or a prompt with a single forced option (CR 732.4).
+pub(crate) fn answered_choice(
+    action: &GameAction,
+    prompt: &WaitingFor,
+) -> Option<AnswerOptionality> {
+    match classify(action, prompt) {
+        Choice::Answer(Answer::Take) if !prompt.is_forced_one_option_choice() => {
+            Some(answer_optionality(prompt, Answer::Take))
+        }
+        Choice::Answer(Answer::Take | Answer::Pass)
+        | Choice::Play(_)
+        | Choice::Reverse(_)
+        | Choice::Setting => None,
+    }
+}
+
 /// The node and legality locus of a play, read from the state before the play is made.
 fn play_node(state: &GameState, play: &Play, at: usize) -> (NodeKey, PlayLocus) {
     let printed = |id: ObjectId| state.objects.get(&id).and_then(|o| o.printed_ref.clone());
@@ -2223,5 +2240,78 @@ mod tests {
             .map(|(label, ..)| label)
             .collect();
         assert_eq!(misclassified, Vec::<&str>::new());
+    }
+
+    /// CR 104.4b + CR 732.4: a loop decision is an answer with more than one option; a pass
+    /// and a single forced option are none.
+    #[test]
+    fn answered_choice_is_an_answer_with_more_than_one_option() {
+        use AnswerOptionality::{Mandatory, Optional};
+        let (player, source) = (PlayerId(0), ObjectId(1));
+        let reveal = |cards: Vec<ObjectId>| WaitingFor::RevealChoice {
+            player,
+            cards,
+            filter: TargetFilter::Any,
+            optional: false,
+            decline_runs_continuation: false,
+        };
+        let may = WaitingFor::OptionalEffectChoice {
+            player,
+            decision_subject_id: None,
+            source_id: source,
+            description: None,
+            may_trigger_key: None,
+            same_card_may_trigger_choice_available: false,
+        };
+        let order = WaitingFor::OrderTriggers {
+            player,
+            triggers: vec![],
+        };
+        let priority = WaitingFor::Priority { player };
+        let select = |cards: Vec<ObjectId>| GameAction::SelectCards { cards };
+        let rows = [
+            (
+                "declined may",
+                &may,
+                GameAction::DecideOptionalEffect { accept: false },
+                Some(Optional),
+            ),
+            (
+                "accepted may",
+                &may,
+                GameAction::DecideOptionalEffect { accept: true },
+                Some(Optional),
+            ),
+            (
+                "trigger order",
+                &order,
+                GameAction::OrderTriggers { order: vec![1, 0] },
+                Some(Mandatory),
+            ),
+            ("pass", &priority, GameAction::PassPriority, None),
+        ];
+        let one_card = reveal(vec![source]);
+        let two_cards = reveal(vec![source, ObjectId(2)]);
+        let reveals = [
+            (
+                "one-card forced reveal",
+                &one_card,
+                select(vec![source]),
+                None,
+            ),
+            (
+                "two-card reveal",
+                &two_cards,
+                select(vec![source]),
+                Some(Mandatory),
+            ),
+        ];
+        let misread: Vec<&str> = rows
+            .iter()
+            .chain(reveals.iter())
+            .filter(|(_, prompt, action, expected)| answered_choice(action, prompt) != *expected)
+            .map(|(label, ..)| *label)
+            .collect();
+        assert_eq!(misread, Vec::<&str>::new());
     }
 }

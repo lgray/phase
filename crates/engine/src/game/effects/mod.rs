@@ -18093,6 +18093,8 @@ fn resolve_chain_body(
                     Some(AutoMayChoice::Decline)
                 )
             }) {
+                // CR 603.5: the remembered decline is the controller's optional choice.
+                state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Optional);
                 progress = resolve_optional_effect_decision_step(
                     state,
                     ability.clone(),
@@ -18145,6 +18147,8 @@ fn resolve_chain_body(
             .is_some_and(|key| state.may_trigger_same_card_choice_available(key));
         if let Some(ref key) = may_trigger_key {
             if let Some(choice) = state.may_trigger_auto_choice_for_live_prompt(key) {
+                // CR 603.5: the remembered answer is the controller's optional choice.
+                state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Optional);
                 progress = resolve_optional_effect_decision_step(
                     state,
                     ability_with_event_context_targets(state, ability),
@@ -32081,6 +32085,7 @@ mod tests {
 
         assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
         assert_eq!(state.players[0].life, 23);
+        assert_eq!(state.loop_decision_tally.optional, 1);
     }
 
     #[test]
@@ -32101,6 +32106,79 @@ mod tests {
 
         assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
         assert_eq!(state.players[0].life, 20);
+        assert_eq!(state.loop_decision_tally.optional, 1);
+    }
+
+    /// CR 603.5: a remembered decline of an optional payment is recorded where it applies;
+    /// the unremembered prompt records nothing.
+    #[test]
+    fn saved_decline_of_an_optional_payment_is_recorded_where_it_applies() {
+        let resolve = |stored: Option<AutoMayChoice>| {
+            let mut state = GameState::new_two_player(42);
+            let source_id = create_object(
+                &mut state,
+                CardId(100),
+                PlayerId(0),
+                "Payment Source".to_string(),
+                Zone::Battlefield,
+            );
+            create_object(
+                &mut state,
+                CardId(101),
+                PlayerId(0),
+                "Fodder".to_string(),
+                Zone::Hand,
+            );
+            let origin = MayTriggerOrigin::Printed { trigger_index: 0 };
+            if let Some(choice) = stored {
+                state.set_may_trigger_auto_choice(
+                    MayTriggerAutoChoiceKey {
+                        player: PlayerId(0),
+                        source_id,
+                        origin: origin.clone(),
+                    },
+                    choice,
+                );
+            }
+            let mut ability = ResolvedAbility::new(
+                Effect::PayCost {
+                    cost: AbilityCost::OneOf {
+                        costs: vec![AbilityCost::Discard {
+                            count: QuantityExpr::Fixed { value: 1 },
+                            filter: None,
+                            selection: crate::types::ability::CardSelectionMode::Chosen,
+                            self_scope: crate::types::ability::DiscardSelfScope::FromHand,
+                        }],
+                    },
+                    scale: None,
+                    payer: TargetFilter::Controller,
+                },
+                vec![],
+                source_id,
+                PlayerId(0),
+            );
+            ability.optional = true;
+            ability.set_may_trigger_origin_recursive(origin);
+            resolve_ability_chain(&mut state, &ability, &mut Vec::new(), 0).unwrap();
+            state
+        };
+
+        let declined = resolve(Some(AutoMayChoice::Decline));
+        assert!(
+            matches!(declined.waiting_for, WaitingFor::Priority { .. }),
+            "reach: the remembered decline opens no prompt"
+        );
+        assert_eq!(declined.loop_decision_tally.optional, 1);
+
+        let prompted = resolve(None);
+        assert!(
+            matches!(
+                prompted.waiting_for,
+                WaitingFor::ResolutionOptionalPaymentChoice { .. }
+            ),
+            "reach: without a remembered answer the payment prompt opens"
+        );
+        assert_eq!(prompted.loop_decision_tally.optional, 0);
     }
 
     #[test]

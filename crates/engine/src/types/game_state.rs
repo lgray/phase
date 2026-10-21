@@ -18945,13 +18945,10 @@ impl WaitingFor {
     /// the ring-clearing behaviour, so a newly added variant defaults to the safe side
     /// without anyone remembering to update this list.
     pub fn is_forced_cascade_window(&self) -> bool {
-        matches!(
-            self,
-            // CR 608.2d + CR 732.4: a non-optional choice with one eligible card is no player decision.
-            WaitingFor::RevealChoice { cards, optional: false, .. } if cards.len() == 1
-        ) || matches!(
-            self,
-            WaitingFor::OrderTriggers { .. }
+        self.is_forced_one_option_choice()
+            || matches!(
+                self,
+                WaitingFor::OrderTriggers { .. }
                 | WaitingFor::TriggerTargetSelection { .. }
                 | WaitingFor::OptionalEffectChoice { .. }
                 | WaitingFor::CommanderZoneChoice { .. }
@@ -18974,6 +18971,14 @@ impl WaitingFor {
                 // CR 514.1 + CR 514.3: discarding to maximum hand size is the cleanup
                 // step's turn-based action, and no player normally gets priority there.
                 | WaitingFor::DiscardToHandSize { .. }
+            )
+    }
+
+    /// CR 608.2d + CR 732.4: a non-optional choice with one eligible card is no player decision.
+    pub fn is_forced_one_option_choice(&self) -> bool {
+        matches!(
+            self,
+            WaitingFor::RevealChoice { cards, optional: false, .. } if cards.len() == 1
         )
     }
 
@@ -21086,6 +21091,79 @@ impl<'de> Deserialize<'de> for PendingLiminalEntryResume {
 pub struct LoopDetectSample {
     pub normalized: GameState,
     pub live: GameState,
+    /// This beat's decision marks, taken when it was sampled.
+    pub marks: LoopDecisionMarks,
+}
+
+/// CR 104.4b: a kind of non-mandatory action a loop period can hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LoopDecision {
+    /// CR 603.5 + CR 616.1e: a declinable choice was answered, prompted or remembered.
+    Optional,
+    /// CR 104.4b: some player held a priority action that could stop the loop.
+    Outs,
+    /// CR 603.3b + CR 616.1: a choice among several options was made, prompted or remembered.
+    Decision,
+}
+
+/// Answered loop decisions so far; monotone, so only the difference between two reads means
+/// anything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoopDecisionTally {
+    pub optional: u64,
+    pub decision: u64,
+}
+
+/// CR 732.5: whether some living player held a meaningful priority action at a sampled beat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PriorityOut {
+    #[default]
+    Absent,
+    Held,
+}
+
+/// What a sampled beat contributes to its period's [`LoopDecisionProfile`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoopDecisionMarks {
+    pub tally: LoopDecisionTally,
+    pub out: PriorityOut,
+}
+
+/// CR 104.4b + CR 732.4: the non-mandatory members of a loop period; only a period with none
+/// is a draw.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoopDecisionProfile {
+    pub members: BTreeSet<LoopDecision>,
+}
+
+impl LoopDecisionProfile {
+    /// The profile of the period from the window's first mark to `current`.
+    pub fn of_window<'a>(
+        window: impl IntoIterator<Item = &'a LoopDecisionMarks>,
+        current: &'a LoopDecisionMarks,
+    ) -> Self {
+        let mut marks = window
+            .into_iter()
+            .chain(std::iter::once(current))
+            .peekable();
+        let first = marks.peek().map_or(current.tally, |first| first.tally);
+        let mut members = BTreeSet::new();
+        if marks.any(|marks| marks.out == PriorityOut::Held) {
+            members.insert(LoopDecision::Outs);
+        }
+        if current.tally.optional != first.optional {
+            members.insert(LoopDecision::Optional);
+        }
+        if current.tally.decision != first.decision {
+            members.insert(LoopDecision::Decision);
+        }
+        Self { members }
+    }
+
+    /// CR 732.4: the period holds only mandatory actions.
+    pub fn is_forced(&self) -> bool {
+        self.members.is_empty()
+    }
 }
 
 /// CR 601.2h + CR 608.2c: authoritative descriptor for a resolution-time
@@ -21744,6 +21822,10 @@ declare_game_state! {
             >,
         >,
     >,
+    /// CR 104.4b: every loop decision answered so far, in every mode; written only by
+    /// [`GameState::record_loop_decision`]. Live-only: never persisted or compared.
+    #[serde(skip, default)]
+    pub(crate) loop_decision_tally: LoopDecisionTally,
     /// CR 732.2a: every play and answer of the current step, and the spans carried past earlier
     /// steps. Live-only, like
     /// `loop_answer_journal`: never persisted, compared, or shown to a viewer.
@@ -29508,6 +29590,7 @@ impl GameState {
             static_mode_presence: crate::types::statics::StaticModePresence::all_present(),
             loop_detect_ring: std::collections::VecDeque::new(),
             loop_answer_journal: None,
+            loop_decision_tally: LoopDecisionTally::default(),
             play_trace: None,
             precast_shortcut_runtime: PrecastShortcutRuntime::default(),
             life_safety_probe: Box::default(),
@@ -31993,8 +32076,41 @@ impl GameState {
             });
             self.loop_detect_live_sample()
         };
-        let snapshot = std::sync::Arc::new(LoopDetectSample { normalized, live });
+        let marks = self.loop_decision_marks();
+        let snapshot = std::sync::Arc::new(LoopDetectSample {
+            normalized,
+            live,
+            marks,
+        });
         self.loop_detect_ring.push_back(snapshot);
+    }
+
+    /// CR 104.4b: one answered loop decision — `Optional` for a declinable choice (CR 603.5,
+    /// CR 616.1e), `Mandatory` for a choice among several options (CR 603.3b, CR 616.1).
+    pub(crate) fn record_loop_decision(
+        &mut self,
+        answer: crate::game::play_trace::AnswerOptionality,
+    ) {
+        use crate::game::play_trace::AnswerOptionality;
+        let count = match answer {
+            AnswerOptionality::Optional => &mut self.loop_decision_tally.optional,
+            AnswerOptionality::Mandatory => &mut self.loop_decision_tally.decision,
+        };
+        *count += 1;
+    }
+
+    /// This beat's decision marks: the tally so far, and whether any living player holds a
+    /// meaningful priority action here (CR 732.5).
+    pub(crate) fn loop_decision_marks(&self) -> LoopDecisionMarks {
+        let out = if crate::game::engine::no_living_player_has_meaningful_priority_action(self) {
+            PriorityOut::Absent
+        } else {
+            PriorityOut::Held
+        };
+        LoopDecisionMarks {
+            tally: self.loop_decision_tally,
+            out,
+        }
     }
 
     /// CR 732.2a: the un-normalized half of a [`LoopDetectSample`] — this beat exactly as
@@ -32790,6 +32906,8 @@ fn _gamestate_partition_is_total(s: &GameState) {
         // covering pair: `project_out_resources` opens with `normalize_for_loop`, which
         // is one of the ring-clear sites this field follows, so the projection clears it.
         loop_answer_journal: _,
+        // A monotone counter: comparing it would split every recurring position.
+        loop_decision_tally: _,
         play_trace: _,
         precast_shortcut_runtime: _,
         life_safety_probe: _,
@@ -34014,6 +34132,49 @@ mod forced_cascade_window_tests {
         for (why, wf) in &not_forced {
             assert!(!wf.is_forced_cascade_window(), "{why} must NOT be a member");
         }
+    }
+}
+
+#[cfg(test)]
+mod loop_decision_profile_tests {
+    use super::*;
+    use LoopDecision::{Decision, Optional, Outs};
+    use PriorityOut::{Absent, Held};
+
+    fn marks(optional: u64, decision: u64, out: PriorityOut) -> LoopDecisionMarks {
+        LoopDecisionMarks {
+            tally: LoopDecisionTally { optional, decision },
+            out,
+        }
+    }
+
+    fn members(window: &[LoopDecisionMarks], current: LoopDecisionMarks) -> Vec<LoopDecision> {
+        LoopDecisionProfile::of_window(window, &current)
+            .members
+            .into_iter()
+            .collect()
+    }
+
+    /// CR 104.4b + CR 732.4: a period is forced only with no answered choice since its first
+    /// mark and no out at any of its marks.
+    #[test]
+    fn the_profile_names_each_non_mandatory_member_of_the_period() {
+        let base = marks(2, 3, Absent);
+        assert_eq!(members(&[base], base), vec![]);
+        assert_eq!(members(&[], marks(5, 5, Absent)), vec![]);
+        assert_eq!(members(&[base], marks(3, 3, Absent)), vec![Optional]);
+        assert_eq!(members(&[base], marks(2, 4, Absent)), vec![Decision]);
+        assert_eq!(members(&[base, marks(2, 3, Held)], base), vec![Outs]);
+        assert_eq!(members(&[base], marks(2, 3, Held)), vec![Outs]);
+        assert_eq!(
+            members(&[base, marks(3, 3, Absent)], marks(3, 3, Absent)),
+            vec![Optional],
+            "the window's first mark is the baseline"
+        );
+        assert_eq!(
+            members(&[marks(3, 3, Absent)], marks(4, 5, Held)),
+            vec![Optional, Outs, Decision]
+        );
     }
 }
 
