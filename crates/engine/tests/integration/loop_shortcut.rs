@@ -16493,9 +16493,8 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
 ///
 /// THIS FIXTURE REACHES NEITHER of the two paths that break a length delta, measured rather than
 /// assumed: 0 evicting beats and 0 clear-and-rebuild beats over the drive, max ring 5 against a
-/// capacity of 16. Both are reached — and the deleted scalar shown wrong on each — by
-/// `an_evicting_beat_mints_without_growing_the_ring` and
-/// `a_clearing_beat_rebuilds_the_ring_inside_the_same_beat`, on boards driven through the same
+/// capacity of 16. The evicting path is reached — and the deleted scalar shown wrong on it — by
+/// `an_evicting_beat_mints_without_growing_the_ring`, on a board driven through the same
 /// production `apply()`.
 ///
 /// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
@@ -16828,8 +16827,8 @@ fn ring_membership_delta<'a, T>(
 /// `answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact` reads a beat's
 /// minted frames as the `loop_detect_ring`'s pre/post `Arc`-identity MEMBERSHIP DIFFERENCE. It
 /// previously read them as `rev().take(after_len - before_len)` off a changed `back()`, and this
-/// row plus its ⓒ sibling are the reachability half of the #7023 review that replaced that: the
-/// scalar is wrong on two production routes, and the `dina_conqueror_4p` drive that row performs
+/// row is the reachability half of the #7023 review that replaced that: the scalar is wrong on
+/// this production route, and the `dina_conqueror_4p` drive that row performs
 /// reaches NEITHER — measured on it: max ring 5 against a capacity of 16, 0 evicting beats, 0
 /// clearing beats. Correcting a detector against routes no fixture reaches would re-open the
 /// evidential hole the correction exists to close, so each route gets a board.
@@ -16916,67 +16915,45 @@ fn an_evicting_beat_mints_without_growing_the_ring() {
     );
 }
 
-/// CR 732.2a. ROUTE ⓒ — CLEAR-AND-REBUILD INSIDE ONE BEAT: a beat that MINTS MORE THAN IT GROWS.
-///
-/// Sibling of `an_evicting_beat_mints_without_growing_the_ring`; the shared argument for why both
-/// routes need a board of their own is stated there.
-///
-/// THE MECHANISM. `game::engine::apply_action` clears the ring at its top for any action that is
-/// neither `PassPriority` nor `OrderTriggers` answering a non-forced window.
-/// `GameAction::SetAutoPass` at a `Priority` window is exactly that, and its own arm then calls
-/// `pass_priority_once_with_pipeline`, whose settle sampler mints — after which `apply`'s
-/// auto-pass loop can call it again inside the SAME beat. Net growth is therefore
-/// `minted - cleared`, strictly below `minted` whenever the ring was non-empty, so `take(net)`
-/// skips frames the answer-beat row claims to validate. MEASURED here: ring 2 -> 1, 2 dropped, 1
-/// minted, i.e. net 0 against a real mint — the same blindness route ⓔ produces, reached the
-/// other way, and the shallow-clear case (`0 < net < minted`) is the same defect with a smaller
-/// margin.
+/// CR 732.1 + CR 117.3d: a "Resolve All" press mid-cascade keeps the loop-detection ring. The
+/// request is a shortcut over passes, so the beat drops no accumulated frame and its own pass
+/// mints one, growing the ring by exactly one.
 ///
 /// `SetAutoPass { UntilStackEmpty }` IS NOT A TEST HOOK. It is the exact payload the client's
 /// Arena-style "Resolve All" control dispatches (`client/src/game/dispatch.ts`), so this beat is
 /// a player pressing that button mid-cascade. It is absent from
 /// `ai_support::legal_actions_for_viewer`'s enumeration — `classify_flat_priority_action` files
 /// it with the preference-propagation actions — which is why the generic dump driver never picks
-/// it and why the route is dispatched by name here instead of being found by the driver's "first
+/// it and why it is dispatched by name here instead of being found by the driver's "first
 /// legal action" policy. Dispatching it by name changes nothing about the beat: it is one
 /// ordinary `apply()`, validated by the production reducer like any other.
 ///
-/// FIXTURE: the tracked `dina_conqueror_4p` dump — the SAME board the answer-beat row drives, so
-/// the contrast is exact. Left to itself that drive never clears (measured: 0 clearing beats);
-/// one "Resolve All" press at the first `Priority` window carrying 2 accumulated frames puts it
-/// on this route at beat 6.
-///
-/// SEARCH PREDICATE STRUCTURAL, ASSERTION THE CONSEQUENCE: the witness is the dispatched
-/// `SetAutoPass` beat that lost EVERY pre-beat frame, and the assertion is what the beat minted
-/// and what it left behind. The threshold of 2 accumulated frames is not cosmetic: below it a
-/// wiped ring and a merely-evicted one are indistinguishable by membership.
+/// FIXTURE: the tracked `dina_conqueror_4p` dump — the SAME board the answer-beat row drives,
+/// pressed at the first `Priority` window carrying 2 accumulated frames, so a dropped frame is
+/// visible by membership.
 #[test]
-fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
+fn a_resolve_all_press_keeps_the_ring_and_mints_inside_the_same_beat() {
     let mut state = restore_dump(&gunzip_dump(include_bytes!(
         "../fixtures/dina_conqueror_4p.json.gz"
     )));
     assert_eq!(
         state.loop_detect_ring.len(),
         0,
-        "reach-guard: the dump ships with an EMPTY ring, so the frames the clear below discards \
+        "reach-guard: the dump ships with an EMPTY ring, so the frames the press below keeps \
          were accumulated by THIS drive through the production sampler"
     );
 
     let pin = engine_live_opponents(&state, P0).first().copied();
-    let mut fired = false;
     let mut max_ring = 0usize;
     let mut beats_run = 0usize;
-    let mut clearing = None;
+    let mut pressed = None;
     for beat in 0..120usize {
         if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
             break;
         }
         let before: Vec<_> = state.loop_detect_ring.iter().cloned().collect();
         max_ring = max_ring.max(before.len());
-        let dispatched_here =
-            !fired && before.len() >= 2 && matches!(state.waiting_for, WaitingFor::Priority { .. });
-        let outcome = if dispatched_here {
-            fired = true;
+        if before.len() >= 2 && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
             let who = state
                 .waiting_for
                 .acting_player()
@@ -16988,49 +16965,34 @@ fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
                     mode: AutoPassRequest::UntilStackEmpty,
                 },
             )
-            .map(|_| ())
-            .map_err(|e| format!("resolve-all err: {e:?}"))
-        } else {
-            dump_drive_one_beat(&mut state, pin).map(|_| ())
-        };
-        if outcome.is_err() {
+            .unwrap_or_else(|e| panic!("resolve-all err: {e:?}"));
+            let (minted_frames, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
+            pressed = Some((
+                beat,
+                before.len(),
+                state.loop_detect_ring.len(),
+                minted_frames.len(),
+                dropped,
+            ));
+            break;
+        }
+        if dump_drive_one_beat(&mut state, pin).is_err() {
             break;
         }
         beats_run = beat + 1;
-        let (minted_frames, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
-        let minted = minted_frames.len();
-        if !dispatched_here || before.is_empty() || dropped != before.len() {
-            continue;
-        }
-        clearing = Some((
-            beat,
-            before.len(),
-            state.loop_detect_ring.len(),
-            minted,
-            dropped,
-        ));
-        break;
     }
 
-    let (beat, before_len, after_len, minted, _dropped) = clearing.unwrap_or_else(|| {
+    let (beat, before_len, after_len, minted, dropped) = pressed.unwrap_or_else(|| {
         panic!(
-            "reach-guard: no beat lost EVERY pre-beat ring frame, so `apply_action`'s \
-             top-of-beat clear never ran on an accumulated ring and the clear-and-rebuild route \
-             is untested. resolve-all dispatched={fired}, max ring {max_ring} over {beats_run} \
-             beats"
+            "reach-guard: no `Priority` window carried 2 accumulated frames, so the press was \
+             never dispatched. max ring {max_ring} over {beats_run} beats"
         )
     });
     assert_eq!(
-        (minted, after_len),
-        (1, 1),
-        "beat {beat}: `apply_action` cleared all {before_len} accumulated frames at the top of \
-         this beat; a sampler must then have MINTED inside the SAME beat, leaving exactly one \
-         frame — a left of `(0, 0)` means the beat only cleared, which is a different route and \
-         proves nothing about the detector. THE DELETED SCALAR ON THE REBUILD BEAT: \
-         `after_len - before_len` saturates to 0 against a real mint, so `take(grew)` validates \
-         none of the frames the answer-beat row claims — and where the clear is shallower than \
-         the rebuild the scalar is positive but still short. Net growth is `minted - cleared`; \
-         it can never name `minted`"
+        (minted, dropped, after_len),
+        (1, 0, before_len + 1),
+        "beat {beat}: a Resolve-All press must keep all {before_len} accumulated frames and \
+         mint its own pass's sample"
     );
 }
 

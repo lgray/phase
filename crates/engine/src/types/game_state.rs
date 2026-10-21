@@ -18854,6 +18854,8 @@ impl WaitingFor {
     /// * [`WaitingFor::BattleProtectorChoice`] — CR 310.11 ("its controller chooses an
     ///   appropriate player to be its protector ... This is a state-based action")
     ///   + CR 704.5x, likewise answered inside the CR 704.3 fixpoint.
+    /// * [`WaitingFor::RevealChoice`] with `optional: false` and exactly one eligible
+    ///   card — CR 608.2d, a mid-resolution choice with a single legal option.
     ///
     /// Those SBA members (the commander-zone, legend and battle-protector choices) are
     /// the COMPLETE set of player-choice pauses `game::sba` opens inside the SBA
@@ -18944,6 +18946,10 @@ impl WaitingFor {
     /// without anyone remembering to update this list.
     pub fn is_forced_cascade_window(&self) -> bool {
         matches!(
+            self,
+            // CR 608.2d + CR 732.4: a non-optional choice with one eligible card is no player decision.
+            WaitingFor::RevealChoice { cards, optional: false, .. } if cards.len() == 1
+        ) || matches!(
             self,
             WaitingFor::OrderTriggers { .. }
                 | WaitingFor::TriggerTargetSelection { .. }
@@ -30894,6 +30900,9 @@ impl GameState {
             .product_knowledge_state
             .zone_change_library_knowledge_stamps
             .clear();
+        // CR 701.20a + CR 104.4b: revealed-card knowledge is disclosure history, not game position.
+        clone.product_knowledge_state.facts.clear();
+        clone.product_knowledge_state.library_epochs.clear();
         // Private shortcut capabilities are live interaction state, never part
         // of a CR 104.4b position sample.
         clone.precast_shortcut_runtime = PrecastShortcutRuntime::default();
@@ -31228,11 +31237,15 @@ impl GameState {
     }
 
     /// See `normalize_for_loop`. Per object, rank-based over the retained
-    /// `lki_by_incarnation` and `lki_copiable_values_by_incarnation` keys and
-    /// the incarnations trigger events name (`ZoneChanged` entries and stamped
-    /// `PermanentTapped` taps), so two positions minted at different times
-    /// compare equal while which incarnation each event names — and its
-    /// snapshot — is preserved.
+    /// `lki_by_incarnation` and `lki_copiable_values_by_incarnation` keys, the
+    /// incarnations trigger events name (`ZoneChanged` entries and every
+    /// incarnation inside their records, stamped `PermanentTapped` taps), the
+    /// may-trigger origins and stored answers, and the object's live
+    /// incarnation. Ranks count down from the highest member, so the live
+    /// incarnation anchors them: two positions minted at different times
+    /// compare equal, while which incarnation each carrier names, relative to
+    /// the live one, is preserved. The live incarnation is rewritten through the
+    /// same map, so normalizing a normalized state is a fixed point.
     fn canonicalize_lki_incarnations_for_loop(&mut self) {
         fn named_incarnation(event: &mut GameEvent) -> Option<(ObjectId, &mut u64)> {
             match event {
@@ -31392,6 +31405,234 @@ impl GameState {
                 | GameEvent::DebugPermissionRevoked { .. } => None,
             }
         }
+        // Every incarnation inside a `ZoneChanged` record except `entered_incarnation`,
+        // which `named_incarnation` owns. Destructured without `..` so a new
+        // incarnation-bearing field must decide here whether it is ranked.
+        fn record_incarnations(event: &mut GameEvent, f: &mut impl FnMut(ObjectId, &mut u64)) {
+            let GameEvent::ZoneChanged { record, .. } = event else {
+                return;
+            };
+            let ZoneChangeRecord {
+                object_id: _,
+                name: _,
+                core_types: _,
+                subtypes: _,
+                supertypes: _,
+                keywords: _,
+                trigger_definitions: _,
+                trigger_source_context,
+                power: _,
+                toughness: _,
+                base_power: _,
+                base_toughness: _,
+                colors: _,
+                mana_value: _,
+                controller: _,
+                owner: _,
+                arrival: _,
+                from_zone: _,
+                cast_from_zone: _,
+                played_from_zone: _,
+                to_zone: _,
+                attachments,
+                linked_exile_snapshot,
+                is_token: _,
+                combat_status: _,
+                co_departed: _,
+                entered_incarnation: _,
+                attached_to: _,
+                turn_zone_change_index: _,
+                recorded_turn_number: _,
+                is_suspected: _,
+            } = &mut **record;
+            attachment_incarnations(attachments, f);
+            linked_exile_incarnations(linked_exile_snapshot, f);
+            let Some(TriggerSourceContext {
+                identity,
+                lki,
+                card_id: _,
+                printed_ref: _,
+                is_token: _,
+                face_down: _,
+                mana_cost: _,
+                transformed: _,
+                is_renowned: _,
+                is_saddled: _,
+                echo_due: _,
+                harnessed: _,
+                saddled_by: _,
+                convoked_creatures: _,
+                case_state: _,
+                class_level: _,
+                trigger_entries: _,
+                timestamp: _,
+                entered_battlefield_turn: _,
+                paired_with: _,
+                pair_controller: _,
+                attached_to: _,
+                attachments,
+                linked_exile_snapshot,
+                cards_exiled_this_turn: _,
+                combat_status: _,
+                cast_from_zone: _,
+                played_from_zone: _,
+                entered_via_ability_source: _,
+                cast_controller: _,
+                phase_status: _,
+                cast_variant_paid: _,
+                cast_timing_permission: _,
+                cost_x_paid: _,
+                cast_spell_keywords: _,
+                mana_spent_to_cast: _,
+                colors_spent_to_cast: _,
+                mana_spent_to_cast_amount: _,
+                mana_spent_source_snapshots,
+                kickers_paid: _,
+                additional_cost_payment_count: _,
+                additional_cost_payments: _,
+                cast_cost_paid_object,
+                granting_object,
+            }) = trigger_source_context.as_mut()
+            else {
+                return;
+            };
+            let ObjectIdentityBinding {
+                reference,
+                expected_zone: _,
+            } = identity;
+            f(reference.object_id, &mut reference.incarnation);
+            lki_incarnations(lki, f);
+            attachment_incarnations(attachments, f);
+            linked_exile_incarnations(linked_exile_snapshot, f);
+            for ManaSpentSourceSnapshot { source_id: _, lki } in mana_spent_source_snapshots {
+                lki_incarnations(lki, f);
+            }
+            if let Some(CostPaidObjectSnapshot {
+                object_id,
+                lki,
+                incarnation,
+            }) = cast_cost_paid_object
+            {
+                f(*object_id, incarnation);
+                lki_incarnations(lki, f);
+            }
+            if let Some(granting) = granting_object {
+                f(granting.object_id, &mut granting.incarnation);
+            }
+        }
+        fn lki_incarnations(lki: &mut LKISnapshot, f: &mut impl FnMut(ObjectId, &mut u64)) {
+            let LKISnapshot {
+                name: _,
+                token_image_ref: _,
+                power: _,
+                toughness: _,
+                base_power: _,
+                base_toughness: _,
+                mana_value: _,
+                controller: _,
+                owner: _,
+                card_types: _,
+                subtypes: _,
+                supertypes: _,
+                keywords: _,
+                colors: _,
+                chosen_attributes: _,
+                counters: _,
+                tapped: _,
+                is_suspected: _,
+                attachments,
+            } = lki;
+            attachment_incarnations(attachments, f);
+        }
+        fn attachment_incarnations(
+            attachments: &mut [AttachmentSnapshot],
+            f: &mut impl FnMut(ObjectId, &mut u64),
+        ) {
+            for AttachmentSnapshot {
+                object_id: _,
+                identity,
+                controller: _,
+                kind: _,
+            } in attachments
+            {
+                if let Some(reference) = identity {
+                    f(reference.object_id, &mut reference.incarnation);
+                }
+            }
+        }
+        fn linked_exile_incarnations(
+            snapshots: &mut [LinkedExileSnapshot],
+            f: &mut impl FnMut(ObjectId, &mut u64),
+        ) {
+            for LinkedExileSnapshot {
+                exiled_id,
+                owner: _,
+                mana_value: _,
+                incarnation,
+            } in snapshots
+            {
+                f(*exiled_id, incarnation);
+            }
+        }
+        // The may-trigger origins on every ability that can still resolve, and the
+        // stored exact-instance answers, so a stored answer keeps naming the same
+        // incarnation as the trigger it answers (CR 603.5).
+        fn may_trigger_origin_incarnations(
+            state: &mut GameState,
+            f: &mut impl FnMut(ObjectId, &mut u64),
+        ) {
+            for entry in state
+                .stack
+                .iter_mut()
+                .chain(state.resolving_stack_entry.iter_mut())
+            {
+                if let Some(ability) = entry.ability_mut() {
+                    ability.for_each_may_trigger_origin_incarnation_mut(f);
+                }
+            }
+            let ordering = state
+                .pending_trigger_order
+                .iter_mut()
+                .flat_map(|order| order.groups.iter_mut())
+                .flat_map(|group| group.triggers.iter_mut())
+                .map(|context| &mut context.pending);
+            for pending in state
+                .pending_trigger
+                .as_deref_mut()
+                .into_iter()
+                .chain(
+                    state
+                        .deferred_triggers
+                        .iter_mut()
+                        .map(|deferred| &mut deferred.pending),
+                )
+                .chain(ordering)
+            {
+                if let Some(MayTriggerOrigin::Definition { definition_ref }) =
+                    pending.may_trigger_origin.as_mut()
+                {
+                    f(
+                        definition_ref.source.object_id,
+                        &mut definition_ref.source.incarnation,
+                    );
+                }
+                pending
+                    .ability
+                    .for_each_may_trigger_origin_incarnation_mut(f);
+            }
+            for record in state.may_trigger_auto_choices.iter_mut() {
+                if let MayTriggerAutoChoiceSelector::ExactInstance {
+                    origin: MayTriggerOrigin::Definition { definition_ref },
+                    ..
+                } = &mut record.selector
+                {
+                    f(
+                        definition_ref.source.object_id,
+                        &mut definition_ref.source.incarnation,
+                    );
+                }
+            }
+        }
         let mut present: std::collections::HashMap<ObjectId, Vec<u64>> =
             std::collections::HashMap::new();
         for (object_id, history) in self.lki_by_incarnation.iter() {
@@ -31410,16 +31651,28 @@ impl GameState {
             if let Some((object_id, incarnation)) = named_incarnation(event) {
                 present.entry(object_id).or_default().push(*incarnation);
             }
+            record_incarnations(event, &mut |object_id, incarnation| {
+                present.entry(object_id).or_default().push(*incarnation);
+            });
         });
-        for incarnations in present.values_mut() {
+        may_trigger_origin_incarnations(self, &mut |object_id, incarnation| {
+            present.entry(object_id).or_default().push(*incarnation);
+        });
+        for (object_id, incarnations) in present.iter_mut() {
+            // An object named only by last known information may no longer exist.
+            if let Some(object) = self.objects.get(object_id) {
+                incarnations.push(object.incarnation);
+            }
             incarnations.sort_unstable();
             incarnations.dedup();
         }
+        // CR 400.7 + CR 104.4b: which incarnation a record names, relative to the live object, is position; when it was minted is not.
         let canonical = |object_id: ObjectId, incarnation: u64| {
-            let rank = present[&object_id]
+            let members = &present[&object_id];
+            let rank = members
                 .binary_search(&incarnation)
                 .expect("every incarnation was collected above");
-            rank as u64 + 1
+            u64::MAX - (members.len() - 1 - rank) as u64
         };
         self.lki_by_incarnation = std::mem::take(&mut self.lki_by_incarnation)
             .into_iter()
@@ -31446,7 +31699,24 @@ impl GameState {
             if let Some((object_id, incarnation)) = named_incarnation(event) {
                 *incarnation = canonical(object_id, *incarnation);
             }
+            record_incarnations(event, &mut |object_id, incarnation| {
+                *incarnation = canonical(object_id, *incarnation);
+            });
+            if let GameEvent::ZoneChanged { record, .. } = event {
+                record.turn_zone_change_index = 0;
+                if let Some(context) = record.trigger_source_context.as_mut() {
+                    context.timestamp = 0;
+                }
+            }
         });
+        may_trigger_origin_incarnations(self, &mut |object_id, incarnation| {
+            *incarnation = canonical(object_id, *incarnation);
+        });
+        for (object_id, object) in self.objects.iter_mut() {
+            if present.contains_key(object_id) {
+                object.incarnation = canonical(*object_id, object.incarnation);
+            }
+        }
     }
 
     /// The spell announcements named by `BecomesTarget` targeters on every
@@ -33399,6 +33669,16 @@ fn default_pile_source_battlefield() -> PileSource {
 mod forced_cascade_window_tests {
     use super::*;
 
+    fn reveal_choice(cards: Vec<ObjectId>, optional: bool) -> WaitingFor {
+        WaitingFor::RevealChoice {
+            player: PlayerId(0),
+            cards,
+            filter: crate::types::ability::default_target_filter_any(),
+            optional,
+            decline_runs_continuation: false,
+        }
+    }
+
     fn certificate() -> crate::analysis::loop_check::LoopCertificate {
         crate::analysis::loop_check::LoopCertificate {
             unbounded: vec![crate::analysis::resource::ResourceAxis::Life(PlayerId(1))],
@@ -33413,7 +33693,7 @@ mod forced_cascade_window_tests {
     /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2d / CR 903.9a / CR 704.5j /
     /// CR 310.11 / CR 703.1 + CR 117.3a: the membership matrix for
     /// [`WaitingFor::is_forced_cascade_window`], asserted in BOTH directions —
-    /// thirteen members and nine non-members, each named.
+    /// every member and every load-bearing non-member, each named.
     ///
     /// The class is defined by "no player has priority here", and each half of the
     /// matrix pins a different consequence:
@@ -33461,8 +33741,8 @@ mod forced_cascade_window_tests {
     /// `true` or always `false`) fails one of the two loops. REVERT-PROBE: adding
     /// `Priority{..}` to the `matches!` flips the `Priority` rows here AND breaks
     /// the sampler invariant; adding `RedistributeLifeTotals` or
-    /// `AssignCombatDamage` flips its row here; dropping ANY of the thirteen members
-    /// — SBA or turn-based — flips that member's TRUE row here (each was observed to
+    /// `AssignCombatDamage` flips its row here; dropping ANY member — SBA,
+    /// turn-based or the single-option reveal — flips that member's TRUE row here (each was observed to
     /// panic individually).
     ///
     /// This row owns the RULES invariant only. Runtime WIRING — that the sampler and
@@ -33593,9 +33873,25 @@ mod forced_cascade_window_tests {
                     cards: vec![ObjectId(10)],
                 },
             ),
+            (
+                "RevealChoice, non-optional with one eligible card (CR 608.2d — one legal option)",
+                reveal_choice(vec![ObjectId(13)], false),
+            ),
         ];
 
         let not_forced: Vec<(&str, WaitingFor)> = vec![
+            (
+                "RevealChoice, optional with one card — declining is a real choice",
+                reveal_choice(vec![ObjectId(13)], true),
+            ),
+            (
+                "RevealChoice, non-optional with two cards — which card is a real choice",
+                reveal_choice(vec![ObjectId(13), ObjectId(14)], false),
+            ),
+            (
+                "RevealChoice, non-optional with no card — not a single-option choice",
+                reveal_choice(Vec::new(), false),
+            ),
             (
                 "ResolutionOptionalPaymentChoice — a Phyrexian branch can MOVE LIFE",
                 WaitingFor::ResolutionOptionalPaymentChoice {
@@ -41739,6 +42035,239 @@ mod tests {
             !loop_states_equal(&early.normalize_for_loop(), &unmatched.normalize_for_loop()),
             "an event naming an incarnation with no retained snapshot is a different position"
         );
+    }
+
+    fn draw_one(source: ObjectId) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        )
+    }
+
+    fn push_trigger(
+        state: &mut GameState,
+        source: ObjectId,
+        ability: ResolvedAbility,
+        event: Option<GameEvent>,
+    ) {
+        let id = ObjectId(100 + state.stack.len() as u64);
+        state.stack.push_back(StackEntry {
+            id,
+            source_id: source,
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: source,
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: event,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+                provenance: None,
+            },
+        });
+    }
+
+    /// An object live at `live`, and one stack trigger per `named` incarnation whose
+    /// `ZoneChanged` record names the object at that incarnation in every incarnation
+    /// carrier the record holds.
+    fn records_naming(live: u64, named: &[u64]) -> (GameState, ObjectId) {
+        let mut state = GameState::new_two_player(7);
+        let x = create_object(
+            &mut state,
+            CardId(60),
+            PlayerId(0),
+            "Named Object".to_string(),
+            Zone::Battlefield,
+        );
+        for &incarnation in named {
+            state.objects.get_mut(&x).unwrap().incarnation = incarnation;
+            let mut record = state.objects.get(&x).unwrap().snapshot_for_zone_change(
+                x,
+                Some(Zone::Battlefield),
+                Zone::Graveyard,
+            );
+            let reference = ObjectIncarnationRef::of(x, incarnation);
+            let attachment = AttachmentSnapshot {
+                object_id: x,
+                identity: Some(reference),
+                controller: PlayerId(0),
+                kind: crate::types::ability::AttachmentKind::Aura,
+            };
+            let linked = LinkedExileSnapshot {
+                exiled_id: x,
+                owner: PlayerId(0),
+                mana_value: 0,
+                incarnation,
+            };
+            record.attachments = vec![attachment.clone()];
+            record.linked_exile_snapshot = vec![linked.clone()];
+            let context = record.trigger_source_context.as_mut().unwrap();
+            assert_eq!(context.identity.reference, reference);
+            context.attachments = vec![attachment.clone()];
+            context.linked_exile_snapshot = vec![linked];
+            context.lki.attachments = vec![attachment];
+            context.cast_cost_paid_object = Some(CostPaidObjectSnapshot {
+                object_id: x,
+                lki: context.lki.clone(),
+                incarnation,
+            });
+            context.mana_spent_source_snapshots = vec![ManaSpentSourceSnapshot {
+                source_id: x,
+                lki: context.lki.clone(),
+            }];
+            context.granting_object = Some(reference);
+            let event = GameEvent::ZoneChanged {
+                object_id: x,
+                from: Some(Zone::Battlefield),
+                to: Zone::Graveyard,
+                record: Box::new(record),
+            };
+            push_trigger(&mut state, x, draw_one(x), Some(event));
+        }
+        state.objects.get_mut(&x).unwrap().incarnation = live;
+        (state, x)
+    }
+
+    fn normalized_equal(a: &GameState, b: &GameState) -> bool {
+        loop_states_equal(&a.normalize_for_loop(), &b.normalize_for_loop())
+    }
+
+    /// CR 701.20a + CR 104.4b: disclosure history is not position.
+    #[test]
+    fn normalize_for_loop_clears_disclosure_history() {
+        let (state, x) = records_naming(1, &[]);
+        let mut disclosed = state.clone();
+        disclosed
+            .product_knowledge_state
+            .facts
+            .push(ProductKnowledgeFact {
+                viewer: PlayerId(1),
+                owner: PlayerId(0),
+                zone: Zone::Hand,
+                identity: ObjectIncarnationRef::of(x, 1),
+                library_epoch: None,
+            });
+        disclosed.product_knowledge_state.library_epochs.push(1);
+        assert_ne!(state, disclosed, "reach guard: the raw positions differ");
+        assert!(normalized_equal(&state, &disclosed));
+        let mut tapped = disclosed.clone();
+        tapped.objects.get_mut(&x).unwrap().tapped = true;
+        assert!(
+            !normalized_equal(&state, &tapped),
+            "control: tapping still differs"
+        );
+    }
+
+    /// CR 400.7 + CR 104.4b: every incarnation a zone-change record names is ranked,
+    /// so a position minted later compares equal to the earlier one.
+    #[test]
+    fn normalize_for_loop_ranks_every_incarnation_a_zone_change_record_names() {
+        let (early, _) = records_naming(3, &[2]);
+        let (late, _) = records_naming(8, &[7]);
+        assert_ne!(early, late, "reach guard: the raw positions differ");
+        assert!(normalized_equal(&early, &late));
+    }
+
+    /// CR 400.7: ranking keeps which incarnation each record names.
+    #[test]
+    fn normalize_for_loop_keeps_which_incarnation_each_record_names() {
+        let (ascending, _) = records_naming(6, &[3, 5]);
+        let (descending, _) = records_naming(6, &[5, 3]);
+        assert!(!normalized_equal(&ascending, &descending));
+        let (shifted, _) = records_naming(9, &[6, 8]);
+        assert!(
+            normalized_equal(&ascending, &shifted),
+            "control: same order, later mint"
+        );
+    }
+
+    /// CR 400.7: a record naming a stale incarnation is not the record naming the live one.
+    #[test]
+    fn normalize_for_loop_anchors_record_incarnations_on_the_live_object() {
+        let (stale, _) = records_naming(3, &[2]);
+        let (live, _) = records_naming(2, &[2]);
+        assert!(!normalized_equal(&stale, &live));
+        assert!(
+            normalized_equal(&stale, &stale.clone()),
+            "control: identical twins"
+        );
+    }
+
+    /// CR 400.7 + CR 104.4b: zone-change allocation order is history.
+    #[test]
+    fn normalize_for_loop_zeroes_zone_change_allocation_history() {
+        let (early, _) = records_naming(3, &[2]);
+        let mut later = early.clone();
+        let StackEntryKind::TriggeredAbility {
+            trigger_event: Some(GameEvent::ZoneChanged { record, .. }),
+            ..
+        } = &mut later.stack[0].kind
+        else {
+            unreachable!("the fixture's trigger carries a zone change");
+        };
+        record.turn_zone_change_index += 4;
+        record.trigger_source_context.as_mut().unwrap().timestamp += 10;
+        assert_ne!(early, later, "reach guard: the raw positions differ");
+        assert!(normalized_equal(&early, &later));
+    }
+
+    /// Ring frames are normalized again on every compare, so normalization must be a
+    /// fixed point on its own output.
+    #[test]
+    fn normalize_for_loop_is_idempotent_on_ranked_incarnations() {
+        for named in [&[2][..], &[2, 3][..]] {
+            let (state, _) = records_naming(3, named);
+            let once = state.normalize_for_loop();
+            assert!(
+                loop_states_equal(&once.normalize_for_loop(), &once),
+                "normalizing a normalized state naming {named:?} changed it"
+            );
+        }
+    }
+
+    /// CR 603.5 + CR 400.7: a stored exact-instance answer is ranked with the trigger it
+    /// answers, so a stale stored answer stays distinct from a current one.
+    #[test]
+    fn normalize_for_loop_ranks_stored_answers_with_their_trigger() {
+        use crate::types::ability::TriggerDefinitionRef;
+        let answered = |live: u64, trigger: u64, stored: u64| {
+            let (mut state, x) = records_naming(live, &[]);
+            let origin = |incarnation| MayTriggerOrigin::Definition {
+                definition_ref: TriggerDefinitionRef {
+                    source: ObjectIncarnationRef::of(x, incarnation),
+                    occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                        base_set: TriggerBaseSetInstanceRef::INITIAL,
+                        printed_index: 0,
+                    },
+                },
+            };
+            let mut ability = draw_one(x);
+            ability.may_trigger_origin = Some(origin(trigger));
+            push_trigger(&mut state, x, ability, None);
+            state
+                .may_trigger_auto_choices
+                .push(MayTriggerAutoChoiceRecord {
+                    selector: MayTriggerAutoChoiceSelector::ExactInstance {
+                        player: PlayerId(0),
+                        source_id: x,
+                        origin: origin(stored),
+                    },
+                    choice: AutoMayChoice::Accept,
+                });
+            state
+        };
+        let early = answered(6, 5, 5);
+        let late = answered(10, 9, 9);
+        assert_ne!(early, late, "reach guard: the raw positions differ");
+        assert!(normalized_equal(&early, &late));
+        assert!(!normalized_equal(&early, &answered(6, 5, 3)));
     }
 
     /// Maintainer round 4, finding 1. CR 104.4b + CR 400.7: LKI retention and

@@ -1793,6 +1793,7 @@ mod love_on_the_battlefield_combat_counters;
 mod loyalty_ability_activated_trigger;
 mod loyalty_replacement_order_resume;
 mod mad_mage_lost_level_scry_runtime;
+mod mandatory_loop_draws;
 mod mandatory_reflexive_modal_parent;
 mod mass_unsuspect_701_60a;
 mod memory_vessel_std_s25;

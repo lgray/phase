@@ -3330,6 +3330,9 @@ pub(crate) trait CurrentSide<'a>: Copy {
     fn projected(self) -> Cow<'a, GameState>;
     /// [`cover_projection`] of it.
     fn cover_projected(self) -> Cow<'a, GameState>;
+    /// [`normalized_stack_entries`] of the loop-normalized state, so its ranked
+    /// incarnations meet a normalized prior's.
+    fn cover_stack(self) -> Cow<'a, [(StackEntry, Option<TriggerFiring>)]>;
 }
 
 impl<'a> CurrentSide<'a> for &'a GameState {
@@ -3341,6 +3344,9 @@ impl<'a> CurrentSide<'a> for &'a GameState {
     }
     fn cover_projected(self) -> Cow<'a, GameState> {
         Cow::Owned(cover_projection(self))
+    }
+    fn cover_stack(self) -> Cow<'a, [(StackEntry, Option<TriggerFiring>)]> {
+        Cow::Owned(normalized_stack_entries(&self.normalize_for_loop()))
     }
 }
 
@@ -3355,14 +3361,18 @@ pub(crate) struct SharedCurrentFrames<'a> {
     current: &'a GameState,
     projected: GameState,
     cover: GameState,
+    cover_stack: Vec<(StackEntry, Option<TriggerFiring>)>,
 }
 
 impl<'a> SharedCurrentFrames<'a> {
     pub(crate) fn new(current: &'a GameState) -> Self {
+        let projected = project_out_resources(current);
+        let cover_stack = normalized_stack_entries(&projected);
         Self {
             current,
-            projected: project_out_resources(current),
+            projected,
             cover: cover_projection(current),
+            cover_stack,
         }
     }
 
@@ -3382,6 +3392,9 @@ impl<'a> CurrentSide<'a> for &'a SharedCurrentFrames<'a> {
     }
     fn cover_projected(self) -> Cow<'a, GameState> {
         Cow::Borrowed(&self.cover)
+    }
+    fn cover_stack(self) -> Cow<'a, [(StackEntry, Option<TriggerFiring>)]> {
+        Cow::Borrowed(&self.cover_stack)
     }
 }
 
@@ -4296,13 +4309,18 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a, C: CurrentSide<'a>>(
 ) -> bool {
     bump_loop_detect_cost(|cost| cost.compares_cover_modulo_growth_scoped += 1);
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
-    // object resource axes STRICT-COMPARED. Project both through the single authority for
-    // this comparand ([`cover_projection`]) — the stack and its entry-indexed firing sidecar
-    // are compared separately in (2) — then require full board equality plus
-    // loyalty-activation parity plus strict object damage/counter equality.
+    // object resource axes STRICT-COMPARED. Both sides are [`cover_projection`]'s comparand —
+    // the stack and its entry-indexed firing sidecar are compared separately in (2) — then
+    // require full board equality plus loyalty-activation parity plus strict object
+    // damage/counter equality. The prior's is cut from the one projection whose stack (2)
+    // reads, so both stacks carry the same ranked incarnations as the current side's.
     let pb = current.cover_projected();
+    let side = current;
     let current = current.state();
-    let pa = cover_projection(prior);
+    let mut pa = project_out_resources(prior);
+    let prior_stack = normalized_stack_entries(&pa);
+    pa.stack.clear();
+    pa.stack_trigger_firings.clear();
     if !(loop_states_equal(&pa, &pb)
         && loyalty_activation_counts_match(&pa, &pb)
         && object_resource_axes_match(prior, current))
@@ -4312,8 +4330,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a, C: CurrentSide<'a>>(
 
     // (2) Stack coverability: order-preserving bottom-up embedding + strict growth
     // confined to places already occupied in `prior` (CR 608.1 / CR 405.5 LIFO freeze).
-    let prior_stack = normalized_stack_entries(prior);
-    let cur_stack = normalized_stack_entries(current);
+    let cur_stack = side.cover_stack();
     if !stack_covers(&prior_stack, &cur_stack) {
         return false;
     }
@@ -6805,6 +6822,20 @@ fn object_resource_axes_match(prior: &GameState, current: &GameState) -> bool {
     })
 }
 
+/// CR 120.3e + CR 704.5g + CR 122.1: the axes the relaxed projection drops and
+/// [`ResourceVector::snapshot`] never measures — marked damage, per-object counters
+/// and player counters — strict-compared, so a terminal verdict cannot rest on a
+/// period that changed one of them unseen.
+pub(crate) fn unmeasured_resource_axes_match(prior: &GameState, current: &GameState) -> bool {
+    object_resource_axes_match(prior, current)
+        && prior.players.len() == current.players.len()
+        && prior
+            .players
+            .iter()
+            .zip(current.players.iter())
+            .all(|(a, b)| projected_player_maps(a) == projected_player_maps(b))
+}
+
 /// Normalize a stack into behavioral-identity clones for coverability counting:
 /// zero the volatile top-level `id`/`source_id` and the per-kind inner `source_id`,
 /// strip nested `source_id`s from the embedded ability, and retain the associated
@@ -8193,7 +8224,6 @@ fn projected_player_axes(p: &Player) -> Vec<i64> {
 /// per-kind veto too, so a new map consumable can never be zeroed by
 /// [`project_out_player_consumables`] yet silently escape the sign-check. Returns references so
 /// the caller unions keys without cloning.
-#[cfg_attr(not(test), allow(dead_code))] // exercised by this module's unit tests.
 fn projected_player_maps(
     p: &Player,
 ) -> Vec<&HashMap<crate::types::player::PlayerCounterKind, u32>> {
@@ -15735,7 +15765,37 @@ mod tests {
                 },
                 true,
             ),
+            (
+                "RevealChoice, non-optional with one eligible card (CR 608.2d)",
+                reveal_choice(vec![in_hand], false),
+                true,
+            ),
+            (
+                "RevealChoice, optional with one card — declining is a real choice",
+                reveal_choice(vec![in_hand], true),
+                false,
+            ),
+            (
+                "RevealChoice, non-optional with two cards — which card is a real choice",
+                reveal_choice(vec![in_hand, on_board[0]], false),
+                false,
+            ),
+            (
+                "RevealChoice, non-optional with no card",
+                reveal_choice(Vec::new(), false),
+                false,
+            ),
         ]
+    }
+
+    fn reveal_choice(cards: Vec<ObjectId>, optional: bool) -> crate::types::game_state::WaitingFor {
+        crate::types::game_state::WaitingFor::RevealChoice {
+            player: PlayerId(0),
+            cards,
+            filter: crate::types::ability::default_target_filter_any(),
+            optional,
+            decline_runs_continuation: false,
+        }
     }
 
     /// The `cast_card_ids: Some(&[])` proof, pinned as a row.
@@ -15757,9 +15817,8 @@ mod tests {
     /// the candidate list through `is_forced_cascade_window` — the predicate under test — is
     /// itself a hole, because deleting a member just shrinks the loop. Each candidate
     /// therefore carries its EXPECTED membership and that expectation is asserted before the
-    /// cast proof runs, so DELETING a member fails its `true` row and ADDING one of the
-    /// enumerated non-members (`Priority` either seat, `RedistributeLifeTotals`,
-    /// `AssignCombatDamage`, `CombatTaxPayment`) fails its `false` row.
+    /// cast proof runs, so DELETING a member fails its `true` row and ADDING any
+    /// enumerated non-member fails its `false` row.
     ///
     /// ponytail: a brand-new `WaitingFor` variant added to the predicate but to no list
     /// is still silent. Closing that needs an exhaustive 127-arm `WaitingFor` destructure;
@@ -26302,7 +26361,7 @@ mod tests {
         let mut a = accumulated_entry_frame(9, Some(LkiCarrier::PendingTriggerEventBatch));
         let mut record =
             ZoneChangeRecord::test_minimal(entrant, Some(Zone::Exile), Zone::Battlefield);
-        record.entered_incarnation = Some(7);
+        record.entered_incarnation = Some(11);
         let StackEntryKind::TriggeredAbility { trigger_event, .. } = &mut a.stack[0].kind else {
             unreachable!("the frame's stack entry is a triggered ability");
         };
@@ -26314,7 +26373,7 @@ mod tests {
         });
         let history = a.lki_by_incarnation.get_mut(&entrant).unwrap();
         let earlier = history.get(&9).unwrap().clone();
-        history.insert(7, earlier);
+        history.insert(11, earlier);
         let pa = a.normalize_for_loop();
         assert_eq!(pa.lki_by_incarnation[&entrant].len(), 2);
         assert_ne!(

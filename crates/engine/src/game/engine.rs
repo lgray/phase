@@ -2601,7 +2601,8 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         return;
     }
 
-    // Path B: CR 732.4 all-mandatory, net-progress, no-loss draw. Only reached when Path A
+    // Path B: CR 732.4 all-mandatory draw, on zero progress or on net progress with no loss
+    // axis, over a period that left every unmeasured axis unchanged. Only reached when Path A
     // found no determinate winner. `mandatory` gates it (CR 732.5); a loss axis or an
     // optional loop falls through to the pre-feature halt.
     if mandatory {
@@ -2621,19 +2622,38 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         // comparing against a state it already changed.
         let drawn = !priors.is_empty() && {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
-            priors.iter().any(|prior| {
-                let prior = &prior.normalized;
+            let ring_live: Vec<&GameState> = priors.iter().map(|sample| &sample.live).collect();
+            // A span-0 pair is the state against its own sample, which trivially recurs.
+            let spanning: Vec<usize> = candidate_windows(&ring_live)
+                .map(|(idx, _, _)| idx)
+                .collect();
+            priors.iter().enumerate().any(|(idx, sample)| {
+                let prior = &sample.normalized;
                 let delta = crate::analysis::resource::ResourceVector::delta(
                     &crate::analysis::resource::ResourceVector::snapshot(prior),
                     &cur,
                 );
+                let recurs = crate::analysis::resource::loop_states_equal_modulo_resources_side(
+                    prior, &frames,
+                );
+                let unmeasured = crate::analysis::resource::unmeasured_resource_axes_match(
+                    prior,
+                    frames.current(),
+                );
+                // CR 104.4b + CR 732.4: a mandatory loop whose position recurs with no resource change is a draw.
+                let zero_progress =
+                    recurs && spanning.contains(&idx) && delta.axis_components().is_empty();
                 // CR 732.2a board-recurrence (constant-depth OR ω growing cascade) + net
                 // progress + NO loss axis for anyone ⇒ the loop grinds forever with nobody
                 // able to win or lose ⇒ CR 732.4 / 104.4b draw.
-                (crate::analysis::resource::loop_states_equal_modulo_resources_side(prior, &frames)
-                    || crate::analysis::resource::loop_states_cover_modulo_growth(prior, &frames))
-                    && delta.is_net_progress()
-                    && has_no_loss_axis(&delta)
+                unmeasured
+                    && (zero_progress
+                        || ((recurs
+                            || crate::analysis::resource::loop_states_cover_modulo_growth(
+                                prior, &frames,
+                            ))
+                            && delta.is_net_progress()
+                            && has_no_loss_axis(&delta)))
             })
         };
         if drawn {
@@ -9507,7 +9527,9 @@ fn end_of_turn_active(state: &GameState, player: PlayerId) -> bool {
 
 struct PriorityPassPipelineOutcome {
     waiting_for: WaitingFor,
-    consumed_stack_entries: u32,
+    /// Whether this pass ended the Resolve-All session and restored the pre-session
+    /// auto-pass map.
+    session_restored: bool,
 }
 
 // Test-only reach signal for the production phase-transition deferral seam. It
@@ -9543,9 +9565,12 @@ fn pass_priority_once_with_pipeline(
 ) -> Result<PriorityPassPipelineOutcome, EngineError> {
     if let WaitingFor::Priority { player } = &state.waiting_for {
         if super::precast_copy_shortcut::blocks_pass(state, *player) {
+            let waiting_for = state.waiting_for.clone();
+            let session_restored =
+                advance_stack_resolution_session_after_priority_pass(state, 0, &waiting_for);
             return Ok(PriorityPassPipelineOutcome {
-                waiting_for: state.waiting_for.clone(),
-                consumed_stack_entries: 0,
+                waiting_for,
+                session_restored,
             });
         }
     }
@@ -9693,6 +9718,13 @@ fn pass_priority_once_with_pipeline(
         }
     }
 
+    // CR 732.2c + CR 117.4: a consumed Resolve-All session ends before the priority window it ends at is sampled.
+    let session_restored = advance_stack_resolution_session_after_priority_pass(
+        state,
+        priority_outcome.consumed_stack_entries,
+        &wf,
+    );
+
     // PR-3 (Option C) CR 732.2a loop-shortcut window accumulation — relocated here
     // (PR3 Defect-1 fix). The refilling trigger is placed by
     // `run_post_action_pipeline` (CR 603.3 / CR 704.3: triggered abilities waiting to
@@ -9763,7 +9795,7 @@ fn pass_priority_once_with_pipeline(
 
     Ok(PriorityPassPipelineOutcome {
         waiting_for: wf,
-        consumed_stack_entries: priority_outcome.consumed_stack_entries,
+        session_restored,
     })
 }
 
@@ -10297,11 +10329,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                         advanced = true;
                         let stack_empty_or_grew =
                             finish_completed_or_interrupted_until_stack_empty_sessions(state);
-                        let session_finished = advance_stack_resolution_session_after_priority_pass(
-                            state,
-                            outcome.consumed_stack_entries,
-                            &outcome.waiting_for,
-                        );
+                        let session_finished = outcome.session_restored;
                         result.events.extend(events);
                         result.waiting_for = outcome.waiting_for;
                         // CR 732.2: a mandatory cascade growing the board or
@@ -10997,11 +11025,6 @@ fn pass_installed_auto_pass_priority(
         StackResolutionSessionPriorityDecision::NotActive => None,
     };
     let outcome = pass_priority_once_with_pipeline(state, events, stack_resolution_limit)?;
-    advance_stack_resolution_session_after_priority_pass(
-        state,
-        outcome.consumed_stack_entries,
-        &outcome.waiting_for,
-    );
     Ok(ActionResult::applied(
         std::mem::take(events),
         outcome.waiting_for,
@@ -11501,8 +11524,8 @@ fn apply_action(
     // Placed AFTER every preference early-return (CancelAutoPass / SetPhaseStops /
     // SetPriorityPassingMode / ReorderHand / Debug / Grant- & RevokeDebugPermission)
     // so a no-op preference
-    // toggle never reaches here; PassPriority and OrderTriggers are the only actions
-    // that CONTINUE a cascade and so must NOT clear (see the CR 603.3b note below).
+    // toggle never reaches here; PassPriority, SetAutoPass and OrderTriggers CONTINUE a
+    // cascade and so must NOT clear (see the CR 603.3b note below).
     // `run_auto_pass_loop` and `resolve_all_fast_forward`
     // call the resolution seam directly (not via `apply_action`), so this clear does
     // not fire during their internal iterations — the ring accumulates correctly there.
@@ -11529,13 +11552,15 @@ fn apply_action(
     // and the `SelectCards` that answers `DiscardToHandSize` with no edit here — and
     // `SelectCards` in particular is answer-overloaded across a dozen unrelated windows,
     // so an action-keyed list could not have expressed the class correctly at all.
-    // `PassPriority` keeps its own action-side exemption because it is answered at a
-    // `Priority` window, which is deliberately NOT in the forced class.
+    // `PassPriority` and `SetAutoPass` keep their own action-side exemption because they
+    // are answered at a `Priority` window, which is deliberately NOT in the forced class.
     let answering_forced_window = state.waiting_for.is_forced_cascade_window();
     let stack_len_before_action = state.stack.len();
     if !matches!(
         action,
         GameAction::PassPriority
+            // CR 732.1 + CR 117.3d: an auto-pass request is a shortcut over passes, not an action that breaks the cascade.
+            | GameAction::SetAutoPass { .. }
             | GameAction::OrderTriggers { .. }
             | GameAction::BeginResolveAll { .. }
             | GameAction::RespondResolveAllConsent { .. }
@@ -11661,11 +11686,6 @@ fn apply_action(
         if stack_resolution_limit.is_some() {
             let outcome =
                 pass_priority_once_with_pipeline(state, &mut events, stack_resolution_limit)?;
-            advance_stack_resolution_session_after_priority_pass(
-                state,
-                outcome.consumed_stack_entries,
-                &outcome.waiting_for,
-            );
             return Ok(ActionResult::applied(events, outcome.waiting_for));
         }
         return pass_installed_auto_pass_priority(state, *player, &mut events);
@@ -27649,5 +27669,87 @@ mod legacy_copy_announcement_tests {
             r.act(GameAction::PassPriority).expect("resolve");
         }
         assert_eq!(elementals(&r), 1, "no Elemental for the abandoned copy");
+    }
+}
+
+#[cfg(test)]
+mod mandatory_draw_unmeasured_axis_tests {
+    use super::*;
+    use crate::game::scenario::{GameScenario, P1};
+    use crate::types::game_state::LoopDetectionMode;
+    use crate::types::player::PlayerCounterKind;
+    use std::sync::Arc;
+
+    /// Runs Path B on a mandatory state whose ring is `[prior, own sample]`, the state
+    /// being the prior after `change`, and reports whether it drew.
+    fn draws(change: impl Fn(&mut GameState, ObjectId)) -> bool {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let creature = scenario.add_creature(P1, "Wall", 0, 10).id();
+        let runner = scenario.build();
+        let mut prior = runner.state().clone();
+        prior.loop_detection = LoopDetectionMode::Interactive;
+        prior.objects.get_mut(&creature).unwrap().damage_marked = 1;
+        let mut current = prior.clone();
+        change(&mut current, creature);
+        let sample = |state: &GameState| {
+            Arc::new(crate::types::LoopDetectSample {
+                normalized: state.normalize_for_loop(),
+                live: state.clone(),
+            })
+        };
+        let own = sample(&current);
+        current.loop_detect_ring = [sample(&prior), own].into_iter().collect();
+        assert!(
+            no_living_player_has_meaningful_priority_action(&current),
+            "reach guard: the loop is mandatory"
+        );
+        let mut result = ActionResult::applied(Vec::new(), current.waiting_for.clone());
+        interactive_loop_bridge(&mut current, &mut result);
+        matches!(current.waiting_for, WaitingFor::GameOver { winner: None })
+    }
+
+    fn experience(state: &mut GameState) {
+        state.players[0]
+            .player_counters
+            .insert(PlayerCounterKind::Experience, 1);
+    }
+
+    /// CR 104.4b + CR 732.4: a mandatory draw needs the period to leave marked damage,
+    /// counters and player counters unchanged, on both the zero-progress and the
+    /// net-progress leg.
+    #[test]
+    fn a_mandatory_draw_requires_every_unmeasured_axis_unchanged() {
+        assert!(draws(|_, _| {}), "identical: the zero-progress leg draws");
+        assert!(
+            draws(|state, _| state.players[0].life += 3),
+            "life +3: the net-progress leg draws"
+        );
+        assert!(
+            !draws(|state, creature| state.objects.get_mut(&creature).unwrap().tapped = true),
+            "control: a tapped creature is a different position"
+        );
+        assert!(
+            !draws(|state, creature| state.objects.get_mut(&creature).unwrap().damage_marked = 9),
+            "damage grew unmeasured"
+        );
+        assert!(
+            !draws(|state, creature| {
+                state.players[0].life += 3;
+                state.objects.get_mut(&creature).unwrap().damage_marked = 9;
+            }),
+            "net progress over damage that grew unmeasured"
+        );
+        assert!(
+            !draws(|state, _| experience(state)),
+            "a player counter grew unmeasured"
+        );
+        assert!(
+            !draws(|state, _| {
+                state.players[0].life += 3;
+                experience(state);
+            }),
+            "net progress over a player counter that grew unmeasured"
+        );
     }
 }
