@@ -2669,7 +2669,7 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                     // CR 104.4b: a period holding an optional action, a decision or an out is
                     // no draw.
                     && crate::types::game_state::LoopDecisionProfile::of_window(
-                        priors[idx..].iter().map(|sample| &sample.marks),
+                        priors[idx..].iter().map(|sample| &**sample),
                         &current_marks,
                     )
                     .is_forced()
@@ -24782,7 +24782,7 @@ mod bounded_offer_conjunct_tests {
                 .push_back(std::sync::Arc::new(crate::types::LoopDetectSample {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
-                    marks: Default::default(),
+                    tally: Default::default(),
                 }));
         }
         state
@@ -25528,7 +25528,7 @@ mod bounded_offer_conjunct_tests {
                 Arc::new(LoopDetectSample {
                     normalized,
                     live,
-                    marks: Default::default(),
+                    tally: Default::default(),
                 })
             })
             .collect();
@@ -27733,7 +27733,7 @@ mod mandatory_draw_unmeasured_axis_tests {
             Arc::new(crate::types::LoopDetectSample {
                 normalized: state.normalize_for_loop(),
                 live: state.clone(),
-                marks: state.loop_decision_marks(),
+                tally: state.loop_decision_tally,
             })
         };
         let own = sample(&current);

@@ -21091,8 +21091,8 @@ impl<'de> Deserialize<'de> for PendingLiminalEntryResume {
 pub struct LoopDetectSample {
     pub normalized: GameState,
     pub live: GameState,
-    /// This beat's decision marks, taken when it was sampled.
-    pub marks: LoopDecisionMarks,
+    /// The answered-decision tally when this beat was sampled.
+    pub tally: LoopDecisionTally,
 }
 
 /// CR 104.4b: a kind of non-mandatory action a loop period can hold.
@@ -21122,11 +21122,48 @@ pub enum PriorityOut {
     Held,
 }
 
+impl PriorityOut {
+    /// The out verdict at `state`, which must be a live state: normalization never decides it.
+    pub(crate) fn at(state: &GameState) -> Self {
+        if crate::game::engine::no_living_player_has_meaningful_priority_action(state) {
+            Self::Absent
+        } else {
+            Self::Held
+        }
+    }
+}
+
 /// What a sampled beat contributes to its period's [`LoopDecisionProfile`].
+pub trait LoopDecisionMark {
+    fn tally(&self) -> LoopDecisionTally;
+    fn out(&self) -> PriorityOut;
+}
+
+/// A beat's marks with the out verdict already taken.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LoopDecisionMarks {
     pub tally: LoopDecisionTally,
     pub out: PriorityOut,
+}
+
+impl LoopDecisionMark for LoopDecisionMarks {
+    fn tally(&self) -> LoopDecisionTally {
+        self.tally
+    }
+
+    fn out(&self) -> PriorityOut {
+        self.out
+    }
+}
+
+impl LoopDecisionMark for LoopDetectSample {
+    fn tally(&self) -> LoopDecisionTally {
+        self.tally
+    }
+
+    fn out(&self) -> PriorityOut {
+        PriorityOut::at(&self.live)
+    }
 }
 
 /// CR 104.4b + CR 732.4: the non-mandatory members of a loop period; only a period with none
@@ -21137,25 +21174,27 @@ pub struct LoopDecisionProfile {
 }
 
 impl LoopDecisionProfile {
-    /// The profile of the period from the window's first mark to `current`.
-    pub fn of_window<'a>(
-        window: impl IntoIterator<Item = &'a LoopDecisionMarks>,
-        current: &'a LoopDecisionMarks,
+    /// The profile of the period from the window's first mark to `current`. `Outs` is not read
+    /// for an Optional period: Optional is never declared or offered, and the out verdict
+    /// enumerates every living player's priority actions.
+    pub fn of_window<'a, M: LoopDecisionMark + 'a>(
+        window: impl IntoIterator<Item = &'a M>,
+        current: &LoopDecisionMarks,
     ) -> Self {
-        let mut marks = window
-            .into_iter()
-            .chain(std::iter::once(current))
-            .peekable();
-        let first = marks.peek().map_or(current.tally, |first| first.tally);
+        let mut window = window.into_iter().peekable();
+        let first = window.peek().map_or(current.tally, |first| first.tally());
         let mut members = BTreeSet::new();
-        if marks.any(|marks| marks.out == PriorityOut::Held) {
-            members.insert(LoopDecision::Outs);
-        }
         if current.tally.optional != first.optional {
             members.insert(LoopDecision::Optional);
         }
         if current.tally.decision != first.decision {
             members.insert(LoopDecision::Decision);
+        }
+        if !members.contains(&LoopDecision::Optional)
+            && (current.out == PriorityOut::Held
+                || window.any(|marks| marks.out() == PriorityOut::Held))
+        {
+            members.insert(LoopDecision::Outs);
         }
         Self { members }
     }
@@ -32076,11 +32115,10 @@ impl GameState {
             });
             self.loop_detect_live_sample()
         };
-        let marks = self.loop_decision_marks();
         let snapshot = std::sync::Arc::new(LoopDetectSample {
             normalized,
             live,
-            marks,
+            tally: self.loop_decision_tally,
         });
         self.loop_detect_ring.push_back(snapshot);
     }
@@ -32102,14 +32140,9 @@ impl GameState {
     /// This beat's decision marks: the tally so far, and whether any living player holds a
     /// meaningful priority action here (CR 732.5).
     pub(crate) fn loop_decision_marks(&self) -> LoopDecisionMarks {
-        let out = if crate::game::engine::no_living_player_has_meaningful_priority_action(self) {
-            PriorityOut::Absent
-        } else {
-            PriorityOut::Held
-        };
         LoopDecisionMarks {
             tally: self.loop_decision_tally,
-            out,
+            out: PriorityOut::at(self),
         }
     }
 
@@ -34173,8 +34206,45 @@ mod loop_decision_profile_tests {
         );
         assert_eq!(
             members(&[marks(3, 3, Absent)], marks(4, 5, Held)),
-            vec![Optional, Outs, Decision]
+            vec![Optional, Decision]
         );
+        assert_eq!(
+            members(&[base, marks(2, 3, Held)], marks(2, 4, Absent)),
+            vec![Outs, Decision]
+        );
+    }
+
+    struct CountedReads {
+        marks: LoopDecisionMarks,
+        reads: std::cell::Cell<u32>,
+    }
+
+    impl LoopDecisionMark for CountedReads {
+        fn tally(&self) -> LoopDecisionTally {
+            self.marks.tally
+        }
+
+        fn out(&self) -> PriorityOut {
+            self.reads.set(self.reads.get() + 1);
+            self.marks.out
+        }
+    }
+
+    /// The out verdict is not read for an Optional period, and is read for a Decision one.
+    #[test]
+    fn the_out_verdict_is_read_unless_the_period_is_optional() {
+        for (current, reads, expected) in [
+            (marks(3, 3, Absent), 0, vec![Optional]),
+            (marks(2, 4, Absent), 1, vec![Outs, Decision]),
+        ] {
+            let first = CountedReads {
+                marks: marks(2, 3, Held),
+                reads: std::cell::Cell::new(0),
+            };
+            let profile = LoopDecisionProfile::of_window([&first], &current);
+            assert_eq!(profile.members.into_iter().collect::<Vec<_>>(), expected);
+            assert_eq!(first.reads.get(), reads, "{expected:?}");
+        }
     }
 }
 
