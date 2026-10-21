@@ -16491,11 +16491,9 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
 /// documents. MEASURED on this drive: 2 forced-window minting beats (5, 14), 3 non-forced ones
 /// (0, 9, 18), 5 frames minted and validated in total, offer at beat 19 over a 5-frame ring.
 ///
-/// THIS FIXTURE REACHES NEITHER of the two paths that break a length delta, measured rather than
-/// assumed: 0 evicting beats and 0 clear-and-rebuild beats over the drive, max ring 5 against a
-/// capacity of 16. The evicting path is reached — and the deleted scalar shown wrong on it — by
-/// `an_evicting_beat_mints_without_growing_the_ring`, on a board driven through the same
-/// production `apply()`.
+/// This fixture never fills the ring, so eviction at capacity, the route the deleted scalar is
+/// shown wrong on, is reached instead by `an_evicting_beat_mints_without_growing_the_ring` on a
+/// board driven through the same production `apply()`.
 ///
 /// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
 /// leaves all three arms GREEN, and that is a measurement rather than an oversight: an
@@ -16829,7 +16827,7 @@ fn ring_membership_delta<'a, T>(
 /// previously read them as `rev().take(after_len - before_len)` off a changed `back()`, and this
 /// row is the reachability half of the #7023 review that replaced that: the scalar is wrong on
 /// this production route, and the `dina_conqueror_4p` drive that row performs
-/// reaches NEITHER — measured on it: max ring 5 against a capacity of 16, 0 evicting beats, 0
+/// does not reach it — measured on it: max ring 5 against a capacity of 16, 0 evicting beats, 0
 /// clearing beats. Correcting a detector against routes no fixture reaches would re-open the
 /// evidential hole the correction exists to close, so each route gets a board.
 ///

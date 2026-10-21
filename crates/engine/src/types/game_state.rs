@@ -42233,11 +42233,24 @@ mod tests {
     }
 
     /// CR 603.5 + CR 400.7: a stored exact-instance answer is ranked with the trigger it
-    /// answers, so a stale stored answer stays distinct from a current one.
+    /// answers wherever that trigger waits, so a stale stored answer stays distinct from a
+    /// current one.
     #[test]
     fn normalize_for_loop_ranks_stored_answers_with_their_trigger() {
+        use crate::game::triggers::{PendingTrigger, PendingTriggerContext};
         use crate::types::ability::TriggerDefinitionRef;
-        let answered = |live: u64, trigger: u64, stored: u64| {
+        #[derive(Debug, Clone, Copy)]
+        enum Carrier {
+            Stack,
+            Resolving,
+            Pending,
+            PendingAbility,
+            Deferred,
+            Ordering,
+            SubAbility,
+            ElseAbility,
+        }
+        let answered = |carrier: Carrier, live: u64, trigger: u64, stored: u64| {
             let (mut state, x) = records_naming(live, &[]);
             let origin = |incarnation| MayTriggerOrigin::Definition {
                 definition_ref: TriggerDefinitionRef {
@@ -42248,9 +42261,62 @@ mod tests {
                     },
                 },
             };
-            let mut ability = draw_one(x);
-            ability.may_trigger_origin = Some(origin(trigger));
-            push_trigger(&mut state, x, ability, None);
+            let with_origin = || {
+                let mut ability = draw_one(x);
+                ability.may_trigger_origin = Some(origin(trigger));
+                ability
+            };
+            let pending = |ability: ResolvedAbility, origin: Option<MayTriggerOrigin>| {
+                let mut pending =
+                    PendingTrigger::ordinary(x, PlayerId(0), None, Box::new(ability), 0);
+                pending.may_trigger_origin = origin;
+                pending
+            };
+            match carrier {
+                Carrier::Stack => push_trigger(&mut state, x, with_origin(), None),
+                Carrier::Resolving => {
+                    push_trigger(&mut state, x, with_origin(), None);
+                    state.resolving_stack_entry = state.stack.pop_back();
+                }
+                Carrier::Pending => {
+                    state.pending_trigger =
+                        Some(Box::new(pending(draw_one(x), Some(origin(trigger)))));
+                }
+                Carrier::PendingAbility => {
+                    state.pending_trigger = Some(Box::new(pending(with_origin(), None)));
+                }
+                Carrier::Deferred => {
+                    state
+                        .deferred_triggers
+                        .push(PendingTriggerContext::single(pending(
+                            draw_one(x),
+                            Some(origin(trigger)),
+                        )))
+                }
+                Carrier::Ordering => {
+                    state.pending_trigger_order = Some(PendingTriggerOrder {
+                        groups: vec![TriggerOrderGroup {
+                            controller: PlayerId(0),
+                            triggers: vec![PendingTriggerContext::single(pending(
+                                draw_one(x),
+                                Some(origin(trigger)),
+                            ))],
+                            ordered: false,
+                        }],
+                        resume_after_ordering: None,
+                    });
+                }
+                Carrier::SubAbility => {
+                    let mut ability = draw_one(x);
+                    ability.sub_ability = Some(Box::new(with_origin()));
+                    push_trigger(&mut state, x, ability, None);
+                }
+                Carrier::ElseAbility => {
+                    let mut ability = draw_one(x);
+                    ability.else_ability = Some(Box::new(with_origin()));
+                    push_trigger(&mut state, x, ability, None);
+                }
+            }
             state
                 .may_trigger_auto_choices
                 .push(MayTriggerAutoChoiceRecord {
@@ -42263,11 +42329,28 @@ mod tests {
                 });
             state
         };
-        let early = answered(6, 5, 5);
-        let late = answered(10, 9, 9);
-        assert_ne!(early, late, "reach guard: the raw positions differ");
-        assert!(normalized_equal(&early, &late));
-        assert!(!normalized_equal(&early, &answered(6, 5, 3)));
+        for carrier in [
+            Carrier::Stack,
+            Carrier::Resolving,
+            Carrier::Pending,
+            Carrier::PendingAbility,
+            Carrier::Deferred,
+            Carrier::Ordering,
+            Carrier::SubAbility,
+            Carrier::ElseAbility,
+        ] {
+            let early = answered(carrier, 6, 5, 5);
+            let late = answered(carrier, 10, 9, 9);
+            assert_ne!(
+                early, late,
+                "reach guard for {carrier:?}: raw positions differ"
+            );
+            assert!(normalized_equal(&early, &late), "{carrier:?}");
+            assert!(
+                !normalized_equal(&early, &answered(carrier, 6, 5, 3)),
+                "{carrier:?}: a stale stored answer is a different position"
+            );
+        }
     }
 
     /// Maintainer round 4, finding 1. CR 104.4b + CR 400.7: LKI retention and
