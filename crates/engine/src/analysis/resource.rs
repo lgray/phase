@@ -4997,9 +4997,9 @@ pub enum CoveredGrowth {
     /// Objects of the grown class and nothing else, each under the period's controller.
     #[default]
     Mintable,
-    /// CR 702.10b + CR 603.7a + CR 111.2 + CR 701.17b: a grown object carries a keyword, a delayed
-    /// trigger acts on it alone, another player controls it, or a certified instructed departure
-    /// moved it, so only performing the period makes it.
+    /// CR 702.10b + CR 603.7a + CR 111.2 + CR 701.17b: a grown object carries a keyword or a
+    /// trigger, a delayed trigger acts on it alone, another player controls it, or a certified
+    /// instructed departure moved it, so only performing the period makes it.
     PerformedOnly,
 }
 
@@ -5105,14 +5105,21 @@ pub(crate) fn fodder_growth_cover_refusals(
         .iter()
         .filter_map(|id| cf.objects.get(id))
         .any(|o| o.zone == Zone::Battlefield && o.controller != caster);
+    // A bare minted copy carries no trigger, so a grown object that does is made only by
+    // performing the period.
+    let triggered = growing
+        .iter()
+        .filter_map(|id| cf.objects.get(id))
+        .any(|o| o.trigger_definitions.iter_all().next().is_some());
     // CR 701.17b: no mint makes a certified departure, so only performing the period does.
-    let growth = if keyword || delayed_trigger || other_controller || certified.is_some() {
-        CoveredGrowth::PerformedOnly
-    } else if equalized_history {
-        CoveredGrowth::EQUALIZED_HISTORY
-    } else {
-        CoveredGrowth::Mintable
-    };
+    let growth =
+        if keyword || delayed_trigger || other_controller || triggered || certified.is_some() {
+            CoveredGrowth::PerformedOnly
+        } else if equalized_history {
+            CoveredGrowth::EQUALIZED_HISTORY
+        } else {
+            CoveredGrowth::Mintable
+        };
     (refusals, growth)
 }
 
@@ -6151,19 +6158,42 @@ fn grown_token_is_inert_after_its_entry(o: &GameObject) -> bool {
         && o.trigger_definitions.iter_all().all(|entry| {
             let def = &entry.definition;
             def.mode == crate::types::triggers::TriggerMode::ChangesZone
-                && def.zone_change_clauses.is_empty()
-                && def.destination == Some(Zone::Battlefield)
+                && crate::game::trigger_matchers::trigger_is_an_entry(def)
                 && matches!(def.valid_card, Some(TargetFilter::SelfRef))
+        })
+}
+
+/// CR 603.2: a token on the battlefield whose every trigger acts on itself alone, cannot fire as
+/// it leaves, and reads neither its siblings' mutable state nor the growing class, so another
+/// copy of it changes no other object's behavior. A trigger that can fire as the token leaves
+/// stays live on a token the cover projects out, so it is not relieved here.
+fn grown_token_triggers_only_on_itself(o: &GameObject) -> bool {
+    use crate::types::ability::TargetFilter;
+    o.is_token
+        && o.zone == Zone::Battlefield
+        && object_is_inert_except_triggers(o)
+        && o.trigger_definitions.iter_all().all(|entry| {
+            let def = &entry.definition;
+            matches!(def.valid_card, Some(TargetFilter::SelfRef))
+                && !crate::game::trigger_matchers::trigger_can_fire_as_its_object_leaves(def)
+                && !def
+                    .condition
+                    .as_ref()
+                    .is_some_and(crate::game::ability_scan::trigger_condition_reads_sibling_mutable)
+                && !def.execute.as_deref().is_some_and(
+                    crate::game::ability_scan::ability_definition_reads_growing_class_for_loop,
+                )
         })
 }
 
 /// CR 732.2a: every grown object is churn-inert.
 fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bool {
     grown.iter().all(|id| {
-        current
-            .objects
-            .get(id)
-            .is_some_and(|o| object_is_inert(o) || grown_token_is_inert_after_its_entry(o))
+        current.objects.get(id).is_some_and(|o| {
+            object_is_inert(o)
+                || grown_token_is_inert_after_its_entry(o)
+                || grown_token_triggers_only_on_itself(o)
+        })
     })
 }
 
@@ -8285,6 +8315,25 @@ pub(crate) fn driving_resources_non_decreasing(
     current: &GameState,
     controller: PlayerId,
 ) -> bool {
+    driving_resources_non_decreasing_carried(prior, current, controller, None)
+}
+
+/// [`driving_resources_non_decreasing`], with the object clauses (c) and (d) read over only the
+/// permanents on the battlefield in `carried`, `prior` and `current` when `carried` is given: an
+/// object the period minted is growth, not a driving resource the period spends.
+pub(crate) fn driving_resources_non_decreasing_carried(
+    prior: &GameState,
+    current: &GameState,
+    controller: PlayerId,
+    carried: Option<&GameState>,
+) -> bool {
+    let in_population = |id: &ObjectId| {
+        carried.is_none_or(|first| {
+            first.battlefield.contains(id)
+                && prior.battlefield.contains(id)
+                && current.battlefield.contains(id)
+        })
+    };
     // CR 119: no `GameState::player` accessor exists — find by id.
     let (Some(pp), Some(cp)) = (
         prior.players.iter().find(|p| p.id == controller),
@@ -8322,7 +8371,7 @@ pub(crate) fn driving_resources_non_decreasing(
     //     (a decrease is a beneficial heal).
     let totals = |s: &GameState| -> HashMap<CounterType, u64> {
         let mut m: HashMap<CounterType, u64> = HashMap::default();
-        for id in &s.battlefield {
+        for id in s.battlefield.iter().filter(|id| in_population(id)) {
             if let Some(o) = s.objects.get(id) {
                 if o.controller != controller {
                     continue;
@@ -8354,6 +8403,7 @@ pub(crate) fn driving_resources_non_decreasing(
     let damage_total = |s: &GameState| -> u64 {
         s.battlefield
             .iter()
+            .filter(|id| in_population(id))
             .filter_map(|id| s.objects.get(id))
             .filter(|o| o.controller == controller)
             .filter(|o| !o.has_keyword(&crate::types::keywords::Keyword::Indestructible))
@@ -14798,6 +14848,30 @@ mod tests {
         (prior, current)
     }
 
+    /// The fodder base with every Saproling, and the class, a token carrying one
+    /// `DamageReceived` trigger whose subject is `valid_card`.
+    fn damage_triggered_token_fodder(
+        valid_card: Option<TargetFilter>,
+    ) -> (GameState, GameState, GameObject) {
+        let (mut prior, mut current) = fodder_cover_base();
+        let mut class = saproling_class();
+        let mut trigger = TriggerDefinition::new(TriggerMode::DamageReceived);
+        trigger.valid_card = valid_card;
+        let arm = |object: &mut GameObject| {
+            if object.name == "Saproling" {
+                object.is_token = true;
+                object.trigger_definitions = vec![trigger.clone()].into();
+            }
+        };
+        for state in [&mut prior, &mut current] {
+            for id in state.battlefield.clone() {
+                arm(state.objects.get_mut(&id).unwrap());
+            }
+        }
+        arm(&mut class);
+        (prior, current, class)
+    }
+
     /// F+ COVER (tapped-split, NO cost keyword). Revert-failing: swapping
     /// `fodder_cover` to `loop_states_cover_modulo_object_growth` (absolute-ObjectId)
     /// rejects — 700's untapped→tapped drift fails `board_covers`' non-grown eq.
@@ -14817,8 +14891,9 @@ mod tests {
     }
 
     /// CR 732.1b: a certifying cover reports growth only performing makes when a grown object
-    /// carries a keyword, a delayed trigger acts on a grown object alone, another player controls a
-    /// grown object, or a certified departure moved one, and mintable growth otherwise.
+    /// carries a keyword or a trigger, a delayed trigger acts on a grown object alone, another
+    /// player controls a grown object, or a certified departure moved one, and mintable growth
+    /// otherwise.
     #[test]
     fn the_fodder_cover_reports_whether_a_mint_makes_its_growth() {
         use crate::types::ability::{
@@ -14901,6 +14976,12 @@ mod tests {
             report(&prior, &sacrificed, &saproling_class()),
             (vec![], CoveredGrowth::PerformedOnly)
         );
+
+        let (prior, current, class) = damage_triggered_token_fodder(Some(TargetFilter::SelfRef));
+        assert_eq!(
+            report(&prior, &current, &class),
+            (vec![], CoveredGrowth::PerformedOnly)
+        );
     }
 
     /// F-B1 (untapped ↓): total STILL grows (5→6) but untapped DROPS (4→3) — a
@@ -14969,6 +15050,35 @@ mod tests {
             fodder_cover(&p, &c),
             "reach-guard: inert fodder growth ⇒ COVER"
         );
+
+        // CR 603.2: a token whose trigger acts on itself alone is relieved; one whose trigger
+        // reads any creature is not.
+        let refusals = |valid_card| {
+            let (prior, current, class) = damage_triggered_token_fodder(valid_card);
+            fodder_growth_cover_refusals(&prior, &current, &class, PlayerId(0)).0
+        };
+        assert_eq!(refusals(Some(TargetFilter::SelfRef)), vec![]);
+        assert_eq!(refusals(None), vec![FodderCoverRefusal::GrownNotInert]);
+
+        // CR 603.6c + CR 603.10a: a self trigger that can fire as the token leaves is not
+        // relieved, nor is a zone-change shape outside the entry shape.
+        let s = |mode| TriggerDefinition::new(mode).valid_card(TargetFilter::SelfRef);
+        assert!(grown_with(true, s(TriggerMode::DamageReceived)));
+        assert_eq!(
+            [
+                s(TriggerMode::LeavesBattlefield),
+                s(TriggerMode::ChangesZone)
+                    .origin(Zone::Battlefield)
+                    .destination(Zone::Graveyard),
+                s(TriggerMode::Exiled),
+                s(TriggerMode::Destroyed),
+                s(TriggerMode::ChangesZone).destination(Zone::Graveyard),
+                s(TriggerMode::Evolve).origin(Zone::Battlefield),
+                s(TriggerMode::EntersOrAttacks).origin(Zone::Battlefield),
+            ]
+            .map(|trigger| grown_with(true, trigger)),
+            [false; 7]
+        );
     }
 
     // =======================================================================
@@ -14980,6 +15090,39 @@ mod tests {
 
     fn sign_check(prior: &GameState, current: &GameState) -> bool {
         driving_resources_non_decreasing(prior, current, PlayerId(0))
+    }
+
+    /// CR 704.5g: with the period's first frame carried, damage on a permanent the period minted
+    /// is growth, while damage on a permanent present throughout still falls on a driving
+    /// resource.
+    #[test]
+    fn driving_resources_follow_the_carried_population() {
+        let mut first = GameState::new_two_player(7);
+        inert_token(&mut first, 800, 0, "Engine");
+        let mut prior = first.clone();
+        inert_token(&mut prior, 801, 0, "Copy");
+        let damaged = |id: u64| {
+            let mut current = prior.clone();
+            current
+                .objects
+                .get_mut(&ObjectId(id))
+                .unwrap()
+                .damage_marked = 2;
+            current
+        };
+        let read = |current: &GameState| {
+            (
+                driving_resources_non_decreasing_carried(
+                    &prior,
+                    current,
+                    PlayerId(0),
+                    Some(&first),
+                ),
+                driving_resources_non_decreasing_carried(&prior, current, PlayerId(0), None),
+            )
+        };
+        assert_eq!(read(&damaged(801)), (true, false));
+        assert_eq!(read(&damaged(800)), (false, false));
     }
 
     /// S+ (positive reach-guard for every S- below): no consumable decreases.
@@ -17619,6 +17762,7 @@ mod tests {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
                     tally: Default::default(),
+                    trace_at: None,
                 }));
         }
         state
@@ -19534,6 +19678,7 @@ mod tests {
                         normalized: frame.normalize_for_loop(),
                         live: frame.loop_detect_live_sample(),
                         tally: Default::default(),
+                        trace_at: None,
                     },
                 ));
             }
@@ -23027,6 +23172,7 @@ mod tests {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
                     tally: Default::default(),
+                    trace_at: None,
                 }));
         }
         state
@@ -27696,8 +27842,8 @@ mod tests {
     /// CR 603.6a + CR 111.8: a grown token whose only trigger is its own entry is inert once it
     /// has entered; a card can re-enter, and a leaves-the-battlefield trigger can still fire.
     ///
-    /// REVERT-PROBE: drop the `grown_token_is_inert_after_its_entry` disjunct ⇒ the relieved
-    /// leg **FAILS**; drop its `is_token` conjunct ⇒ the card leg **FAILS**.
+    /// REVERT-PROBE: drop the `is_token` conjunct of `grown_token_is_inert_after_its_entry` ⇒ the
+    /// card leg **FAILS**.
     #[test]
     fn only_a_spent_token_entry_is_inert() {
         use crate::types::triggers::TriggerMode;

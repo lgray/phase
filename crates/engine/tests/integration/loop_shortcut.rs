@@ -2570,19 +2570,9 @@ fn b3_declare_refuses_a_schedule_breaking_inside_the_declared_count() {
 const POISON_RIDER: &str = "Whenever you gain life, each opponent gets a poison counter.";
 
 /// 3-player MANDATORY self-sustaining lifegain cascade (SELF_LIFE_ENGINE) that ALSO drips
-/// poison onto each opponent every cycle (POISON_RIDER, a SEPARATE second trigger). Nobody
-/// loses LIFE (so Path A's `live_mandatory_loop_winner` finds no faller ⇒ nonfallers≠1 ⇒
-/// None); opponents accrue POISON.
-///
-/// MEASURED reachability (this 2-trigger fixture does NOT reach the Path-B bridge): the two
-/// simultaneous triggers per lifegain event open OrderTriggers beats, and every non-
-/// `Priority{active_player}` beat CLEARS `loop_detect_ring` (`game/engine.rs`'s
-/// `pass_priority_once_with_pipeline` sample-or-clear arm). So the ring never accumulates, the
-/// `!ring.is_empty()` bridge gate in `reconcile_terminal_result` never passes, and
-/// `interactive_loop_bridge` is never entered (measured: 0 bridge invocations). The loop
-/// instead resolves via the CR 704.5c 10-poison SBA to GameOver{Some(P0)} (both opponents
-/// reach 10 poison and are eliminated). It therefore does NOT exercise the Path-B
-/// `has_no_loss_axis` veto — see the test doc below.
+/// poison onto each opponent every cycle (POISON_RIDER, a SEPARATE second trigger), so P0 orders
+/// the two triggers each cycle. Nobody loses LIFE, so Path A's `live_mandatory_loop_winner` finds
+/// no faller; opponents accrue POISON.
 fn setup_3p_poison_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     let mut scenario = GameScenario::new_n_player(3, 7);
     scenario.at_phase(Phase::PreCombatMain);
@@ -2599,40 +2589,9 @@ fn setup_3p_poison_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     (runner, kickoff)
 }
 
-/// Path-B DRAW-GATE behavioral test (two halves):
-///   - CONTROL (`setup_3p_draw`, pure lifegain, no poison) is a POSITIVE test that the Path-B
-///     draw gate CERTIFIES a benign no-loss loop: it draws `GameOver{None}` via
-///     `interactive_loop_bridge`'s `has_no_loss_axis` draw arm — the one that pushes
-///     `GameEvent::GameOver { winner: None }` (measured P0 life 22, cycle ~2; and neutering that
-///     arm makes this control STOP drawing — confirmed the draw originates AT that gate, not at
-///     the stricter arm of the same fn, which additionally requires
-///     `classify_win_kind(..) == WinKind::Advantage` and emits no `GameOver` at all).
-///   - VARIANT (`setup_3p_poison_draw`, IDENTICAL + a poison-rider creature) locks that a
-///     poison-accruing loop is NOT wrongly drawn: it resolves via the CR 704.5c 10-poison SBA
-///     to `GameOver{Some(P0)}` (measured P0 life 30, poisons [0,10,10], both opponents
-///     eliminated).
-///
-/// SCOPE (measured — do NOT overclaim): this does NOT isolate `has_no_loss_axis`'s Path-B
-/// conjunct. That conjunct IS load-bearing BY CONSTRUCTION (it is the SOLE loss-axis veto in that
-/// draw arm, which has NO `== Advantage` backstop — a poison loop that reached the gate would
-/// be wrongly drawn without it), but it is currently NOT runtime-discriminable, so there is NO
-/// claim here that deleting it flips the variant. MEASURED: deleting `has_no_loss_axis` from
-/// Path B leaves the variant terminal `GameOver{Some(P0)}` UNCHANGED — because the variant
-/// never REACHES the gate with poison>0. A single-compound-trigger poison loop DOES reach the
-/// Path-B bridge, but the "you gain N life and [each opponent gets a poison counter]" parser
-/// drop removes the poison conjunct (card-build keeps only `GainLife`), so poison is 0 in the
-/// loop delta at the gate → it draws as a benign lifegain loop and never exercises
-/// has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the Path-B gate
-/// (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers beats, in
-/// `pass_priority_once_with_pipeline`'s sample-or-clear arm;
-/// the single-compound-trigger form drops the poison at parse). So the Path-B veto is proven
-/// load-bearing IN CODE and its runtime discriminator is WAIVED pending the poison-drop parser
-/// fix.
-///
-/// POST-RE-KEY NOTE (PR-7 poison pass): `has_no_loss_axis`'s poison veto now reads the
-/// per-victim `delta.poison` map (was the aggregate `delta.counters[(Poison, Player)]`).
-/// The veto FIELD moved; the Path-B reachability did NOT — this test is unchanged and stays
-/// the SBA-terminal behavioral anchor.
+/// CR 732.4 + CR 732.2a: the pure lifegain loop is a draw; the same loop with a poison rider is
+/// no draw, and since P0 orders the two triggers each cycle (CR 603.3b) it is offered rather
+/// than won, and taken to P0's win at ten poison counters (CR 704.5c).
 #[test]
 fn interactive_recurring_poison_is_not_drawn() {
     // CONTROL (differential anchor): the SHARED pure-lifegain structure reaches the CR 732.4
@@ -2648,44 +2607,52 @@ fn interactive_recurring_poison_is_not_drawn() {
          fixture change (the poison rider) is what makes the variant below not-draw"
     );
 
-    // VARIANT: identical structure + exactly one poison-rider creature (the single-line delta).
     let (mut runner, kickoff) = setup_3p_poison_draw(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();
-    let (events, wf) = drive_collect(&mut runner, 500);
-
-    // Positive reach-guard (non-vacuity): the poison LOSS axis was genuinely driven to its
-    // CR 704.5c terminal — BOTH opponents reached ≥10 poison and were eliminated. Without this,
-    // "not drawn" could hold trivially (the loop never ran / poison never applied).
-    let poisons: Vec<u32> = runner
-        .state()
-        .players
-        .iter()
-        .map(|p| p.poison_counters)
-        .collect();
+    let (mut events, wf) = drive_collect(&mut runner, 500);
+    let WaitingFor::LoopShortcut {
+        proposer,
+        predicted_winner,
+        schema,
+        ..
+    } = wf
+    else {
+        panic!("the poison loop must be offered, got {wf:?}");
+    };
+    assert_eq!((proposer, predicted_winner), (P0, Some(P0)));
+    let declared = runner
+        .act(GameAction::DeclareShortcut {
+            count: schema.iteration_count,
+            template: None,
+        })
+        .expect("P0 declares the shortcut");
+    events.extend(declared.events);
+    for responder in [P1, P2] {
+        let WaitingFor::RespondToShortcut { player, .. } = runner.state().waiting_for.clone()
+        else {
+            panic!("{responder:?} must be asked to respond");
+        };
+        assert_eq!(player, responder);
+        let accepted = runner
+            .act(GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            })
+            .expect("the responder accepts");
+        events.extend(accepted.events);
+    }
     assert_eq!(
-        runner
-            .state()
-            .players
+        runner.state().waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) }
+    );
+    let players = &runner.state().players;
+    assert_eq!(
+        players
             .iter()
-            .filter(|p| p.is_eliminated && p.poison_counters >= 10)
-            .count(),
-        2,
-        "reach-guard: both opponents must be poisoned out (CR 704.5c, ≥10 poison + eliminated), \
-         proving the loss axis genuinely drove a determinate loss; got poisons {poisons:?}"
+            .map(|p| p.poison_counters)
+            .collect::<Vec<_>>(),
+        vec![0, 10, 10]
     );
-
-    // The guard: the poison loop must NOT be a CR 732.4 draw, and must resolve to the correct
-    // determinate CR 704.5c poison loss (P0 the sole survivor).
-    assert_ne!(
-        wf,
-        WaitingFor::GameOver { winner: None },
-        "recurring poison loop must NOT be certified a CR 732.4 draw; got {wf:?}"
-    );
-    assert_eq!(
-        wf,
-        WaitingFor::GameOver { winner: Some(P0) },
-        "the poison loop resolves to P0's determinate win (both opponents poisoned out), not a draw"
-    );
+    assert!(players[1].is_eliminated && players[2].is_eliminated);
     assert!(
         !events
             .iter()

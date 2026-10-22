@@ -17,14 +17,15 @@ use crate::analysis::decision_template::{
 };
 use crate::analysis::loop_check::{classify_win_kind, LoopCertificate, WinKind};
 use crate::analysis::resource::{
-    frame_without, CertifiedInstructedDeparture, CleanupPair, CoveredGrowth, ObjectGrowthVerdict,
-    PredictedDeparture, RecurrenceCover, ResourceVector,
+    driving_resources_non_decreasing_carried, frame_without, CertifiedInstructedDeparture,
+    CleanupPair, CounterClass, CoveredGrowth, ObjectClass, ObjectGrowthVerdict, PredictedDeparture,
+    RecurrenceCover, ResourceVector,
 };
 use crate::game::engine::{
     announced_target_pins, apply, certify_object_growth_frames, clear_frame_bookkeeping,
-    counted_offer, object_decision_source, period_sign_check, pinnable_mana_color,
-    pinned_decisions_to_points, proliferate_pins, replay_bounded_offer, PeriodSign,
-    SimulationProbeGuard,
+    counted_offer, has_no_loss_axis, minted_battlefield_ids, object_decision_source,
+    period_sign_check, pinnable_mana_color, pinned_decisions_to_points, proliferate_pins,
+    replay_bounded_offer, PeriodSign, SimulationProbeGuard,
 };
 use crate::game::mana_payment::{select_convoke_taps, ConvokeTapOrder};
 use crate::game::play_trace::{
@@ -840,9 +841,38 @@ pub(crate) fn normalize_cast_frame(state: &GameState, casts: &[ObjectId]) -> Gam
     normalized
 }
 
-/// CR 732.2a: confirms the span `span` of the current trace as a period `frame`'s priority
-/// holder may propose to repeat.
-pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation, OfferRefusal> {
+/// A span replayed twice from a priority frame: the stage the confirmer and the
+/// mandatory-recurrence witness share.
+struct ReplayedPeriod {
+    holder: PlayerId,
+    items: Vec<PeriodItem>,
+    performance: Option<PeriodPerformance>,
+    end: FrameEnd,
+    choices: Vec<PinnedDecision>,
+    casts: Vec<ObjectId>,
+    #[cfg(any(test, feature = "test-support"))]
+    performed: Vec<String>,
+    s_n: GameState,
+    s_n1: GameState,
+    /// The frame the second cycle reached, or where it was refused.
+    replay: GameState,
+    second: Result<Vec<String>, OfferRefusal>,
+    /// Every frame above is read inside the probe.
+    _probe: SimulationProbeGuard,
+}
+
+/// CR 117.3d + CR 732.2a: the frame a replay starts from, `holder`'s view with the standing-pass
+/// overlays cleared, since the replay takes only the period's own passes.
+fn replay_base(frame: &GameState, holder: PlayerId) -> GameState {
+    let mut base = crate::game::visibility::proposer_hidden_view(frame, holder);
+    base.auto_pass.clear();
+    base.stack_resolution_session = None;
+    base
+}
+
+/// CR 732.2a: replays the span `span` of the current trace twice from `frame`, a priority frame;
+/// the first cycle's refusal refuses, and the second's is kept for the reader.
+fn replay_period(frame: &GameState, span: NamedSpan) -> Result<ReplayedPeriod, OfferRefusal> {
     let WaitingFor::Priority { player: holder } = frame.waiting_for else {
         return Err(OfferRefusal::UnanswerablePrompt);
     };
@@ -862,10 +892,8 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     let performance = Some(PeriodPerformance::of(&body));
     #[cfg(feature = "test-support")]
     crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
-    let _probe = SimulationProbeGuard::enter();
-    let mut s_n = crate::game::visibility::proposer_hidden_view(frame, holder);
-    // CR 732.2a: the replay takes only the period's own passes; a standing auto-pass takes more.
-    s_n.auto_pass.clear();
+    let probe = SimulationProbeGuard::enter();
+    let s_n = replay_base(frame, holder);
     let end = FrameEnd::of(&s_n, holder, span.reach);
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
@@ -879,7 +907,6 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         &mut Vec::new(),
     )?;
     let s_n1 = replay.clone();
-    // CR 732.2a: `replay` is the frame the second cycle reached, or where it was refused.
     let second = replay_cycle(
         &mut replay,
         &items,
@@ -888,18 +915,53 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         None,
         &mut Vec::new(),
     );
-    // A period whose second cycle is refused has one pair of frames, read as any pair is.
-    let (prior, current) = match second {
-        Ok(_) => (&s_n1, &replay),
-        Err(_) => (&s_n, &s_n1),
-    };
-    let casts: Vec<ObjectId> = items
+    let casts = items
         .iter()
         .filter_map(|item| match item.action {
             GameAction::CastSpell { object_id, .. } => Some(object_id),
             _ => None,
         })
         .collect();
+    Ok(ReplayedPeriod {
+        holder,
+        items,
+        performance,
+        end,
+        choices,
+        casts,
+        #[cfg(any(test, feature = "test-support"))]
+        performed,
+        s_n,
+        s_n1,
+        replay,
+        second,
+        _probe: probe,
+    })
+}
+
+/// CR 732.2a: confirms the span `span` of the current trace as a period `frame`'s priority
+/// holder may propose to repeat.
+pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation, OfferRefusal> {
+    let ReplayedPeriod {
+        holder,
+        items,
+        performance,
+        end,
+        choices,
+        casts,
+        #[cfg(any(test, feature = "test-support"))]
+        performed,
+        s_n,
+        s_n1,
+        mut replay,
+        second,
+        _probe,
+    } = replay_period(frame, span)?;
+    // A period whose second cycle is refused has one pair of frames, read as any pair is.
+    let (prior, current) = match second {
+        Ok(_) => (&s_n1, &replay),
+        Err(_) => (&s_n, &s_n1),
+    };
     let (verdict, growth) = certify_object_growth_frames(
         [&s_n, &s_n1, current],
         |state| normalize_cast_frame(state, &casts),
@@ -1029,6 +1091,60 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     })
 }
 
+/// CR 104.4b + CR 732.4: whether the mandatory span `span`, replayed twice from `frame`, recurs
+/// for every living player with net progress and nothing moving toward a state-based action:
+/// no loss axis (CR 704.5c), no driving resource falling on a carried permanent (CR 704.5g,
+/// CR 704.5i, CR 704.5q), and no -1/-1 counter growth (CR 704.5f).
+pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool {
+    let Ok(ReplayedPeriod {
+        casts,
+        s_n,
+        s_n1,
+        replay: s_n2,
+        second: Ok(_),
+        _probe,
+        ..
+    }) = replay_period(frame, span)
+    else {
+        return false;
+    };
+    let living = seats(frame);
+    let covered = living.iter().all(|&seat| {
+        certify_object_growth_frames(
+            [&s_n, &s_n1, &s_n2],
+            |state| normalize_cast_frame(state, &casts),
+            seat,
+        )
+        .0
+        .certifies()
+    });
+    if !covered {
+        return false;
+    }
+    let mut delta = ResourceVector::delta(
+        &ResourceVector::snapshot(&s_n1),
+        &ResourceVector::snapshot(&s_n2),
+    );
+    delta.tokens_created += minted_battlefield_ids(&s_n1, &s_n2).len() as i64;
+    delta.is_net_progress()
+        && has_no_loss_axis(&delta)
+        && living
+            .iter()
+            .all(|&seat| driving_resources_non_decreasing_carried(&s_n1, &s_n2, seat, Some(&s_n)))
+        && delta
+            .counters
+            .get(&(CounterClass::Minus1Minus1, ObjectClass::Creature))
+            .is_none_or(|&grew| grew <= 0)
+}
+
+/// [`mandatory_period_holds`] on the mandatory span at `state`, a priority frame; `None` when
+/// there is no such span.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mandatory_period_holds_for_tests(state: &GameState) -> Option<bool> {
+    let span = play_trace::mandatory_recurrence_span(state)?;
+    Some(mandatory_period_holds(state, span))
+}
+
 /// CR 732.2a: the most repetitions the counting replay performs for one offer. An offer at the cap
 /// states the cap, which the replay performed; what remains is the next offer's.
 pub(crate) const COUNT_CAP: u32 = 25;
@@ -1151,4 +1267,38 @@ pub fn performed_for_tests(state: &GameState) -> Option<Result<Vec<String>, Offe
         None,
         &mut Vec::new(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::game_state::{
+        AutoPassMode, StackResolutionAutoPassOverlay, StackResolutionBudget, StackResolutionPolicy,
+        StackResolutionSession, TurnBoundary,
+    };
+
+    /// CR 117.3d: a replay takes only the period's own passes, so neither standing pass survives
+    /// into its base.
+    #[test]
+    fn the_replay_base_drops_standing_pass_overlays() {
+        let mut frame = GameState::new_two_player(7);
+        let standing = AutoPassMode::UntilTurnBoundary {
+            until: TurnBoundary::MyNextTurnStart,
+        };
+        frame.auto_pass.insert(PlayerId(1), standing.clone());
+        frame.stack_resolution_session = Some(StackResolutionSession {
+            entries: Vec::new(),
+            cursor: 0,
+            representatives: [PlayerId(0)].into_iter().collect(),
+            verified_pass_representatives: BTreeSet::new(),
+            budget: StackResolutionBudget::Unlimited,
+            policy: StackResolutionPolicy::Committed,
+            auto_pass_overlay: StackResolutionAutoPassOverlay {
+                baseline: [(PlayerId(1), standing)].into_iter().collect(),
+            },
+        });
+        let base = replay_base(&frame, PlayerId(0));
+        assert!(base.auto_pass.is_empty());
+        assert!(base.stack_resolution_session.is_none());
+    }
 }

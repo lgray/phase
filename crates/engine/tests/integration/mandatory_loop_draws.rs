@@ -8,14 +8,17 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use engine::game::game_object::GameObject;
 use engine::game::perf_counters::play_trace_counters;
+use engine::game::period_confirm::mandatory_period_holds_for_tests;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::actions::{GameAction, PriorityYieldOp, ReplacementAutoChoice};
+use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
-    AutoMayChoice, AutoPassRequest, LoopDetectionMode, MayTriggerAutoChoiceScope, StackEntryKind,
-    WaitingFor, YieldScope,
+    AutoMayChoice, AutoPassRequest, GameState, LoopDetectionMode, MayTriggerAutoChoiceScope,
+    StackEntryKind, WaitingFor, YieldScope,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
@@ -25,11 +28,13 @@ use engine::types::zones::Zone;
 
 use crate::support::shared_card_db;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Drive {
     Pass,
     UntilTurnBoundary,
     UntilStackEmpty,
+    /// P0 stands on UntilStackEmpty and P1 passes.
+    P0UntilStackEmpty,
     /// Both players pass until the turn boundary, and P1 yields to each of P0's triggers as
     /// it reaches the top of the stack, so one action drives many cycles.
     FullYields,
@@ -65,6 +70,21 @@ struct Board {
     banisher: bool,
     /// P0 has a Mountain on the battlefield and a Lightning Bolt in hand.
     p0_out: bool,
+    /// Marauding Raptor on P0's battlefield and Polyraptor cast from P0's hand, in place of
+    /// Worldgorger Dragon and Animate Dead.
+    raptor: bool,
+    /// Soul Warden on P0's battlefield.
+    soul_warden: bool,
+    /// Prodigal Sorcerer on P1's battlefield.
+    p1_sorcerer: bool,
+    /// Lumberknot on P1's battlefield.
+    lumberknot: bool,
+    /// A 50/50 on P1's battlefield with this Oracle text, holding this many -1/-1 counters.
+    sink: Option<(&'static str, u32)>,
+    /// Grizzly Bears on P1's battlefield.
+    p1_bears: bool,
+    /// Poison-Tip Archer on P1's battlefield.
+    archer: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -72,6 +92,10 @@ enum Terminal {
     GameOver(Option<PlayerId>),
     SettledOnEmptyStack,
     BeatsExhausted,
+    Offer {
+        predicted_winner: Option<PlayerId>,
+        mandatory: bool,
+    },
     OtherPrompt(String),
 }
 
@@ -79,7 +103,7 @@ struct Run {
     terminal: Terminal,
     runner: GameRunner,
     target: ObjectId,
-    /// Times the reanimated card entered the battlefield, at the end and at half time.
+    /// Times the watched card entered the battlefield, at the end and at half time.
     entries: usize,
     entries_at_half: usize,
     /// The most entries one action produced.
@@ -91,25 +115,89 @@ struct Run {
     prompts: BTreeMap<&'static str, usize>,
     /// Priority beats at which P0's Mountain stood untapped on the battlefield.
     out_beats: usize,
+    /// Each action's acting player and the confirm replays it ran.
+    replays: Vec<(Option<PlayerId>, u64)>,
 }
 
 impl Run {
     fn prompted(&self, prompt: &str) -> usize {
         self.prompts.get(prompt).copied().unwrap_or(0)
     }
+
+    fn state(&self) -> &GameState {
+        self.runner.state()
+    }
+
+    /// The permanents named `name` on the battlefield.
+    fn on_battlefield(&self, name: &str) -> Vec<&GameObject> {
+        let state = self.state();
+        state
+            .battlefield
+            .iter()
+            .filter_map(|id| state.objects.get(id))
+            .filter(|object| object.name == name)
+            .collect()
+    }
+
+    /// The `counter`s on the permanent named `name`.
+    fn counters_on(&self, name: &str, counter: CounterType) -> u32 {
+        self.on_battlefield(name)
+            .first()
+            .and_then(|object| object.counters.get(&counter).copied())
+            .unwrap_or(0)
+    }
+
+    fn poison(&self, player: PlayerId) -> u32 {
+        self.state().players[player.0 as usize].poison_counters
+    }
+
+    fn life(&self, player: PlayerId) -> i32 {
+        self.state().players[player.0 as usize].life
+    }
 }
 
-fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Option<Run> {
+/// The objects a board's drive answers prompts about.
+struct Built {
+    runner: GameRunner,
+    /// The card whose entries are counted: the reanimation target, or Polyraptor.
+    watched: ObjectId,
+    animate: Option<ObjectId>,
+    maggot: Option<ObjectId>,
+    p0_mountain: Option<ObjectId>,
+}
+
+/// Builds `board` and casts its kickoff spell: Animate Dead on Worldgorger Dragon (or Grizzly
+/// Bears), or Polyraptor.
+fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
     let db = shared_card_db()?;
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-    let target_name = if board.bears {
-        "Grizzly Bears"
+    let kickoff = if board.raptor {
+        scenario.add_real_card(P0, "Marauding Raptor", Zone::Battlefield, db);
+        let polyraptor = scenario.add_real_card(P0, "Polyraptor", Zone::Hand, db);
+        let mut pool = vec![
+            ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
+            ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
+        ];
+        pool.extend((0..6).map(|_| ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![])));
+        scenario.with_mana_pool(P0, pool);
+        (polyraptor, None)
     } else {
-        "Worldgorger Dragon"
+        let target_name = if board.bears {
+            "Grizzly Bears"
+        } else {
+            "Worldgorger Dragon"
+        };
+        let target = scenario.add_real_card(P0, target_name, Zone::Graveyard, db);
+        let animate = scenario.add_real_card(P0, "Animate Dead", Zone::Hand, db);
+        scenario.with_mana_pool(
+            P0,
+            (0..2)
+                .map(|_| ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![]))
+                .collect(),
+        );
+        (target, Some(animate))
     };
-    let target = scenario.add_real_card(P0, target_name, Zone::Graveyard, db);
-    let animate = scenario.add_real_card(P0, "Animate Dead", Zone::Hand, db);
     let maggot = board.maggot.then(|| {
         let maggot = scenario.add_real_card(P0, "Brain Maggot", Zone::Battlefield, db);
         scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, db);
@@ -136,31 +224,89 @@ fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Opt
         scenario.add_real_card(P0, "Lightning Bolt", Zone::Hand, db);
         scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db)
     });
+    if board.soul_warden {
+        scenario.add_real_card(P0, "Soul Warden", Zone::Battlefield, db);
+    }
+    if board.p1_sorcerer {
+        scenario.add_real_card(P1, "Prodigal Sorcerer", Zone::Battlefield, db);
+    }
+    if board.lumberknot {
+        scenario.add_real_card(P1, "Lumberknot", Zone::Battlefield, db);
+    }
+    let sink = board.sink.map(|(text, counters)| {
+        let sink = scenario
+            .add_creature_from_oracle(P1, "Test Counter Sink", 50, 50, text)
+            .id();
+        (sink, counters)
+    });
+    if board.p1_bears {
+        scenario.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
+    }
+    if board.archer {
+        scenario.add_real_card(P1, "Poison-Tip Archer", Zone::Battlefield, db);
+    }
     for seat in [P0, P1] {
         for _ in 0..10 {
             scenario.add_real_card(seat, "Swamp", Zone::Library, db);
         }
     }
-    scenario.with_mana_pool(
-        P0,
-        (0..2)
-            .map(|_| ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![]))
-            .collect(),
-    );
     let mut runner = scenario.build();
     runner.state_mut().loop_detection = mode;
-    drop(runner.cast(animate).target_object(target).commit());
+    if let Some((sink, counters)) = sink.filter(|&(_, counters)| counters > 0) {
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&sink)
+            .expect("the sink is on the battlefield")
+            .counters
+            .insert(CounterType::Minus1Minus1, counters);
+    }
+    let (watched, animate) = kickoff;
+    match animate {
+        Some(animate) => drop(runner.cast(animate).target_object(watched).commit()),
+        None => drop(runner.cast(watched).commit()),
+    }
+    Some(Built {
+        runner,
+        watched,
+        animate,
+        maggot,
+        p0_mountain,
+    })
+}
+
+fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Option<Run> {
+    run_observed(board, mode, drive, beats, |_| {})
+}
+
+/// [`run`], showing `observe` every frame before it is answered.
+fn run_observed(
+    board: Board,
+    mode: LoopDetectionMode,
+    drive: Drive,
+    beats: usize,
+    mut observe: impl FnMut(&GameState),
+) -> Option<Run> {
+    let Built {
+        mut runner,
+        watched: target,
+        animate,
+        maggot,
+        p0_mountain,
+    } = build(board, mode)?;
 
     let (mut entries, mut entries_at_half, mut reveals, mut reveals_at_half, mut max_ring) =
         (0, 0, 0, 0, 0);
     let (mut max_entries_per_action, mut out_beats, mut remembered) = (0, 0, false);
     let mut prompts = BTreeMap::new();
+    let mut replays = Vec::new();
     let mut terminal = Terminal::BeatsExhausted;
     for beat in 0..beats {
         if beat == beats / 2 {
             (entries_at_half, reveals_at_half) = (entries, reveals);
         }
         let state = runner.state();
+        observe(state);
         let mut yield_first = None;
         max_ring = max_ring.max(state.loop_detect_ring.len());
         if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
@@ -169,6 +315,17 @@ fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Opt
         let action = match &state.waiting_for {
             WaitingFor::GameOver { winner } => {
                 terminal = Terminal::GameOver(*winner);
+                break;
+            }
+            WaitingFor::LoopShortcut {
+                predicted_winner,
+                certificate,
+                ..
+            } => {
+                terminal = Terminal::Offer {
+                    predicted_winner: *predicted_winner,
+                    mandatory: certificate.mandatory,
+                };
                 break;
             }
             WaitingFor::Priority { .. } if state.stack.is_empty() => {
@@ -185,9 +342,9 @@ fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Opt
                 match drive {
                     Drive::Pass => GameAction::PassPriority,
                     Drive::UntilTurnBoundary => until_turn_boundary(),
-                    Drive::UntilStackEmpty => GameAction::SetAutoPass {
-                        mode: AutoPassRequest::UntilStackEmpty,
-                    },
+                    Drive::UntilStackEmpty => until_stack_empty(),
+                    Drive::P0UntilStackEmpty if *player == P0 => until_stack_empty(),
+                    Drive::P0UntilStackEmpty => GameAction::PassPriority,
                     Drive::FullYields => {
                         yield_first = state.stack.back().and_then(|top| match &top.kind {
                             StackEntryKind::TriggeredAbility { source_id, .. }
@@ -210,7 +367,7 @@ fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Opt
                 let mut order: Vec<usize> = (0..triggers.len()).collect();
                 order.sort_by_key(|&index| {
                     let source = triggers[index].source_id;
-                    (source != animate, Some(source) == maggot)
+                    (Some(source) != animate, Some(source) == maggot)
                 });
                 GameAction::OrderTriggers { order }
             }
@@ -271,7 +428,10 @@ fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Opt
                 })
                 .expect("P1 may yield to a trigger on the stack");
         }
+        let acting = runner.state().waiting_for.acting_player();
+        let drives_before = play_trace_counters().confirm_drives;
         let result = runner.act(action).expect("every driven action is legal");
+        replays.push((acting, play_trace_counters().confirm_drives - drives_before));
         let entered = result
             .events
             .iter()
@@ -298,6 +458,7 @@ fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Opt
         max_ring,
         prompts,
         out_beats,
+        replays,
     })
 }
 
@@ -309,6 +470,12 @@ fn until_turn_boundary() -> GameAction {
     }
 }
 
+fn until_stack_empty() -> GameAction {
+    GameAction::SetAutoPass {
+        mode: AutoPassRequest::UntilStackEmpty,
+    }
+}
+
 const PLAIN: Board = Board {
     maggot: false,
     bears: false,
@@ -317,6 +484,13 @@ const PLAIN: Board = Board {
     fiend: false,
     banisher: false,
     p0_out: false,
+    raptor: false,
+    soul_warden: false,
+    p1_sorcerer: false,
+    lumberknot: false,
+    sink: None,
+    p1_bears: false,
+    archer: false,
 };
 
 const ANCHOR: Board = Board {
@@ -671,7 +845,7 @@ const TIMEOUT_SECS: u64 = 180;
 /// over a mandatory loop still draws.
 #[test]
 fn a_capped_auto_pass_action_returns_under_interactive() {
-    let Some((terminal, _, _)) = full_yield_drive_returns(PLAIN) else {
+    let Some((terminal, _, _)) = full_yield_drive_returns(PLAIN, 12, capped_reading) else {
         return;
     };
     assert_eq!(
@@ -689,7 +863,9 @@ fn a_capped_auto_pass_action_returns_after_a_remembered_decline() {
 
 fn capped_drive_runs_on(board: Board) {
     let leg = format!("{:?}", board.snarecaster);
-    let Some((terminal, max_entries_per_action, prompts)) = full_yield_drive_returns(board) else {
+    let Some((terminal, max_entries_per_action, prompts)) =
+        full_yield_drive_returns(board, 12, capped_reading)
+    else {
         return;
     };
     assert_eq!(terminal, Terminal::BeatsExhausted, "{leg}");
@@ -700,18 +876,29 @@ fn capped_drive_runs_on(board: Board) {
     assert_eq!(prompts, 1, "{leg}: reach: one remembered answer");
 }
 
-/// Runs an Interactive full-yield drive on its own thread so an action that never returns
-/// fails the test instead of hanging it.
-fn full_yield_drive_returns(board: Board) -> Option<(Terminal, usize, usize)> {
+fn capped_reading(run: Run) -> (Terminal, usize, usize) {
+    let prompts = run.prompted("OptionalEffectChoice");
+    (run.terminal, run.max_entries_per_action, prompts)
+}
+
+/// Runs an Interactive full-yield drive of `beats` on its own thread so an action that never
+/// returns fails the test instead of hanging it, and reads the run there.
+fn full_yield_drive_returns<T: Send + 'static>(
+    board: Board,
+    beats: usize,
+    read: fn(Run) -> T,
+) -> Option<T> {
     let (tx, rx) = mpsc::channel();
     let _drive = std::thread::Builder::new()
         .stack_size(64 << 20)
         .spawn(move || {
-            let leg =
-                run(board, LoopDetectionMode::Interactive, Drive::FullYields, 12).map(|run| {
-                    let prompts = run.prompted("OptionalEffectChoice");
-                    (run.terminal, run.max_entries_per_action, prompts)
-                });
+            let leg = run(
+                board,
+                LoopDetectionMode::Interactive,
+                Drive::FullYields,
+                beats,
+            )
+            .map(read);
             let _ = tx.send(leg);
         })
         .expect("spawn the drive");
@@ -743,4 +930,302 @@ fn a_standing_auto_pass_does_not_pass_inside_a_confirm_replay() {
         2 * counted.resolution_hooks_in_probe <= counted.probe_entries,
         "a replayed action passed for its holder as well ({counted:?})"
     );
+}
+
+const RAPTOR: Board = Board {
+    raptor: true,
+    ..PLAIN
+};
+
+/// CR 104.4b + CR 732.4: Marauding Raptor deals 2 damage to each Polyraptor copy as it enters,
+/// and the copy's enrage makes another; nothing in the loop is optional, so it is a draw on every
+/// drive. Off declares nothing, and the battlefield keeps growing.
+#[test]
+fn a_mandatory_token_copy_loop_is_a_draw_on_every_drive() {
+    for drive in [
+        Drive::Pass,
+        Drive::UntilTurnBoundary,
+        Drive::UntilStackEmpty,
+        Drive::P0UntilStackEmpty,
+    ] {
+        let Some(run) = run(RAPTOR, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            run.on_battlefield("Polyraptor").len() >= 2,
+            "{drive:?}: reach: a copy entered"
+        );
+    }
+    let Some((terminal, polyraptors)) = full_yield_drive_returns(RAPTOR, 6, |run| {
+        let polyraptors = run.on_battlefield("Polyraptor").len();
+        (run.terminal, polyraptors)
+    }) else {
+        return;
+    };
+    assert_eq!(terminal, Terminal::GameOver(None), "FullYields");
+    assert!(polyraptors >= 2, "FullYields: reach: a copy entered");
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(RAPTOR, LoopDetectionMode::Off, drive, 60) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::BeatsExhausted, "Off {drive:?}");
+        assert!(
+            run.on_battlefield("Polyraptor").len() >= 4,
+            "Off {drive:?}: reach: the copies kept coming"
+        );
+    }
+}
+
+const LUMBERKNOT: Board = Board {
+    lumberknot: true,
+    ..PLAIN
+};
+
+/// CR 104.4b + CR 732.4: Lumberknot grows a +1/+1 counter at each Dragon death, and nothing in
+/// the loop reads it, so the loop is still a draw.
+#[test]
+fn monotone_counter_growth_nothing_reads_is_a_draw() {
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(LUMBERKNOT, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            run.counters_on("Lumberknot", CounterType::Plus1Plus1) >= 1,
+            "{drive:?}: reach: Lumberknot grew"
+        );
+        let Some(off) = run_off(LUMBERKNOT, drive, 60) else {
+            return;
+        };
+        assert!(
+            off.counters_on("Lumberknot", CounterType::Plus1Plus1) >= 2,
+            "Off {drive:?}: reach: Lumberknot kept growing"
+        );
+    }
+}
+
+/// Runs `board` with loop detection Off and asserts it ran its beats with the Dragon still
+/// entering.
+fn run_off(board: Board, drive: Drive, beats: usize) -> Option<Run> {
+    let run = run(board, LoopDetectionMode::Off, drive, beats)?;
+    assert_runs_on(&run, &format!("Off {drive:?}"));
+    Some(run)
+}
+
+const MINUS_SINK: &str = "Whenever a creature dies, put a -1/-1 counter on this creature.";
+const SPREAD_SINK: &str =
+    "Whenever a creature dies, put a +1/+1 counter on each creature you control.";
+
+/// CR 704.5f + CR 704.5q: a loop growing -1/-1 counters toward a creature's death is not a draw,
+/// and one whose +1/+1 counters annihilate a creature's -1/-1 counters is a draw only once that
+/// annihilation has run its course.
+#[test]
+fn counter_growth_toward_a_state_based_action_is_not_a_draw() {
+    let shrinking = Board {
+        sink: Some((MINUS_SINK, 0)),
+        ..PLAIN
+    };
+    let annihilating = Board {
+        sink: Some((SPREAD_SINK, 4)),
+        p1_bears: true,
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let Some(shrunk) = run(shrinking, LoopDetectionMode::Interactive, drive, 120) else {
+            return;
+        };
+        assert_eq!(shrunk.terminal, Terminal::BeatsExhausted, "{drive:?}");
+        assert!(
+            shrunk.counters_on("Test Counter Sink", CounterType::Minus1Minus1) >= 10,
+            "{drive:?}: reach: the -1/-1 counters grew"
+        );
+
+        let Some(annihilated) = run(annihilating, LoopDetectionMode::Interactive, drive, 120)
+        else {
+            return;
+        };
+        assert_eq!(annihilated.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            annihilated.counters_on("Test Counter Sink", CounterType::Minus1Minus1) <= 1,
+            "{drive:?}: declared before the annihilation ran its course"
+        );
+        assert!(
+            annihilated.counters_on("Grizzly Bears", CounterType::Plus1Plus1) >= 1,
+            "{drive:?}: reach: the Bears grew"
+        );
+
+        for board in [shrinking, annihilating] {
+            if run_off(board, drive, 60).is_none() {
+                return;
+            }
+        }
+    }
+}
+
+/// CR 704.5c: a loop giving each player a poison counter at each Dragon death is not declared; it
+/// ends when both players reach ten poison counters.
+#[test]
+fn a_poison_axis_loop_is_not_declared() {
+    let board = Board {
+        sink: Some((
+            "Whenever a creature dies, each player gets a poison counter.",
+            0,
+        )),
+        ..PLAIN
+    };
+    for mode in MODES {
+        for drive in EVERY_DRIVE {
+            let Some(run) = run(board, mode, drive, 120) else {
+                return;
+            };
+            assert_eq!(run.terminal, Terminal::GameOver(None), "{mode:?} {drive:?}");
+            assert!(
+                run.poison(P0) >= 10 && run.poison(P1) >= 10,
+                "{mode:?} {drive:?}: the game ended at ten poison counters"
+            );
+        }
+    }
+}
+
+/// CR 104.4b + CR 603.3b: with Soul Warden, P0 orders Raptor's and Warden's triggers each cycle,
+/// so the growth loop holds a decision and is not declared.
+#[test]
+fn a_mandatory_growth_loop_with_an_ordering_point_is_not_declared() {
+    let board = Board {
+        soul_warden: true,
+        ..RAPTOR
+    };
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::BeatsExhausted, "{drive:?}");
+        assert!(
+            run.prompted("OrderTriggers") >= 2,
+            "{drive:?}: reach: the triggers were ordered across cycles"
+        );
+        assert!(
+            run.on_battlefield("Polyraptor").len() >= 3,
+            "{drive:?}: reach: the copies kept coming"
+        );
+    }
+}
+
+/// CR 608.1 + CR 732.2a: a window whose stack shrinks and then returns to its depth keeps its
+/// samples across the shrinking beat.
+#[test]
+fn a_shrinking_beat_inside_a_returning_window_keeps_the_ring() {
+    let Some(run) = run(LUMBERKNOT, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+        return;
+    };
+    assert_eq!(run.terminal, Terminal::GameOver(None));
+    assert!(run.max_ring > 4, "max ring {}", run.max_ring);
+}
+
+/// CR 732.2b: Poison-Tip Archer drains P0 at each Dragon death. With nothing P0 can do, P1 wins
+/// before the drain ends; with a Bolt P0 can cast while its Mountain is back, the drain is
+/// offered.
+#[test]
+fn a_drain_with_an_out_outside_the_loop_is_offered_not_won() {
+    let drain = Board {
+        archer: true,
+        ..PLAIN
+    };
+    let with_out = Board {
+        p0_out: true,
+        ..drain
+    };
+    for drive in EVERY_DRIVE {
+        let Some(won) = run(drain, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_eq!(won.terminal, Terminal::GameOver(Some(P1)), "{drive:?}");
+        assert!(won.life(P0) > 0, "{drive:?}: won before the drain ended");
+
+        let Some(offered) = run(with_out, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_eq!(
+            offered.terminal,
+            Terminal::Offer {
+                predicted_winner: Some(P1),
+                mandatory: false
+            },
+            "{drive:?}"
+        );
+
+        for board in [drain, with_out] {
+            let Some(off) = run_off(board, drive, 60) else {
+                return;
+            };
+            assert!(off.life(P0) < 20, "Off {drive:?}: reach: P0 was drained");
+        }
+    }
+}
+
+/// CR 117.3d + CR 732.4: the mandatory period reads the same whichever player holds priority,
+/// including a frame where P1's standing pass is paused by its own meaningful action.
+#[test]
+fn a_mandatory_token_copy_loop_reads_the_same_on_either_holder() {
+    let board = Board {
+        p1_sorcerer: true,
+        ..RAPTOR
+    };
+    let mut readings: Vec<(PlayerId, bool, bool)> = Vec::new();
+    let observe = |state: &GameState| {
+        if let WaitingFor::Priority { player } = state.waiting_for {
+            if let Some(holds) = mandatory_period_holds_for_tests(state) {
+                readings.push((player, state.stack_resolution_session.is_some(), holds));
+            }
+        }
+    };
+    if run_observed(
+        board,
+        LoopDetectionMode::Interactive,
+        Drive::UntilStackEmpty,
+        30,
+        observe,
+    )
+    .is_none()
+    {
+        return;
+    }
+    assert!(
+        readings
+            .iter()
+            .any(|&(holder, session, _)| holder == P1 && session),
+        "reach: a P1 frame under a paused standing pass: {readings:?}"
+    );
+    assert!(
+        readings.iter().any(|&(holder, _, _)| holder == P0),
+        "reach: a P0 frame: {readings:?}"
+    );
+    assert!(readings.iter().all(|&(_, _, holds)| holds), "{readings:?}");
+}
+
+/// The mandatory period is replayed once per span start: P0's passes leave the same span on top,
+/// so only P1's passes, which bring a new one, replay it.
+#[test]
+fn a_mandatory_period_is_replayed_once_per_span_start() {
+    let board = Board {
+        sink: Some((MINUS_SINK, 0)),
+        ..PLAIN
+    };
+    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+        return;
+    };
+    assert_eq!(run.terminal, Terminal::BeatsExhausted);
+    let replays_by = |seat: PlayerId| -> u64 {
+        run.replays
+            .iter()
+            .filter(|&&(acting, _)| acting == Some(seat))
+            .map(|&(_, replays)| replays)
+            .sum()
+    };
+    assert!(
+        replays_by(P1) >= 1,
+        "reach: P1's passes replayed the period"
+    );
+    assert_eq!(replays_by(P0), 0);
 }

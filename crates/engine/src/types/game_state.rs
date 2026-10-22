@@ -21654,6 +21654,17 @@ pub struct LoopDetectSample {
     pub live: GameState,
     /// The answered-decision tally when this beat was sampled.
     pub tally: LoopDecisionTally,
+    /// The play trace's length when this beat was sampled; `live` carries no trace.
+    pub trace_at: Option<usize>,
+}
+
+/// CR 608.1 + CR 732.2a: a loop window kept across beats whose stack fell below its start depth,
+/// until a beat returns to that depth; only the top resolves, so a window whose depth only falls
+/// is a finite drain and is never admitted.
+#[derive(Debug, Clone)]
+pub struct HeldLoopWindow {
+    pub start_depth: usize,
+    pub samples: std::collections::VecDeque<std::sync::Arc<LoopDetectSample>>,
 }
 
 /// CR 104.4b: a kind of non-mandatory action a loop period can hold.
@@ -22372,6 +22383,10 @@ declare_game_state! {
     /// dedup on semantically-identical positions is unaffected.
     #[serde(skip, default)]
     pub loop_detect_ring: std::collections::VecDeque<std::sync::Arc<LoopDetectSample>>,
+    /// The window held across shrinking beats; transient like `loop_detect_ring`, so never
+    /// persisted or compared.
+    #[serde(skip, default)]
+    pub loop_detect_held: Option<Box<HeldLoopWindow>>,
     /// CR 603.5 + CR 608.2b + CR 732.2a: the answers given to published decision SLOTS
     /// during the window `loop_detect_ring` is sampling, so the CR 732.2a declaration can
     /// pin the choice each iteration actually made instead of guessing one. Both published
@@ -30315,6 +30330,7 @@ impl GameState {
             static_source_index: StaticSourceIndex::default(),
             static_mode_presence: crate::types::statics::StaticModePresence::all_present(),
             loop_detect_ring: std::collections::VecDeque::new(),
+            loop_detect_held: None,
             loop_answer_journal: None,
             loop_decision_tally: LoopDecisionTally::default(),
             play_trace: None,
@@ -31694,6 +31710,7 @@ impl GameState {
         // the live ring → recursive/quadratic growth. Cleared ⇒ every stored snapshot
         // has clone depth 1. Does not affect any comparison (the ring is eq-excluded).
         clone.loop_detect_ring.clear();
+        clone.loop_detect_held = None;
         // CR 603.5: the "may"-answer journal belongs to the LIVE window, not to a stored
         // position sample. Cleared with the ring, on this same receiver.
         clone.loop_answer_journal = None;
@@ -32774,9 +32791,7 @@ impl GameState {
         // no route (strict equality, growth cover, or `ring_delta_signature`'s
         // bounded offer) certifies a period across it.
         if !self.is_loop_comparable() {
-            self.loop_detect_ring.clear();
-            // CR 603.5: the answers belong to the window the ring just lost.
-            self.loop_answer_journal = None;
+            self.clear_loop_detect_window();
             return;
         }
         if self.loop_detect_ring.len() == LOOP_DETECT_RING_CAP {
@@ -32811,8 +32826,63 @@ impl GameState {
             normalized,
             live,
             tally: self.loop_decision_tally,
+            trace_at: crate::game::play_trace::current_entries(self).map(|entries| entries.len()),
         });
+        if let Some(held) = self.loop_detect_held.as_mut() {
+            if held.samples.len() == LOOP_DETECT_RING_CAP {
+                held.samples.pop_front();
+            }
+            held.samples.push_back(snapshot.clone());
+            // CR 732.2a: a beat back at the held window's depth shows the window recurring.
+            if self.stack.len() >= held.start_depth {
+                if let Some(held) = self.loop_detect_held.take() {
+                    self.loop_detect_ring = held.samples;
+                }
+                return;
+            }
+        }
         self.loop_detect_ring.push_back(snapshot);
+    }
+
+    /// The depth the open loop window started at: the held window's, else the ring's first
+    /// sample's; `None` when no window is open.
+    pub(crate) fn loop_window_start_depth(&self) -> Option<usize> {
+        self.loop_detect_held
+            .as_ref()
+            .map(|held| held.start_depth)
+            .or_else(|| {
+                self.loop_detect_ring
+                    .front()
+                    .map(|sample| sample.live.stack.len())
+            })
+    }
+
+    /// Ends the loop window: its ring, its held window and its answers (CR 603.5).
+    pub(crate) fn clear_loop_detect_window(&mut self) {
+        self.loop_detect_ring.clear();
+        self.loop_detect_held = None;
+        self.loop_answer_journal = None;
+    }
+
+    /// CR 608.1 + CR 732.2a: a beat at the active player's priority after a resolution, in a
+    /// window that started at depth `start`. At or above `start` it is sampled; below it the
+    /// window is held and the beat is sampled only into it, so a window whose depth only falls
+    /// never reaches the ring.
+    pub(crate) fn record_shrinking_beat(&mut self, start: usize) {
+        if self.stack.len() >= start {
+            self.record_loop_detect_sample();
+            return;
+        }
+        if self.loop_detect_held.is_none() {
+            self.loop_detect_held = Some(Box::new(HeldLoopWindow {
+                start_depth: start,
+                samples: std::mem::take(&mut self.loop_detect_ring),
+            }));
+        }
+        // The window continues, so the visible ring is emptied without ending it.
+        self.loop_detect_ring.clear();
+        self.record_loop_detect_sample();
+        self.loop_detect_ring.clear();
     }
 
     /// CR 104.4b: one answered loop decision — `Optional` for a declinable choice (CR 603.5,
@@ -32852,6 +32922,7 @@ impl GameState {
     pub(crate) fn loop_detect_live_sample(&self) -> GameState {
         let mut clone = self.clone();
         clone.loop_detect_ring.clear();
+        clone.loop_detect_held = None;
         clone.loop_answer_journal = None;
         clone.play_trace = None;
         clone
@@ -32904,9 +32975,7 @@ impl GameState {
                 .zip(lives_before)
                 .any(|(p, &before)| p.life != before)
         {
-            self.loop_detect_ring.clear();
-            // CR 603.5: the answers belong to the window the ring just lost.
-            self.loop_answer_journal = None;
+            self.clear_loop_detect_window();
         }
     }
 
@@ -33624,6 +33693,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         static_source_index: _,
         static_mode_presence: _,
         loop_detect_ring: _,
+        loop_detect_held: _,
         // CR 603.5 + CR 732.2a "may"-answer journal: EXCLUDED from `impl PartialEq for
         // GameState` for `loop_detect_ring`'s reason — transient derived state rebuilt
         // from play, and comparing it would split two semantically-identical positions
@@ -43791,6 +43861,41 @@ mod tests {
             crate::analysis::resource::ring_delta_signature(&ring).is_none(),
             "no shortcut is certified across an unsettled beat"
         );
+    }
+
+    /// CR 732.2a: the end of a loop window drops its held window, so a later beat at the held
+    /// depth starts a new window instead of admitting the stale one.
+    #[test]
+    fn a_window_end_drops_the_held_window() {
+        let mut state = GameState::new_two_player(7);
+        for id in [1, 2] {
+            state.stack.push_back(triggered_entry(
+                ObjectId(1000 + id),
+                ObjectId(id),
+                PlayerId(0),
+                None,
+                None,
+            ));
+        }
+        state.record_loop_detect_sample();
+        state.record_loop_detect_sample();
+        state.stack.pop_back();
+        state.record_shrinking_beat(2);
+        assert!(
+            state.loop_detect_held.is_some(),
+            "reach: the shrinking beat holds the window"
+        );
+        state.clear_loop_detect_window();
+        state.stack.push_back(triggered_entry(
+            ObjectId(1003),
+            ObjectId(3),
+            PlayerId(0),
+            None,
+            None,
+        ));
+        state.record_loop_detect_sample();
+        assert_eq!(state.loop_detect_ring.len(), 1);
+        assert!(state.loop_detect_held.is_none());
     }
 
     /// CR 104.4b (issue #6877): two states differing only in the

@@ -2707,7 +2707,28 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
 
     // Path A: determinate lethal single-winner drain.
     if let Some((winner, delta, prior)) = find_live_loop_winner(state) {
-        if mandatory {
+        // CR 732.2b: a period holding a decision or an out is offered, so each other player may
+        // shorten it; only a period of mandatory actions alone is won outright.
+        let forced = mandatory && {
+            let start = state
+                .loop_detect_ring
+                .iter()
+                .position(|sample| std::sync::Arc::ptr_eq(sample, &prior))
+                .unwrap_or(0);
+            crate::types::game_state::LoopDecisionProfile::of_window(
+                state
+                    .loop_detect_ring
+                    .iter()
+                    .skip(start)
+                    .map(|sample| &**sample),
+                &crate::types::game_state::LoopDecisionMarks {
+                    tally: state.loop_decision_tally,
+                    out: crate::types::game_state::PriorityOut::Absent,
+                },
+            )
+            .is_forced()
+        };
+        if forced {
             // FIRM #1 — mandatory winning drain: identical to the `On` auto-win.
             // CR 732.2a: mark the loop's unbounded axes; CR 704.5a: terminal GameOver.
             state.mark_unbounded_loop(winner, &delta.unbounded_axes_for(winner));
@@ -2834,6 +2855,8 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                     .is_forced()
             })
         };
+        // CR 732.4: a period the ring cannot show recurring is drawn on its recorded witness.
+        let drawn = drawn || mandatory_recurrence_witnessed(state, &priors, &current_marks);
         if drawn {
             super::elimination::end_game(state, None, &mut result.events);
             return;
@@ -2971,6 +2994,41 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     }
     // else: staggered-pod loss / non-beneficial optional loop ⇒ no auto-resolve; fall
     // through to the pre-feature behavior (halt / continue).
+}
+
+/// CR 104.4b + CR 732.4: whether the mandatory span the play trace holds at the top of the stack
+/// is a draw. The ring's last sample at or before the span's start must be in this window and
+/// begin a period of mandatory actions alone; the span's replayed reading is kept per span start,
+/// so each recorded period is replayed once.
+fn mandatory_recurrence_witnessed(
+    state: &mut GameState,
+    priors: &[std::sync::Arc<crate::types::LoopDetectSample>],
+    current_marks: &crate::types::game_state::LoopDecisionMarks,
+) -> bool {
+    let Some(span) = super::play_trace::mandatory_recurrence(state) else {
+        return false;
+    };
+    if let Some(verdict) = super::play_trace::witnessed(state, span.start) {
+        return verdict;
+    }
+    let window = super::play_trace::WindowKey::of(state);
+    let Some(base) = priors.iter().rposition(|sample| {
+        sample.trace_at.is_some_and(|at| at <= span.start)
+            && super::play_trace::WindowKey::of(&sample.live) == window
+    }) else {
+        return false;
+    };
+    if !crate::types::game_state::LoopDecisionProfile::of_window(
+        priors[base..].iter().map(|sample| &**sample),
+        current_marks,
+    )
+    .is_forced()
+    {
+        return false;
+    }
+    let verdict = super::period_confirm::mandatory_period_holds(state, span);
+    super::play_trace::note_witnessed(state, span.start, verdict);
+    verdict
 }
 
 /// PR-7 Phase 3: scan the live loop-detect ring for a determinate lethal single-winner,
@@ -5278,7 +5336,7 @@ fn build_shortcut_schema(
 /// loser (Path A) or a staggered pod (fall through), never a draw. The live delta comes
 /// from two `snapshot`s, so `damage_dealt` is empty (state-fed) and life loss surfaces as
 /// a negative `life` delta.
-fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
+pub(crate) fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
     // CR 704.5c: poison is now per-victim (`delta.poison`); a rising poison on ANY
     // player is a loss axis that vetoes the CR 732.4 draw.
     delta.life.values().all(|&n| n >= 0)
@@ -5616,9 +5674,7 @@ fn end_shortcut_at_priority(
     proposal: &crate::analysis::loop_check::ShortcutProposal,
     reached_named_place: bool,
 ) {
-    state.loop_detect_ring.clear();
-    // CR 603.5: the recorded "may" answers describe the window that just ended.
-    state.loop_answer_journal = None;
+    state.clear_loop_detect_window();
     state.play_trace = None;
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
@@ -5968,9 +6024,7 @@ fn until_lethal_fallback(
     // CR 732.2c: a declined shortcut must not instantly re-offer the SAME loop in this same
     // `apply()`, so both re-offer signals clear: the drain offer's `loop_detect_ring` and the
     // proposer's plays in the trace the recorded road names its periods from.
-    state.loop_detect_ring.clear();
-    // CR 603.5: the recorded "may" answers describe the window that just ended.
-    state.loop_answer_journal = None;
+    state.clear_loop_detect_window();
     super::play_trace::discard_seat(state, proposer);
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
@@ -8230,9 +8284,7 @@ fn materialize_object_growth_shortcut(
     for item in growth.batched {
         state.register_pending_materialization(proposal.proposer, item);
     }
-    state.loop_detect_ring.clear();
-    // CR 603.5: the recorded "may" answers describe the window that just ended.
-    state.loop_answer_journal = None;
+    state.clear_loop_detect_window();
     state.play_trace = None;
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
@@ -10115,17 +10167,20 @@ fn pass_priority_once_with_pipeline(
         // non-shrinking across the resolution, settling at a non-interactive priority
         // window reset to the active player (the canonical modulo-comparison point —
         // `project_out_resources` compares phase/priority exactly). A normal multi-spell
-        // stack SHRINKS; an interactive effect opens a non-Priority window; a finite
-        // chain drains to empty — all three fall to the clear arm.
-        if !state.stack.is_empty()
-            && state.stack.len() >= stack_len_before
-            && matches!(wf, WaitingFor::Priority { player } if player == state.active_player)
-        {
+        // stack SHRINKS, which holds an open window; an interactive effect opens a non-Priority
+        // window and a finite chain drains to empty, which both fall to the clear arm.
+        let settled_at_active_priority = !state.stack.is_empty()
+            && matches!(wf, WaitingFor::Priority { player } if player == state.active_player);
+        if settled_at_active_priority && state.stack.len() >= stack_len_before {
             state.record_loop_detect_sample();
+        } else if let Some(start) = state
+            .loop_window_start_depth()
+            .filter(|_| settled_at_active_priority)
+        {
+            // CR 608.1 + CR 732.2a: a beat whose stack shrank inside an open window.
+            state.record_shrinking_beat(start);
         } else if !wf.is_forced_cascade_window() {
-            state.loop_detect_ring.clear();
-            // CR 603.5: the recorded "may" answers describe the window that just ended.
-            state.loop_answer_journal = None;
+            state.clear_loop_detect_window();
         }
         // CR 603.3b/603.3d/603.5/608.2/903.9a + CR 703.1/117.3a + CR 732.2a: leave the
         // ring intact on every FORCED PRE-PRIORITY window, not just trigger ordering.
@@ -11938,9 +11993,7 @@ fn apply_action(
             | GameAction::RevokeResolveAllConsent { .. }
     ) && !answering_forced_window
     {
-        state.loop_detect_ring.clear();
-        // CR 603.5: the recorded "may" answers describe the window that just ended.
-        state.loop_answer_journal = None;
+        state.clear_loop_detect_window();
     }
 
     // The prompt's semantic owner: the seat `state.waiting_for` names, or the
@@ -25176,6 +25229,7 @@ mod bounded_offer_conjunct_tests {
                     normalized: frame.normalize_for_loop(),
                     live: frame.loop_detect_live_sample(),
                     tally: Default::default(),
+                    trace_at: None,
                 }));
         }
         state
@@ -25922,6 +25976,7 @@ mod bounded_offer_conjunct_tests {
                     normalized,
                     live,
                     tally: Default::default(),
+                    trace_at: None,
                 })
             })
             .collect();
@@ -29745,6 +29800,7 @@ mod mandatory_draw_unmeasured_axis_tests {
                 normalized: state.normalize_for_loop(),
                 live: state.clone(),
                 tally: state.loop_decision_tally,
+                trace_at: None,
             })
         };
         let own = sample(&current);

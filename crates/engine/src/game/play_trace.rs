@@ -375,6 +375,9 @@ pub enum NamingCause {
     Restored,
     /// No play was consumed and this one is legal now.
     LegalNow,
+    /// CR 104.4b + CR 732.4: a triggered node is about to resolve again with no optional answer
+    /// or play since its previous instance resolved. Read on demand, never named.
+    MandatoryRecurrence,
 }
 
 /// A candidate period: the entries `start..end` of its source as they stood when it was named.
@@ -477,6 +480,8 @@ pub(crate) struct PlayTrace {
     carried_named: im::Vector<CarriedSpan>,
     /// Each seat's carrying index, kept across windows.
     carrying: im::HashMap<PlayerId, CarryingIndex>,
+    /// The mandatory-recurrence verdict kept for the span starting at this entry.
+    witnessed: Option<(usize, bool)>,
 }
 
 impl PlayTrace {
@@ -503,6 +508,7 @@ impl PlayTrace {
             carried: im::Vector::new(),
             carried_named: im::Vector::new(),
             carrying: im::HashMap::new(),
+            witnessed: None,
         }
     }
 
@@ -1721,6 +1727,49 @@ fn read_legality(state: &GameState, holder: PlayerId, locus: &PlayLocus) -> Opti
             crate::game::perf_counters::take_cost_snapshot().state_copies - copies_before,
     );
     Some(legal)
+}
+
+/// CR 104.4b + CR 732.4: the span back to the last instance of the triggered node on top of the
+/// stack, when nothing optional was asked or played since; `None` outside a recording boundary.
+pub(crate) fn mandatory_recurrence(state: &GameState) -> Option<NamedSpan> {
+    if !recording(state) {
+        return None;
+    }
+    mandatory_recurrence_span(state)
+}
+
+/// [`mandatory_recurrence`] without its recording gate.
+pub(crate) fn mandatory_recurrence_span(state: &GameState) -> Option<NamedSpan> {
+    let trace = current(state)?;
+    let end = trace.entries.len();
+    let node = trigger_node(state, state.stack.back()?, end).and_then(|key| trace.find(&key))?;
+    let start = *trace.last.get(&node)?;
+    let mandatory = !trace.optional_triggers.contains(&node)
+        && !trace
+            .last_optional
+            .is_some_and(|optional| optional >= start)
+        && !trace.last_play.is_some_and(|play| play >= start);
+    mandatory.then(|| NamedSpan::in_window(start, end, NamingCause::MandatoryRecurrence))
+}
+
+/// The verdict kept for the mandatory-recurrence span of the current window starting at `start`.
+pub(crate) fn witnessed(state: &GameState, start: usize) -> Option<bool> {
+    current(state)?
+        .witnessed
+        .filter(|&(at, _)| at == start)
+        .map(|(_, verdict)| verdict)
+}
+
+/// Keeps `verdict` for the mandatory-recurrence span of the current window starting at `start`.
+pub(crate) fn note_witnessed(state: &mut GameState, start: usize, verdict: bool) {
+    let window = WindowKey::of(state);
+    if let Some(trace) = state
+        .play_trace
+        .as_deref_mut()
+        .filter(|trace| trace.window == window)
+    {
+        trace.witnessed = Some((start, verdict));
+    }
 }
 
 /// The window's naming, at the base's priority window: a play the period made is named once it
