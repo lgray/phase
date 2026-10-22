@@ -49,8 +49,8 @@ use super::oracle_nom::primitives::{
 
 use super::oracle_attraction::parse_attraction_visit_triggers;
 use super::oracle_casting::{
-    additional_cost_line_text, extract_spend_only_on_x_prefix, parse_additional_cost_line,
-    parse_casting_restriction_line, parse_spell_casting_option_line,
+    additional_cost_line_text, extract_spend_only_on_x_prefix, is_cast_this_spell_only_line,
+    parse_additional_cost_line, parse_casting_restriction_line, parse_spell_casting_option_line,
     split_additional_cost_trailing_spell_reduction,
 };
 use super::oracle_class::parse_class_oracle_text;
@@ -78,8 +78,8 @@ use super::oracle_effect::sequence::try_parse_same_is_true_continuation;
 use super::oracle_effect::{
     ability_chain_grants_chosen_color_keyword, lower_ability_ir, parse_ability_ir_standalone,
     parse_ability_ir_with_context, parse_additional_cost_instead_condition_fragment,
-    parse_effect_chain, parse_effect_chain_with_context, parse_windowed_replacement_install_ir,
-    rewrite_condition_keyword, target_filter_controller_ref,
+    parse_effect_chain, parse_effect_chain_with_context, parse_phase_name_set,
+    parse_windowed_replacement_install_ir, rewrite_condition_keyword, target_filter_controller_ref,
     try_parse_temporal_delayed_trigger_ability,
 };
 use super::oracle_ir::ast::parsed_clause;
@@ -3731,8 +3731,11 @@ fn is_spell_resolution_instruction_line(
         }
     }
 
+    // CR 601.3: a "Cast this spell only …" line is a casting restriction even when its
+    // condition is unrecognized; it ends the spell body and is recorded on its own.
     if parse_casting_restriction_line(line).is_some()
         || parse_spell_casting_option_line(line, card_name).is_some()
+        || is_cast_this_spell_only_line(line)
     {
         return false;
     }
@@ -5686,8 +5689,10 @@ fn parse_normalized_oracle_ir(
             //    branches) — every one of them a CR 608.2 resolution-tree field.
             //    The shell stamps NONE of them: it writes cost, cost_reduction,
             //    activation restrictions and the other CR 602.1 envelope fields
-            //    only. So the pre-shell and post-shell lowerings still agree on
-            //    this predicate.
+            //    only. Once that envelope is complete, the linked-paid-cast
+            //    mana-composition fence can additionally refuse unsupported
+            //    inline work; the pre-shell trial has no activation cost and
+            //    deliberately does not classify that composition yet.
             //
             // Cost: one extra lowering per LEVEL-block activated line (two or
             // three rather than one or two). It is intrinsic, not laziness — the
@@ -7873,6 +7878,23 @@ fn parse_normalized_oracle_ir(
             continue;
         }
 
+        // CR 601.3: a "Cast this spell only …" line whose restriction could not be
+        // represented is still a casting restriction, not a spell instruction. Record it as
+        // an `Effect::unimplemented` gap rather than let the spell-imperative route read it
+        // as a conditional self-recast (`CastFromZone`) that drops the restriction.
+        if is_cast_this_spell_only_line(&line) {
+            emitter.ability_at(
+                item_line,
+                AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::unimplemented("casting_restriction", &line),
+                )
+                .description(line.clone()),
+            );
+            i += 1;
+            continue;
+        }
+
         // CR 706: Die roll table — "Roll a dN" followed by "min—max | effect" lines.
         // Consumes the header + all table lines and produces a single RollDie ability.
         if let Some((def, next_i)) = try_parse_die_roll_table(
@@ -9225,12 +9247,7 @@ fn resolve_guards_in_effect(effect: &mut Effect) {
                 resolve_guards_in_ability(execute, None)
             }
         }
-        Effect::FlipCoin {
-            win_effect,
-            lose_effect,
-            ..
-        }
-        | Effect::FlipCoins {
+        Effect::FlipCoins {
             win_effect,
             lose_effect,
             ..
@@ -9242,7 +9259,6 @@ fn resolve_guards_in_effect(effect: &mut Effect) {
                 resolve_guards_in_ability(sub, None);
             }
         }
-        Effect::FlipCoinUntilLose { win_effect } => resolve_guards_in_ability(win_effect, None),
         Effect::RollDie { results, .. } => {
             for branch in results {
                 resolve_guards_in_ability(&mut branch.effect, None);
@@ -9831,7 +9847,7 @@ pub fn parse_oracle_text_traced(
 /// net tests (a node's `duration` beside its `effect`) is an ABILITY-NODE
 /// property, and that module's walk is read-only. A first version walked only
 /// `sub_ability` / `else_ability` and missed three of the corpus's 96
-/// `AddTargetReplacement` nodes (two under `FlipCoin`'s win/lose payloads, one
+/// `AddTargetReplacement` nodes (two under `FlipCoins`'s win/lose payloads, one
 /// under `mode_abilities`). For `mode_abilities` the parser also emits the
 /// refused durations at that position on other effects, so that miss was
 /// reachable rather than theoretical; under the coin-flip payloads the corpus
@@ -10325,12 +10341,7 @@ fn demote_lifetimes_in_effect(effect: &mut Effect) {
                 demote_lifetimes_in_ability(execute)
             }
         }
-        Effect::FlipCoin {
-            win_effect,
-            lose_effect,
-            ..
-        }
-        | Effect::FlipCoins {
+        Effect::FlipCoins {
             win_effect,
             lose_effect,
             ..
@@ -10342,7 +10353,6 @@ fn demote_lifetimes_in_effect(effect: &mut Effect) {
                 demote_lifetimes_in_ability(sub);
             }
         }
-        Effect::FlipCoinUntilLose { win_effect } => demote_lifetimes_in_ability(win_effect),
         Effect::RollDie { results, .. } => {
             for branch in results.iter_mut() {
                 demote_lifetimes_in_ability(&mut branch.effect);
@@ -11186,12 +11196,7 @@ fn render_effect_descriptions(effect: &mut Effect, card_name: &str) {
                 render_ability_descriptions(b, card_name);
             }
         }
-        Effect::FlipCoin {
-            win_effect,
-            lose_effect,
-            ..
-        }
-        | Effect::FlipCoins {
+        Effect::FlipCoins {
             win_effect,
             lose_effect,
             ..
@@ -11202,9 +11207,6 @@ fn render_effect_descriptions(effect: &mut Effect, card_name: &str) {
             if let Some(l) = lose_effect.as_mut() {
                 render_ability_descriptions(l, card_name);
             }
-        }
-        Effect::FlipCoinUntilLose { win_effect } => {
-            render_ability_descriptions(win_effect, card_name)
         }
         Effect::RevealFromHand { on_decline, .. } => {
             if let Some(d) = on_decline.as_mut() {
@@ -11963,6 +11965,9 @@ fn find_top_level_colon(line: &str) -> Option<usize> {
 /// turn-role and turn-window axes are consumed by their own sub-combinators, so
 /// the four role×window gates come from four small tags instead of eight
 /// enumerated phrases (and a new spelling on either axis is a one-tag change).
+/// The unscoped determiner×step arm ("during the <step> step" / "during any
+/// <step> step") shares the same prefix and still lowers to the existing
+/// `RequiresCondition` variant.
 fn parse_activation_during_role_gate(i: &str) -> OracleResult<'_, ActivationRestriction> {
     alt((
         value(
@@ -12227,13 +12232,27 @@ fn parse_activation_turn_window(i: &str) -> OracleResult<'_, ActivationTurnWindo
     .parse(i)
 }
 
-/// CR 602.1b: the composed `during <role> <window>` activation gate — the
-/// shared prefix is consumed once, then each axis by its own sub-combinator.
+/// The unscoped step-determiner axis of a `during ...` activation gate:
+/// "the" / "any" name a step with no turn owner. Plumbing only — the rules
+/// reading lives in `named_step_activation_restriction`. The trailing space is
+/// load-bearing: "their" (a turn-role possessive) cannot match "the ".
+fn parse_unscoped_step_determiner(i: &str) -> OracleResult<'_, ()> {
+    value((), alt((tag::<_, _, OracleError<'_>>("the "), tag("any ")))).parse(i)
+}
+
+/// CR 602.1b: the composed `during ...` activation gate — the shared prefix is
+/// consumed once, then either the unscoped determiner×step axes ("during the
+/// <step> step" / "during any <step> step", via the shared step-name grammar
+/// `parse_phase_name_set`) or the `<role> <window>` axes, each by its own
+/// sub-combinator. Every arm emits an EXISTING `ActivationRestriction` variant.
 fn parse_activation_during_gate(i: &str) -> OracleResult<'_, ActivationRestriction> {
     preceded(
         tag::<_, _, OracleError<'_>>("during "),
         alt((
-            value(any_upkeep_activation_restriction(), tag("any upkeep step")),
+            map(
+                preceded(parse_unscoped_step_determiner, parse_phase_name_set),
+                named_step_activation_restriction,
+            ),
             map(
                 (parse_activation_turn_role, parse_activation_turn_window),
                 |(role, window)| activation_turn_gate(role, window),
@@ -12283,25 +12302,28 @@ fn opponents_turn_activation_condition() -> ParsedCondition {
 /// CR 602.5b + CR 102.3 + CR 503.1: "Activate only during an opponent's upkeep"
 /// gates activation to the upkeep step of an opponent's turn (Trade Caravan).
 /// Composed from the same team-aware opponent-turn leaf as
-/// `opponents_turn_activation_condition` plus the `IsDuringUpkeep` step
-/// predicate, so the opponent scope reuses the existing composition idiom
-/// instead of a dedicated `DuringOpponents*` restriction sibling per step.
+/// `opponents_turn_activation_condition` plus the step predicate
+/// `CurrentPhaseIs { phases: [Upkeep] }`, so the opponent scope reuses the
+/// existing composition idiom instead of a dedicated `DuringOpponents*`
+/// restriction sibling per step.
 fn opponents_upkeep_activation_restriction() -> ActivationRestriction {
     ActivationRestriction::RequiresCondition {
         condition: Some(ParsedCondition::And {
             conditions: vec![
                 opponents_turn_activation_condition(),
-                ParsedCondition::IsDuringUpkeep,
+                ParsedCondition::CurrentPhaseIs {
+                    phases: vec![Phase::Upkeep],
+                },
             ],
         }),
     }
 }
 
-/// CR 602.1b + CR 503.1: activation instructions can restrict activation to
-/// the upkeep step. "Any upkeep" imposes no active-player restriction.
-fn any_upkeep_activation_restriction() -> ActivationRestriction {
+/// CR 602.1b + CR 500.1 + CR 506.1: "during the <step> step" / "during any <step>
+/// step" names one turn step with no turn owner.
+fn named_step_activation_restriction(phases: Vec<Phase>) -> ActivationRestriction {
     ActivationRestriction::RequiresCondition {
-        condition: Some(ParsedCondition::IsDuringUpkeep),
+        condition: Some(ParsedCondition::CurrentPhaseIs { phases }),
     }
 }
 
@@ -13131,9 +13153,10 @@ mod pipeline_snapshot_tests;
 mod has_unimplemented_wrapper_recursion_tests {
     use super::has_unimplemented;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, ChooseOneOfKind, ControllerRef, DelayedTriggerCondition,
-        DieResultBranch, Effect, NestedDefinitionEdge, PileSource, PlayerFilter, PlayerScope,
-        QuantityExpr, TargetFilter, VoteSubject, VoteTally, VoteVisibility, VoterScope,
+        AbilityDefinition, AbilityKind, ChooseOneOfKind, CoinFlipRun, ControllerRef,
+        DelayedTriggerCondition, DieResultBranch, Effect, NestedDefinitionEdge, PileSource,
+        PlayerFilter, PlayerScope, QuantityExpr, TargetFilter, VoteSubject, VoteTally,
+        VoteVisibility, VoterScope,
     };
     use crate::types::phase::Phase;
 
@@ -13228,7 +13251,8 @@ mod has_unimplemented_wrapper_recursion_tests {
     fn sees_a_failure_under_either_coin_flip_branch() {
         let win_bad = AbilityDefinition::new(
             AbilityKind::Spell,
-            Effect::FlipCoin {
+            Effect::FlipCoins {
+                flips: CoinFlipRun::single(),
                 win_effect: Some(Box::new(failure())),
                 lose_effect: Some(Box::new(clean())),
                 flipper: TargetFilter::Controller,
@@ -13236,7 +13260,8 @@ mod has_unimplemented_wrapper_recursion_tests {
         );
         let lose_bad = AbilityDefinition::new(
             AbilityKind::Spell,
-            Effect::FlipCoin {
+            Effect::FlipCoins {
+                flips: CoinFlipRun::single(),
                 win_effect: Some(Box::new(clean())),
                 lose_effect: Some(Box::new(failure())),
                 flipper: TargetFilter::Controller,
@@ -13244,13 +13269,19 @@ mod has_unimplemented_wrapper_recursion_tests {
         );
         let until_lose_bad = AbilityDefinition::new(
             AbilityKind::Spell,
-            Effect::FlipCoinUntilLose {
-                win_effect: Box::new(failure()),
+            Effect::FlipCoins {
+                flips: CoinFlipRun::UntilLoss,
+                win_effect: Some(Box::new(failure())),
+                lose_effect: None,
+                flipper: TargetFilter::Controller,
             },
         );
         assert!(has_unimplemented(&win_bad), "win_effect branch");
         assert!(has_unimplemented(&lose_bad), "lose_effect branch");
-        assert!(has_unimplemented(&until_lose_bad), "FlipCoinUntilLose");
+        assert!(
+            has_unimplemented(&until_lose_bad),
+            "FlipCoins {{ flips: UntilLoss }}"
+        );
     }
 
     /// The SECOND half of the C1.4 gap, and the easy one to miss: the old body
@@ -13498,19 +13529,25 @@ mod has_unimplemented_wrapper_recursion_tests {
                 ],
                 modifier: None,
             },
-            Effect::FlipCoin {
+            Effect::FlipCoins {
+                flips: CoinFlipRun::single(),
                 win_effect: Some(payload("flip_win")),
                 lose_effect: Some(payload("flip_lose")),
                 flipper: TargetFilter::Controller,
             },
             Effect::FlipCoins {
-                count: QuantityExpr::Fixed { value: 2 },
+                flips: CoinFlipRun::Exactly {
+                    count: QuantityExpr::Fixed { value: 2 },
+                },
                 win_effect: Some(payload("flips_win")),
                 lose_effect: Some(payload("flips_lose")),
                 flipper: TargetFilter::Controller,
             },
-            Effect::FlipCoinUntilLose {
-                win_effect: payload("until_lose_win"),
+            Effect::FlipCoins {
+                flips: CoinFlipRun::UntilLoss,
+                win_effect: Some(payload("until_lose_win")),
+                lose_effect: None,
+                flipper: TargetFilter::Controller,
             },
             Effect::ChooseOneOf {
                 chooser: PlayerFilter::Controller,
@@ -13542,11 +13579,11 @@ mod has_unimplemented_wrapper_recursion_tests {
                 NestedDefinitionEdge::CreateDelayedTriggerEffect,
                 NestedDefinitionEdge::RollDieResult,
                 NestedDefinitionEdge::RollDieResult,
-                NestedDefinitionEdge::FlipCoinWin,
-                NestedDefinitionEdge::FlipCoinLose,
                 NestedDefinitionEdge::FlipCoinsWin,
                 NestedDefinitionEdge::FlipCoinsLose,
-                NestedDefinitionEdge::FlipCoinUntilLoseWin,
+                NestedDefinitionEdge::FlipCoinsWin,
+                NestedDefinitionEdge::FlipCoinsLose,
+                NestedDefinitionEdge::FlipCoinsWin,
                 NestedDefinitionEdge::ChooseOneOfBranch,
                 NestedDefinitionEdge::ChooseOneOfBranch,
             ]
@@ -13564,7 +13601,8 @@ mod has_unimplemented_wrapper_recursion_tests {
     /// driven by the payloads present rather than by the carrier variants.
     #[test]
     fn a_carrier_with_no_payload_emits_no_edge() {
-        let empty = Effect::FlipCoin {
+        let empty = Effect::FlipCoins {
+            flips: CoinFlipRun::single(),
             win_effect: None,
             lose_effect: None,
             flipper: TargetFilter::Controller,
