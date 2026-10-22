@@ -2931,18 +2931,9 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 // (poison is a Gained axis, which cannot make is_net_progress false), so without
                 // this conjunct such a loop would be WRONGLY certified a CR 732.4 draw. (Path C's
                 // poison redundancy comes ENTIRELY from its extra `== Advantage` conjunct, which
-                // Path B lacks.) The Path-B veto is currently NOT runtime-discriminable: a
-                // single-compound-trigger poison loop DOES reach the Path-B bridge, but the
-                // "you gain N life and [each opponent gets a poison counter]" parser drop removes
-                // the poison conjunct (card-build keeps only `GainLife`), so poison is 0 in the loop
-                // delta at the gate → it draws as a benign lifegain loop and never exercises
-                // has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the
-                // Path-B gate (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers
-                // beats, in `apply_action`'s `PassPriority | OrderTriggers { .. }` ring-clear arm;
-                // the single-compound-trigger form drops the poison at
-                // parse). The runtime discriminator is therefore WAIVED as measured-unsatisfiable;
-                // this in-code load-bearing-by-construction proof is the substitute. See the
-                // `interactive_recurring_poison_is_not_drawn` Path-B behavioral test.
+                // Path B lacks.) Its runtime discriminator is
+                // `mandatory_loop_draws::a_poison_axis_loop_is_not_declared`: without this conjunct
+                // the ring legs draw that board before either player reaches ten poison counters.
                 // CR 122.1 + CR 104.4b: the third disjunct is a pure preserved-`Generic`
                 // counter-growth cover (proliferate/charge Pentad Prism, burden The One
                 // Ring). Live revocable-∞ mark ONLY — this Path-C arm routes to

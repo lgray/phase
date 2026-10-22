@@ -1244,7 +1244,7 @@ fn r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_ann
 ///
 /// # Discrimination — REVERT-PROBE, RUN, not adopted from a code read
 ///
-/// Delete the seam's `state.loop_detect_ring.clear();` + `state.loop_answer_journal = None;`
+/// Delete the seam's `state.clear_loop_detect_window();`
 /// ⇒ MEASURED `ring=12, answers=3, wf=LoopShortcut` against this drive's `0, 0, Priority`:
 /// all three assertions below flip together and the engine re-offers within the same
 /// `apply()`.
@@ -2635,8 +2635,9 @@ fn c1_row2b_sibling_an_identical_second_answer_stays_uniform() {
 /// # Discrimination
 ///
 /// Delete `clone.loop_answer_journal = None;` from `normalize_for_loop` or from
-/// `loop_detect_live_sample` ⇒ the corresponding per-sample assertion flips. Delete it from
-/// `apply_action`'s clear block ⇒ the final assertion flips.
+/// `loop_detect_live_sample` ⇒ the corresponding per-sample assertion flips. Delete
+/// `self.loop_answer_journal = None;` from `clear_loop_detect_window`, which `apply_action`'s
+/// clear block calls ⇒ the final assertion flips.
 #[test]
 fn c1_row7b_the_may_journal_follows_the_ring_on_the_same_receiver() {
     let mut state = load_f4();
