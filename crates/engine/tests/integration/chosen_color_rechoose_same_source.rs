@@ -1384,13 +1384,7 @@ fn faiths_shield_fateful_hour_branch_chooses_its_own_color() {
         runner.state().objects[&opponents].keywords
     );
 
-    // STATED LIMITATION (F11): this test does not and cannot assert
-    // player-level protection for the controller. The fateful branch creates
-    // no player-scoped continuous effect at all (`tce == 2`, one per
-    // controlled permanent, none for the player), and
-    // `game/static_abilities.rs::player_protection_from_object` has no
-    // coloured-transient authority to read even if it did. Narrower than the
-    // literal "you ... gain protection" ask; filed as backlog F11.
+    // Player-level colour protection is not asserted: `player_protection_from_object` has no coloured-transient authority.
 }
 
 /// T6's non-fateful sibling — same construction, life kept above 5 so the
