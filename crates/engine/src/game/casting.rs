@@ -24704,7 +24704,9 @@ fn find_eligible_hand_cost_targets(
 ) -> Vec<ObjectId> {
     let effective_filter = super::cost_payability::cost_filter_before_x_announcement(filter);
     let filter_ref = effective_filter.as_ref();
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .players
@@ -24800,7 +24802,9 @@ pub(crate) fn find_eligible_exile_for_cost_targets(
             find_eligible_hand_cost_targets(state, player, source, granting_object, filter_ref)
         }
         ExileCostSourceZone::Graveyard => {
-            let ctx = super::filter::FilterContext::from_source(state, source)
+            // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+            // activated ability).
+            let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
                 .with_granting_object(granting_object);
             state
                 .players
@@ -24838,7 +24842,9 @@ pub(crate) fn find_eligible_unattach_for_cost_targets(
     filter: &TargetFilter,
     n: u32,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .battlefield
@@ -25135,7 +25141,9 @@ pub(crate) fn find_eligible_return_to_hand_targets(
     granting_object: Option<ObjectIncarnationRef>,
     filter: Option<&TargetFilter>,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .battlefield
@@ -25193,7 +25201,9 @@ pub(crate) fn find_eligible_remove_counter_for_cost_targets(
     counter_type: &crate::types::counter::CounterMatch,
     count: u32,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     state
         .battlefield
@@ -25220,7 +25230,9 @@ pub(super) fn find_eligible_tap_creatures_for_cost(
     cost: &AbilityCost,
     filter: &TargetFilter,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player)
         .with_granting_object(granting_object);
     let exclude_source = requires_untapped(cost);
     state

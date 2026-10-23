@@ -1206,7 +1206,9 @@ pub(crate) fn eligible_behold_choices(
     source: ObjectId,
     filter: &TargetFilter,
 ) -> Vec<ObjectId> {
-    let ctx = super::filter::FilterContext::from_source(state, source);
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(source, player);
     let mut choices: Vec<ObjectId> = state
         .battlefield
         .iter()
@@ -3650,7 +3652,9 @@ fn validate_deferred_spell_sacrifices_at_commit(
             state,
             id,
             &selection.filter,
-            &super::filter::FilterContext::from_source(state, pending.object_id),
+            // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+            // activated ability).
+            &super::filter::FilterContext::from_source_with_controller(pending.object_id, player),
         ) {
             return Err(EngineError::ActionNotAllowed(
                 "Deferred sacrifice permanent no longer matches the sacrifice cost".to_string(),
@@ -4786,7 +4790,9 @@ pub(crate) fn handle_unattach_for_cost(
             "Must unattach at least one attachment to pay the cost".to_string(),
         ));
     }
-    let ctx = super::filter::FilterContext::from_source(state, pending.object_id)
+    // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+    // activated ability).
+    let ctx = super::filter::FilterContext::from_source_with_controller(pending.object_id, player)
         .with_granting_object(pending.ability.context.granting_object);
     for &id in chosen {
         if !choices.contains(&id) {
@@ -10738,27 +10744,14 @@ fn pay_additional_cost_with_source(
             // source is eligible unless a {T} cost is also present in the
             // activation cost (in which case the source was already tapped, so
             // !obj.tapped naturally excludes it).
-            let eligible: Vec<ObjectId> = state
-                .battlefield
-                .iter()
-                .copied()
-                .filter(|id| {
-                    state.objects.get(id).is_some_and(|obj| {
-                        obj.controller == player
-                            && !obj.tapped
-                            && super::filter::matches_target_filter(
-                                state,
-                                obj.id,
-                                filter,
-                                &super::filter::FilterContext::from_source(
-                                    state,
-                                    pending.object_id,
-                                )
-                                .with_granting_object(pending.ability.context.granting_object),
-                            )
-                    })
-                })
-                .collect();
+            let eligible = super::casting::find_eligible_tap_creatures_for_cost(
+                state,
+                player,
+                pending.object_id,
+                pending.ability.context.granting_object,
+                &cost,
+                filter,
+            );
             // CR 601.2b: The requirement shapes drive different prompts.
             // Fixed-count taps exactly `count`; the X-sentinel form (CR 107.3a)
             // taps freely within [0, eligible]; aggregate (Crew/Saddle/Teamwork)
