@@ -1869,6 +1869,19 @@ mod tests {
             (saturated(0), saturated(1)),
             (OptionProof::Undecided, OptionProof::Undecided)
         );
+        let pending_saturates = frame_closure(
+            2usize,
+            ORDER_EDGES,
+            |_| (),
+            |&node| match node {
+                2 => 2,
+                1 => 1,
+                _ => usize::MAX,
+            },
+            |_, order| Ok(1 - order),
+            |_, _| Ok(false),
+        );
+        assert_eq!(pending_saturates, OptionProof::Undecided);
     }
 
     /// CR 104.4b: a refused ordered replay ends the loop only when the game ended or priority
