@@ -55,8 +55,8 @@ const EVERY_DRIVE: [Drive; 3] = [
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Board {
-    /// Brain Maggot on P0's battlefield and a Lightning Bolt in P1's hand.
-    maggot: bool,
+    /// This many Brain Maggots on P0's battlefield, and a Lightning Bolt in P1's hand.
+    maggots: usize,
     /// Animate Dead targets Grizzly Bears instead of Worldgorger Dragon.
     bears: bool,
     /// P1 has a Mountain on the battlefield and a Lightning Bolt in hand.
@@ -66,8 +66,8 @@ struct Board {
     /// Gibbering Fiend on P0's battlefield and Battletide Alchemist on P1's, whose
     /// prevention P1 remembers at its first prompt.
     fiend: bool,
-    /// Banisher Priest on P0's battlefield and two Grizzly Bears on P1's.
-    banisher: bool,
+    /// Banisher Priest on P0's battlefield and this many Grizzly Bears on P1's.
+    banisher: Option<usize>,
     /// P0 has a Mountain on the battlefield and a Lightning Bolt in hand.
     p0_out: bool,
     /// Marauding Raptor on P0's battlefield and Polyraptor cast from P0's hand, in place of
@@ -90,6 +90,14 @@ struct Board {
     p1_bears: bool,
     /// Poison-Tip Archer on P1's battlefield.
     archer: bool,
+    /// Rest in Peace on P0's battlefield.
+    rest_in_peace: bool,
+    /// This many Grizzly Bears on P0's battlefield.
+    p0_bears: usize,
+    /// Ichor Rats on P0's battlefield.
+    ichor_rats: bool,
+    /// The card whose trigger P0 orders to resolve first; otherwise Animate Dead's resolves last.
+    first: Option<&'static str>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -120,8 +128,8 @@ struct Run {
     prompts: BTreeMap<&'static str, usize>,
     /// Priority beats at which P0's Mountain stood untapped on the battlefield.
     out_beats: usize,
-    /// Each action's acting player and the confirm replays it ran.
-    replays: Vec<(Option<PlayerId>, u64)>,
+    /// Each action's acting player, whether it ordered triggers, and the confirm replays it ran.
+    replays: Vec<(Option<PlayerId>, bool, u64)>,
 }
 
 impl Run {
@@ -167,7 +175,6 @@ struct Built {
     /// The card whose entries are counted: the reanimation target, or Polyraptor.
     watched: ObjectId,
     animate: Option<ObjectId>,
-    maggot: Option<ObjectId>,
     p0_mountain: Option<ObjectId>,
 }
 
@@ -203,11 +210,12 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         );
         (target, Some(animate))
     };
-    let maggot = board.maggot.then(|| {
-        let maggot = scenario.add_real_card(P0, "Brain Maggot", Zone::Battlefield, db);
+    if board.maggots > 0 {
+        for _ in 0..board.maggots {
+            scenario.add_real_card(P0, "Brain Maggot", Zone::Battlefield, db);
+        }
         scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, db);
-        maggot
-    });
+    }
     if board.optional {
         scenario.add_real_card(P1, "Mountain", Zone::Battlefield, db);
         scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, db);
@@ -219,9 +227,9 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         scenario.add_real_card(P0, "Gibbering Fiend", Zone::Battlefield, db);
         scenario.add_real_card(P1, "Battletide Alchemist", Zone::Battlefield, db);
     }
-    if board.banisher {
+    if let Some(bears) = board.banisher {
         scenario.add_real_card(P0, "Banisher Priest", Zone::Battlefield, db);
-        for _ in 0..2 {
+        for _ in 0..bears {
             scenario.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
         }
     }
@@ -257,6 +265,15 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
     }
     if board.archer {
         scenario.add_real_card(P1, "Poison-Tip Archer", Zone::Battlefield, db);
+    }
+    if board.ichor_rats {
+        scenario.add_real_card(P0, "Ichor Rats", Zone::Battlefield, db);
+    }
+    if board.rest_in_peace {
+        scenario.add_real_card(P0, "Rest in Peace", Zone::Battlefield, db);
+    }
+    for _ in 0..board.p0_bears {
+        scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
     }
     for seat in [P0, P1] {
         for _ in 0..10 {
@@ -303,7 +320,6 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         runner,
         watched,
         animate,
-        maggot,
         p0_mountain,
     })
 }
@@ -351,7 +367,6 @@ fn run_observed(
         mut runner,
         watched: target,
         animate,
-        maggot,
         p0_mountain,
     } = build(board, mode)?;
 
@@ -420,14 +435,15 @@ fn run_observed(
                     }
                 }
             }
-            // Animate Dead's trigger goes on the stack first, so every other trigger of the
-            // cycle resolves before the Dragon returns; Brain Maggot's goes last, so it
-            // resolves first.
+            // The trigger listed last goes on the stack last and resolves first.
             WaitingFor::OrderTriggers { triggers, .. } => {
                 let mut order: Vec<usize> = (0..triggers.len()).collect();
                 order.sort_by_key(|&index| {
                     let source = triggers[index].source_id;
-                    (Some(source) != animate, Some(source) == maggot)
+                    match board.first {
+                        Some(name) => state.objects.get(&source).is_some_and(|o| o.name == name),
+                        None => Some(source) != animate,
+                    }
                 });
                 GameAction::OrderTriggers { order }
             }
@@ -489,9 +505,14 @@ fn run_observed(
                 .expect("P1 may yield to a trigger on the stack");
         }
         let acting = runner.state().waiting_for.acting_player();
+        let ordered = matches!(action, GameAction::OrderTriggers { .. });
         let drives_before = play_trace_counters().confirm_drives;
         let result = runner.act(action).expect("every driven action is legal");
-        replays.push((acting, play_trace_counters().confirm_drives - drives_before));
+        replays.push((
+            acting,
+            ordered,
+            play_trace_counters().confirm_drives - drives_before,
+        ));
         let entered = result
             .events
             .iter()
@@ -537,12 +558,12 @@ fn until_stack_empty() -> GameAction {
 }
 
 const PLAIN: Board = Board {
-    maggot: false,
+    maggots: 0,
     bears: false,
     optional: false,
     snarecaster: None,
     fiend: false,
-    banisher: false,
+    banisher: None,
     p0_out: false,
     raptor: false,
     soul_warden: None,
@@ -553,10 +574,15 @@ const PLAIN: Board = Board {
     sink: None,
     p1_bears: false,
     archer: false,
+    ichor_rats: false,
+    rest_in_peace: false,
+    p0_bears: 0,
+    first: None,
 };
 
 const ANCHOR: Board = Board {
-    maggot: true,
+    maggots: 1,
+    first: Some("Brain Maggot"),
     ..PLAIN
 };
 
@@ -577,16 +603,16 @@ fn worldgorger_animate_dead_is_a_draw_on_every_drive() {
     }
 }
 
-/// Brain Maggot's forced reveal of P1's only nonland card repeats each cycle with one legal
-/// option, but the saved order of Brain Maggot's and Animate Dead's triggers applies every
-/// cycle and is counted as a decision (CR 603.3b), so the loop is not declared.
+/// CR 603.3b + CR 732.4: Brain Maggot's forced reveal of P1's only nonland card repeats each
+/// cycle with one legal option, and the saved order of Brain Maggot's and Animate Dead's
+/// triggers is no decision, since the loop continues under either order; so the loop is a draw.
 #[test]
-fn worldgorger_with_a_forced_reveal_under_a_saved_order_is_not_declared() {
+fn worldgorger_with_a_forced_reveal_under_a_saved_order_is_a_draw() {
     for drive in EVERY_DRIVE {
         let Some(run) = run(ANCHOR, LoopDetectionMode::Interactive, drive, 120) else {
             return;
         };
-        assert_eq!(run.terminal, Terminal::BeatsExhausted, "{drive:?}");
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
         assert!(
             run.reveals >= 2,
             "{drive:?}: reach: reveals were answered across cycles, got {}",
@@ -620,7 +646,7 @@ fn worldgorger_runs_on_with_loop_detection_off() {
                 run.entries_at_half,
                 run.entries
             );
-            if board.maggot {
+            if board.maggots > 0 {
                 assert!(
                     run.reveals > run.reveals_at_half,
                     "{drive:?}: reach: the reveals keep coming ({} at half, {} at the end)",
@@ -798,7 +824,7 @@ fn a_remembered_optional_prevention_is_not_a_draw() {
 #[test]
 fn a_target_chosen_every_cycle_is_not_a_draw() {
     let board = Board {
-        banisher: true,
+        banisher: Some(2),
         ..PLAIN
     };
     for mode in MODES {
@@ -1150,26 +1176,38 @@ fn a_poison_axis_loop_is_not_declared() {
     }
 }
 
-/// CR 104.4b + CR 603.3b: with Soul Warden, P0 orders Raptor's and Warden's triggers each cycle,
-/// so the growth loop holds a decision and is not declared.
+/// CR 104.4b + CR 603.3b + CR 732.4: with Soul Warden, P0 orders Raptor's and Warden's triggers
+/// each cycle, and the copies keep coming whichever resolves first, so the order is no decision
+/// and the growth loop is a draw.
 #[test]
-fn a_mandatory_growth_loop_with_an_ordering_point_is_not_declared() {
-    let board = Board {
-        soul_warden: Some(P0),
-        ..RAPTOR
-    };
-    for drive in EVERY_DRIVE {
-        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+fn a_mandatory_growth_loop_whose_every_trigger_order_continues_is_a_draw() {
+    for first in ["Marauding Raptor", "Soul Warden"] {
+        let board = Board {
+            soul_warden: Some(P0),
+            first: Some(first),
+            ..RAPTOR
+        };
+        for drive in EVERY_DRIVE {
+            let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            assert_eq!(run.terminal, Terminal::GameOver(None), "{first} {drive:?}");
+            assert!(
+                run.prompted("OrderTriggers") >= 1,
+                "{first} {drive:?}: reach: the triggers were ordered"
+            );
+            assert!(
+                run.on_battlefield("Polyraptor").len() >= 2,
+                "{first} {drive:?}: reach: the copies kept coming"
+            );
+        }
+        let Some(off) = run(board, LoopDetectionMode::Off, Drive::Pass, 60) else {
             return;
         };
-        assert_eq!(run.terminal, Terminal::BeatsExhausted, "{drive:?}");
+        assert_eq!(off.terminal, Terminal::BeatsExhausted, "Off {first}");
         assert!(
-            run.prompted("OrderTriggers") >= 2,
-            "{drive:?}: reach: the triggers were ordered across cycles"
-        );
-        assert!(
-            run.on_battlefield("Polyraptor").len() >= 3,
-            "{drive:?}: reach: the copies kept coming"
+            off.on_battlefield("Polyraptor").len() >= 3,
+            "Off {first}: reach: the copies kept coming"
         );
     }
 }
@@ -1281,8 +1319,8 @@ fn a_mandatory_period_is_replayed_once_per_span_start() {
     let replays_by = |seat: PlayerId| -> u64 {
         run.replays
             .iter()
-            .filter(|&&(acting, _)| acting == Some(seat))
-            .map(|&(_, replays)| replays)
+            .filter(|&&(acting, _, _)| acting == Some(seat))
+            .map(|&(_, _, replays)| replays)
             .sum()
     };
     assert!(
@@ -1393,5 +1431,270 @@ fn a_loop_above_its_opponents_spells_is_a_draw() {
             "{drive:?}: reach: the Dragon re-entered ({}) over buried Lightning Bolts ({bolts})",
             run.entries
         );
+    }
+}
+
+const BURIED_MAGGOT: Board = Board {
+    first: Some("Animate Dead"),
+    ..ANCHOR
+};
+
+/// CR 405.5 + CR 603.3b + CR 732.4: with Animate Dead's trigger resolving first, the Dragon is
+/// back before Brain Maggot's trigger resolves, so each cycle leaves one more Brain Maggot trigger
+/// beneath the loop. The loop continues under either order and the reveal has one option, so it
+/// is a draw on every drive; Off keeps burying.
+#[test]
+fn worldgorger_burying_brain_maggot_triggers_is_a_draw_on_every_drive() {
+    for drive in EVERY_DRIVE {
+        let mut buried = 0;
+        let Some(run) = run_observed(
+            BURIED_MAGGOT,
+            LoopDetectionMode::Interactive,
+            drive,
+            150,
+            |state| buried = buried.max(buried_triggers(state, "Brain Maggot")),
+        ) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            buried >= 1,
+            "{drive:?}: reach: a Brain Maggot trigger was buried"
+        );
+    }
+    let mut depths = Vec::new();
+    let Some(off) = run_observed(
+        BURIED_MAGGOT,
+        LoopDetectionMode::Off,
+        Drive::Pass,
+        150,
+        |state| depths.push(buried_triggers(state, "Brain Maggot")),
+    ) else {
+        return;
+    };
+    assert_eq!(off.terminal, Terminal::BeatsExhausted);
+    assert!(
+        depths[depths.len() - 1] > depths[depths.len() / 2],
+        "Off: reach: the buried triggers keep growing"
+    );
+}
+
+/// CR 603.3b + CR 732.4: Banisher Priest's trigger against P1's only creature has one legal
+/// target, and the loop continues whichever of its trigger and Animate Dead's resolves first,
+/// so it is a draw in either order.
+#[test]
+fn banisher_priest_against_one_creature_is_a_draw_in_either_order() {
+    for first in ["Banisher Priest", "Animate Dead"] {
+        let board = Board {
+            banisher: Some(1),
+            first: Some(first),
+            ..PLAIN
+        };
+        for drive in EVERY_DRIVE {
+            let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 150) else {
+                return;
+            };
+            assert_eq!(run.terminal, Terminal::GameOver(None), "{first} {drive:?}");
+            assert!(
+                run.prompted("OrderTriggers") >= 1,
+                "{first} {drive:?}: reach: the triggers were ordered"
+            );
+        }
+        let Some(off) = run(board, LoopDetectionMode::Off, Drive::Pass, 150) else {
+            return;
+        };
+        assert_runs_on(&off, &format!("Off {first}"));
+    }
+}
+
+/// CR 104.4b + CR 603.3b: with Rest in Peace, ordering its trigger to resolve first exiles the
+/// Dragon from the graveyard before Animate Dead's trigger returns it, ending the loop, so the
+/// loop that orders Animate Dead's first holds an optional action and is no draw.
+#[test]
+fn an_order_that_could_end_the_loop_is_not_a_draw() {
+    let board = |first| Board {
+        rest_in_peace: true,
+        first: Some(first),
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let Some(continued) = run(
+            board("Animate Dead"),
+            LoopDetectionMode::Interactive,
+            drive,
+            60,
+        ) else {
+            return;
+        };
+        assert_runs_on(&continued, &format!("{drive:?}"));
+        assert!(
+            continued.prompted("OrderTriggers") >= 2,
+            "{drive:?}: reach: the order was asked each cycle"
+        );
+        let Some(ended) = run(
+            board("Rest in Peace"),
+            LoopDetectionMode::Interactive,
+            drive,
+            120,
+        ) else {
+            return;
+        };
+        assert_eq!(ended.terminal, Terminal::SettledOnEmptyStack, "{drive:?}");
+    }
+}
+
+/// The every-order proof is replayed once per span start: P0's passes leave the span its trigger
+/// order began on top, so only the actions that begin one replay the orders.
+#[test]
+fn the_every_order_proof_is_replayed_once_per_span_start() {
+    let board = Board {
+        rest_in_peace: true,
+        first: Some("Animate Dead"),
+        ..PLAIN
+    };
+    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+        return;
+    };
+    let replays_by = |seat: PlayerId, ordering: bool| -> u64 {
+        run.replays
+            .iter()
+            .filter(|&&(acting, ordered, _)| acting == Some(seat) && ordered == ordering)
+            .map(|&(_, _, replays)| replays)
+            .sum()
+    };
+    assert_eq!(run.terminal, Terminal::BeatsExhausted);
+    assert!(
+        replays_by(P1, false) >= 1,
+        "reach: P1's passes replayed the orders"
+    );
+    assert_eq!(replays_by(P0, false), 0);
+}
+
+/// CR 603.3b + CR 104.4b: an ordering point of Animate Dead's, Rest in Peace's and three Brain
+/// Maggots' triggers, past the every-order proof's budget, stays a decision, so the loop that
+/// orders Animate Dead's first is no draw.
+#[test]
+fn an_ordering_point_past_the_proof_budget_is_not_a_draw() {
+    let board = Board {
+        rest_in_peace: true,
+        maggots: 3,
+        first: Some("Animate Dead"),
+        ..PLAIN
+    };
+    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 120) else {
+        return;
+    };
+    assert_runs_on(&run, "Pass");
+    assert_eq!(
+        run.prompted("OrderTriggers"),
+        1,
+        "reach: the order was asked once and then saved"
+    );
+}
+
+/// CR 603.6a + CR 603.3b + CR 732.4: Soul Warden returns with two Grizzly Bears, so it triggers
+/// twice beside Animate Dead's trigger; every order of the three, its two triggers among
+/// themselves included, continues the loop, so it is a draw.
+#[test]
+fn an_ordering_point_holding_one_card_twice_is_proved_in_every_order() {
+    let board = Board {
+        soul_warden: Some(P0),
+        p0_bears: 2,
+        first: Some("Animate Dead"),
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let mut buried = 0;
+        let Some(run) = run_observed(board, LoopDetectionMode::Interactive, drive, 150, |state| {
+            buried = buried.max(buried_triggers(state, "Soul Warden"))
+        }) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            buried >= 2,
+            "{drive:?}: reach: Soul Warden's triggers were buried"
+        );
+    }
+    let mut depths = Vec::new();
+    let Some(off) = run_observed(board, LoopDetectionMode::Off, Drive::Pass, 150, |state| {
+        depths.push(buried_triggers(state, "Soul Warden"))
+    }) else {
+        return;
+    };
+    assert_eq!(off.terminal, Terminal::BeatsExhausted);
+    assert!(
+        depths[depths.len() - 1] > depths[depths.len() / 2],
+        "Off: reach: the buried triggers keep growing"
+    );
+}
+
+/// CR 603.3b + CR 104.4b: Soul Warden returns with four Grizzly Bears, so it triggers four times
+/// beside Animate Dead's trigger; every order continues the loop, but the point's 120 orders are
+/// past the every-order proof's budget, so the order stays a decision and the loop is no draw.
+#[test]
+fn a_continuing_loop_past_the_proof_budget_is_not_a_draw() {
+    let board = Board {
+        soul_warden: Some(P0),
+        p0_bears: 4,
+        first: Some("Animate Dead"),
+        ..PLAIN
+    };
+    let mut widest = 0;
+    let Some(run) = run_observed(
+        board,
+        LoopDetectionMode::Interactive,
+        Drive::Pass,
+        150,
+        |state| {
+            if let WaitingFor::OrderTriggers { triggers, .. } = &state.waiting_for {
+                widest = widest.max(triggers.len());
+            }
+        },
+    ) else {
+        return;
+    };
+    assert_runs_on(&run, "Pass");
+    assert_eq!(widest, 5, "reach: five triggers were ordered at one point");
+    let mut depths = Vec::new();
+    let Some(off) = run_observed(board, LoopDetectionMode::Off, Drive::Pass, 150, |state| {
+        depths.push(buried_triggers(state, "Soul Warden"))
+    }) else {
+        return;
+    };
+    assert_eq!(off.terminal, Terminal::BeatsExhausted);
+    assert!(
+        depths[depths.len() - 1] > depths[depths.len() / 2],
+        "Off: reach: the buried triggers keep growing"
+    );
+}
+
+/// CR 603.3b + CR 704.5c + CR 104.4a: Ichor Rats returns beside Animate Dead each cycle and its
+/// trigger, resolving first, gives each player a poison counter. The loop continues whichever
+/// trigger resolves first, but poison is a loss axis, so it is not declared: both players reach
+/// ten poison counters and lose together.
+#[test]
+fn a_mandatory_poison_loop_whose_every_trigger_order_continues_is_not_declared() {
+    let board = Board {
+        ichor_rats: true,
+        first: Some("Ichor Rats"),
+        ..PLAIN
+    };
+    for mode in MODES {
+        for drive in EVERY_DRIVE {
+            let Some(run) = run(board, mode, drive, 250) else {
+                return;
+            };
+            assert_eq!(run.terminal, Terminal::GameOver(None), "{mode:?} {drive:?}");
+            assert_eq!(
+                (run.poison(P0), run.poison(P1)),
+                (10, 10),
+                "{mode:?} {drive:?}: the game ended at ten poison counters"
+            );
+            assert!(
+                run.prompted("OrderTriggers") >= 1,
+                "{mode:?} {drive:?}: reach: the triggers were ordered"
+            );
+        }
     }
 }

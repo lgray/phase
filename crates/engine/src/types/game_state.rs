@@ -19754,10 +19754,21 @@ impl WaitingFor {
 
     /// CR 608.2d + CR 732.4: a non-optional choice with one eligible card is no player decision.
     pub fn is_forced_one_option_choice(&self) -> bool {
-        matches!(
-            self,
-            WaitingFor::RevealChoice { cards, optional: false, .. } if cards.len() == 1
-        )
+        self.forced_one_option_answer().is_some()
+    }
+
+    /// CR 608.2d: the only answer a forced one-option choice has.
+    pub(crate) fn forced_one_option_answer(&self) -> Option<crate::types::actions::GameAction> {
+        match self {
+            WaitingFor::RevealChoice {
+                cards,
+                optional: false,
+                ..
+            } if cards.len() == 1 => Some(crate::types::actions::GameAction::SelectCards {
+                cards: cards.clone(),
+            }),
+            _ => None,
+        }
     }
 
     /// Look-at-top-N states whose legal selections cannot be captured by the
@@ -21891,6 +21902,8 @@ pub enum LoopDecision {
     Optional,
     /// CR 104.4b: some player held a priority action that could stop the loop.
     Outs,
+    /// CR 603.3b: a choice was made at this point, prompted or saved, that no proof has yet read.
+    Unproven(crate::analysis::decision_template::ChoicePoint),
     /// CR 603.3b + CR 616.1: a choice among several options was made, prompted or remembered.
     Decision,
 }
@@ -21901,6 +21914,7 @@ pub enum LoopDecision {
 pub struct LoopDecisionTally {
     pub optional: u64,
     pub decision: u64,
+    pub trigger_order: u64,
 }
 
 /// CR 732.5: whether some living player held a meaningful priority action at a sampled beat.
@@ -21979,6 +21993,11 @@ impl LoopDecisionProfile {
         if current.tally.decision != first.decision {
             members.insert(LoopDecision::Decision);
         }
+        if current.tally.trigger_order != first.trigger_order {
+            members.insert(LoopDecision::Unproven(
+                crate::analysis::decision_template::ChoicePoint::TriggerOrder,
+            ));
+        }
         if !members.contains(&LoopDecision::Optional)
             && (current.out == PriorityOut::Held
                 || window.any(|marks| marks.out() == PriorityOut::Held))
@@ -21991,6 +22010,31 @@ impl LoopDecisionProfile {
     /// CR 732.4: the period holds only mandatory actions.
     pub fn is_forced(&self) -> bool {
         self.members.is_empty()
+    }
+
+    /// CR 603.3b + CR 104.4b: the profile with its trigger orders read by `proof`, asked only when
+    /// the period holds one: no choice when every order continues the loop, an optional action
+    /// when some order ends it, and a decision while unproven.
+    pub(crate) fn with_option_proof(
+        mut self,
+        proof: impl FnOnce() -> crate::game::period_confirm::OptionProof,
+    ) -> Self {
+        use crate::game::period_confirm::OptionProof;
+        let unproven =
+            LoopDecision::Unproven(crate::analysis::decision_template::ChoicePoint::TriggerOrder);
+        if self.members.remove(&unproven) {
+            match proof() {
+                OptionProof::Continues => {}
+                OptionProof::Ends => {
+                    self.members.insert(LoopDecision::Optional);
+                    self.members.remove(&LoopDecision::Outs);
+                }
+                OptionProof::Undecided => {
+                    self.members.insert(LoopDecision::Decision);
+                }
+            }
+        }
+        self
     }
 }
 
@@ -33163,6 +33207,11 @@ impl GameState {
         self.loop_detect_ring.clear();
     }
 
+    /// CR 603.3b: one chosen trigger order, prompted or applied from a saved order.
+    pub(crate) fn record_trigger_order(&mut self) {
+        self.loop_decision_tally.trigger_order += 1;
+    }
+
     /// CR 104.4b: one answered loop decision — `Optional` for a declinable choice (CR 603.5,
     /// CR 616.1e), `Mandatory` for a choice among several options (CR 603.3b, CR 616.1).
     pub(crate) fn record_loop_decision(
@@ -35232,7 +35281,11 @@ mod loop_decision_profile_tests {
 
     fn marks(optional: u64, decision: u64, out: PriorityOut) -> LoopDecisionMarks {
         LoopDecisionMarks {
-            tally: LoopDecisionTally { optional, decision },
+            tally: LoopDecisionTally {
+                optional,
+                decision,
+                trigger_order: 0,
+            },
             out,
         }
     }
@@ -35267,6 +35320,47 @@ mod loop_decision_profile_tests {
         assert_eq!(
             members(&[base, marks(2, 3, Held)], marks(2, 4, Absent)),
             vec![Outs, Decision]
+        );
+    }
+
+    /// CR 603.3b + CR 104.4b: a trigger order is no member when every order continues, Optional
+    /// over an out when some order ends the loop, and a Decision unproven; it alone asks the proof.
+    #[test]
+    fn a_trigger_order_is_read_by_its_every_order_proof() {
+        use crate::game::period_confirm::OptionProof;
+        let ordered = LoopDecisionMarks {
+            tally: LoopDecisionTally {
+                optional: 0,
+                decision: 0,
+                trigger_order: 1,
+            },
+            out: Absent,
+        };
+        let read = |first: LoopDecisionMarks, proof: OptionProof| -> Vec<LoopDecision> {
+            LoopDecisionProfile::of_window(&[first], &ordered)
+                .with_option_proof(|| proof)
+                .members
+                .into_iter()
+                .collect()
+        };
+        let none = marks(0, 0, Absent);
+        let held = marks(0, 0, Held);
+        assert_eq!(
+            members(&[none], ordered),
+            vec![LoopDecision::Unproven(
+                crate::analysis::decision_template::ChoicePoint::TriggerOrder
+            )]
+        );
+        assert_eq!(read(none, OptionProof::Continues), vec![]);
+        assert_eq!(read(none, OptionProof::Ends), vec![Optional]);
+        assert_eq!(read(none, OptionProof::Undecided), vec![Decision]);
+        assert_eq!(read(held, OptionProof::Continues), vec![Outs]);
+        assert_eq!(read(held, OptionProof::Ends), vec![Optional]);
+        let unasked = LoopDecisionProfile::of_window(&[none], &marks(0, 1, Absent))
+            .with_option_proof(|| unreachable!("no trigger order was made"));
+        assert_eq!(
+            unasked.members.into_iter().collect::<Vec<_>>(),
+            vec![Decision]
         );
     }
 

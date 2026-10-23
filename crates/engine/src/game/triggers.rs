@@ -7845,7 +7845,7 @@ fn record_submitted_trigger_order(
         PinnedDecision, ReplayMode,
     };
 
-    if submitted_order_was_identity {
+    if submitted_order_was_identity || saved_orders_bypassed() {
         return;
     }
     let Some(sources) = group_allcopies_sources(triggers) else {
@@ -7992,6 +7992,31 @@ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTri
     });
 }
 
+thread_local! {
+    static SAVED_ORDERS_BYPASSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether an every-order replay is running, so no saved order applies or is saved.
+fn saved_orders_bypassed() -> bool {
+    SAVED_ORDERS_BYPASSED.with(std::cell::Cell::get)
+}
+
+/// CR 603.3b: while held, every ordering point is asked rather than answered by a saved order.
+#[must_use]
+pub(crate) struct SavedOrdersBypass(bool);
+
+impl SavedOrdersBypass {
+    pub(crate) fn enter() -> Self {
+        SavedOrdersBypass(SAVED_ORDERS_BYPASSED.with(|f| f.replace(true)))
+    }
+}
+
+impl Drop for SavedOrdersBypass {
+    fn drop(&mut self) {
+        SAVED_ORDERS_BYPASSED.with(|f| f.set(self.0));
+    }
+}
+
 /// CR 603.3b gate 3rd arm: try to auto-order `group` from a saved template instead of
 /// re-prompting. Returns `true` iff a template covered the group (caller marks it
 /// `ordered`); `false` ⇒ fall through to the normal prompt. Two tiers, consulted
@@ -8037,6 +8062,9 @@ fn apply_trigger_order_template(
     }
 
     // Persistent consult: an `AllCopies` template may auto-order a fresh batch.
+    if saved_orders_bypassed() {
+        return false;
+    }
     let Some(persistent_sources) = group_allcopies_sources(&group.triggers) else {
         return false;
     };
@@ -8130,7 +8158,7 @@ fn begin_trigger_ordering(
             // CR 603.3b: an ephemeral (coverage-only) or persistent (permute-once)
             // template covered this order-dependent group ⇒ no re-prompt, but the
             // order is still the controller's choice.
-            state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Mandatory);
+            state.record_trigger_order();
             g.ordered = true;
         }
     }

@@ -2589,9 +2589,9 @@ fn setup_3p_poison_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     (runner, kickoff)
 }
 
-/// CR 732.4 + CR 732.2a: the pure lifegain loop is a draw; the same loop with a poison rider is
-/// no draw, and since P0 orders the two triggers each cycle (CR 603.3b) it is offered rather
-/// than won, and taken to P0's win at ten poison counters (CR 704.5c).
+/// CR 732.4 + CR 704.5c: the pure lifegain loop is a draw; the same loop with a poison rider is
+/// no draw. The loop continues whichever of P0's two triggers resolves first (CR 603.3b), so the
+/// order is no decision and P0 wins the mandatory loop outright.
 #[test]
 fn interactive_recurring_poison_is_not_drawn() {
     // CONTROL (differential anchor): the SHARED pure-lifegain structure reaches the CR 732.4
@@ -2609,50 +2609,16 @@ fn interactive_recurring_poison_is_not_drawn() {
 
     let (mut runner, kickoff) = setup_3p_poison_draw(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();
-    let (mut events, wf) = drive_collect(&mut runner, 500);
-    let WaitingFor::LoopShortcut {
-        proposer,
-        predicted_winner,
-        schema,
-        ..
-    } = wf
-    else {
-        panic!("the poison loop must be offered, got {wf:?}");
-    };
-    assert_eq!((proposer, predicted_winner), (P0, Some(P0)));
-    let declared = runner
-        .act(GameAction::DeclareShortcut {
-            count: schema.iteration_count,
-            template: None,
-        })
-        .expect("P0 declares the shortcut");
-    events.extend(declared.events);
-    for responder in [P1, P2] {
-        let WaitingFor::RespondToShortcut { player, .. } = runner.state().waiting_for.clone()
-        else {
-            panic!("{responder:?} must be asked to respond");
-        };
-        assert_eq!(player, responder);
-        let accepted = runner
-            .act(GameAction::RespondToShortcut {
-                response: ShortcutResponse::Accept,
-            })
-            .expect("the responder accepts");
-        events.extend(accepted.events);
-    }
-    assert_eq!(
-        runner.state().waiting_for,
-        WaitingFor::GameOver { winner: Some(P0) }
-    );
+    let (events, wf) = drive_collect(&mut runner, 500);
     let players = &runner.state().players;
+    assert_eq!(wf, WaitingFor::GameOver { winner: Some(P0) });
     assert_eq!(
         players
             .iter()
             .map(|p| p.poison_counters)
             .collect::<Vec<_>>(),
-        vec![0, 10, 10]
+        vec![0, 1, 1]
     );
-    assert!(players[1].is_eliminated && players[2].is_eliminated);
     assert!(
         !events
             .iter()

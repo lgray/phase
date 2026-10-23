@@ -482,6 +482,8 @@ pub(crate) struct PlayTrace {
     carrying: im::HashMap<PlayerId, CarryingIndex>,
     /// The mandatory-recurrence verdict kept for the span starting at this entry.
     witnessed: Option<(usize, bool)>,
+    /// The every-order proof kept for the mandatory span starting at this entry.
+    ordered: Option<(usize, crate::game::period_confirm::OptionProof)>,
 }
 
 impl PlayTrace {
@@ -509,6 +511,7 @@ impl PlayTrace {
             carried_named: im::Vector::new(),
             carrying: im::HashMap::new(),
             witnessed: None,
+            ordered: None,
         }
     }
 
@@ -1770,6 +1773,33 @@ pub(crate) fn note_witnessed(state: &mut GameState, start: usize, verdict: bool)
         .filter(|trace| trace.window == window)
     {
         trace.witnessed = Some((start, verdict));
+    }
+}
+
+/// The every-order proof kept for the mandatory span of the current window starting at `start`.
+pub(crate) fn order_proof(
+    state: &GameState,
+    start: usize,
+) -> Option<crate::game::period_confirm::OptionProof> {
+    current(state)?
+        .ordered
+        .filter(|&(at, _)| at == start)
+        .map(|(_, proof)| proof)
+}
+
+/// Keeps `proof` for the mandatory span of the current window starting at `start`.
+pub(crate) fn note_order_proof(
+    state: &mut GameState,
+    start: usize,
+    proof: crate::game::period_confirm::OptionProof,
+) {
+    let window = WindowKey::of(state);
+    if let Some(trace) = state
+        .play_trace
+        .as_deref_mut()
+        .filter(|trace| trace.window == window)
+    {
+        trace.ordered = Some((start, proof));
     }
 }
 

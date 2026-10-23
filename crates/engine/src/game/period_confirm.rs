@@ -390,13 +390,26 @@ fn renamed(
     }
 }
 
-/// What a replayed cycle ends on: the trigger on top, by source and text, or the kind of entry.
+/// CR 603.2c: one occurrence of a triggered ability, by its source and text.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Occurrence {
+    source_name: String,
+    description: Option<String>,
+}
+
+impl Occurrence {
+    fn of(source_name: &str, description: Option<&String>) -> Self {
+        Self {
+            source_name: source_name.to_owned(),
+            description: description.cloned(),
+        }
+    }
+}
+
+/// What a replayed cycle ends on: the trigger occurrence on top, or the kind of entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TopOfStack {
-    Trigger {
-        source_name: String,
-        description: Option<String>,
-    },
+    Trigger(Occurrence),
     Other(std::mem::Discriminant<StackEntryKind>),
 }
 
@@ -406,10 +419,7 @@ fn top_of_stack(state: &GameState) -> Option<TopOfStack> {
             source_name,
             description,
             ..
-        } => TopOfStack::Trigger {
-            source_name: source_name.clone(),
-            description: description.clone(),
-        },
+        } => TopOfStack::Trigger(Occurrence::of(source_name, description.as_ref())),
         other => TopOfStack::Other(std::mem::discriminant(other)),
     })
 }
@@ -542,11 +552,90 @@ fn replay_cycle(
     items: &[PeriodItem],
     end: &FrameEnd,
     choices: &mut Vec<PinnedDecision>,
+    frames: Option<&mut Vec<GameState>>,
+    events: &mut Vec<GameEvent>,
+) -> Result<Vec<String>, OfferRefusal> {
+    replay_cycle_ordered(replay, items, end, choices, frames, events, None)
+}
+
+/// An occurrence and its rank among the equal occurrences at one ordering point, in prompt order.
+type Label = (Occurrence, usize);
+
+/// CR 603.2c: labels `occurrences` by their rank among equal ones, so equal occurrences stay
+/// distinct triggered abilities to order.
+fn ranked(occurrences: Vec<Occurrence>) -> Vec<Label> {
+    let mut labels: Vec<Label> = Vec::with_capacity(occurrences.len());
+    for occurrence in occurrences {
+        let rank = labels
+            .iter()
+            .filter(|(seen, _)| *seen == occurrence)
+            .count();
+        labels.push((occurrence, rank));
+    }
+    labels
+}
+
+/// CR 603.3b: the occurrences the ordering prompt at `replay` asks about, in prompt order.
+fn point_labels(replay: &GameState) -> Option<Vec<Label>> {
+    let WaitingFor::OrderTriggers { triggers, .. } = &replay.waiting_for else {
+        return None;
+    };
+    let group = replay
+        .pending_trigger_order
+        .as_ref()?
+        .groups
+        .iter()
+        .find(|group| !group.ordered)?;
+    let occurrences = triggers
+        .iter()
+        .zip(&group.triggers)
+        .map(|(summary, context)| {
+            Occurrence::of(&summary.source_name, context.pending.description.as_ref())
+        })
+        .collect();
+    Some(ranked(occurrences))
+}
+
+/// The prompt index of each label of `order`, an order of the prompt's `labels`.
+fn order_indices(labels: &[Label], order: &[Label]) -> Option<Vec<usize>> {
+    let mut used = vec![false; labels.len()];
+    order
+        .iter()
+        .map(|label| {
+            let at = (0..labels.len()).find(|&i| !used[i] && labels[i] == *label)?;
+            used[at] = true;
+            Some(at)
+        })
+        .collect()
+}
+
+/// The priority frame before an ordering point, and the point's labels.
+struct Point {
+    frame: GameState,
+    labels: Vec<Label>,
+}
+
+/// Where an ordered replay stops: the first ordering point is answered by `order` when given, and
+/// the next one is kept in `reached`.
+struct PointStop<'a> {
+    order: Option<&'a [Label]>,
+    reached: Option<Point>,
+}
+
+/// [`replay_cycle`]; with `stop`, priority never ends the cycle and the replay stops at an
+/// ordering point, answering any other prompt no recorded answer takes with its forced answer.
+fn replay_cycle_ordered(
+    replay: &mut GameState,
+    items: &[PeriodItem],
+    end: &FrameEnd,
+    choices: &mut Vec<PinnedDecision>,
     mut frames: Option<&mut Vec<GameState>>,
     events: &mut Vec<GameEvent>,
+    mut stop: Option<&mut PointStop>,
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
+    let mut last_priority: Option<GameState> = None;
     let start = play_trace::WindowKey::of(replay);
     for beat in 0..CYCLE_BEATS {
         if replay.game_end.is_some() || !end.admits(start, replay) {
@@ -562,7 +651,9 @@ fn replay_cycle(
             if let Some(frames) = frames.as_deref_mut() {
                 frames.push(replay.clone());
             }
-            if beat > 0 && end.reached(start, replay) && cycle_complete(items, &done) {
+            if stop.is_some() {
+                last_priority = Some(replay.clone());
+            } else if beat > 0 && end.reached(start, replay) && cycle_complete(items, &done) {
                 return Ok(performed);
             }
             let Some(at) = next else {
@@ -586,25 +677,67 @@ fn replay_cycle(
             }
             continue;
         }
-        let Some(at) = next else {
-            return Err(OfferRefusal::UnanswerablePrompt);
-        };
-        let item = &items[at];
-        if item.play == Some((replay.stack.len(), PromptClass::Other)) {
-            let action = rebound(item, replay);
+        if let (Some(stop), WaitingFor::OrderTriggers { player, .. }) =
+            (stop.as_deref_mut(), &replay.waiting_for)
+        {
+            let player = *player;
+            let labels = point_labels(replay).ok_or(OfferRefusal::UnanswerablePrompt)?;
+            let Some(order) = stop.order.take() else {
+                // A prompt following another with no priority between is no node frame.
+                let frame = last_priority
+                    .take()
+                    .ok_or(OfferRefusal::UnanswerablePrompt)?;
+                stop.reached = Some(Point { frame, labels });
+                return Ok(performed);
+            };
+            let order = order_indices(&labels, order).ok_or(OfferRefusal::UnanswerablePrompt)?;
             step(
                 replay,
-                item.seat,
-                action,
-                OfferRefusal::IllegalReplayedPlay,
+                player,
+                GameAction::OrderTriggers { order },
+                OfferRefusal::UnanswerablePrompt,
                 events,
             )?;
-            done[at] = true;
+            last_priority = None;
             continue;
         }
-        let candidates = at..next_play.unwrap_or(items.len());
-        if !answer(replay, items, &mut done, candidates, choices, events)? {
-            return Err(OfferRefusal::UnanswerablePrompt);
+        let answered = match next {
+            None => false,
+            Some(at) => {
+                let item = &items[at];
+                if item.play == Some((replay.stack.len(), PromptClass::Other)) {
+                    let action = rebound(item, replay);
+                    step(
+                        replay,
+                        item.seat,
+                        action,
+                        OfferRefusal::IllegalReplayedPlay,
+                        events,
+                    )?;
+                    done[at] = true;
+                    continue;
+                }
+                let candidates = at..next_play.unwrap_or(items.len());
+                answer(replay, items, &mut done, candidates, choices, events)?
+            }
+        };
+        if !answered {
+            // CR 608.2d: an order the period did not record meets a choice with one option.
+            let forced = stop
+                .is_some()
+                .then(|| replay.waiting_for.forced_one_option_answer())
+                .flatten()
+                .zip(replay.waiting_for.acting_player());
+            let Some((action, seat)) = forced else {
+                return Err(OfferRefusal::UnanswerablePrompt);
+            };
+            step(
+                replay,
+                seat,
+                action,
+                OfferRefusal::UnanswerablePrompt,
+                events,
+            )?;
         }
     }
     Err(OfferRefusal::NoRecurrence)
@@ -893,17 +1026,26 @@ fn stack_floor(frame: &GameState, next: &GameState) -> usize {
 /// CR 405.5 + CR 608.1: floors are measured on the frames the cover compares, and a refused cycle
 /// keeps nothing.
 fn period_floors(
-    frames: [&GameState; 4],
-    third: &Result<Vec<String>, OfferRefusal>,
+    frames: [&GameState; 3],
+    next: Option<&GameState>,
     casts: &[ObjectId],
 ) -> [usize; 3] {
-    let [a, b, c, d] = frames.map(|frame| normalize_cast_frame(frame, casts));
-    let closing = if third.is_ok() {
-        stack_floor(&c, &d)
-    } else {
-        0
-    };
+    let [a, b, c] = frames.map(|frame| normalize_cast_frame(frame, casts));
+    let closing = next.map_or(0, |next| {
+        stack_floor(&c, &normalize_cast_frame(next, casts))
+    });
     [stack_floor(&a, &b), stack_floor(&b, &c), closing]
+}
+
+/// The objects the period casts.
+fn period_casts(items: &[PeriodItem]) -> Vec<ObjectId> {
+    items
+        .iter()
+        .filter_map(|item| match item.action {
+            GameAction::CastSpell { object_id, .. } => Some(object_id),
+            _ => None,
+        })
+        .collect()
 }
 
 impl ReplayedPeriod {
@@ -919,8 +1061,8 @@ impl ReplayedPeriod {
             &mut Vec::new(),
         );
         period_floors(
-            [&self.s_n, &self.s_n1, &self.replay, &next],
-            &third,
+            [&self.s_n, &self.s_n1, &self.replay],
+            third.is_ok().then_some(&next),
             &self.casts,
         )
     }
@@ -971,13 +1113,7 @@ fn replay_period(frame: &GameState, span: NamedSpan) -> Result<ReplayedPeriod, O
         None,
         &mut Vec::new(),
     );
-    let casts = items
-        .iter()
-        .filter_map(|item| match item.action {
-            GameAction::CastSpell { object_id, .. } => Some(object_id),
-            _ => None,
-        })
-        .collect();
+    let casts = period_casts(&items);
     Ok(ReplayedPeriod {
         holder,
         items,
@@ -1200,6 +1336,270 @@ pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool
             .is_none_or(|&grew| grew <= 0)
 }
 
+/// CR 603.3b: what the every-order proof found of a period's trigger orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OptionProof {
+    /// Under every sequence of orders the loop comes round to a frame the closure covers.
+    Continues,
+    /// Under some sequence of orders the loop ends: the game ends or priority settles on an
+    /// empty stack.
+    Ends,
+    /// Some sequence neither comes round nor ends within the budget.
+    Undecided,
+}
+
+/// Why a closure edge or cover check has no frame: the loop ended, or the replay could not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Halt {
+    Ends,
+    Undecided,
+}
+
+/// CR 104.4b: a refused ordered replay ended the loop only when the game ended or priority
+/// settled on an empty stack; any other refusal leaves the point a decision.
+fn halt(replay: &GameState, refusal: &OfferRefusal) -> Halt {
+    if replay.game_end.is_some()
+        || (matches!(refusal, OfferRefusal::NoRecurrence) && replay.stack.is_empty())
+    {
+        Halt::Ends
+    } else {
+        Halt::Undecided
+    }
+}
+
+/// The most closure edges the proof makes, an edge being one order replayed at one point; with
+/// at most `1 + 2 * ONWARD_POINTS` replays per edge, the replays are linear in the budget.
+const ORDER_EDGES: usize = 25;
+
+/// The most ordering points a cover check replays, per onward frame, to come back to a node's
+/// point; an edge costs at most `1 + 2 * ONWARD_POINTS` replays.
+const ONWARD_POINTS: usize = 8;
+
+/// The number of orders of `labels` labels, saturating rather than overflowing.
+fn order_count(labels: usize) -> usize {
+    (1..=labels)
+        .try_fold(1usize, usize::checked_mul)
+        .unwrap_or(usize::MAX)
+}
+
+/// Every order of the labels `labels`.
+fn class_orders(labels: &[Label]) -> Vec<Vec<Label>> {
+    if labels.is_empty() {
+        return vec![Vec::new()];
+    }
+    let mut out: Vec<Vec<Label>> = Vec::new();
+    for at in 0..labels.len() {
+        let mut rest = labels.to_vec();
+        let first = rest.remove(at);
+        for mut tail in class_orders(&rest) {
+            tail.insert(0, first.clone());
+            out.push(tail);
+        }
+    }
+    out
+}
+
+/// CR 603.3b + CR 104.4b: closes the frames reachable from `root` under every order at every
+/// ordering point: each node is expanded once under each of its orders, and a successor no seen
+/// node with its key covers becomes a node. Ends when an edge or a cover's replay ends the loop;
+/// Undecided on a refusal or when the edges made and pending exceed `budget`.
+fn frame_closure<N, K: PartialEq>(
+    root: N,
+    budget: usize,
+    key: impl Fn(&N) -> K,
+    orders: impl Fn(&N) -> usize,
+    mut successor: impl FnMut(&N, usize) -> Result<N, Halt>,
+    mut covers: impl FnMut(&N, &N) -> Result<bool, Halt>,
+) -> OptionProof {
+    let mut pending = orders(&root);
+    if pending > budget {
+        return OptionProof::Undecided;
+    }
+    let mut nodes = vec![root];
+    let mut work = vec![0];
+    let (mut edges, mut undecided) = (0usize, false);
+    while let Some(at) = work.pop() {
+        let mut reached = Vec::new();
+        for order in 0..orders(&nodes[at]) {
+            pending -= 1;
+            edges += 1;
+            match successor(&nodes[at], order) {
+                Err(Halt::Ends) => return OptionProof::Ends,
+                next => reached.push(next),
+            }
+        }
+        for next in reached {
+            let Ok(next) = next else {
+                undecided = true;
+                continue;
+            };
+            let mut covered = false;
+            for seen in nodes.iter().filter(|seen| key(seen) == key(&next)) {
+                match covers(seen, &next) {
+                    Ok(true) => {
+                        covered = true;
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(Halt::Ends) => return OptionProof::Ends,
+                    Err(Halt::Undecided) => {
+                        undecided = true;
+                        covered = true;
+                        break;
+                    }
+                }
+            }
+            if !covered {
+                pending = pending.saturating_add(orders(&next));
+                if edges.saturating_add(pending) > budget {
+                    return OptionProof::Undecided;
+                }
+                nodes.push(next);
+                work.push(nodes.len() - 1);
+            }
+        }
+    }
+    if undecided {
+        OptionProof::Undecided
+    } else {
+        OptionProof::Continues
+    }
+}
+
+/// The order a road took at each point key; a later point with that key reuses it.
+type Road = Vec<(Vec<Label>, Vec<Label>)>;
+
+/// A node of the proof: the priority frame before an ordering point, and the road to it.
+struct PointNode {
+    point: Point,
+    road: Road,
+    /// The frames before the next two points with this node's key, along `road`.
+    onward: std::cell::OnceCell<Result<[GameState; 2], Halt>>,
+}
+
+fn point_key(labels: &[Label]) -> Vec<Label> {
+    let mut key = labels.to_vec();
+    key.sort();
+    key
+}
+
+/// CR 603.3b + CR 104.4b: replays the span `span` from `frame` under every order at every
+/// ordering point it meets, with saved orders asked rather than applied, closing over the frames
+/// before each point; a frame is covered when the recorded road's certification, with each
+/// frame's floor, equates it with a node at the same point.
+pub(crate) fn trigger_orders(frame: &GameState, span: NamedSpan) -> OptionProof {
+    let WaitingFor::Priority { player: holder } = frame.waiting_for else {
+        return OptionProof::Undecided;
+    };
+    let Some(entries) = play_trace::span_entries(frame, span) else {
+        return OptionProof::Undecided;
+    };
+    let items: Vec<PeriodItem> = period_items(entries, span, frame)
+        .into_iter()
+        .filter(|item| !matches!(item.action, GameAction::OrderTriggers { .. }))
+        .collect();
+    let casts = period_casts(&items);
+    let _probe = SimulationProbeGuard::enter();
+    let _bypass = crate::game::triggers::SavedOrdersBypass::enter();
+    let s0 = replay_base(frame, holder);
+    let end = FrameEnd::of(&s0, holder, span.reach);
+    let living = seats(frame);
+    let step = |from: &GameState, order: Option<&[Label]>, road: Road| -> Result<PointNode, Halt> {
+        #[cfg(feature = "test-support")]
+        crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
+        let mut replay = from.clone();
+        let mut stop = PointStop {
+            order,
+            reached: None,
+        };
+        let out = replay_cycle_ordered(
+            &mut replay,
+            &items,
+            &end,
+            &mut Vec::new(),
+            None,
+            &mut Vec::new(),
+            Some(&mut stop),
+        );
+        match (out, stop.reached) {
+            (Ok(_), Some(point)) => Ok(PointNode {
+                point,
+                road,
+                onward: std::cell::OnceCell::new(),
+            }),
+            (Ok(_), None) => Err(Halt::Undecided),
+            (Err(refusal), _) => Err(halt(&replay, &refusal)),
+        }
+    };
+    let road_with = |node: &PointNode, order: &[Label]| {
+        let key = point_key(&node.point.labels);
+        let mut road = node.road.clone();
+        road.retain(|(k, _)| *k != key);
+        road.push((key, order.to_vec()));
+        road
+    };
+    // The frame before the next point with `node`'s key, each point answered by its key's order
+    // on the road, or by its prompt order where the road has none.
+    let onward = |node: &PointNode| -> Result<PointNode, Halt> {
+        let key = point_key(&node.point.labels);
+        let mut at = PointNode {
+            point: Point {
+                frame: node.point.frame.clone(),
+                labels: node.point.labels.clone(),
+            },
+            road: node.road.clone(),
+            onward: std::cell::OnceCell::new(),
+        };
+        for _ in 0..ONWARD_POINTS {
+            let here = point_key(&at.point.labels);
+            let order = at
+                .road
+                .iter()
+                .find(|(k, _)| *k == here)
+                .map_or_else(|| at.point.labels.clone(), |(_, order)| order.clone());
+            let next = step(&at.point.frame, Some(&order), road_with(&at, &order))?;
+            if point_key(&next.point.labels) == key {
+                return Ok(next);
+            }
+            at = next;
+        }
+        Err(Halt::Undecided)
+    };
+    let Ok(root) = step(&s0, None, Vec::new()) else {
+        return OptionProof::Undecided;
+    };
+    frame_closure(
+        root,
+        ORDER_EDGES,
+        |node| point_key(&node.point.labels),
+        |node| order_count(node.point.labels.len()),
+        |node, order| {
+            let order = class_orders(&node.point.labels).swap_remove(order);
+            step(&node.point.frame, Some(&order), road_with(node, &order))
+        },
+        |seen, next| {
+            let chain = next.onward.get_or_init(|| {
+                let first = onward(next)?;
+                let second = onward(&first)?;
+                Ok([first.point.frame, second.point.frame])
+            });
+            let [y1, y2] = chain.as_ref().map_err(|halt| *halt)?;
+            let floors =
+                period_floors([&seen.point.frame, &next.point.frame, y1], Some(y2), &casts);
+            Ok(living.iter().all(|&seat| {
+                certify_object_growth_frames(
+                    [&seen.point.frame, &next.point.frame, y1],
+                    |state| normalize_cast_frame(state, &casts),
+                    seat,
+                    Some(floors),
+                )
+                .0
+                .certifies()
+            }))
+        },
+    )
+}
+
 /// [`mandatory_period_holds`] on the mandatory span at `state`, a priority frame; `None` when
 /// there is no such span.
 #[cfg(any(test, feature = "test-support"))]
@@ -1371,6 +1771,131 @@ mod tests {
         state
     }
 
+    /// CR 603.2c + CR 603.3b: two occurrences equal in source and text are still two triggered
+    /// abilities, so the orders tried at a point apply every order of the three.
+    #[test]
+    fn every_order_of_equal_occurrences_is_applied() {
+        let occurrence = |name: &str| Occurrence {
+            source_name: name.to_string(),
+            description: None,
+        };
+        let point = ranked(vec![occurrence("T"), occurrence("T"), occurrence("X")]);
+        let applied: std::collections::BTreeSet<Vec<usize>> = class_orders(&point)
+            .iter()
+            .filter_map(|order| order_indices(&point, order))
+            .collect();
+        assert_eq!(applied.len(), 6, "{applied:?}");
+    }
+
+    /// CR 603.3b: an order sequence that ends the loop is found though every repeated order
+    /// continues; with that sequence returning instead, the closure continues.
+    #[test]
+    fn a_mixed_order_that_ends_the_loop_is_found_by_the_frame_closure() {
+        type Table = [[Option<usize>; 2]; 2];
+        let closure = |table: &Table| {
+            frame_closure(
+                0usize,
+                ORDER_EDGES,
+                |_| (),
+                |_| 2,
+                |&node, order| table[node][order].ok_or(Halt::Ends),
+                |seen, next| Ok(seen == next),
+            )
+        };
+        let repeated_orders_continue = |table: &Table| {
+            (0..2).all(|order| {
+                let (mut node, mut seen) = (0, Vec::new());
+                while !seen.contains(&node) {
+                    seen.push(node);
+                    let Some(next) = table[node][order] else {
+                        return false;
+                    };
+                    node = next;
+                }
+                true
+            })
+        };
+        let ends: Table = [[Some(0), Some(1)], [None, Some(1)]];
+        let returns: Table = [[Some(0), Some(1)], [Some(0), Some(1)]];
+        assert!(repeated_orders_continue(&ends));
+        assert_eq!(
+            (closure(&ends), closure(&returns)),
+            (OptionProof::Ends, OptionProof::Continues)
+        );
+        let halted = |halt: Halt| {
+            frame_closure(
+                0usize,
+                ORDER_EDGES,
+                |_| (),
+                |_| 2,
+                |&node, order| returns[node][order].ok_or(Halt::Ends),
+                |_, _| Err(halt),
+            )
+        };
+        assert_eq!(
+            (halted(Halt::Ends), halted(Halt::Undecided)),
+            (OptionProof::Ends, OptionProof::Undecided)
+        );
+        let keyed = frame_closure(
+            0usize,
+            ORDER_EDGES,
+            |&node| node,
+            |_| 2,
+            |&node, order| ends[node][order].ok_or(Halt::Ends),
+            |_, _| Ok(true),
+        );
+        assert_eq!(
+            keyed,
+            OptionProof::Ends,
+            "a cover is sought only at the same point"
+        );
+        assert!(
+            [21, 34, 66]
+                .into_iter()
+                .all(|labels| order_count(labels) > ORDER_EDGES),
+            "an order count past usize saturates past the budget"
+        );
+        let saturated = |root: usize| {
+            frame_closure(
+                root,
+                ORDER_EDGES,
+                |_| (),
+                |&node| if node == 0 { usize::MAX } else { 1 },
+                |_, _| Ok(0),
+                |_, _| Ok(false),
+            )
+        };
+        assert_eq!(
+            (saturated(0), saturated(1)),
+            (OptionProof::Undecided, OptionProof::Undecided)
+        );
+    }
+
+    /// CR 104.4b: a refused ordered replay ends the loop only when the game ended or priority
+    /// settled on an empty stack; any other refusal there stays undecided.
+    #[test]
+    fn a_refused_replay_ends_the_loop_only_when_it_settled_or_the_game_ended() {
+        let empty = GameState::new_two_player(7);
+        let mut ended = with_stack(&[1]);
+        ended.game_end = Some(crate::types::game_state::GameEnd { winner: None });
+        assert_eq!(
+            (
+                halt(&empty, &OfferRefusal::NoRecurrence),
+                halt(&empty, &OfferRefusal::UnanswerablePrompt),
+                halt(&empty, &OfferRefusal::Randomness),
+                halt(&with_stack(&[1]), &OfferRefusal::NoRecurrence),
+                halt(&ended, &OfferRefusal::UnanswerablePrompt),
+            ),
+            (
+                Halt::Ends,
+                Halt::Undecided,
+                Halt::Undecided,
+                Halt::Undecided,
+                Halt::Ends
+            )
+        );
+    }
+
     /// CR 405.5 + CR 400.7: a floor keeps the entries the next frame holds unchanged, so a
     /// resolved trigger and a spell cast again at its old position are above it.
     #[test]
@@ -1427,8 +1952,8 @@ mod tests {
         let [a, b, c, d] = &frames;
         assert_eq!(
             (
-                period_floors([a, b, c, d], &Ok(Vec::new()), &[cast]),
-                period_floors([a, b, c, d], &Err(OfferRefusal::NoRecurrence), &[cast]),
+                period_floors([a, b, c], Some(d), &[cast]),
+                period_floors([a, b, c], None, &[cast]),
             ),
             ([1, 2, 3], [1, 2, 0])
         );

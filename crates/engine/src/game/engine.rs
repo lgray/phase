@@ -1406,6 +1406,7 @@ pub(super) fn apply_action_boundary_with_stack_limit(
     }
     let trace_snapshot = super::play_trace::begin_action(state, semantic_owner, &action);
     let answered = super::play_trace::answered_choice(&action, &state.waiting_for);
+    let ordered = matches!(state.waiting_for, WaitingFor::OrderTriggers { .. });
     let result = apply_action_boundary_core(
         state,
         authenticated_actor,
@@ -1417,7 +1418,11 @@ pub(super) fn apply_action_boundary_with_stack_limit(
     .and_then(|raw| {
         // CR 104.4b: recorded before this action's own auto-pass drive samples the loop.
         if let Some(answer) = answered.filter(|_| raw.result.disposition.is_applied()) {
-            state.record_loop_decision(answer);
+            if ordered {
+                state.record_trigger_order();
+            } else {
+                state.record_loop_decision(answer);
+            }
         }
         finish_action_boundary(state, raw, mode)
     });
@@ -2707,6 +2712,16 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // priority action that could break it)? The single mandatory-vs-optional signal the
     // engine already computes — not a new stored flag.
     let mandatory = no_living_player_has_meaningful_priority_action(state);
+    let order_proof = if mandatory {
+        trigger_order_proof(state)
+    } else {
+        None
+    };
+    let resolve = |profile: crate::types::game_state::LoopDecisionProfile| {
+        profile.with_option_proof(|| {
+            order_proof.unwrap_or(super::period_confirm::OptionProof::Undecided)
+        })
+    };
 
     // Path A: determinate lethal single-winner drain.
     if let Some((winner, delta, prior)) = find_live_loop_winner(state) {
@@ -2718,7 +2733,7 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 .iter()
                 .position(|sample| std::sync::Arc::ptr_eq(sample, &prior))
                 .unwrap_or(0);
-            crate::types::game_state::LoopDecisionProfile::of_window(
+            resolve(crate::types::game_state::LoopDecisionProfile::of_window(
                 state
                     .loop_detect_ring
                     .iter()
@@ -2728,7 +2743,7 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                     tally: state.loop_decision_tally,
                     out: crate::types::game_state::PriorityOut::Absent,
                 },
-            )
+            ))
             .is_forced()
         };
         if forced {
@@ -2851,15 +2866,16 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                             && has_no_loss_axis(&delta)))
                     // CR 104.4b: a period holding an optional action, a decision or an out is
                     // no draw.
-                    && crate::types::game_state::LoopDecisionProfile::of_window(
+                    && resolve(crate::types::game_state::LoopDecisionProfile::of_window(
                         priors[idx..].iter().map(|sample| &**sample),
                         &current_marks,
-                    )
+                    ))
                     .is_forced()
             })
         };
         // CR 732.4: a period the ring cannot show recurring is drawn on its recorded witness.
-        let drawn = drawn || mandatory_recurrence_witnessed(state, &priors, &current_marks);
+        let drawn =
+            drawn || mandatory_recurrence_witnessed(state, &priors, &current_marks, order_proof);
         if drawn {
             super::elimination::end_game(state, None, &mut result.events);
             return;
@@ -2998,6 +3014,7 @@ fn mandatory_recurrence_witnessed(
     state: &mut GameState,
     priors: &[std::sync::Arc<crate::types::LoopDetectSample>],
     current_marks: &crate::types::game_state::LoopDecisionMarks,
+    order_proof: Option<super::period_confirm::OptionProof>,
 ) -> bool {
     let Some(span) = super::play_trace::mandatory_recurrence(state) else {
         return false;
@@ -3016,6 +3033,7 @@ fn mandatory_recurrence_witnessed(
         priors[base..].iter().map(|sample| &**sample),
         current_marks,
     )
+    .with_option_proof(|| order_proof.unwrap_or(super::period_confirm::OptionProof::Undecided))
     .is_forced()
     {
         return false;
@@ -3023,6 +3041,22 @@ fn mandatory_recurrence_witnessed(
     let verdict = super::period_confirm::mandatory_period_holds(state, span);
     super::play_trace::note_witnessed(state, span.start, verdict);
     verdict
+}
+
+/// CR 603.3b: the every-order proof of the mandatory span at `state`, kept per span start; `None`
+/// when no trigger order was made since the ring's first sample.
+fn trigger_order_proof(state: &mut GameState) -> Option<super::period_confirm::OptionProof> {
+    let first = state.loop_detect_ring.front()?.tally.trigger_order;
+    if state.loop_decision_tally.trigger_order == first {
+        return None;
+    }
+    let span = super::play_trace::mandatory_recurrence(state)?;
+    if let Some(proof) = super::play_trace::order_proof(state, span.start) {
+        return Some(proof);
+    }
+    let proof = super::period_confirm::trigger_orders(state, span);
+    super::play_trace::note_order_proof(state, span.start, proof);
+    Some(proof)
 }
 
 /// PR-7 Phase 3: scan the live loop-detect ring for a determinate lethal single-winner,
@@ -30246,7 +30280,8 @@ At the beginning of combat on your turn, you may choose two. Each mode must targ
             runner.state().loop_decision_tally,
             LoopDecisionTally {
                 optional: 1,
-                decision: 0
+                decision: 0,
+                trigger_order: 0,
             }
         );
     }
