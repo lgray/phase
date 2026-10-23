@@ -73,8 +73,13 @@ struct Board {
     /// Marauding Raptor on P0's battlefield and Polyraptor cast from P0's hand, in place of
     /// Worldgorger Dragon and Animate Dead.
     raptor: bool,
-    /// Soul Warden on P0's battlefield.
-    soul_warden: bool,
+    /// Soul Warden on this player's battlefield.
+    soul_warden: Option<PlayerId>,
+    /// Animate Dead returns Grizzly Bears, P0 casts Worldgorger Dragon, which exiles both, and on
+    /// P1's turn P1 casts Murder on the Dragon, so the loop runs on P1's turn.
+    opponents_turn: bool,
+    /// With `opponents_turn`, the Lightning Bolts P1 casts at P0, holding priority, before Murder.
+    opponents_bolts: usize,
     /// Prodigal Sorcerer on P1's battlefield.
     p1_sorcerer: bool,
     /// Lumberknot on P1's battlefield.
@@ -183,7 +188,7 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         scenario.with_mana_pool(P0, pool);
         (polyraptor, None)
     } else {
-        let target_name = if board.bears {
+        let target_name = if board.bears || board.opponents_turn {
             "Grizzly Bears"
         } else {
             "Worldgorger Dragon"
@@ -224,9 +229,17 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         scenario.add_real_card(P0, "Lightning Bolt", Zone::Hand, db);
         scenario.add_real_card(P0, "Mountain", Zone::Battlefield, db)
     });
-    if board.soul_warden {
-        scenario.add_real_card(P0, "Soul Warden", Zone::Battlefield, db);
+    if let Some(seat) = board.soul_warden {
+        scenario.add_real_card(seat, "Soul Warden", Zone::Battlefield, db);
     }
+    let opponents_turn = board.opponents_turn.then(|| {
+        let dragon = scenario.add_real_card(P0, "Worldgorger Dragon", Zone::Hand, db);
+        let murder = scenario.add_real_card(P1, "Murder", Zone::Hand, db);
+        let bolts: Vec<ObjectId> = (0..board.opponents_bolts)
+            .map(|_| scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, db))
+            .collect();
+        (dragon, murder, bolts)
+    });
     if board.p1_sorcerer {
         scenario.add_real_card(P1, "Prodigal Sorcerer", Zone::Battlefield, db);
     }
@@ -261,10 +274,30 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
             .counters
             .insert(CounterType::Minus1Minus1, counters);
     }
-    let (watched, animate) = kickoff;
+    let (mut watched, animate) = kickoff;
     match animate {
         Some(animate) => drop(runner.cast(animate).target_object(watched).commit()),
         None => drop(runner.cast(watched).commit()),
+    }
+    if let Some((dragon, murder, bolts)) = opponents_turn {
+        settle(&mut runner, |state| holds_priority(state, P0));
+        add_mana(&mut runner, P0, &[ManaType::Red; 3]);
+        add_mana(&mut runner, P0, &[ManaType::Colorless; 3]);
+        drop(runner.cast(dragon).commit());
+        settle(&mut runner, |state| holds_priority(state, P0));
+        settle(&mut runner, |state| {
+            state.active_player == P1
+                && state.phase == Phase::PreCombatMain
+                && holds_priority(state, P1)
+        });
+        add_mana(&mut runner, P1, &[ManaType::Black; 2]);
+        add_mana(&mut runner, P1, &[ManaType::Colorless]);
+        for bolt in bolts {
+            add_mana(&mut runner, P1, &[ManaType::Red]);
+            drop(runner.cast(bolt).target_player(P0).commit());
+        }
+        drop(runner.cast(murder).target_object(dragon).commit());
+        watched = dragon;
     }
     Some(Built {
         runner,
@@ -273,6 +306,33 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         maggot,
         p0_mountain,
     })
+}
+
+/// Whether `player` holds priority on an empty stack.
+fn holds_priority(state: &GameState, player: PlayerId) -> bool {
+    state.stack.is_empty()
+        && matches!(state.waiting_for, WaitingFor::Priority { player: holder } if holder == player)
+}
+
+/// Passes priority until `done` holds.
+fn settle(runner: &mut GameRunner, done: impl Fn(&GameState) -> bool) {
+    for _ in 0..200 {
+        if done(runner.state()) {
+            return;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("each player may pass priority");
+    }
+    panic!("the setup did not reach its frame");
+}
+
+fn add_mana(runner: &mut GameRunner, player: PlayerId, kinds: &[ManaType]) {
+    for &kind in kinds {
+        let _ = runner
+            .state_mut()
+            .add_mana_to_pool(player, ManaUnit::new(kind, ObjectId(0), false, vec![]));
+    }
 }
 
 fn run(board: Board, mode: LoopDetectionMode, drive: Drive, beats: usize) -> Option<Run> {
@@ -485,7 +545,9 @@ const PLAIN: Board = Board {
     banisher: false,
     p0_out: false,
     raptor: false,
-    soul_warden: false,
+    soul_warden: None,
+    opponents_turn: false,
+    opponents_bolts: 0,
     p1_sorcerer: false,
     lumberknot: false,
     sink: None,
@@ -1093,7 +1155,7 @@ fn a_poison_axis_loop_is_not_declared() {
 #[test]
 fn a_mandatory_growth_loop_with_an_ordering_point_is_not_declared() {
     let board = Board {
-        soul_warden: true,
+        soul_warden: Some(P0),
         ..RAPTOR
     };
     for drive in EVERY_DRIVE {
@@ -1228,4 +1290,108 @@ fn a_mandatory_period_is_replayed_once_per_span_start() {
         "reach: P1's passes replayed the period"
     );
     assert_eq!(replays_by(P0), 0);
+}
+
+/// Each of a source's triggered abilities below the top of the stack.
+fn buried_triggers(state: &GameState, source: &str) -> usize {
+    state
+        .stack
+        .iter()
+        .rev()
+        .skip(1)
+        .filter(|entry| {
+            matches!(&entry.kind, StackEntryKind::TriggeredAbility { source_name, .. } if source_name == source)
+        })
+        .count()
+}
+
+/// CR 603.3b + CR 405.5 + CR 732.4: on P1's turn, P1's Soul Warden trigger goes on the stack
+/// before P0's trigger of the same event, so each cycle leaves P1's triggers beneath the loop. No
+/// player chooses anything, so the loop is a draw on every drive; with loop detection Off it runs
+/// on.
+#[test]
+fn a_loop_burying_its_opponents_triggers_on_the_opponents_turn_is_a_draw() {
+    let board = Board {
+        soul_warden: Some(P1),
+        opponents_turn: true,
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let mut buried = 0;
+        let Some(run) = run_observed(board, LoopDetectionMode::Interactive, drive, 150, |state| {
+            buried = buried.max(buried_triggers(state, "Soul Warden"));
+        }) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert_eq!(
+            run.prompted("OrderTriggers"),
+            0,
+            "{drive:?}: reach: no player ordered triggers"
+        );
+        assert!(
+            buried >= 2 && run.entries >= 1,
+            "{drive:?}: reach: the Dragon re-entered ({}) over buried Soul Warden triggers ({buried})",
+            run.entries
+        );
+    }
+    let mut seen = Vec::new();
+    let Some(off) = run_observed(board, LoopDetectionMode::Off, Drive::Pass, 150, |state| {
+        seen.push(buried_triggers(state, "Soul Warden"));
+    }) else {
+        return;
+    };
+    assert_eq!(off.terminal, Terminal::BeatsExhausted);
+    assert!(
+        seen[seen.len() / 2] < seen[seen.len() - 1],
+        "reach: the buried Soul Warden triggers keep growing: {seen:?}"
+    );
+}
+
+/// Each spell named `name` on the stack below its top object.
+fn buried_spells(state: &GameState, name: &str) -> usize {
+    state
+        .stack
+        .iter()
+        .rev()
+        .skip(1)
+        .filter(|entry| {
+            matches!(entry.kind, StackEntryKind::Spell { .. })
+                && state
+                    .objects
+                    .get(&entry.id)
+                    .is_some_and(|object| object.name == name)
+        })
+        .count()
+}
+
+/// CR 405.5 + CR 608.1 + CR 732.4: spells P1 cast before the loop began stay beneath it and never
+/// resolve, so the loop is still a draw on every drive.
+#[test]
+fn a_loop_above_its_opponents_spells_is_a_draw() {
+    let board = Board {
+        soul_warden: Some(P1),
+        opponents_turn: true,
+        opponents_bolts: 2,
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let mut bolts = 0;
+        let Some(run) = run_observed(board, LoopDetectionMode::Interactive, drive, 150, |state| {
+            bolts = bolts.max(buried_spells(state, "Lightning Bolt"));
+        }) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert_eq!(
+            run.runner.state().players[0].life,
+            20,
+            "{drive:?}: no Lightning Bolt resolved"
+        );
+        assert!(
+            bolts >= 2 && run.entries >= 1,
+            "{drive:?}: reach: the Dragon re-entered ({}) over buried Lightning Bolts ({bolts})",
+            run.entries
+        );
+    }
 }

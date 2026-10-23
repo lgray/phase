@@ -7710,16 +7710,21 @@ pub(crate) fn clear_frame_bookkeeping(s: &mut GameState) {
 
 /// CR 732.2a: the object-growth producer's certification of its three settle frames — their
 /// normalization, the minted class, and the recurrence cover — with what the cover admitted as
-/// growth.
+/// growth; `floors` are the frames' stack floors when the replay derived them.
 pub(crate) fn certify_object_growth_frames(
     frames: [&GameState; 3],
     normalize: impl Fn(&GameState) -> GameState,
     caster: PlayerId,
+    floors: Option<[usize; 3]>,
 ) -> (
     crate::analysis::resource::ObjectGrowthVerdict,
     crate::analysis::resource::CoveredGrowth,
 ) {
     use crate::analysis::resource::{CoveredGrowth, ObjectGrowthVerdict, PairCover};
+    let (first_floors, second_floors) = match floors {
+        Some([a, b, c]) => (Some((a, b)), Some((b, c))),
+        None => (None, None),
+    };
     let [s_n, s_n1, s_n2] = frames;
     // CR 400.7: normalize each frame BEFORE the cover fork so both arms share the normalized
     // frames.
@@ -7739,10 +7744,13 @@ pub(crate) fn certify_object_growth_frames(
         let first = without(&cs_n, &cs_n1, &first_remade);
         if derived_fodder_class(&first.0, &first.1).is_none() {
             let second = without(&cs_n1, &cs_n2, &second_remade);
-            let covers = |(prior, current): &(GameState, GameState)| {
-                crate::analysis::resource::resource_recurrence_covers(prior, current, caster)
+            let covers = |(prior, current): &(GameState, GameState), floors| {
+                crate::analysis::resource::resource_recurrence_covers(
+                    prior, current, caster, floors,
+                )
             };
-            let (verdict, _) = PairCover::of_pairs(covers(&first), covers(&second));
+            let (verdict, _) =
+                PairCover::of_pairs(covers(&first, first_floors), covers(&second, second_floors));
             return (verdict, CoveredGrowth::PerformedOnly);
         }
     }
@@ -7768,10 +7776,18 @@ pub(crate) fn certify_object_growth_frames(
             )
         }
         None => {
-            let first =
-                crate::analysis::resource::resource_recurrence_covers(&cs_n, &cs_n1, caster);
-            let second =
-                crate::analysis::resource::resource_recurrence_covers(&cs_n1, &cs_n2, caster);
+            let first = crate::analysis::resource::resource_recurrence_covers(
+                &cs_n,
+                &cs_n1,
+                caster,
+                first_floors,
+            );
+            let second = crate::analysis::resource::resource_recurrence_covers(
+                &cs_n1,
+                &cs_n2,
+                caster,
+                second_floors,
+            );
             PairCover::of_pairs(first, second)
         }
     }
@@ -7795,6 +7811,7 @@ pub fn certify_object_growth_frames_for_tests(
         [&views[0], &views[1], &views[2]],
         |frame| super::period_confirm::normalize_cast_frame(frame, casts),
         caster,
+        None,
     )
     .0
 }

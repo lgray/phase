@@ -5153,6 +5153,9 @@ pub enum RecurrenceCover {
     History,
     /// Covered once the caster's own turns and their draws are equalized.
     TurnCycle,
+    /// CR 405.5 + CR 608.1: covered once the entries below each frame's floor, which never
+    /// resolve while the period repeats, are set aside.
+    StackGrowth,
 }
 
 /// CR 732.2a: what the no-mint cover answers of one frame pair.
@@ -5194,12 +5197,93 @@ pub(crate) fn resource_recurrence_covers(
     prior: &GameState,
     current: &GameState,
     caster: PlayerId,
+    floors: Option<(usize, usize)>,
 ) -> Option<PairCover> {
-    if let Some((growth, cover)) = certifying_cover(prior, current, caster) {
+    let buried = floors.map(|(fp, fc)| (buried_ids(prior, fp), buried_ids(current, fc)));
+    let buried = buried.as_ref();
+    if let Some((growth, cover)) = certifying_cover(prior, current, caster, buried) {
         return Some(PairCover::Certified(growth, cover));
     }
     let (prior, current) = without_spend(prior, current, caster)?;
-    certifying_cover(&prior, &current, caster).map(|_| PairCover::Spend)
+    certifying_cover(&prior, &current, caster, buried).map(|_| PairCover::Spend)
+}
+
+/// The entries below `floor`, by id, so a later removal from the frame cannot shift which are
+/// buried.
+fn buried_ids(state: &GameState, floor: usize) -> Vec<ObjectId> {
+    state
+        .stack
+        .iter()
+        .take(floor)
+        .map(|entry| entry.id)
+        .collect()
+}
+
+/// CR 405.5 + CR 608.1: the frame with the buried entries set aside; an object a buried spell is
+/// goes with it, and last known information only they named is pruned by the comparand.
+fn without_buried(state: &GameState, buried: &[ObjectId]) -> GameState {
+    let mut frame = frame_without(state, buried);
+    frame.stack.retain(|entry| !buried.contains(&entry.id));
+    frame
+}
+
+/// CR 115.1 + CR 405.1: whether a working entry targets a buried one or reads the stack, or a
+/// functioning trigger's fire-time condition reads it.
+fn above_floor_reads_buried(state: &GameState, buried: &[ObjectId]) -> bool {
+    let working_reads = state
+        .stack
+        .iter()
+        .filter(|entry| !buried.contains(&entry.id))
+        .any(|entry| {
+            entry.ability().is_some_and(|ability| {
+                let targets_buried = ability
+                    .targets
+                    .iter()
+                    .any(|target| matches!(target, TargetRef::Object(id) if buried.contains(id)));
+                let mut profile = crate::game::ability_rw::ability_rw_profile(ability);
+                if let StackEntryKind::TriggeredAbility {
+                    condition: Some(condition),
+                    ..
+                } = &entry.kind
+                {
+                    profile.merge(crate::game::ability_rw::trigger_condition_rw_profile(
+                        condition,
+                    ));
+                }
+                targets_buried || profile.reads_stack()
+            })
+        });
+    working_reads
+        || state.objects.values().any(|obj| {
+            crate::game::functioning_abilities::active_trigger_definitions(state, obj).any(
+                |active| {
+                    crate::game::triggers::trigger_definition_functions_in_zone(
+                        active.definition,
+                        obj.zone,
+                    ) && active
+                        .definition
+                        .condition
+                        .as_ref()
+                        .is_some_and(|condition| {
+                            crate::game::ability_rw::trigger_condition_rw_profile(condition)
+                                .reads_stack()
+                        })
+                },
+            )
+        })
+}
+
+/// CR 405.5 + CR 608.1: the pair covers when no fewer entries are buried in `current`, nothing
+/// above them reads them, and the frames compare equal with them set aside.
+fn buried_growth_covers(
+    prior: &GameState,
+    current: &GameState,
+    (bp, bc): &(Vec<ObjectId>, Vec<ObjectId>),
+) -> bool {
+    bp.len() <= bc.len()
+        && !above_floor_reads_buried(prior, bp)
+        && !above_floor_reads_buried(current, bc)
+        && covers_modulo_resources(&without_buried(prior, bp), &without_buried(current, bc))
 }
 
 /// CR 701.21a + CR 701.26a: the pair with what `caster` spent across it set aside: a permanent of
@@ -5250,6 +5334,7 @@ fn certifying_cover(
     prior: &GameState,
     current: &GameState,
     caster: PlayerId,
+    buried: Option<&(Vec<ObjectId>, Vec<ObjectId>)>,
 ) -> Option<(CoveredGrowth, RecurrenceCover)> {
     if loop_states_equal_modulo_resources(prior, current) {
         return Some((CoveredGrowth::Mintable, RecurrenceCover::Equal));
@@ -5277,8 +5362,12 @@ fn certifying_cover(
     if history_covers(prior, current) {
         return Some((CoveredGrowth::EQUALIZED_HISTORY, RecurrenceCover::History));
     }
-    turn_cycle_covers(prior, current, caster)
-        .then_some((CoveredGrowth::EQUALIZED_HISTORY, RecurrenceCover::TurnCycle))
+    if turn_cycle_covers(prior, current, caster) {
+        return Some((CoveredGrowth::EQUALIZED_HISTORY, RecurrenceCover::TurnCycle));
+    }
+    buried
+        .filter(|buried| buried_growth_covers(prior, current, buried))
+        .map(|_| (CoveredGrowth::PerformedOnly, RecurrenceCover::StackGrowth))
 }
 
 /// The equality or counter-growth disjunct of the no-mint cover.
@@ -25960,7 +26049,7 @@ mod tests {
         let mut prior = GameState::new_two_player(42);
         cover_library_card(&mut prior, 900, PlayerId(1));
         assert_eq!(
-            resource_recurrence_covers(&prior, &prior.clone(), PlayerId(0)),
+            resource_recurrence_covers(&prior, &prior.clone(), PlayerId(0), None),
             Some(PairCover::Certified(
                 CoveredGrowth::Mintable,
                 RecurrenceCover::Equal
@@ -25970,7 +26059,7 @@ mod tests {
 
         let (prior, current) = no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            resource_recurrence_covers(&prior, &current, PlayerId(0), None),
             Some(PairCover::Certified(
                 CoveredGrowth::PerformedOnly,
                 RecurrenceCover::Departure
@@ -25979,7 +26068,7 @@ mod tests {
 
         let (prior, current) = no_mint_pair_with_departure(PlayerId(0), Zone::Graveyard);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            resource_recurrence_covers(&prior, &current, PlayerId(0), None),
             None
         );
 
@@ -25991,7 +26080,7 @@ mod tests {
             .counters
             .insert(CounterType::Plus1Plus1, 1);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            resource_recurrence_covers(&prior, &current, PlayerId(0), None),
             None,
             "an arrival carrying a counter is not inert"
         );
@@ -26000,7 +26089,7 @@ mod tests {
         cover_library_card(&mut prior, 901, PlayerId(1));
         cover_library_card(&mut current, 901, PlayerId(1));
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            resource_recurrence_covers(&prior, &current, PlayerId(0), None),
             Some(PairCover::Certified(
                 CoveredGrowth::PerformedOnly,
                 RecurrenceCover::Departure
@@ -26014,7 +26103,7 @@ mod tests {
             .counters
             .insert(CounterType::Stun, 1);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, PlayerId(0)),
+            resource_recurrence_covers(&prior, &current, PlayerId(0), None),
             None,
             "the strip relieves only the certified ids"
         );
@@ -26065,7 +26154,7 @@ mod tests {
         let caster = PlayerId(0);
         let (prior, current) = spend_pair();
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, caster),
+            resource_recurrence_covers(&prior, &current, caster, None),
             Some(PairCover::Certified(
                 CoveredGrowth::Mintable,
                 RecurrenceCover::Equal
@@ -26091,7 +26180,7 @@ mod tests {
             let (prior, mut current) = spend_pair();
             spend(&mut current);
             assert_eq!(
-                resource_recurrence_covers(&prior, &current, caster),
+                resource_recurrence_covers(&prior, &current, caster, None),
                 Some(PairCover::Spend),
                 "the caster's permanent {how}"
             );
@@ -26100,7 +26189,7 @@ mod tests {
         let (prior, mut current) = spend_pair();
         set_tapped(&mut current, 801, true);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, caster),
+            resource_recurrence_covers(&prior, &current, caster, None),
             None,
             "another player's permanent became tapped"
         );
@@ -26108,7 +26197,7 @@ mod tests {
         let (mut prior, current) = spend_pair();
         set_tapped(&mut prior, 800, true);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, caster),
+            resource_recurrence_covers(&prior, &current, caster, None),
             None,
             "the caster's permanent became untapped"
         );
@@ -26122,7 +26211,7 @@ mod tests {
             .counters
             .insert(CounterType::Stun, 1);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, caster),
+            resource_recurrence_covers(&prior, &current, caster, None),
             None,
             "the remainder still differs"
         );
@@ -26133,7 +26222,7 @@ mod tests {
             battlefield_creature(frame, 800, 0);
         }
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, caster),
+            resource_recurrence_covers(&prior, &current, caster, None),
             Some(PairCover::Certified(
                 CoveredGrowth::PerformedOnly,
                 RecurrenceCover::Departure
@@ -26142,7 +26231,7 @@ mod tests {
         );
         set_tapped(&mut current, 800, true);
         assert_eq!(
-            resource_recurrence_covers(&prior, &current, caster),
+            resource_recurrence_covers(&prior, &current, caster, None),
             Some(PairCover::Spend),
             "the departure arm admits the remainder"
         );
@@ -27963,17 +28052,305 @@ mod tests {
     /// card leg **FAILS**.
     #[test]
     fn only_a_spent_token_entry_is_inert() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, TargetFilter, TypedFilter,
+        };
         use crate::types::triggers::TriggerMode;
         let entry = || self_trigger(TriggerMode::ChangesZone, Zone::Battlefield, true);
         let leaves = self_trigger(TriggerMode::ChangesZone, Zone::Battlefield, false);
+        let sweeping_entry = entry().execute(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DestroyAll {
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                cant_regenerate: false,
+            },
+        ));
         assert_eq!(
             (
                 grown_with(true, entry()),
                 grown_with(false, entry()),
                 grown_with(true, leaves),
+                grown_with(true, sweeping_entry),
             ),
-            (true, false, false)
+            (true, false, false, true)
         );
+    }
+
+    fn named_entry(
+        entry_id: u64,
+        source_name: &str,
+        ability: Option<ResolvedAbility>,
+    ) -> StackEntry {
+        let mut entry = trigger_entry(entry_id, 500, 0);
+        if let crate::types::game_state::StackEntryKind::TriggeredAbility {
+            source_name: name,
+            ability: body,
+            ..
+        } = &mut entry.kind
+        {
+            *name = source_name.to_string();
+            if let Some(ability) = ability {
+                **body = ability;
+            }
+        }
+        entry
+    }
+
+    fn buried(entry_id: u64) -> StackEntry {
+        named_entry(entry_id, "Buried", None)
+    }
+
+    fn working(entry_id: u64) -> StackEntry {
+        named_entry(entry_id, "Working", None)
+    }
+
+    /// A frame holding `entries`, each with the firing row the scheduler gives a triggered entry.
+    fn stacked(entries: Vec<StackEntry>) -> GameState {
+        let mut state = GameState::new_two_player(7);
+        for entry in &entries {
+            state.stack_trigger_firings.insert(
+                entry.id,
+                crate::types::identifiers::TriggerFiring::UnknownLegacy,
+            );
+        }
+        state.stack.extend(entries);
+        state
+    }
+
+    fn covers_at(prior: &GameState, current: &GameState, (fp, fc): (usize, usize)) -> bool {
+        buried_growth_covers(
+            prior,
+            current,
+            &(buried_ids(prior, fp), buried_ids(current, fc)),
+        )
+    }
+
+    /// CR 405.5 + CR 608.1: a floor that rises by the entries the period buried, with the
+    /// working stacks matching, is covered; a floor that falls is not.
+    #[test]
+    fn buried_growth_is_covered_only_below_a_rising_floor() {
+        let prior = stacked(vec![buried(1), working(2)]);
+        let current = stacked(vec![buried(1), buried(3), working(4)]);
+        assert_eq!(
+            (
+                covers_at(&prior, &current, (1, 2)),
+                covers_at(&current, &prior, (2, 1)),
+            ),
+            (true, false)
+        );
+    }
+
+    /// The spend retry sets aside the entries the floors named, though the spent permanent's own
+    /// entry has left its frame.
+    #[test]
+    fn the_spend_retry_sets_aside_the_entries_the_floors_named() {
+        let x = ObjectId(1);
+        let spell_x = || StackEntry {
+            id: x,
+            source_id: x,
+            controller: PlayerId(0),
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                card_id: crate::types::identifiers::CardId(9),
+                ability: None,
+                casting_variant: Default::default(),
+                actual_mana_spent: 0,
+            },
+        };
+        let with_x = |entries: Vec<StackEntry>, zone: Zone| {
+            let mut state = stacked(entries);
+            state.stack_trigger_firings.remove(&x);
+            state.objects.insert(
+                x,
+                crate::game::game_object::GameObject::new(
+                    x,
+                    crate::types::identifiers::CardId(9),
+                    PlayerId(0),
+                    "X".to_string(),
+                    zone,
+                ),
+            );
+            if zone == Zone::Battlefield {
+                state.battlefield.push_back(x);
+            }
+            state
+        };
+        let taller = resource_recurrence_covers(
+            &with_x(vec![buried(10), working(2)], Zone::Battlefield),
+            &with_x(
+                vec![buried(10), spell_x(), buried(3), working(4), working(5)],
+                Zone::Stack,
+            ),
+            PlayerId(0),
+            Some((1, 3)),
+        );
+        let exact = resource_recurrence_covers(
+            &with_x(vec![buried(10)], Zone::Battlefield),
+            &with_x(vec![buried(10), spell_x(), buried(3)], Zone::Stack),
+            PlayerId(0),
+            Some((1, 3)),
+        );
+        assert_eq!((taller, exact), (None, Some(PairCover::Spend)));
+    }
+
+    /// CR 405.5: working stacks that differ in height or kind, a floor that rises by more or less
+    /// than the entries buried, and the same kind growing above the floor are not covered.
+    #[test]
+    fn working_stacks_that_differ_are_not_covered() {
+        let prior = stacked(vec![buried(1), working(2)]);
+        let current = stacked(vec![buried(1), buried(3), working(4)]);
+        let taller = stacked(vec![buried(1), buried(3), working(4), working(5)]);
+        let other_kind = stacked(vec![buried(1), buried(3), buried(4)]);
+        let spell = || StackEntry {
+            id: ObjectId(1),
+            source_id: ObjectId(1),
+            controller: PlayerId(1),
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                card_id: crate::types::identifiers::CardId(9),
+                ability: None,
+                casting_variant: Default::default(),
+                actual_mana_spent: 0,
+            },
+        };
+        let over_a_spell = |entries: Vec<StackEntry>| {
+            let mut state = stacked(entries);
+            state.stack_trigger_firings.remove(&ObjectId(1));
+            state.objects.insert(
+                ObjectId(1),
+                crate::game::game_object::GameObject::new(
+                    ObjectId(1),
+                    crate::types::identifiers::CardId(9),
+                    PlayerId(1),
+                    "Buried Spell".to_string(),
+                    Zone::Stack,
+                ),
+            );
+            state
+        };
+        let spell_prior = over_a_spell(vec![spell(), working(2)]);
+        assert_eq!(
+            (
+                covers_at(&prior, &current, (1, 2)),
+                covers_at(&prior, &current, (1, 3)),
+                covers_at(&prior, &current, (1, 1)),
+                covers_at(&prior, &taller, (1, 2)),
+                covers_at(&prior, &other_kind, (1, 2)),
+                covers_at(
+                    &spell_prior,
+                    &over_a_spell(vec![spell(), buried(3), working(4)]),
+                    (1, 2)
+                ),
+                covers_at(
+                    &spell_prior,
+                    &over_a_spell(vec![spell(), buried(3), buried(4)]),
+                    (1, 2)
+                ),
+            ),
+            (true, false, false, false, false, true, false)
+        );
+    }
+
+    /// CR 115.1 + CR 405.1: a working entry aimed at a buried entry, or reading the stack's
+    /// shape, keeps the buried entries in the comparand.
+    #[test]
+    fn an_above_floor_reader_of_the_buried_entries_is_not_covered() {
+        use crate::types::ability::{Effect, TargetFilter, TargetRef};
+        let aimed = |entry_id: u64, at: u64| {
+            let mut ability = gain_ability(1);
+            ability.targets = vec![TargetRef::Object(ObjectId(at))];
+            named_entry(entry_id, "Working", Some(ability))
+        };
+        let copier = |entry_id: u64| {
+            let ability = ResolvedAbility::new(
+                Effect::CopySpell {
+                    target: TargetFilter::Any,
+                    retarget: crate::types::ability::CopyRetargetPermission::KeepOriginalTargets,
+                    copier: None,
+                    additional_modifications: vec![],
+                    starting_loyalty_from_casualty_sacrifice: false,
+                },
+                vec![],
+                ObjectId(500),
+                PlayerId(0),
+            );
+            named_entry(entry_id, "Working", Some(ability))
+        };
+        let pair = |top: &dyn Fn(u64) -> StackEntry| {
+            covers_at(
+                &stacked(vec![buried(1), top(2)]),
+                &stacked(vec![buried(1), buried(3), top(4)]),
+                (1, 2),
+            )
+        };
+        let watched = |condition: crate::types::ability::TriggerCondition| {
+            let watcher = |mut state: GameState| {
+                let id = inert_token(&mut state, 800, 0, "Watcher");
+                state.objects.get_mut(&id).unwrap().trigger_definitions =
+                    vec![crate::types::ability::TriggerDefinition::new(
+                        crate::types::triggers::TriggerMode::ChangesZone,
+                    )
+                    .condition(condition.clone())]
+                    .into();
+                state
+            };
+            covers_at(
+                &watcher(stacked(vec![buried(1), working(2)])),
+                &watcher(stacked(vec![buried(1), buried(3), working(4)])),
+                (1, 2),
+            )
+        };
+        let stack_reading = crate::types::ability::TriggerCondition::DuringPlayersTurn {
+            player: crate::types::ability::PlayerFilter::OpponentDealtDamage {
+                kind: crate::types::ability::DamageKindFilter::Any,
+                source: Some(Box::new(TargetFilter::SourceController)),
+                min_sources: 1,
+            },
+        };
+        assert_eq!(
+            (
+                pair(&working),
+                pair(&|id| aimed(id, 1)),
+                pair(&copier),
+                watched(crate::types::ability::TriggerCondition::SourceIsTapped),
+                watched(stack_reading),
+            ),
+            (true, false, false, true, false)
+        );
+    }
+
+    /// CR 608.2h: last known information a working entry names stays compared; what only buried
+    /// entries name is set aside.
+    #[test]
+    fn last_known_information_a_working_entry_names_stays_compared() {
+        let entrant = ObjectId(50);
+        let template = accumulated_entry_frame(7, Some(LkiCarrier::StackEntryEvent));
+        let naming = |entry_id: u64| {
+            let mut entry = template.stack[0].clone();
+            entry.id = ObjectId(entry_id);
+            entry
+        };
+        let frame = |stack: Vec<StackEntry>, power: i32| {
+            let mut state = stacked(stack);
+            state.lki_by_incarnation = template.lki_by_incarnation.clone();
+            state
+                .lki_by_incarnation
+                .get_mut(&entrant)
+                .unwrap()
+                .get_mut(&7)
+                .unwrap()
+                .power = Some(power);
+            state
+        };
+        let only_buried_name = covers_at(
+            &frame(vec![naming(1), working(2)], 2),
+            &frame(vec![naming(1), naming(3), working(4)], 3),
+            (1, 2),
+        );
+        let working_names = covers_at(
+            &frame(vec![buried(1), naming(2)], 2),
+            &frame(vec![buried(1), buried(3), naming(4)], 3),
+            (1, 2),
+        );
+        assert_eq!((only_buried_name, working_names), (true, false));
     }
 
     fn belt_with(edit: impl FnOnce(&mut GameState)) -> bool {

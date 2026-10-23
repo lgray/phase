@@ -872,6 +872,60 @@ fn replay_base(frame: &GameState, holder: PlayerId) -> GameState {
     base
 }
 
+/// CR 405.5 + CR 608.1 + CR 400.7: the bottom of `frame`'s stack that `next` keeps unchanged,
+/// where an entry is its id and the incarnation of the object at it.
+fn stack_floor(frame: &GameState, next: &GameState) -> usize {
+    let key = |state: &GameState, entry: &crate::types::game_state::StackEntry| {
+        let incarnation = state
+            .objects
+            .get(&entry.id)
+            .map(|object| object.incarnation);
+        (entry.id, incarnation)
+    };
+    frame
+        .stack
+        .iter()
+        .zip(next.stack.iter())
+        .take_while(|(a, b)| key(frame, a) == key(next, b))
+        .count()
+}
+
+/// CR 405.5 + CR 608.1: floors are measured on the frames the cover compares, and a refused cycle
+/// keeps nothing.
+fn period_floors(
+    frames: [&GameState; 4],
+    third: &Result<Vec<String>, OfferRefusal>,
+    casts: &[ObjectId],
+) -> [usize; 3] {
+    let [a, b, c, d] = frames.map(|frame| normalize_cast_frame(frame, casts));
+    let closing = if third.is_ok() {
+        stack_floor(&c, &d)
+    } else {
+        0
+    };
+    [stack_floor(&a, &b), stack_floor(&b, &c), closing]
+}
+
+impl ReplayedPeriod {
+    /// Each replayed frame's floor; the closing frame's needs a third cycle.
+    fn floors(&self) -> [usize; 3] {
+        let mut next = self.replay.clone();
+        let third = replay_cycle(
+            &mut next,
+            &self.items,
+            &self.end,
+            &mut Vec::new(),
+            None,
+            &mut Vec::new(),
+        );
+        period_floors(
+            [&self.s_n, &self.s_n1, &self.replay, &next],
+            &third,
+            &self.casts,
+        )
+    }
+}
+
 /// CR 732.2a: replays the span `span` of the current trace twice from `frame`, a priority frame;
 /// the first cycle's refusal refuses, and the second's is kept for the reader.
 fn replay_period(frame: &GameState, span: NamedSpan) -> Result<ReplayedPeriod, OfferRefusal> {
@@ -968,6 +1022,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         [&s_n, &s_n1, current],
         |state| normalize_cast_frame(state, &casts),
         holder,
+        None,
     );
     // CR 732.2a: one count per offer. Something of its proposer's own falling makes the period
     // the counting replay's; any other period with a loss axis is the threshold authority's.
@@ -1098,27 +1153,31 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
 /// no loss axis (CR 704.5c), no driving resource falling on a carried permanent (CR 704.5g,
 /// CR 704.5i, CR 704.5q), and no -1/-1 counter growth (CR 704.5f).
 pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool {
-    let Ok(ReplayedPeriod {
+    let Ok(period @ ReplayedPeriod { second: Ok(_), .. }) = replay_period(frame, span) else {
+        return false;
+    };
+    let floors = period.floors();
+    let ReplayedPeriod {
         casts,
         s_n,
         s_n1,
         replay: s_n2,
-        second: Ok(_),
         _probe,
         ..
-    }) = replay_period(frame, span)
-    else {
-        return false;
-    };
+    } = period;
     let living = seats(frame);
+    let mut buried_growth = false;
     let covered = living.iter().all(|&seat| {
-        certify_object_growth_frames(
+        let verdict = certify_object_growth_frames(
             [&s_n, &s_n1, &s_n2],
             |state| normalize_cast_frame(state, &casts),
             seat,
+            Some(floors),
         )
-        .0
-        .certifies()
+        .0;
+        buried_growth |=
+            verdict == ObjectGrowthVerdict::ResourceRecurrence(Some(RecurrenceCover::StackGrowth));
+        verdict.certifies()
     });
     if !covered {
         return false;
@@ -1128,7 +1187,9 @@ pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool
         &ResourceVector::snapshot(&s_n2),
     );
     delta.tokens_created += minted_battlefield_ids(&s_n1, &s_n2).len() as i64;
-    delta.is_net_progress()
+    // CR 104.4b + CR 405.5: entries the period buries are its unbounded axis.
+    let buried_rises = buried_growth && floors[2] > floors[1];
+    (delta.is_net_progress() || buried_rises)
         && has_no_loss_axis(&delta)
         && living
             .iter()
@@ -1278,6 +1339,100 @@ mod tests {
         AutoPassMode, StackResolutionAutoPassOverlay, StackResolutionBudget, StackResolutionPolicy,
         StackResolutionSession, TurnBoundary,
     };
+
+    fn with_stack(ids: &[u64]) -> GameState {
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility, TargetFilter};
+        use crate::types::game_state::{StackEntry, StackEntryKind};
+        let mut state = GameState::new_two_player(7);
+        state.stack.extend(ids.iter().map(|&id| StackEntry {
+            id: ObjectId(id),
+            source_id: ObjectId(500),
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: ObjectId(500),
+                ability: Box::new(ResolvedAbility::new(
+                    Effect::GainLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                        player: TargetFilter::Controller,
+                    },
+                    vec![],
+                    ObjectId(500),
+                    PlayerId(0),
+                )),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+                provenance: None,
+            },
+        }));
+        state
+    }
+
+    /// CR 405.5 + CR 400.7: a floor keeps the entries the next frame holds unchanged, so a
+    /// resolved trigger and a spell cast again at its old position are above it.
+    #[test]
+    fn a_floor_is_the_stack_the_next_frame_keeps_unchanged() {
+        let spell_frame = |ids: &[u64], incarnation: u64| {
+            let mut state = with_stack(ids);
+            let mut spell = crate::game::game_object::GameObject::new(
+                ObjectId(2),
+                crate::types::identifiers::CardId(2),
+                PlayerId(0),
+                "Spell".to_string(),
+                crate::types::zones::Zone::Stack,
+            );
+            spell.incarnation = incarnation;
+            state.objects.insert(ObjectId(2), spell);
+            state
+        };
+        let frame = spell_frame(&[1, 2, 3], 0);
+        assert_eq!(
+            (
+                stack_floor(&frame, &spell_frame(&[1, 2, 3, 4], 0)),
+                stack_floor(&frame, &spell_frame(&[1, 2, 5], 0)),
+                stack_floor(&frame, &spell_frame(&[1, 2, 3], 1)),
+            ),
+            (3, 2, 1)
+        );
+    }
+
+    /// CR 405.5 + CR 608.1: floors are measured on the frames the cover compares, which hold no
+    /// spell the period cast, and a refused cycle keeps nothing for the frame it began at.
+    #[test]
+    fn floors_are_measured_without_the_periods_casts_and_need_a_completed_cycle() {
+        let cast = ObjectId(9);
+        let frame = |ids: &[u64]| {
+            let mut state = with_stack(ids);
+            state.objects.insert(
+                cast,
+                crate::game::game_object::GameObject::new(
+                    cast,
+                    crate::types::identifiers::CardId(9),
+                    PlayerId(0),
+                    "Cast".to_string(),
+                    crate::types::zones::Zone::Stack,
+                ),
+            );
+            state
+        };
+        let frames = [
+            frame(&[9, 1]),
+            frame(&[9, 1, 2]),
+            frame(&[9, 1, 2, 3]),
+            frame(&[9, 1, 2, 3, 4]),
+        ];
+        let [a, b, c, d] = &frames;
+        assert_eq!(
+            (
+                period_floors([a, b, c, d], &Ok(Vec::new()), &[cast]),
+                period_floors([a, b, c, d], &Err(OfferRefusal::NoRecurrence), &[cast]),
+            ),
+            ([1, 2, 3], [1, 2, 0])
+        );
+    }
 
     /// CR 117.3d: a replay takes only the period's own passes, so neither standing pass survives
     /// into its base.
