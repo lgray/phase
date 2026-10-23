@@ -15442,7 +15442,7 @@ mod tests {
         assert!(!declaration_pending_at_current_phase(&state));
     }
 
-    /// CR 508.1d + CR 508.1h: the declaration is still pending while its attack
+    /// CR 508.1h + CR 508.1j: the declaration is still pending while its attack
     /// tax awaits payment, and complete once the tax is paid.
     #[test]
     fn declaration_pending_at_current_phase_holds_through_an_unpaid_attack_tax() {
