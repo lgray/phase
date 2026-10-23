@@ -27766,6 +27766,19 @@ fn chain_prior_player_declaration(clauses: &[ClauseIr]) -> Option<&ClauseIr> {
         if prev.condition.is_some() {
             return None;
         }
+        // CR 608.2c: a clause absorbed into the search's own result continues that
+        // instruction and names no other player.
+        if matches!(
+            prev.disposition,
+            ClauseDisposition::Continue {
+                continuation: Some(
+                    ContinuationAst::SearchRevealResult
+                        | ContinuationAst::SearchResultClauseHandled
+                )
+            }
+        ) {
+            continue;
+        }
         if has_explicit_player_target(&prev.parsed.effect) {
             return Some(prev);
         }
@@ -28409,6 +28422,16 @@ fn lower_subject_predicate_ast_body(
             // anaphor keeps for its targeted form (imperative.rs
             // `try_parse_choose_exiled_anaphor`).
             if let Effect::ChooseFromZone { chooser, .. } = &mut clause.effect {
+                // CR 608.2c: an anaphoric "that player" subject is the player the chain announced.
+                if subject.target.is_none()
+                    && matches!(affected, TargetFilter::ParentTargetController)
+                {
+                    if let Some(ControllerRef::DeclaredPlayer { group }) = ctx.declared_player_scope
+                    {
+                        *chooser = ZoneChoiceChooser::DeclaredPlayer { group };
+                        return clause;
+                    }
+                }
                 if subject.target.is_none()
                     && matches!(
                         &affected,

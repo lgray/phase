@@ -758,30 +758,23 @@ pub(super) fn parse_choice_partition_destination(
     input: &str,
 ) -> Result<(&str, Zone), nom::Err<OracleError<'_>>> {
     alt((
-        value(
-            Zone::Graveyard,
+        preceded(
+            (
+                tag::<_, _, OracleError<'_>>(" into "),
+                parse_partition_owner_possessive,
+            ),
             alt((
-                tag::<_, _, OracleError<'_>>(" into your graveyard"),
-                tag(" into their graveyard"),
-                tag(" into its owner's graveyard"),
-            )),
-        ),
-        value(
-            Zone::Hand,
-            alt((
-                tag::<_, _, OracleError<'_>>(" into your hand"),
-                tag(" into their hand"),
+                value(Zone::Graveyard, tag("graveyard")),
+                value(Zone::Hand, tag("hand")),
+                value(Zone::Library, tag("library")),
             )),
         ),
         value(
             Zone::Library,
-            alt((
-                tag::<_, _, OracleError<'_>>(" into your library"),
-                tag(" into their library"),
-                tag(" into its owner's library"),
-                tag(" on the bottom of your library"),
-                tag(" on the bottom of their library"),
-            )),
+            preceded(
+                (tag(" on the bottom of "), parse_partition_owner_possessive),
+                tag("library"),
+            ),
         ),
         value(
             Zone::Exile,
@@ -791,6 +784,21 @@ pub(super) fn parse_choice_partition_destination(
             )),
         ),
     ))
+    .parse(input)
+}
+
+/// CR 400.3: these zones are always the owner's, so the possessive selects no player.
+fn parse_partition_owner_possessive(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag("your "),
+            tag("their "),
+            tag("its owner's "),
+            tag("the player's "),
+            tag("that player's "),
+        )),
+    )
     .parse(input)
 }
 
@@ -10431,6 +10439,45 @@ mod tests {
     use super::super::parse_effect_chain;
     use super::*;
     use crate::types::ability::{QuantityExpr, SearchSelectionConstraint, ZoneChoiceChooser};
+
+    #[test]
+    fn choice_partition_destination_accepts_every_owner_possessive() {
+        for possessive in [
+            "your",
+            "their",
+            "its owner's",
+            "the player's",
+            "that player's",
+        ] {
+            for (word, zone) in [
+                ("graveyard", Zone::Graveyard),
+                ("hand", Zone::Hand),
+                ("library", Zone::Library),
+            ] {
+                let text = format!(" into {possessive} {word}");
+                assert_eq!(
+                    parse_choice_partition_destination(&text).ok(),
+                    Some(("", zone)),
+                    "{text}"
+                );
+            }
+            let bottom = format!(" on the bottom of {possessive} library");
+            assert_eq!(
+                parse_choice_partition_destination(&bottom).ok(),
+                Some(("", Zone::Library)),
+                "{bottom}"
+            );
+        }
+        assert_eq!(
+            parse_choice_partition_destination(" into exile").ok(),
+            Some(("", Zone::Exile))
+        );
+        assert!(parse_choice_partition_destination(" into a player's graveyard").is_err());
+        assert_eq!(
+            parse_choice_partition_destination(" into the player's graveyard").ok(),
+            Some(("", Zone::Graveyard))
+        );
+    }
 
     /// SHAPE — CR 608.2c: a conditional destination owns movement; this
     /// detector suppresses only the earlier search's synthesized default.

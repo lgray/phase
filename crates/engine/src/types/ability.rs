@@ -143,6 +143,9 @@ pub enum ZoneChoiceChooser {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         player: Option<PlayerId>,
     },
+    /// CR 608.2c + CR 608.2d: the player announced as the target of the chain
+    /// clause declaring `group` ("That player chooses …").
+    DeclaredPlayer { group: ChosenGroupId },
 }
 
 impl From<Chooser> for ZoneChoiceChooser {
