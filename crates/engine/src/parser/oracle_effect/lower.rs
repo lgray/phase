@@ -7734,7 +7734,7 @@ fn bare_dealt_damage_relative_clause_owns_suffix(input: &str) -> bool {
 /// CR 603.7a + CR 500.1: clause-final "at the beginning of {your next <step> |
 /// that player's next <step> | the <step> on your next turn}" for one named step.
 /// The player is a placeholder rewritten from `binding` at delayed-trigger
-/// creation; CR 513.2: "on your next turn" skips the creation turn's step, and
+/// creation; "on your next turn" skips the creation turn's step, and
 /// CR 608.2c: "that player" is the owner of the object the parent moved.
 fn parse_player_next_step_suffix(input: &str) -> OracleResult<'_, DelayedTriggerCondition> {
     use crate::types::ability::{DelayedTriggerPlayerBinding, TurnGate};
