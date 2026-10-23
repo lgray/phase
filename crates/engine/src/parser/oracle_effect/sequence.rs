@@ -336,6 +336,14 @@ fn has_conditional_search_result_destination(lower: &str) -> bool {
         .is_some()
 }
 
+/// CR 608.2c: a later "put/shuffle the chosen … and the rest …" instruction owns where the found cards go.
+fn has_choice_partition_destinations(lower: &str) -> bool {
+    nom_primitives::scan_at_word_boundaries(lower, |input| {
+        map_opt(rest, parse_choice_partition_destinations).parse(input)
+    })
+    .is_some()
+}
+
 /// Parse count from "choose one/two/three/N of them/those" text using nom combinator.
 /// Handles all chooser prefix forms: "choose ", "you choose ", "an opponent chooses ",
 /// "target opponent chooses ".
@@ -7148,6 +7156,10 @@ pub(super) fn parse_intrinsic_continuation_ast(
             if has_positional_put {
                 return None;
             }
+            // CR 701.24b: the found cards stay in the library until that partition moves them.
+            if has_choice_partition_destinations(&full_lower) {
+                return None;
+            }
             let lower = text.to_lowercase();
             let attach_host = if nom_primitives::scan_contains(&full_lower, "attached to")
                 || nom_primitives::scan_contains(&lower, "attached to")
@@ -9324,12 +9336,13 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
                     .map(|position| ContinuationAst::PutChosenCardsAtLibraryPosition { position })
             }),
         // CR 608.2d: "Choose/You choose/An opponent chooses/Target opponent chooses one/two/N
-        // of them/those" after ChangeZone, ExileTop, RevealTop, or RevealHand →
-        // ChooseFromZone building block
+        // of them/those" after ChangeZone, ExileTop, RevealTop, RevealHand, or a search
+        // whose found cards wait in the library → ChooseFromZone building block
         Effect::ChangeZone { .. }
         | Effect::ExileTop { .. }
         | Effect::RevealTop { .. }
         | Effect::RevealHand { .. }
+        | Effect::SearchLibrary { .. }
             if (nom_primitives::scan_contains(&lower, "of them")
                 || nom_primitives::scan_contains(&lower, "of those"))
                 && alt((

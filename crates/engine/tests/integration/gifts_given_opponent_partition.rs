@@ -31,18 +31,15 @@ struct Resolved {
     shuffled: Vec<PlayerId>,
 }
 
-/// Casts `oracle` from P0 targeting `target`, has P0 find the first four
-/// cards of `library_owner`'s library, and has `expected_chooser` pick
-/// `found[pick.0]` and `found[pick.1]`.
-fn cast_and_choose(
+/// Casts `oracle` from P0 targeting `target` and returns the cards P0's
+/// search offers from `library_owner`'s library.
+fn cast_to_search(
     mut scenario: GameScenario,
     name: &str,
     oracle: &str,
     library_owner: PlayerId,
     target: PlayerId,
-    expected_chooser: PlayerId,
-    pick: (usize, usize),
-) -> Resolved {
+) -> (GameRunner, Vec<ObjectId>) {
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(library_owner, &LIBRARY);
     let spell = scenario
@@ -68,6 +65,61 @@ fn cast_and_choose(
     assert_eq!(player, P0);
     assert_eq!(searched, Some(library_owner));
     assert_eq!(count, 4);
+    (runner, cards)
+}
+
+fn hand_sizes(runner: &GameRunner) -> Vec<usize> {
+    runner
+        .state()
+        .players
+        .iter()
+        .map(|player| player.hand.len())
+        .collect()
+}
+
+fn zone_changes_of<'a>(
+    events: &'a [GameEvent],
+    ids: &'a [ObjectId],
+) -> impl Iterator<Item = (Option<Zone>, Zone)> + 'a {
+    events.iter().filter_map(move |event| match event {
+        GameEvent::ZoneChanged {
+            object_id,
+            from,
+            to,
+            ..
+        } if ids.contains(object_id) => Some((*from, *to)),
+        _ => None,
+    })
+}
+
+fn shuffled_players(events: &[GameEvent]) -> Vec<PlayerId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::PlayerPerformedAction {
+                player_id,
+                action: PlayerActionKind::ShuffledLibrary,
+                ..
+            } => Some(*player_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Casts `oracle` from P0 targeting `target`, has P0 find the first four
+/// cards of `library_owner`'s library, and has `expected_chooser` pick
+/// `found[pick.0]` and `found[pick.1]`.
+fn cast_and_choose(
+    scenario: GameScenario,
+    name: &str,
+    oracle: &str,
+    library_owner: PlayerId,
+    target: PlayerId,
+    expected_chooser: PlayerId,
+    pick: (usize, usize),
+) -> Resolved {
+    let (mut runner, cards) = cast_to_search(scenario, name, oracle, library_owner, target);
+    let hands_at_search = hand_sizes(&runner);
     let found: Vec<_> = cards.into_iter().take(4).collect();
     let mut events = runner
         .act(GameAction::SelectCards {
@@ -95,6 +147,14 @@ fn cast_and_choose(
     let mut found_sorted = found.clone();
     found_sorted.sort();
     assert_eq!(offered_sorted, found_sorted);
+    // CR 701.20b + CR 701.24b: the found cards wait, revealed, in the library.
+    let owner_library = &runner.state().players[library_owner.0 as usize].library;
+    for id in &found {
+        assert_eq!(runner.state().objects[id].zone, Zone::Library, "{id:?}");
+        assert!(owner_library.contains(id), "{id:?}");
+    }
+    assert_eq!(hand_sizes(&runner), hands_at_search);
+    assert!(zone_changes_of(&events, &found).all(|(_, to)| to != Zone::Hand));
 
     let chosen = vec![found[pick.0], found[pick.1]];
     let rest: Vec<_> = found
@@ -102,31 +162,23 @@ fn cast_and_choose(
         .copied()
         .filter(|id| !chosen.contains(id))
         .collect();
-    events.extend(
-        runner
-            .act(GameAction::SelectCards {
-                cards: chosen.clone(),
-            })
-            .expect("the choice resumes the spell")
-            .events,
-    );
+    let choice_events = runner
+        .act(GameAction::SelectCards {
+            cards: chosen.clone(),
+        })
+        .expect("the choice resumes the spell")
+        .events;
+    let moves: Vec<_> = zone_changes_of(&choice_events, &found).collect();
+    assert_eq!(moves.len(), found.len());
+    assert!(moves.iter().all(|(from, _)| *from == Some(Zone::Library)));
+    events.extend(choice_events);
     assert!(runner.state().stack.is_empty());
     assert!(matches!(
         runner.state().waiting_for,
         WaitingFor::Priority { .. }
     ));
 
-    let shuffled = events
-        .iter()
-        .filter_map(|event| match event {
-            GameEvent::PlayerPerformedAction {
-                player_id,
-                action: PlayerActionKind::ShuffledLibrary,
-                ..
-            } => Some(*player_id),
-            _ => None,
-        })
-        .collect();
+    let shuffled = shuffled_players(&events);
     Resolved {
         runner,
         found,
@@ -193,4 +245,24 @@ fn gifts_ungiven_partition_routes_the_casters_cards() {
     assert_in_zone(&r.runner, &r.chosen, P0, Zone::Graveyard);
     assert_in_zone(&r.runner, &r.rest, P0, Zone::Hand);
     assert_eq!(r.shuffled, vec![P0]);
+}
+
+#[test]
+fn gifts_ungiven_finding_nothing_skips_the_choice() {
+    let (mut runner, _) =
+        cast_to_search(GameScenario::new(), "Gifts Ungiven", GIFTS_UNGIVEN, P0, P1);
+    let p0_hand = runner.state().players[0].hand.len();
+    let events = runner
+        .act(GameAction::SelectCards { cards: vec![] })
+        .expect("an empty find resumes the spell")
+        .events;
+    assert!(runner.state().stack.is_empty());
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { .. }
+    ));
+    let p0 = &runner.state().players[0];
+    assert_eq!(p0.library.len(), LIBRARY.len());
+    assert_eq!(p0.hand.len(), p0_hand);
+    assert_eq!(shuffled_players(&events), vec![P0]);
 }
