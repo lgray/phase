@@ -307,7 +307,14 @@ fn clause_delayed_combat_step(clause: &ClauseIr) -> Option<Phase> {
         | DelayedTriggerCondition::AtNextPhaseForPlayer { phase, .. } => {
             Some(*phase).filter(|phase| phase.is_combat())
         }
-        _ => None,
+        DelayedTriggerCondition::AtBeginningOfAddedPhase { .. }
+        | DelayedTriggerCondition::WhenLeavesPlay { .. }
+        | DelayedTriggerCondition::WhenDies { .. }
+        | DelayedTriggerCondition::WhenLeavesPlayFiltered { .. }
+        | DelayedTriggerCondition::WhenEntersBattlefield { .. }
+        | DelayedTriggerCondition::WhenDiesOrExiled { .. }
+        | DelayedTriggerCondition::WheneverEvent { .. }
+        | DelayedTriggerCondition::WhenNextEvent { .. } => None,
     }
 }
 

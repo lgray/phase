@@ -1789,13 +1789,14 @@ fn bind_tracked_set_to_effect(effect: &mut Effect, real_id: TrackedSetId) {
                     bound_target.rebind_tracked_set_sentinel(real_id);
                     bound_target
                 }
-                TargetFilter::ParentTarget | TargetFilter::ParentTargetSlot { .. } => {
-                    TargetFilter::TrackedSetFiltered {
-                        id: real_id,
-                        filter: Box::new(target.clone()),
-                        caused_by: None,
-                    }
-                }
+                // CR 400.7 + CR 603.7c: keeping `SelfRef` inside the set pins the return to the source incarnation latched at creation, so a card re-exiled meanwhile is a new object.
+                TargetFilter::ParentTarget
+                | TargetFilter::ParentTargetSlot { .. }
+                | TargetFilter::SelfRef => TargetFilter::TrackedSetFiltered {
+                    id: real_id,
+                    filter: Box::new(target.clone()),
+                    caused_by: None,
+                },
                 _ => TargetFilter::TrackedSet { id: real_id },
             };
             *effect = Effect::ChangeZoneAll {

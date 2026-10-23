@@ -5095,9 +5095,14 @@ fn declaration_pending_at_current_phase(state: &GameState) -> bool {
             true
         }
         // CR 508.1 + CR 508.2: the declaration is the step's first act and priority follows it, so the step is pending only while the engine waits for that declaration.
+        // CR 508.1h: an unpaid attack tax leaves the declaration in progress.
         Phase::DeclareAttackers => matches!(
             state.waiting_for,
             crate::types::game_state::WaitingFor::DeclareAttackers { .. }
+                | crate::types::game_state::WaitingFor::CombatTaxPayment {
+                    context: crate::types::game_state::CombatTaxContext::Attacking,
+                    ..
+                }
         ),
         Phase::DeclareBlockers
         | Phase::CombatDamage
@@ -15435,6 +15440,55 @@ mod tests {
             player: PlayerId(0),
         };
         assert!(!declaration_pending_at_current_phase(&state));
+    }
+
+    /// CR 508.1d + CR 508.1h: the declaration is still pending while its attack
+    /// tax awaits payment, and complete once the tax is paid.
+    #[test]
+    fn declaration_pending_at_current_phase_holds_through_an_unpaid_attack_tax() {
+        use crate::game::scenario::GameScenario;
+        use crate::types::game_state::WaitingFor;
+        use crate::types::mana::{ManaType, ManaUnit};
+
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let attacker = scenario.add_creature(PlayerId(0), "Taxed", 2, 2).id();
+        let prison = parse_static_line(
+            "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+        )
+        .expect("Ghostly Prison static should parse");
+        scenario
+            .add_creature(PlayerId(1), "Ghostly Prison", 0, 1)
+            .with_static_definition(prison);
+        let mut runner = scenario.build();
+        runner.advance_to_phase(Phase::DeclareAttackers);
+        runner
+            .declare_attackers(&[(attacker, AttackTarget::Player(PlayerId(1)))])
+            .expect("declaring a taxed attacker is legal");
+        assert!(matches!(
+            runner.state().waiting_for,
+            WaitingFor::CombatTaxPayment { .. }
+        ));
+        assert!(declaration_pending_at_current_phase(runner.state()));
+
+        for _ in 0..2 {
+            runner.state_mut().players[0].mana_pool.add(ManaUnit::new(
+                ManaType::Colorless,
+                ObjectId(0),
+                false,
+                Vec::new(),
+            ));
+        }
+        runner
+            .act(crate::types::actions::GameAction::PayCombatTax { accept: true })
+            .expect("paying the attack tax completes the declaration");
+        assert_eq!(runner.state().phase, Phase::DeclareAttackers);
+        assert!(runner
+            .state()
+            .combat
+            .as_ref()
+            .is_some_and(|c| c.attackers.len() == 1));
+        assert!(!declaration_pending_at_current_phase(runner.state()));
     }
 
     /// CR 508.1k: once attackers are declared, the whole `=> false` arm group

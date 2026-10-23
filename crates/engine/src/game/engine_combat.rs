@@ -842,7 +842,7 @@ pub(super) fn handle_assign_blocker_damage(
 ///
 /// This helper is intentionally asymmetric with `handle_empty_blockers`:
 /// - CR 508.8 *explicitly* skips declare blockers and combat damage when there
-///   are no attackers — no priority window is owed during skipped steps, and the declare attackers step owes one only when the declaration triggered.
+///   are no attackers — no priority window is owed during skipped steps.
 /// - CR 509.1 (handled by `handle_empty_blockers`) says the declare blockers
 ///   step still runs even if no blockers are declared, and CR 117.1c requires
 ///   AP priority during it (required for instants and CR 702.49 Ninjutsu-family

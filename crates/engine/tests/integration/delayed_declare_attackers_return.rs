@@ -316,6 +316,25 @@ fn aetherling_moved_out_of_exile_is_not_returned() {
     assert_eq!(zone(&runner, aetherling), Zone::Graveyard);
 }
 
+#[test]
+fn aetherling_exiled_again_before_the_end_step_is_not_returned() {
+    let (scenario, aetherling) = aetherling_scenario();
+    let mut runner = scenario.build();
+
+    activate(&mut runner, aetherling);
+    drain_stack(&mut runner);
+    assert_eq!(zone(&runner, aetherling), Zone::Exile);
+    let mut events = Vec::new();
+    engine::game::zones::move_to_zone(runner.state_mut(), aetherling, Zone::Graveyard, &mut events);
+    engine::game::zones::move_to_zone(runner.state_mut(), aetherling, Zone::Exile, &mut events);
+    assert_eq!(runner.state().delayed_triggers.len(), 1);
+
+    pass_until(&mut runner, |r| r.state().phase == Phase::End);
+    drain_stack(&mut runner);
+    // CR 400.7 + CR 603.7c: the re-exiled card is a new object the delayed return cannot find.
+    assert_eq!(zone(&runner, aetherling), Zone::Exile);
+}
+
 fn add_spell(
     scenario: &mut GameScenario,
     name: &str,
