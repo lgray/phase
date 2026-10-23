@@ -26724,6 +26724,33 @@ fn has_explicit_player_target(effect: &Effect) -> bool {
         .is_some_and(target_filter_is_explicit_player_target)
 }
 
+/// CR 115.1 + CR 108.3: a clause announces a player when it targets one or when the cards it acts on are scoped to a target player's zone ("target player's graveyard").
+fn clause_announces_player(effect: &Effect) -> bool {
+    has_explicit_player_target(effect)
+        || crate::game::ability_utils::effect_bound_filter_matches(
+            effect,
+            filter_owner_is_target_player,
+        )
+}
+
+fn filter_owner_is_target_player(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => tf.properties.iter().any(|prop| {
+            matches!(
+                prop,
+                FilterProp::Owned {
+                    controller: ControllerRef::TargetPlayer | ControllerRef::TargetOpponent,
+                }
+            )
+        }),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(filter_owner_is_target_player)
+        }
+        TargetFilter::Not { filter } => filter_owner_is_target_player(filter),
+        _ => false,
+    }
+}
+
 /// CR 608.2c: Variant of `has_typed_target` that accepts compound filter
 /// shapes (`And` / `Or` wrapping a `Typed`). Effect-kind whitelist mirrors
 /// `has_typed_target` exactly — only the filter-shape recognition is
@@ -27715,7 +27742,7 @@ fn declared_player_reference(
 ) -> Option<TargetFilter> {
     let Some(index) = clauses
         .iter()
-        .rposition(|clause| has_explicit_player_target(&clause.parsed.effect))
+        .rposition(|clause| clause_announces_player(&clause.parsed.effect))
     else {
         return enclosing.clone();
     };
@@ -27766,7 +27793,7 @@ fn chain_prior_player_declaration(clauses: &[ClauseIr]) -> Option<&ClauseIr> {
         if prev.condition.is_some() {
             return None;
         }
-        if has_explicit_player_target(&prev.parsed.effect) {
+        if clause_announces_player(&prev.parsed.effect) {
             return Some(prev);
         }
         if matches!(
@@ -44533,6 +44560,23 @@ fn parse_effect_chain_ir_body(
                 ctx.next_declared_player_group = chain_declared_groups;
                 let mut body_ir = parse_effect_chain_ir(&text, kind, ctx);
                 chain_declared_groups = ctx.next_declared_player_group;
+                // CR 608.2c + CR 614.6: an "instead" body is one replacement of the
+                // earlier instruction, not N independently gated instructions.
+                if outer_condition.is_instead_override() && !builder.is_empty() {
+                    let mut def = lower_effect_chain_ir(&body_ir);
+                    def.condition = Some(outer_condition.clone());
+                    builder
+                        .clause(
+                            normalized_text,
+                            placeholder_parsed_clause("instead_clause_placeholder"),
+                            chunk.boundary_after,
+                            ClauseDisposition::ReplaceMeaning {
+                                kind: ReplaceMeaningKind::Instead(Box::new(def)),
+                            },
+                        )
+                        .push();
+                    continue;
+                }
                 if let Some(last) = body_ir.clauses.last_mut() {
                     if last.boundary.is_none() {
                         last.boundary = chunk.boundary_after;

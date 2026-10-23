@@ -30862,6 +30862,17 @@ impl AbilityCondition {
         AbilityCondition::And { conditions }
     }
 
+    /// CR 608.2c + CR 614.1a: a condition under which this node replaces its parent's effect.
+    pub fn is_instead_override(&self) -> bool {
+        matches!(
+            self,
+            AbilityCondition::AdditionalCostPaidInstead
+                | AbilityCondition::CastVariantPaidInstead { .. }
+                | AbilityCondition::TargetHasKeywordInstead { .. }
+                | AbilityCondition::ConditionInstead { .. }
+        )
+    }
+
     /// Whether this condition carries the CR 603.12 creation marker at its
     /// root. A marker inside `Or`, `Not`, or a nested `And` is intentionally
     /// not a reflexive-body marker.
