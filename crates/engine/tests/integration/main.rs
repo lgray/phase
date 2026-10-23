@@ -325,6 +325,7 @@ mod declaring_clause_no_one;
 mod defending_player_controls_combat_anchor;
 mod deferred_card_type_reflexive_guard;
 mod deferred_target_cost_determination;
+mod delayed_declare_attackers_return;
 mod delayed_departure_lookback;
 mod delayed_event_subject_anaphor_snapshot;
 mod delayed_parent_target_incarnation;

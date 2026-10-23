@@ -83,15 +83,26 @@ pub fn resolve(
     // nonempty published set. An empty chain id (stale pre-choice publish) must
     // not shadow a later nonempty set (Storm Herald delayed exile).
     let tracked_set_id = if uses_tracked_set {
-        state
-            .chain_tracked_set_id
-            .filter(|id| {
-                state
-                    .tracked_object_sets
-                    .get(id)
-                    .is_some_and(|objects| !objects.is_empty())
-            })
-            .or_else(|| crate::game::targeting::latest_tracked_set_id(state))
+        if matches!(
+            &*effect_def.effect,
+            Effect::ChangeZone {
+                target: TargetFilter::SelfRef,
+                ..
+            }
+        ) {
+            // CR 400.7j: a payload naming the source finds only what this ability's own move moved, so it binds that publication as is, empty included.
+            state.chain_tracked_set_id
+        } else {
+            state
+                .chain_tracked_set_id
+                .filter(|id| {
+                    state
+                        .tracked_object_sets
+                        .get(id)
+                        .is_some_and(|objects| !objects.is_empty())
+                })
+                .or_else(|| crate::game::targeting::latest_tracked_set_id(state))
+        }
     } else {
         None
     };
@@ -261,6 +272,14 @@ pub fn resolve(
                 .find_map(|target| match target {
                     TargetRef::Object(id) => state.objects.get(id).map(|obj| obj.owner),
                     TargetRef::Player(_) => None,
+                })
+                // CR 108.3: an untargeted moved object's owner is read from the creation tracked set.
+                .or_else(|| {
+                    tracked_set_id
+                        .and_then(|id| state.tracked_object_sets.get(&id))
+                        .and_then(|objects| objects.first())
+                        .and_then(|id| state.objects.get(id))
+                        .map(|obj| obj.owner)
                 })
                 .unwrap_or(ability.controller),
         };
@@ -1754,6 +1773,7 @@ fn bind_tracked_set_to_effect(effect: &mut Effect, real_id: TrackedSetId) {
             target,
             enters_under,
             enter_tapped,
+            enters_attacking,
             enter_with_counters,
             face_down_profile,
             ..
@@ -1784,7 +1804,8 @@ fn bind_tracked_set_to_effect(effect: &mut Effect, real_id: TrackedSetId) {
                 target: bound_target,
                 enters_under: enters_under.clone(),
                 enter_tapped: *enter_tapped,
-                enters_attacking: false,
+                // CR 508.4: a creature returned "attacking" keeps that instruction through the tracked-set upgrade.
+                enters_attacking: *enters_attacking,
                 enter_with_counters: enter_with_counters.clone(),
                 face_down_profile: face_down_profile.clone(),
                 library_position: None,

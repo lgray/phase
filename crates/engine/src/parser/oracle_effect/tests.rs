@@ -12994,12 +12994,10 @@ fn singular_battlefield_recall_after_chosen_target_exile_keeps_tracked_set() {
     );
 }
 
-/// B6 — hostile, delayed: the rewriter never descends into
-/// CreateDelayedTrigger, so the payload keeps its CR 603.7c ParentTarget
-/// referent with origin pinned to Exile at delayed-trigger creation
-/// (CR 603.7a; Aetherling / Otherworldly Journey shapes).
+/// CR 400.7j + CR 603.7c: a delayed singular recall after a self-exile binds
+/// the source, guarded on the exile it was moved to (Aetherling shape).
 #[test]
-fn singular_battlefield_recall_delayed_keeps_parent_target_payload() {
+fn singular_battlefield_recall_delayed_binds_self_with_exile_origin() {
     let def = parse_effect_chain(
         "Exile ~, then return it to the battlefield at the beginning of the next end step.",
         AbilityKind::Spell,
@@ -13029,12 +13027,12 @@ fn singular_battlefield_recall_delayed_keeps_parent_target_payload() {
     let Effect::ChangeZone {
         origin: Some(Zone::Exile),
         destination: Zone::Battlefield,
-        target: TargetFilter::ParentTarget,
+        target: TargetFilter::SelfRef,
         ..
     } = &*effect.effect
     else {
         panic!(
-            "delayed payload must keep ParentTarget with origin Exile, got {:?}",
+            "delayed payload must bind SelfRef with origin Exile, got {:?}",
             effect.effect
         );
     };
@@ -23994,6 +23992,102 @@ fn strip_temporal_suffix_your_next_main_phase() {
             binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
         })
     );
+}
+
+/// CR 603.7a + CR 500.1: the player-relative next-step suffix composes the
+/// player axis with any single named step.
+#[test]
+fn strip_temporal_suffix_player_next_step_shapes() {
+    use crate::types::ability::{DelayedTriggerPlayerBinding as B, TurnGate as G};
+    for (step_text, phase) in [
+        ("declare attackers step", Phase::DeclareAttackers),
+        ("end step", Phase::End),
+        ("upkeep", Phase::Upkeep),
+    ] {
+        for (shape, binding, gate) in [
+            (format!("your next {step_text}"), B::Controller, G::None),
+            (
+                format!("that player's next {step_text}"),
+                B::ParentTargetOwner,
+                G::None,
+            ),
+            (
+                format!("the {step_text} on your next turn"),
+                B::Controller,
+                G::AfterCreationTurn,
+            ),
+        ] {
+            let text = format!("Return it to the battlefield at the beginning of {shape}");
+            let (rest, cond) = strip_temporal_suffix(&text);
+            assert_eq!(rest, "Return it to the battlefield", "{text}");
+            assert_eq!(
+                cond,
+                Some(DelayedTriggerCondition::AtNextPhaseForPlayer {
+                    phase,
+                    player: crate::types::player::PlayerId(0),
+                    gate,
+                    binding,
+                }),
+                "{text}"
+            );
+        }
+    }
+
+    assert_eq!(
+        strip_temporal_suffix("you draw a card at the beginning of their next upkeep").1,
+        None
+    );
+    let quenchable = "it deals an additional 3 damage to that player or planeswalker at the beginning of your next upkeep step";
+    assert_eq!(
+        strip_temporal_suffix(quenchable).1,
+        Some(DelayedTriggerCondition::AtNextPhaseForPlayer {
+            phase: Phase::Upkeep,
+            player: crate::types::player::PlayerId(0),
+            gate: crate::types::ability::TurnGate::None,
+            binding: crate::types::ability::DelayedTriggerPlayerBinding::Controller,
+        })
+    );
+    assert_eq!(
+        strip_temporal_suffix(&format!(
+            "{quenchable} unless that player or that planeswalker's controller pays {{U}} before that step"
+        ))
+        .1,
+        None
+    );
+}
+
+/// CR 506.1 + CR 608.2c: Noctis's "that combat" rider rides the delayed
+/// declare-attackers return; "this combat" names the current combat and stays
+/// a sibling.
+#[test]
+fn delayed_combat_step_payload_nests_that_combat_continuation() {
+    let text = |combat: &str| {
+        format!(
+            "Exile ~. Return it to the battlefield under its owner's control tapped and attacking at the beginning of that player's next declare attackers step. It can't be blocked {combat} combat."
+        )
+    };
+    let nested = parse_effect_chain(&text("that"), AbilityKind::Activated);
+    let legs = chain_effects(&nested);
+    assert_eq!(legs.len(), 2, "{legs:?}");
+    let Effect::CreateDelayedTrigger { effect, .. } = &legs[1] else {
+        panic!("expected CreateDelayedTrigger, got {:?}", legs[1]);
+    };
+    assert!(
+        matches!(
+            effect.sub_ability.as_deref().map(|sub| &*sub.effect),
+            Some(Effect::GenericEffect { .. })
+        ),
+        "payload must carry the rider: {effect:?}"
+    );
+
+    let sibling = parse_effect_chain(&text("this"), AbilityKind::Activated);
+    let legs = chain_effects(&sibling);
+    assert_eq!(legs.len(), 3, "{legs:?}");
+    let Effect::CreateDelayedTrigger { effect, .. } = &legs[1] else {
+        panic!("expected CreateDelayedTrigger, got {:?}", legs[1]);
+    };
+    assert!(effect.sub_ability.is_none(), "{effect:?}");
+    assert!(matches!(legs[2], Effect::GenericEffect { .. }), "{legs:?}");
 }
 
 #[test]

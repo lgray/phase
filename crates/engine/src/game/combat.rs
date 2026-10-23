@@ -5079,7 +5079,7 @@ pub fn is_on_attacking_team(state: &GameState, player: PlayerId) -> bool {
 
 /// CR 500.1 + CR 506.1 + CR 508.1: whether the declare-attackers step of the
 /// combat phase this turn is IN — or has not yet reached — is still ahead with
-/// the attacking team yet to declare. Reads `state.phase` and `state.combat`
+/// the attacking team yet to declare. Reads `state.phase` and `state.waiting_for`
 /// only; a combat phase that is merely scheduled is the other arm of
 /// `attacker_declaration_pending_for`.
 ///
@@ -5094,15 +5094,11 @@ fn declaration_pending_at_current_phase(state: &GameState) -> bool {
         Phase::Untap | Phase::Upkeep | Phase::Draw | Phase::PreCombatMain | Phase::BeginCombat => {
             true
         }
-        // CR 508.1k: the chosen creatures become attacking creatures, so an
-        // attacking creature is the mark that the turn-based action has run.
-        // CR 508.8 keeps the empty declaration out of this arm: the engine
-        // leaves the step immediately when nothing is declared (pinned by
-        // `declaration_pending_at_current_phase_survives_an_empty_declaration`).
-        Phase::DeclareAttackers => state
-            .combat
-            .as_ref()
-            .is_none_or(|combat| combat.attackers.is_empty()),
+        // CR 508.1 + CR 508.2: the declaration is the step's first act and priority follows it, so the step is pending only while the engine waits for that declaration.
+        Phase::DeclareAttackers => matches!(
+            state.waiting_for,
+            crate::types::game_state::WaitingFor::DeclareAttackers { .. }
+        ),
         Phase::DeclareBlockers
         | Phase::CombatDamage
         | Phase::EndCombat
@@ -15420,7 +15416,25 @@ mod tests {
 
         state.phase = Phase::DeclareAttackers;
         state.combat = Some(CombatState::default());
+        state.waiting_for = build_declare_attackers_waiting_for(&state);
         assert!(declaration_pending_at_current_phase(&state));
+    }
+
+    /// CR 508.2 + CR 508.8: after an empty declaration whose triggers keep the
+    /// step open, the declaration has happened even though no creature attacks.
+    #[test]
+    fn declaration_pending_at_current_phase_is_false_in_the_priority_window_after_an_empty_declaration(
+    ) {
+        let mut state = setup();
+        create_creature(&mut state, PlayerId(0), "Ready", 2, 2);
+        state.phase = Phase::DeclareAttackers;
+        state.combat = Some(CombatState::default());
+        state.waiting_for = build_declare_attackers_waiting_for(&state);
+        assert!(declaration_pending_at_current_phase(&state));
+        state.waiting_for = crate::types::game_state::WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        assert!(!declaration_pending_at_current_phase(&state));
     }
 
     /// CR 508.1k: once attackers are declared, the whole `=> false` arm group

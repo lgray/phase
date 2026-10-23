@@ -491,6 +491,13 @@ pub(super) fn advance_after_empty_attackers(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
 ) -> WaitingFor {
+    // CR 508.2 + CR 508.8: abilities triggered at the beginning of this step resolve in it; the skip is decided when the step ends (the DeclareBlockers arm).
+    if !state.stack.is_empty() {
+        priority::reset_priority(state);
+        return WaitingFor::Priority {
+            player: state.active_player,
+        };
+    }
     mark_empty_attackers_end_combat(state, events);
     auto_advance(state, events)
 }
