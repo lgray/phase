@@ -174,6 +174,7 @@ pub mod mana;
 pub mod manifest;
 pub mod manifest_dread;
 pub mod mill;
+pub mod modify_announced_x;
 pub mod monstrosity;
 pub mod myriad;
 pub mod note_mana_spent;
@@ -7507,6 +7508,7 @@ fn audit_later_instruction(effect: &Effect) -> LaterInstructionAudit<'_> {
         | Effect::SkipNextTurn { .. }
         | Effect::SkipNextStep { .. }
         | Effect::Double { .. }
+        | Effect::ModifyAnnouncedX { .. }
         | Effect::RuntimeHandled { .. }
         | Effect::Incubate { .. }
         | Effect::Amass { .. }
@@ -8778,6 +8780,7 @@ fn effect_fields_read_filter_population(
         | Effect::Bolster { .. }
         | Effect::Adapt { .. }
         | Effect::Learn
+        | Effect::ModifyAnnouncedX { .. }
         | Effect::Forage
         | Effect::CompletePlayerAction { .. }
         | Effect::Harness
@@ -9029,6 +9032,7 @@ fn static_condition_reads_filter_population(
         | StaticCondition::SharesColorWithMostCommonColorAmongPermanents
         | StaticCondition::SourceEnteredThisTurn
         | StaticCondition::SourceHasDealtDamage
+        | StaticCondition::SourceExertedThisTurn
         | StaticCondition::WasCast { .. }
         | StaticCondition::IsRingBearer
         | StaticCondition::RingLevelAtLeast { .. }
@@ -9086,13 +9090,15 @@ fn ward_cost_reads_filter_population(
     use crate::types::keywords::WardCost;
     match cost {
         WardCost::Sacrifice { filter, .. } => filter::filter_operands_contain(filter, leaf),
+        WardCost::Discard { filter, .. } => filter
+            .as_ref()
+            .is_some_and(|f| filter::filter_operands_contain(f, leaf)),
         WardCost::Compound(costs) => costs
             .iter()
             .any(|cost| ward_cost_reads_filter_population(cost, leaf)),
         WardCost::Mana(_)
         | WardCost::PayLife(_)
         | WardCost::PayLifeEqualToPower
-        | WardCost::DiscardCard
         | WardCost::Waterbend(_)
         | WardCost::GetPlayerCounters { .. } => false,
     }
@@ -9103,9 +9109,10 @@ fn ward_cost_reads_filter_population(
 /// `valid_subject_player`, as `delayed_trigger::condition_filter_groups`
 /// enumerates them), its zone-change clauses, its constraint, its condition and
 /// its `unless_pay`. They are evaluated when the trigger's event fires
-/// (CR 603.2, CR 603.4), against the live ledger. Its `execute` chain is the
-/// nested walk's. The struct is destructured without `..`, so a new field is a
-/// compile error here.
+/// (CR 603.2, CR 603.4), against the live ledger. An attack-exert permission's
+/// `attack_cost_condition` is read the same way, as the attackers are declared
+/// (CR 508.1g). Its `execute` chain is the nested walk's. The struct is
+/// destructured without `..`, so a new field is a compile error here.
 fn trigger_matchers_read_filter_population(
     trigger: &crate::types::ability::TriggerDefinition,
     leaf: &dyn Fn(&TargetFilter) -> bool,
@@ -9150,6 +9157,7 @@ fn trigger_matchers_read_filter_population(
         clash_result: _,
         room_door: _,
         granting_object: _,
+        attack_cost_condition,
     } = trigger;
     [valid_card, valid_target, valid_subject_player, valid_source]
         .into_iter()
@@ -9164,6 +9172,9 @@ fn trigger_matchers_read_filter_population(
         || condition
             .as_ref()
             .is_some_and(|condition| trigger_condition_reads_filter_population(condition, leaf))
+        || attack_cost_condition
+            .as_ref()
+            .is_some_and(|condition| static_condition_reads_filter_population(condition, leaf))
         || unless_pay.as_ref().is_some_and(|unless_pay| {
             ability_cost_reads_filter_population(&unless_pay.cost, leaf)
                 || has_filter(&unless_pay.payer)
@@ -9172,8 +9183,9 @@ fn trigger_matchers_read_filter_population(
 
 /// Whether a replacement definition's MATCHERS and own values name a
 /// population satisfying `leaf`: `valid_card`, `damage_source_filter`,
-/// `redirect_target`, its condition, a `MayCost` cost, a damage magnitude, and
-/// the keywords, statics and sacrifice duration of the token specs it adds.
+/// `redirect_target`, its condition, a `MayCost` cost, a damage magnitude, an
+/// entry-payment cap, and the keywords, statics and sacrifice duration of the
+/// token specs it adds.
 /// They are evaluated each time the replaced event would happen (CR 614.1),
 /// against the live ledger. Its `execute` and decline chains are the nested
 /// walk's. The struct is destructured without `..`, so a new field is a
@@ -9222,6 +9234,7 @@ fn replacement_matchers_read_filter_population(
         origin: _,
         counter_replacement_subject: _,
         granting_object: _,
+        entry_payment_max,
     } = replacement;
     let token_spec_reads = |spec: &crate::types::proposed_event::TokenSpec| {
         spec.characteristics
@@ -9257,6 +9270,9 @@ fn replacement_matchers_read_filter_population(
             .as_deref()
             .is_some_and(token_spec_reads)
         || ensure_token_specs.iter().flatten().any(token_spec_reads)
+        || entry_payment_max
+            .as_ref()
+            .is_some_and(|max| quantity_expr_counts_population_matching(max, leaf))
 }
 
 /// Whether a damage modification's magnitude counts a population satisfying
@@ -12327,6 +12343,7 @@ fn resolve_legacy_effect(
         Effect::SkipNextStep { .. } => skip_next_step::resolve(state, ability, events),
         Effect::SkipNextTurn { .. } => skip_next_turn::resolve(state, ability, events),
         Effect::Double { .. } => double::resolve(state, ability, events),
+        Effect::ModifyAnnouncedX { .. } => modify_announced_x::resolve(state, ability, events),
         Effect::RuntimeHandled { .. } => Ok(()), // Handled by dedicated engine path
         Effect::Learn => learn::resolve(state, ability, events),
         Effect::BlightEffect { .. } => blight::resolve(state, ability, events),
@@ -28004,6 +28021,7 @@ mod tests {
                     QuantityRef::DistinctSubtypes {
                         source: objects.clone(),
                         exclude: crate::types::ability::SubtypeExclusion::None,
+                        restrict: None,
                     },
                     QuantityRef::DistinctColorsAmong { source: journal },
                     QuantityRef::ZoneCardCount {
@@ -30094,6 +30112,7 @@ mod tests {
             QuantityRef::DistinctSubtypes {
                 source: source.clone(),
                 exclude: Default::default(),
+                restrict: None,
             },
             QuantityRef::DistinctColorsAmong {
                 source: source.clone(),
@@ -30448,6 +30467,7 @@ mod tests {
                     QuantityRef::DistinctSubtypes {
                         source: population.clone(),
                         exclude: Default::default(),
+                        restrict: None,
                     },
                     QuantityRef::DistinctColorsAmong {
                         source: population.clone(),
@@ -48019,10 +48039,7 @@ mod tests {
         let copy_values = |values: CopiableValues| {
             generic(granting(ContinuousModification::CopyValues {
                 values: Box::new(values),
-                display_source: Default::default(),
-                printed_ref: None,
-                token_image_ref: None,
-                token_art: None,
+                display: Default::default(),
             }))
         };
         let token = |static_abilities: Vec<StaticDefinition>| Effect::Token {
