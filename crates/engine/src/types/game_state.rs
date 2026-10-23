@@ -22713,7 +22713,8 @@ declare_game_state! {
         >,
     >,
     /// CR 104.4b: every loop decision answered so far, in every mode; written only by
-    /// [`GameState::record_loop_decision`]. Live-only: never persisted or compared.
+    /// [`GameState::record_loop_decision`] and [`GameState::record_trigger_order`]. Live-only:
+    /// never persisted or compared.
     #[serde(skip, default)]
     pub(crate) loop_decision_tally: LoopDecisionTally,
     /// CR 732.2a: every play and answer of the current step, and the spans carried past earlier
@@ -33213,7 +33214,7 @@ impl GameState {
     }
 
     /// CR 104.4b: one answered loop decision — `Optional` for a declinable choice (CR 603.5,
-    /// CR 616.1e), `Mandatory` for a choice among several options (CR 603.3b, CR 616.1).
+    /// CR 616.1e), `Mandatory` for a choice among several options (CR 616.1).
     pub(crate) fn record_loop_decision(
         &mut self,
         answer: crate::game::play_trace::AnswerOptionality,
