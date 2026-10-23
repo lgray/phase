@@ -1345,13 +1345,22 @@ fn faiths_shield_fateful_hour_branch_chooses_its_own_color() {
         runner.state().waiting_for
     );
 
-    // REACH-GUARD (d), NOT a discriminator (measured 2 on both trees — it
-    // proves the branch applied, nothing more): one transient continuous
-    // effect per controlled permanent.
+    // REACH-GUARD (d): one transient continuous effect per controlled permanent plus one for you.
     assert_eq!(
         runner.state().transient_continuous_effects.len(),
-        2,
-        "the fateful branch must create one continuous effect per controlled permanent"
+        3,
+        "the fateful branch must create one continuous effect per controlled permanent plus one for you"
+    );
+    // CR 702.16b: "you" is a player recipient, so exactly one effect binds to P0.
+    assert_eq!(
+        runner
+            .state()
+            .transient_continuous_effects
+            .iter()
+            .filter(|tce| tce.affected == TargetFilter::SpecificPlayer { id: P0 })
+            .count(),
+        1,
+        "the fateful branch must bind exactly one continuous effect to you"
     );
 
     // THE ASSERTIONS THAT FLIP: the fateful branch's WIDE scope — "you and
