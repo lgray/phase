@@ -5236,8 +5236,7 @@ fn above_floor_reads_buried(state: &GameState, buried: &[ObjectId]) -> bool {
         .filter(|entry| !buried.contains(&entry.id))
         .any(|entry| {
             entry.ability().is_some_and(|ability| {
-                let targets_buried = ability
-                    .targets
+                let targets_buried = crate::game::ability_utils::flatten_targets_in_chain(ability)
                     .iter()
                     .any(|target| matches!(target, TargetRef::Object(id) if buried.contains(id)));
                 let mut profile = crate::game::ability_rw::ability_rw_profile(ability);
@@ -28249,8 +28248,8 @@ mod tests {
         );
     }
 
-    /// CR 115.1 + CR 405.1: a working entry aimed at a buried entry, or reading the stack's
-    /// shape, keeps the buried entries in the comparand.
+    /// CR 115.1 + CR 405.1: a working entry aimed at a buried entry anywhere in its chain, or
+    /// reading the stack's shape, keeps the buried entries in the comparand.
     #[test]
     fn an_above_floor_reader_of_the_buried_entries_is_not_covered() {
         use crate::types::ability::{Effect, TargetFilter, TargetRef};
@@ -28258,6 +28257,13 @@ mod tests {
             let mut ability = gain_ability(1);
             ability.targets = vec![TargetRef::Object(ObjectId(at))];
             named_entry(entry_id, "Working", Some(ability))
+        };
+        let aimed_down_chain = |entry_id: u64, link: fn(&mut ResolvedAbility, ResolvedAbility)| {
+            let mut linked = gain_ability(1);
+            linked.targets = vec![TargetRef::Object(ObjectId(1))];
+            let mut root = gain_ability(1);
+            link(&mut root, linked);
+            named_entry(entry_id, "Working", Some(root))
         };
         let copier = |entry_id: u64| {
             let ability = ResolvedAbility::new(
@@ -28309,11 +28315,17 @@ mod tests {
             (
                 pair(&working),
                 pair(&|id| aimed(id, 1)),
+                pair(&|id| aimed_down_chain(id, |root, sub| {
+                    root.sub_ability = Some(Box::new(sub))
+                })),
+                pair(&|id| aimed_down_chain(id, |root, otherwise| {
+                    root.else_ability = Some(Box::new(otherwise))
+                })),
                 pair(&copier),
                 watched(crate::types::ability::TriggerCondition::SourceIsTapped),
                 watched(stack_reading),
             ),
-            (true, false, false, true, false)
+            (true, false, false, false, false, true, false)
         );
     }
 
