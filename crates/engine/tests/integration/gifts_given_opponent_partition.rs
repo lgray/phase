@@ -266,3 +266,82 @@ fn gifts_ungiven_finding_nothing_skips_the_choice() {
     assert_eq!(p0.hand.len(), p0_hand);
     assert_eq!(shuffled_players(&events), vec![P0]);
 }
+
+/// Verbatim Scryfall Oracle text.
+const THREATS_UNDETECTED: &str = "Search your library for up to four creature cards with \
+different powers and reveal them. An opponent chooses two of those cards. Shuffle the chosen \
+cards into your library and put the rest into your hand.";
+
+#[test]
+fn threats_undetected_chosen_cards_stay_in_the_library_through_one_shuffle() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let creatures: Vec<ObjectId> = (1..=5)
+        .map(|power| {
+            scenario
+                .add_spell_to_library_top(P0, &format!("Power {power}"), false)
+                .as_creature()
+                .id()
+        })
+        .collect();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Threats Undetected", false, THREATS_UNDETECTED)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    for (id, power) in creatures.iter().zip(1..) {
+        let obj = runner.state_mut().objects.get_mut(id).unwrap();
+        obj.power = Some(power);
+        obj.base_power = Some(power);
+        obj.toughness = Some(1);
+        obj.base_toughness = Some(1);
+    }
+    runner.cast(spell).resolve();
+
+    let WaitingFor::SearchChoice { cards, count, .. } = runner.state().waiting_for.clone() else {
+        panic!(
+            "expected SearchChoice, got {:?}",
+            runner.state().waiting_for
+        );
+    };
+    assert_eq!(count, 4);
+    let found: Vec<_> = cards.into_iter().take(4).collect();
+    let mut events = runner
+        .act(GameAction::SelectCards {
+            cards: found.clone(),
+        })
+        .expect("search selection resumes the spell")
+        .events;
+    let WaitingFor::ChooseFromZoneChoice { player, .. } = runner.state().waiting_for.clone() else {
+        panic!(
+            "expected ChooseFromZoneChoice, got {:?}",
+            runner.state().waiting_for
+        );
+    };
+    assert_eq!(player, P1);
+
+    let chosen = vec![found[0], found[2]];
+    let rest = vec![found[1], found[3]];
+    events.extend(
+        runner
+            .act(GameAction::SelectCards {
+                cards: chosen.clone(),
+            })
+            .expect("the choice resumes the spell")
+            .events,
+    );
+    assert!(runner.state().stack.is_empty());
+
+    let p0 = &runner.state().players[0];
+    for id in &chosen {
+        assert_eq!(runner.state().objects[id].zone, Zone::Library, "{id:?}");
+        assert!(p0.library.contains(id), "{id:?}");
+    }
+    assert_in_zone(&runner, &rest, P0, Zone::Hand);
+    assert_eq!(
+        zone_changes_of(&events, &rest).collect::<Vec<_>>(),
+        vec![(Some(Zone::Library), Zone::Hand); 2]
+    );
+    assert_eq!(zone_changes_of(&events, &chosen).count(), 0, "{events:?}");
+    assert_eq!(shuffled_players(&events), vec![P0]);
+}

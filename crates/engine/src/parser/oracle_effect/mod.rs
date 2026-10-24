@@ -23590,6 +23590,7 @@ fn try_parse_target_subject_multi_target_damage_chain(
         multi_target: application.multi_target,
         inherits_parent: application.inherits_parent,
         is_optional: application.is_optional,
+        player_anaphor: application.player_anaphor,
     };
     let clause = try_parse_multi_target_damage_chain_inner(predicate, &mut tentative_ctx)?;
     let wrapped = wrap_target_subject_damage(clause, &subject)?;
@@ -24783,6 +24784,7 @@ fn try_parse_shared_equal_to_quantity_compound(
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     });
     let (head, tail) = verbs.split_first()?;
     // CR 608.2c: instructions resolve in the order written — right-fold the
@@ -28422,14 +28424,24 @@ fn lower_subject_predicate_ast_body(
             // anaphor keeps for its targeted form (imperative.rs
             // `try_parse_choose_exiled_anaphor`).
             if let Effect::ChooseFromZone { chooser, .. } = &mut clause.effect {
-                // CR 608.2c: an anaphoric "that player" subject is the player the chain announced.
                 if subject.target.is_none()
                     && matches!(affected, TargetFilter::ParentTargetController)
                 {
-                    if let Some(ControllerRef::DeclaredPlayer { group }) = ctx.declared_player_scope
-                    {
-                        *chooser = ZoneChoiceChooser::DeclaredPlayer { group };
-                        return clause;
+                    match (subject.player_anaphor, &ctx.declared_player_scope) {
+                        // CR 608.2c: "that player" names the player the chain announced.
+                        (
+                            Some(nom_target::PlayerAnaphor::ThatPlayer),
+                            Some(ControllerRef::DeclaredPlayer { group }),
+                        ) => {
+                            *chooser = ZoneChoiceChooser::DeclaredPlayer { group: *group };
+                            return clause;
+                        }
+                        // CR 608.2c: "its controller" names an object's controller, which no
+                        // zone chooser represents.
+                        (Some(nom_target::PlayerAnaphor::ItsController), _) => {
+                            return parsed_clause(Effect::unimplemented("choose", text.clone()));
+                        }
+                        _ => {}
                     }
                 }
                 if subject.target.is_none()
@@ -29901,6 +29913,7 @@ impl CarriedPlayerSubject {
             multi_target: None,
             inherits_parent: declared,
             is_optional: false,
+            player_anaphor: None,
         }
     }
 }

@@ -2989,6 +2989,7 @@ fn prepared_designation_subject_unclassified_subject_stays_single() {
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     };
     let yours = TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You));
 
@@ -88583,6 +88584,7 @@ mod carried_player_reference_tests {
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         }
     }
 
@@ -88743,6 +88745,7 @@ mod carried_player_reference_tests {
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         };
         let mut gain = gain_life_controller();
         inject_subject_target(
@@ -90613,6 +90616,7 @@ mod controller_anaphor_antecedent_writer_tests {
             multi_target,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         }
     }
 
@@ -92413,4 +92417,34 @@ fn that_player_chooser_without_a_declared_player_is_not_bound_to_one() {
         !matches!(chooser, ZoneChoiceChooser::DeclaredPlayer { .. }),
         "{chooser:?}"
     );
+}
+
+#[test]
+fn only_that_player_binds_the_declared_player_as_zone_chooser() {
+    let chooser_of = |text: &str| {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let chooser = chain_defs(&def).into_iter().find_map(|d| match &*d.effect {
+            Effect::ChooseFromZone { chooser, .. } => Some(*chooser),
+            _ => None,
+        });
+        (chooser, chain_has_unimplemented(&def), def)
+    };
+    let (chooser, unimplemented, def) = chooser_of(
+        "Search target opponent's library for four cards with different names and reveal them. That player chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand. Then that player shuffles their library.",
+    );
+    assert!(
+        matches!(chooser, Some(ZoneChoiceChooser::DeclaredPlayer { .. })) && !unimplemented,
+        "{def:?}"
+    );
+    for text in [
+        "Search target opponent's library for four cards with different names and reveal them. Its controller chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand.",
+        "Search target opponent's library for four cards with different names and reveal them. Tap target creature. Its controller chooses two of those cards. Put the chosen cards into the player's graveyard and the rest into your hand.",
+    ] {
+        let (chooser, unimplemented, def) = chooser_of(text);
+        assert!(
+            !matches!(chooser, Some(ZoneChoiceChooser::DeclaredPlayer { .. })),
+            "{text}: {def:?}"
+        );
+        assert!(unimplemented, "{text}: {def:?}");
+    }
 }
