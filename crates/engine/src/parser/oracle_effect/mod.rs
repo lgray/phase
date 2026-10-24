@@ -1466,6 +1466,22 @@ fn apply_outer_condition_to_clause(outer: &AbilityCondition, clause: &mut Clause
     clause.condition = Some(merge_clause_conditions(outer.clone(), inner));
 }
 
+/// CR 608.2c + CR 614.6: an "instead" override's `condition` selects the
+/// replacement and its `else_ability` carries the unreplaced instructions, so a
+/// body with its own guard or otherwise branch resolves beneath a no-op carrier
+/// instead of surrendering them to the selector.
+pub(super) fn instead_override_definition(
+    body: AbilityDefinition,
+    selector: AbilityCondition,
+) -> AbilityDefinition {
+    if body.condition.is_none() && body.else_ability.is_none() {
+        return body.condition(selector);
+    }
+    AbilityDefinition::new(body.kind, Effect::NoOp)
+        .condition(selector)
+        .sub_ability(body)
+}
+
 /// CR 608.2c: Propagate the committed `ChoiceType` from a chain's head
 /// `Effect::Choose` onto every `GuessSubject::CommittedChoice` in the assembled
 /// definition. The head `Choose` is the in-resolution authority for "the last
@@ -26726,29 +26742,13 @@ fn has_explicit_player_target(effect: &Effect) -> bool {
 
 /// CR 115.1 + CR 108.3: a clause announces a player when it targets one or when the cards it acts on are scoped to a target player's zone ("target player's graveyard").
 fn clause_announces_player(effect: &Effect) -> bool {
+    use crate::game::ability_utils::{
+        effect_bound_filter_matches, filter_binds_target_player, PlayerBindingAxis,
+    };
     has_explicit_player_target(effect)
-        || crate::game::ability_utils::effect_bound_filter_matches(
-            effect,
-            filter_owner_is_target_player,
-        )
-}
-
-fn filter_owner_is_target_player(filter: &TargetFilter) -> bool {
-    match filter {
-        TargetFilter::Typed(tf) => tf.properties.iter().any(|prop| {
-            matches!(
-                prop,
-                FilterProp::Owned {
-                    controller: ControllerRef::TargetPlayer | ControllerRef::TargetOpponent,
-                }
-            )
-        }),
-        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
-            filters.iter().any(filter_owner_is_target_player)
-        }
-        TargetFilter::Not { filter } => filter_owner_is_target_player(filter),
-        _ => false,
-    }
+        || effect_bound_filter_matches(effect, |filter| {
+            filter_binds_target_player(filter, PlayerBindingAxis::Owner)
+        })
 }
 
 /// CR 608.2c: Variant of `has_typed_target` that accepts compound filter
@@ -44563,8 +44563,10 @@ fn parse_effect_chain_ir_body(
                 // CR 608.2c + CR 614.6: an "instead" body is one replacement of the
                 // earlier instruction, not N independently gated instructions.
                 if outer_condition.is_instead_override() && !builder.is_empty() {
-                    let mut def = lower_effect_chain_ir(&body_ir);
-                    def.condition = Some(outer_condition.clone());
+                    let def = instead_override_definition(
+                        lower_effect_chain_ir(&body_ir),
+                        outer_condition.clone(),
+                    );
                     builder
                         .clause(
                             normalized_text,
