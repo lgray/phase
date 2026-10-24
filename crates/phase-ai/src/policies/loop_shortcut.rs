@@ -2139,8 +2139,7 @@ mod tests {
 
     /// CR 732.5 + CR 104.4b: Worldgorger Dragon under Animate Dead loops with P1's Lightning Bolt
     /// outside it. Driven to the engine's offer of a draw without end, two AI seats play it out:
-    /// whether P0 declares (P1 shortens and bolts) or declines (P1 bolts), the loop is left with
-    /// no out and the game is a draw.
+    /// whichever way the seats answer it, the game is a draw.
     #[test]
     fn ai_seats_play_an_out_only_loop_offer_to_a_draw() {
         use crate::auto_play::{run_ai_actions_bounded, AiActionsStop};

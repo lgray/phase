@@ -20306,8 +20306,7 @@ pub enum LoopDetectionMode {
     /// mandatory lethal drain it OFFERS the interactive loop-shortcut + runs the APNAP
     /// accept-or-shorten window for an OPTIONAL winning drain, and adds the CR 732.4
     /// all-mandatory net-progress no-loss DRAW. A mandatory winning drain still
-    /// auto-wins exactly as `On` does. Opt-in / default stays `Off`. (Phase 4 reuses
-    /// this same mode for B5's non-winning hold — one serialized-enum add, not two.)
+    /// auto-wins exactly as `On` does. Opt-in / default stays `Off`.
     Interactive,
 }
 

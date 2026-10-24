@@ -375,9 +375,9 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
         (28, 29),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
-         The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
-         arm), `interactive_loop_bridge` (drain bridge arm) and \
-         `try_offer_bounded_cycle_shortcut` (bounded arm), all in `engine/src/game/engine.rs`. \
+         The four CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
+         arm), `interactive_loop_bridge` (drain bridge arm), `offer_draw_without_end` \
+         (out-only ring arm) and `try_offer_bounded_cycle_shortcut` (bounded arm), all in `engine/src/game/engine.rs`. \
          `game/visibility.rs`'s `filter_state_for_viewer` writer is EXCLUDED by name and not \
          silently: it re-emits an ALREADY-minted offer into a per-viewer projection and cannot \
          run unless `state.waiting_for` is already a `LoopShortcut`. `game/derived_views.rs`'s \

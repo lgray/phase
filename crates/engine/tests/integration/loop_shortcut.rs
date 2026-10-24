@@ -2562,7 +2562,7 @@ fn b3_declare_refuses_a_schedule_breaking_inside_the_declared_count() {
     );
 }
 
-// ═══════════════════ PR-7 Phase 4c — B5 revocable-∞ + LOW-2 ═══════════════════
+// ═══════════════════ PR-7 Phase 4c — draw gate + LOW-2 ═══════════════════
 
 /// Poison rider for the DRAW-gate behavioral test: fires on the SAME "whenever you gain
 /// life" event the SELF_LIFE_ENGINE cascade pumps, dripping a poison counter onto each
@@ -8068,13 +8068,12 @@ fn r6a_drive_to_boundary(state: &mut GameState) {
 /// which bounds the boundary prompt per CR 732.2c); what this engine defers is APPLYING it, until
 /// the CR 500.5 boundary (`game::turns`), while the game advances to the proposal's ending point
 /// (CR 732.2c; `types::game_state`'s `scheduled_collapse_axes` doc has the full reading). This test
-/// pins what the engine DOES during that window: the marks and their enablers are still live, so the
+/// pins what the engine DOES during that window: the marks are still live, so the
 /// projection KEEPS every `∞` surface. CR 732.2c bounds the collapse; it never licensed hiding a
 /// mark the store still carries, which is what the BASE gate used it for.
 ///
 /// NEVER HIDE — and never filter the store either. The store must still carry the mark
-/// (the engine-state enabler lockstep and `zones::apply_zone_exit_cleanup`'s defuse read it until
-/// the boundary applies the growth), so this row asserts store AND wire.
+/// (the boundary reads it until it applies the growth), so this row asserts store AND wire.
 ///
 /// NON-VACUITY: every wire assertion here is a NON-emptiness paired with the store's own
 /// non-emptiness at (1), so a projection that returned nothing fails immediately.
@@ -8276,8 +8275,7 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
     assert_eq!(
         state.unbounded_resources.get(&P0),
         Some(&marked),
-        "the ∞ store must survive the projection (the engine-state enabler lockstep + the \
-         zone-exit defuse still need it until the boundary)"
+        "the ∞ store must survive the projection (the boundary still reads it)"
     );
     assert!(
         !state.unbounded_loop_pile.is_empty(),
@@ -8291,7 +8289,7 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
 /// fixture (nothing is stale there) — this test is what makes the distinction bite.
 ///
 /// The store/wire split is the whole contract: `unbounded_loop_pile` must stay unfiltered
-/// because the boundary collapse and `zones::apply_zone_exit_cleanup`'s defuse both read it,
+/// because the boundary collapse reads it,
 /// so the liveness filter has to live in the projection.
 ///
 /// MUTATIONS (RUN, measured over the 164-test loop/∞ blast radius):
@@ -8349,8 +8347,7 @@ fn stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store() {
 
     // (3) THE STORE IS NOT FILTERED. This is the discriminator against a "fix" that prunes
     //     `unbounded_loop_pile` itself: that mutation satisfies (1), (2) and (4) and reds only
-    //     this row. The store must survive because the boundary collapse and the zone-exit
-    //     defuse both read it.
+    //     this row. The store must survive because the boundary collapse reads it.
     assert!(
         state
             .unbounded_loop_pile
