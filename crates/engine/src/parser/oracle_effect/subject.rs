@@ -1,4 +1,5 @@
 use crate::parser::oracle_nom::error::OracleError;
+use crate::parser::oracle_nom::target::PlayerAnaphor;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until};
 use nom::character::complete::multispace0;
@@ -101,6 +102,7 @@ fn subject_phrase_ast(application: Option<SubjectApplication>) -> SubjectPhraseA
             multi_target: application.multi_target,
             inherits_parent: application.inherits_parent,
             is_optional: application.is_optional,
+            player_anaphor: application.player_anaphor,
         },
         None => SubjectPhraseAst {
             affected: None,
@@ -108,6 +110,7 @@ fn subject_phrase_ast(application: Option<SubjectApplication>) -> SubjectPhraseA
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         },
     }
 }
@@ -255,6 +258,21 @@ pub(super) fn try_parse_subject_predicate_ast(
 
     if let Some(clause) = try_parse_subject_additive_type_clause(text, ctx) {
         return Some(clause);
+    }
+
+    // Runs before the continuous arm, which would otherwise take "your life total"
+    // as a subject and harvest a later conjunct's keywords onto it.
+    if let Some(clause) = try_parse_life_lock_clause(text) {
+        return Some(subject_predicate_ast_from_clause(
+            text,
+            clause,
+            |effect, duration, sub_ability| PredicateAst::Restriction {
+                effect,
+                duration,
+                sub_ability,
+            },
+            ctx,
+        ));
     }
 
     if let Some(clause) = try_parse_subject_continuous_clause(text, ctx) {
@@ -465,6 +483,7 @@ fn try_parse_subject_additive_type_clause(text: &str, ctx: &mut ParseContext) ->
             multi_target: application.multi_target,
             inherits_parent: application.inherits_parent,
             is_optional: application.is_optional,
+            player_anaphor: application.player_anaphor,
         }),
         predicate: Box::new(PredicateAst::Continuous {
             effect: clause.effect,
@@ -532,6 +551,7 @@ fn try_parse_contracted_subject_additive_type_clause(
                     multi_target: application.multi_target.clone(),
                     inherits_parent: application.inherits_parent,
                     is_optional: application.is_optional,
+                    player_anaphor: application.player_anaphor,
                 }),
                 predicate: Box::new(PredicateAst::Become {
                     effect: Effect::GenericEffect {
@@ -561,6 +581,7 @@ fn try_parse_contracted_subject_additive_type_clause(
                     multi_target: application.multi_target,
                     inherits_parent: application.inherits_parent,
                     is_optional: application.is_optional,
+                    player_anaphor: application.player_anaphor,
                 }),
                 predicate: Box::new(PredicateAst::Continuous {
                     effect: clause.effect,
@@ -644,6 +665,7 @@ fn try_parse_contracted_subject_additive_type_clause(
             multi_target: application.multi_target,
             inherits_parent: application.inherits_parent,
             is_optional: application.is_optional,
+            player_anaphor: application.player_anaphor,
         }),
         predicate: Box::new(PredicateAst::Become {
             effect: clause.effect,
@@ -875,6 +897,7 @@ fn try_parse_compound_all_subjects_become_clause(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         };
         let clause = build_become_clause(application, &predicate_with_verb, ctx)?;
         let Effect::GenericEffect {
@@ -1034,6 +1057,7 @@ fn try_parse_subject_supertype_removal_clause(
             multi_target: application.multi_target,
             inherits_parent: application.inherits_parent,
             is_optional: application.is_optional,
+            player_anaphor: application.player_anaphor,
         }),
         predicate: Box::new(PredicateAst::Become {
             effect,
@@ -1522,6 +1546,7 @@ fn try_parse_subject_base_pt_set_clause_ast(
             multi_target: application.multi_target,
             inherits_parent: application.inherits_parent,
             is_optional: application.is_optional,
+            player_anaphor: application.player_anaphor,
         }),
         predicate: Box::new(PredicateAst::Continuous {
             effect,
@@ -1743,6 +1768,7 @@ fn try_parse_source_and_other_restriction_clause(
             multi_target: None,
             inherits_parent: primary_application.inherits_parent,
             is_optional: primary_application.is_optional,
+            player_anaphor: primary_application.player_anaphor,
         }),
         predicate: Box::new(PredicateAst::Restriction {
             effect: primary_clause.effect,
@@ -1850,6 +1876,7 @@ fn try_parse_target_and_same_name_pump_clause(
             multi_target: None,
             inherits_parent: primary.inherits_parent,
             is_optional: primary.is_optional,
+            player_anaphor: primary.player_anaphor,
         }),
         predicate: Box::new(PredicateAst::Continuous {
             effect: primary_effect,
@@ -1945,6 +1972,7 @@ fn try_parse_subject_restriction_clause(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         };
         return build_restriction_clause(application, predicate);
     }
@@ -2275,31 +2303,6 @@ fn try_parse_subject_restriction_clause(
         });
     }
 
-    // CR 119.7 + CR 119.8: "[possessor] life total can't change" — bidirectional
-    // life-lock for the named player (Teferi's Protection: "your life total can't
-    // change"). Distinct from the generic " can't " split below because the
-    // subject is a possessive noun phrase ("your") rather than a player subject.
-    if let Some((before, _)) = tp.split_around(" life total can't change") {
-        let possessor = before.original.trim().to_lowercase();
-        let scope_filter = life_lock_scope_from_possessor(&possessor);
-        return Some(build_life_lock_clause(scope_filter));
-    }
-    if let Some((before, _)) = tp.split_around(" life totals can't change") {
-        let possessor = before.original.trim().to_lowercase();
-        let scope_filter = life_lock_scope_from_possessor(&possessor);
-        return Some(build_life_lock_clause(scope_filter));
-    }
-    if let Some((before, _)) = tp.split_around(" life total cannot change") {
-        let possessor = before.original.trim().to_lowercase();
-        let scope_filter = life_lock_scope_from_possessor(&possessor);
-        return Some(build_life_lock_clause(scope_filter));
-    }
-    if let Some((before, _)) = tp.split_around(" life totals cannot change") {
-        let possessor = before.original.trim().to_lowercase();
-        let scope_filter = life_lock_scope_from_possessor(&possessor);
-        return Some(build_life_lock_clause(scope_filter));
-    }
-
     // CR 510.1a: "[subject] assigns no combat damage [this turn/this combat]"
     // Transient rule modification that prevents combat damage assignment.
     if let Some((before, after)) = tp.split_around(" assigns no combat damage") {
@@ -2500,6 +2503,7 @@ fn try_parse_can_block_additional(
             multi_target: None,
             inherits_parent: true,
             is_optional: false,
+            player_anaphor: None,
         }
     } else {
         parse_subject_application_for(subject_text.trim(), ctx, AnaphorConsumer::AffectedObject)?
@@ -2874,6 +2878,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: false,
+                player_anaphor: None,
             });
         }
         return subject_filter_application(filter, true);
@@ -3105,6 +3110,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 303.4b + CR 303.4m + CR 702.5a (issues #5947, #5271): "enchanted
@@ -3207,6 +3213,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 102.1 + CR 103.1: "the player to your right/left" as subject — a
@@ -3452,6 +3459,8 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional,
+                player_anaphor: matches!(subject_anaphor, PlayerSubjectAnaphor::Player)
+                    .then_some(PlayerAnaphor::ThatPlayer),
             });
         }
     }
@@ -3483,6 +3492,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // "an opponent" as subject — single opponent (two-player: equivalent to "each opponent").
@@ -3516,6 +3526,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     if lower == "that controller" {
@@ -3525,6 +3536,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 608.2c + CR 113.7a: "~'s controller" names the controller of the
@@ -3542,6 +3554,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: true,
+                player_anaphor: None,
             });
         }
     }
@@ -3555,6 +3568,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 608.2c + CR 608.2d: "its controller" / "their controller" as anaphoric
@@ -3581,6 +3595,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: true,
+                player_anaphor: Some(PlayerAnaphor::ItsController),
             });
         }
     }
@@ -3591,6 +3606,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: Some(PlayerAnaphor::ItsController),
         });
     }
     // CR 608.2c + CR 608.2d: "its owner may" / "their owner may" — owner-of-target
@@ -3608,6 +3624,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: true,
+                player_anaphor: None,
             });
         }
     }
@@ -3621,6 +3638,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 115.1 + CR 608.2c: "[that|the] <noun>'s controller or that player" —
@@ -3648,6 +3666,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 608.2c: Definite/anaphoric "[the|that] <noun>'s controller" /
@@ -3675,6 +3694,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: true,
+                player_anaphor: Some(PlayerAnaphor::ItsController),
             });
         }
         // CR 108.3: "[the|that] <noun>'s owner may" — owner of the parent target.
@@ -3686,6 +3706,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: true,
+                player_anaphor: None,
             });
         }
         // allow-noncombinator: post-tokenized subject suffix classification
@@ -3696,6 +3717,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: false,
+                player_anaphor: Some(PlayerAnaphor::ItsController),
             });
         }
         // CR 108.3: "[the|that] <noun>'s owner" — owner of the parent target
@@ -3708,6 +3730,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: false,
+                player_anaphor: None,
             });
         }
     }
@@ -3725,6 +3748,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 608.2k: Bare pronoun "it" — context-dependent. In trigger context,
@@ -3767,6 +3791,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: true,
                 is_optional: false,
+                player_anaphor: None,
             });
         }
         if ctx.subject.is_none() && ctx.parent_target_available {
@@ -3776,6 +3801,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: true,
                 is_optional: false,
+                player_anaphor: None,
             });
         }
         return Some(SubjectApplication {
@@ -3784,6 +3810,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // CR 608.2k: Bare pronoun "they" — context-dependent.
@@ -3824,6 +3851,7 @@ fn parse_subject_application_for(
             multi_target: None,
             inherits_parent: false,
             is_optional,
+            player_anaphor: None,
         });
     }
 
@@ -3846,6 +3874,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: true,
                 is_optional: false,
+                player_anaphor: None,
             });
         }
     }
@@ -3894,6 +3923,7 @@ fn parse_subject_application_for(
                     multi_target: None,
                     inherits_parent: true,
                     is_optional: false,
+                    player_anaphor: None,
                 });
             }
             return Some(SubjectApplication {
@@ -3902,6 +3932,7 @@ fn parse_subject_application_for(
                 multi_target: None,
                 inherits_parent: true,
                 is_optional: false,
+                player_anaphor: None,
             });
         }
     }
@@ -4022,6 +4053,7 @@ fn parse_conjoined_subject_application(
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     })
 }
 
@@ -4147,6 +4179,7 @@ pub(super) fn cant_be_regenerated_tracked_set_application() -> SubjectApplicatio
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     }
 }
 
@@ -4232,6 +4265,7 @@ fn subject_application_for_cant_be_activated(
             multi_target: None,
             inherits_parent: true,
             is_optional: false,
+            player_anaphor: None,
         });
     }
     // Typed possessor noun phrases carry a trailing "'s" ("target creature's",
@@ -4471,6 +4505,7 @@ fn subject_filter_application(filter: TargetFilter, targeted: bool) -> Option<Su
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     })
 }
 
@@ -5154,6 +5189,7 @@ fn build_pt_choice_clause(
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     };
 
     let branches = alternatives
@@ -5545,6 +5581,7 @@ pub(super) fn try_parse_exiled_this_way_keyword_grant(
         multi_target: None,
         inherits_parent: false,
         is_optional: false,
+        player_anaphor: None,
     };
     build_continuous_clause(
         application,
@@ -6691,6 +6728,22 @@ fn try_parse_become_choice(
     )
 }
 
+/// CR 119.7 + CR 119.8: "[possessor] life total(s) can't change" — bidirectional
+/// life-lock for the named player (Teferi's Protection: "your life total can't
+/// change"). The subject is a possessive noun phrase rather than a player subject.
+fn try_parse_life_lock_clause(text: &str) -> Option<ParsedEffectClause> {
+    let lower = text.to_lowercase();
+    let (_, (possessor, _, _)) = (
+        take_until::<_, _, OracleError<'_>>(" life total"),
+        alt((tag(" life totals"), tag(" life total"))),
+        alt((tag(" can't change"), tag(" cannot change"))),
+    )
+        .parse(lower.as_str())
+        .ok()?;
+    let scope_filter = life_lock_scope_from_possessor(possessor.trim());
+    Some(build_life_lock_clause(scope_filter))
+}
+
 /// CR 119.7 + CR 119.8: Map the possessive subject of a "life total can't change"
 /// clause to the player-scope filter for the resulting CantGainLife/CantLoseLife
 /// statics. Recognizes opponent possessives ("an opponent's", "your opponents'",
@@ -6974,6 +7027,7 @@ fn build_restriction_clause(
             | TargetFilter::PostReplacementDamageTarget
             | TargetFilter::PostReplacementDamageTargetOwner
             | TargetFilter::DefendingPlayer
+            | TargetFilter::AttackedPlayerOrPlaneswalker
             | TargetFilter::HasChosenName
             | TargetFilter::ChosenDamageSource { .. }
             | TargetFilter::Named { .. }
@@ -12493,6 +12547,7 @@ mod tests {
                 multi_target: None,
                 inherits_parent: false,
                 is_optional: false,
+                player_anaphor: None,
             };
             let mut ctx = ParseContext {
                 stated_clause_duration: context_window,
