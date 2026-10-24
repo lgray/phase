@@ -3875,7 +3875,41 @@ fn ward_becomes_target_suppressed(
     })
 }
 
-fn inline_tap_mana_trigger_abilities(
+/// CR 605.1b: Whether `event`, the production of the triggered mana ability `ability`, triggers
+/// `ability`'s own trigger again with nothing on it that could stop the retrigger.
+pub(super) fn mana_production_retriggers_itself_mandatorily(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    event: &GameEvent,
+) -> bool {
+    let Some(own) = ability.trigger_definition_ref.as_ref() else {
+        return false;
+    };
+    super::trigger_index::ensure_ready(state);
+    let candidates = super::trigger_index::candidates_for_event(state, event);
+    let state = &*state;
+    inline_tap_mana_trigger_abilities(state, event, candidates)
+        .into_iter()
+        .find(|(definition_ref, _)| definition_ref == own)
+        .is_some_and(|(definition_ref, retrigger)| {
+            let Some(object) = state.objects.get(&definition_ref.source.object_id) else {
+                return false;
+            };
+            super::functioning_abilities::active_trigger_definitions(state, object)
+                .find(|active| active.definition_ref == definition_ref)
+                .is_some_and(|active| {
+                    // CR 104.4b: an intervening-if (CR 603.4), a "may" (CR 603.5), an effect
+                    // condition or a trigger limit can stop the retrigger, so only a trigger
+                    // with none of them is a mandatory loop.
+                    !retrigger.optional
+                        && retrigger.condition.is_none()
+                        && active.definition.condition.is_none()
+                        && active.definition.constraint.is_none()
+                })
+        })
+}
+
+pub(super) fn inline_tap_mana_trigger_abilities(
     state: &GameState,
     tap_event: &GameEvent,
     candidate_ids: impl IntoIterator<Item = ObjectId>,

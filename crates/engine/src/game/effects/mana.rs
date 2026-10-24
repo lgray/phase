@@ -8,7 +8,7 @@ use crate::types::ability::{
     ManaSpendRestriction, ManaTargetRole, ManaTargetSlot, ObjectScope, ResolvedAbility, TargetRef,
 };
 use crate::types::ability::{DevotionColors, QuantityRef};
-use crate::types::events::GameEvent;
+use crate::types::events::{GameEvent, ManaAbilityTriggerState};
 use crate::types::game_state::{
     GameState, ManaChoice, ManaChoiceContext, ManaChoicePrompt, MayTriggerOrigin, WaitingFor,
 };
@@ -318,7 +318,7 @@ pub fn resolve(
     // into that player's mana pool.
     let produced_mana = !mana_types.is_empty();
     let mut deposited = false;
-    for mana_type in mana_types {
+    for &mana_type in &mana_types {
         deposited |= !mana_payment::produce_mana_with_attributes_from_source_quality(
             state,
             ability.source_id,
@@ -332,6 +332,27 @@ pub fn resolve(
             events,
         )
         .is_empty();
+    }
+    // CR 605.1b is traded away under Off: this production event is emitted only where loop
+    // detection samples, the only modes that can recognise the self-retrigger it may start.
+    if is_triggered_mana_inline && deposited && state.loop_detection.samples() {
+        let event = GameEvent::ManaAbilityProduced {
+            player_id: recipient,
+            source_id: ability.source_id,
+            produced: mana_types,
+            trigger_state: ManaAbilityTriggerState::Pending,
+        };
+        // CR 104.4b + CR 732.4: a mandatory self-retrigger inside one mana resolution
+        // (CR 605.4a) is a loop of mandatory actions.
+        if crate::game::triggers::mana_production_retriggers_itself_mandatorily(
+            state, ability, &event,
+        ) {
+            if state.game_end.is_none() {
+                super::declare_mandatory_loop_draw(state, events);
+            }
+        } else {
+            events.push(event);
+        }
     }
     record_firebending_if_marked(state, ability, produced_mana, events);
     record_triggered_ability_added_mana(state, ability, recipient, deposited);
@@ -3420,5 +3441,205 @@ mod tests {
             3,
             "Mana Echoes must produce one colorless per matching creature"
         );
+    }
+
+    fn real_caged_sun(sc: &mut crate::game::scenario::GameScenario) -> ObjectId {
+        use crate::game::scenario_db::GameScenarioDbExt;
+        sc.add_real_card(
+            crate::game::scenario::P0,
+            "Caged Sun",
+            Zone::Battlefield,
+            crate::test_support::shared_card_db(),
+        )
+    }
+
+    /// Toph when `toph`, a green Sun added by `add_sun`, and a Forest, under `mode`; returns the
+    /// Sun and its triggered mana ability as the Forest's production couples it.
+    fn sun_board(
+        toph: bool,
+        mode: crate::types::game_state::LoopDetectionMode,
+        add_sun: impl FnOnce(&mut crate::game::scenario::GameScenario) -> ObjectId,
+    ) -> (GameState, ObjectId, ResolvedAbility, GameEvent) {
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::game::scenario_db::GameScenarioDbExt;
+        use crate::types::ability::ChosenAttribute;
+
+        let db = crate::test_support::shared_card_db();
+        let mut sc = GameScenario::new();
+        sc.at_phase(crate::types::phase::Phase::PreCombatMain);
+        if toph {
+            sc.add_real_card(P0, "Toph, the First Metalbender", Zone::Battlefield, db);
+        }
+        let sun = add_sun(&mut sc);
+        let forest = sc.add_real_card(P0, "Forest", Zone::Battlefield, db);
+        let mut state = sc.state;
+        state.loop_detection = mode;
+        state
+            .objects
+            .get_mut(&sun)
+            .unwrap()
+            .chosen_attributes
+            .push(ChosenAttribute::Color(ManaColor::Green));
+        crate::game::layers::flush_layers(&mut state);
+        crate::game::trigger_index::ensure_ready(&mut state);
+        let forest_event = GameEvent::ManaAbilityProduced {
+            player_id: P0,
+            source_id: forest,
+            produced: vec![ManaType::Green],
+            trigger_state: ManaAbilityTriggerState::Pending,
+        };
+        let candidates = crate::game::trigger_index::candidates_for_event(&state, &forest_event);
+        let (_, ability) = crate::game::triggers::inline_tap_mana_trigger_abilities(
+            &state,
+            &forest_event,
+            candidates,
+        )
+        .into_iter()
+        .find(|(definition_ref, _)| definition_ref.source.object_id == sun)
+        .expect("the Forest's production triggers the Sun");
+        (state, sun, ability, forest_event)
+    }
+
+    fn resolve_sun(
+        state: &mut GameState,
+        ability: &ResolvedAbility,
+        forest_event: &GameEvent,
+    ) -> Vec<GameEvent> {
+        let mut events = Vec::new();
+        crate::game::mana_abilities::resolve_triggered_mana_ability_inline(
+            state,
+            ability,
+            Some(forest_event),
+            &mut events,
+            None,
+        );
+        events
+    }
+
+    fn produced_by(events: &[GameEvent], source: ObjectId) -> Vec<&GameEvent> {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(event, GameEvent::ManaAbilityProduced { source_id, .. } if *source_id == source)
+            })
+            .collect()
+    }
+
+    fn game_overs(events: &[GameEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| matches!(event, GameEvent::GameOver { .. }))
+            .count()
+    }
+
+    /// CR 605.1b is traded away under Off: a Caged Sun land's production is no event, so the
+    /// resolution neither retriggers the Sun nor ends the game.
+    #[test]
+    fn a_caged_sun_land_under_off_emits_no_production_event() {
+        use crate::types::game_state::LoopDetectionMode;
+
+        let (mut state, sun, ability, forest_event) =
+            sun_board(true, LoopDetectionMode::Off, real_caged_sun);
+        let events = resolve_sun(&mut state, &ability, &forest_event);
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Green),
+            1,
+            "reach: the Sun added its mana"
+        );
+        assert!(produced_by(&events, sun).is_empty());
+        assert_eq!(game_overs(&events), 0);
+        assert_eq!(state.game_end, None);
+    }
+
+    /// CR 104.4b + CR 605.1b: under Interactive, a Caged Sun land's production triggers the Sun
+    /// again mandatorily, so the resolution ends the game in a draw instead of emitting it.
+    #[test]
+    fn a_caged_sun_land_under_interactive_draws_at_its_production() {
+        use crate::types::game_state::{GameEnd, LoopDetectionMode};
+
+        let (mut state, sun, ability, forest_event) =
+            sun_board(true, LoopDetectionMode::Interactive, real_caged_sun);
+        let events = resolve_sun(&mut state, &ability, &forest_event);
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Green),
+            1,
+            "reach: the Sun added its mana"
+        );
+        assert!(produced_by(&events, sun).is_empty());
+        assert_eq!(game_overs(&events), 1);
+        assert_eq!(state.game_end, Some(GameEnd { winner: None }));
+        assert_eq!(state.waiting_for, WaitingFor::GameOver { winner: None });
+    }
+
+    /// CR 605.1b: a Caged Sun that is not a land does not trigger on its own production, so the
+    /// event is emitted and the game goes on.
+    #[test]
+    fn a_caged_sun_that_is_not_a_land_emits_its_production() {
+        use crate::types::game_state::LoopDetectionMode;
+
+        let (mut state, sun, ability, forest_event) =
+            sun_board(false, LoopDetectionMode::Interactive, real_caged_sun);
+        let events = resolve_sun(&mut state, &ability, &forest_event);
+        let emitted = produced_by(&events, sun);
+        assert_eq!(emitted.len(), 1, "reach: the Sun's production is an event");
+        let emitted = emitted[0].clone();
+        assert!(
+            !crate::game::triggers::mana_production_retriggers_itself_mandatorily(
+                &mut state, &ability, &emitted,
+            )
+        );
+        assert_eq!(game_overs(&events), 0);
+        assert_eq!(state.game_end, None);
+    }
+
+    /// CR 104.4b: a "may", an intervening-if, an effect condition or a trigger limit can stop a
+    /// self-retrigger, so only a trigger with none of them certifies as a mandatory loop.
+    #[test]
+    fn only_a_self_retrigger_nothing_can_stop_certifies_as_mandatory() {
+        use crate::game::scenario::P0;
+        use crate::types::game_state::LoopDetectionMode;
+
+        const TRIGGER: &str =
+            "Whenever a land's ability causes you to add one or more mana of the chosen color, ";
+        for (rider, certified) in [
+            ("add an additional one mana of that color.", true),
+            ("you may add an additional one mana of that color.", false),
+            (
+                "if you control a Forest, add an additional one mana of that color.",
+                false,
+            ),
+            (
+                "add an additional one mana of that color if you control a Forest.",
+                false,
+            ),
+            (
+                "add an additional one mana of that color. This ability triggers only once each turn.",
+                false,
+            ),
+        ] {
+            let text = format!("{TRIGGER}{rider}");
+            let (mut state, sun, ability, _) =
+                sun_board(true, LoopDetectionMode::Interactive, |sc| {
+                    sc.add_creature(P0, "Test Sun", 0, 0)
+                        .as_artifact()
+                        .from_oracle_text(&text)
+                        .id()
+                });
+            let production = GameEvent::ManaAbilityProduced {
+                player_id: P0,
+                source_id: sun,
+                produced: vec![ManaType::Green],
+                trigger_state: ManaAbilityTriggerState::Pending,
+            };
+            assert_eq!(
+                crate::game::triggers::mana_production_retriggers_itself_mandatorily(
+                    &mut state,
+                    &ability,
+                    &production,
+                ),
+                certified,
+                "{rider}"
+            );
+        }
     }
 }

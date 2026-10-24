@@ -3341,7 +3341,7 @@ pub(super) fn match_mana_added(
     matches!(event, GameEvent::ManaAdded { .. })
 }
 
-/// CR 605.1b: Matches one aggregate production event from an activated mana
+/// CR 605.1b: Matches one aggregate production event from a mana
 /// ability. This deliberately does not consume `ManaAdded`, whose per-unit
 /// accounting would fire a multi-mana ability's trigger more than once.
 pub(super) fn match_mana_ability_produced(

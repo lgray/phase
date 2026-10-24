@@ -8,20 +8,22 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use engine::game::game_object::GameObject;
+use engine::ai_support::legal_actions_full;
+use engine::game::game_object::{AttachTarget, GameObject};
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::mandatory_period_holds_for_tests;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
+use engine::types::ability::ChosenAttribute;
 use engine::types::actions::{GameAction, PriorityYieldOp, ReplacementAutoChoice};
 use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
-    AutoMayChoice, AutoPassRequest, GameState, LoopDetectionMode, MayTriggerAutoChoiceScope,
-    StackEntryKind, WaitingFor, YieldScope,
+    AutoMayChoice, AutoPassRequest, CastPaymentMode, GameEnd, GameState, LoopDetectionMode,
+    MayTriggerAutoChoiceScope, StackEntryKind, WaitingFor, YieldScope,
 };
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
@@ -976,22 +978,29 @@ fn full_yield_drive_returns<T: Send + 'static>(
     beats: usize,
     read: fn(Run) -> T,
 ) -> Option<T> {
+    returns_within(move || {
+        run(
+            board,
+            LoopDetectionMode::Interactive,
+            Drive::FullYields,
+            beats,
+        )
+        .map(read)
+    })
+}
+
+/// Runs `drive` on its own thread so a drive that never returns fails the test instead of
+/// hanging it.
+fn returns_within<T: Send + 'static>(drive: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = mpsc::channel();
     let _drive = std::thread::Builder::new()
         .stack_size(64 << 20)
         .spawn(move || {
-            let leg = run(
-                board,
-                LoopDetectionMode::Interactive,
-                Drive::FullYields,
-                beats,
-            )
-            .map(read);
-            let _ = tx.send(leg);
+            let _ = tx.send(drive());
         })
         .expect("spawn the drive");
     rx.recv_timeout(Duration::from_secs(TIMEOUT_SECS))
-        .unwrap_or_else(|err| panic!("an Interactive full-yield action never returned ({err:?})"))
+        .unwrap_or_else(|err| panic!("a bounded drive never returned ({err:?})"))
 }
 
 /// CR 117.4 + CR 732.2a: a period confirmed on a frame where its holder stands on an auto-pass
@@ -1696,5 +1705,357 @@ fn a_mandatory_poison_loop_whose_every_trigger_order_continues_is_not_declared()
                 "{mode:?} {drive:?}: reach: the triggers were ordered"
             );
         }
+    }
+}
+
+/// P0's Forest beside triggered mana sources, and Grizzly Bears in P0's hand.
+#[derive(Clone, Copy, Debug)]
+struct SunBoard {
+    toph: bool,
+    /// This many Caged Suns, each choosing `sun_color`.
+    suns: usize,
+    sun_color: ManaColor,
+    /// The Caged Suns are tokens.
+    token_suns: bool,
+    /// A Gauntlet of Power choosing green.
+    gauntlet: bool,
+    aura: Option<ForestAura>,
+}
+
+/// An Aura enchanting the Forest; Utopia Sprawl chooses blue.
+#[derive(Clone, Copy, Debug)]
+enum ForestAura {
+    FertileGround,
+    UtopiaSprawl,
+}
+
+const TOPH_GREEN_SUN: SunBoard = SunBoard {
+    toph: true,
+    suns: 1,
+    sun_color: ManaColor::Green,
+    token_suns: false,
+    gauntlet: false,
+    aura: None,
+};
+
+#[derive(Clone, Copy, Debug)]
+enum SunRoute {
+    TapForest,
+    CastAuto,
+    /// A manual cast, then the Forest's tap at the payment prompt.
+    CastManual,
+}
+
+struct SunRun {
+    /// What the last action returned.
+    returned: WaitingFor,
+    /// Every action's events.
+    events: Vec<GameEvent>,
+    runner: GameRunner,
+}
+
+impl SunRun {
+    fn produced_by(&self, name: &str) -> usize {
+        let objects = &self.runner.state().objects;
+        self.events
+            .iter()
+            .filter(|event| {
+                matches!(event, GameEvent::ManaAbilityProduced { source_id, .. }
+                    if objects.get(source_id).is_some_and(|object| object.name == name))
+            })
+            .count()
+    }
+
+    fn game_overs(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|event| matches!(event, GameEvent::GameOver { .. }))
+            .count()
+    }
+
+    fn pool(&self, mana: ManaType) -> usize {
+        self.runner.state().players[0].mana_pool.count_color(mana)
+    }
+
+    fn pool_total(&self) -> usize {
+        self.runner.state().players[0].mana_pool.total()
+    }
+}
+
+fn choose_color(state: &mut GameState, id: ObjectId, color: ManaColor) {
+    state
+        .objects
+        .get_mut(&id)
+        .expect("the chooser is on the battlefield")
+        .chosen_attributes
+        .push(ChosenAttribute::Color(color));
+}
+
+fn build_suns(
+    board: SunBoard,
+    mode: LoopDetectionMode,
+) -> Option<(GameRunner, ObjectId, ObjectId)> {
+    let db = shared_card_db()?;
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    if board.toph {
+        scenario.add_real_card(P0, "Toph, the First Metalbender", Zone::Battlefield, db);
+    }
+    let suns: Vec<ObjectId> = (0..board.suns)
+        .map(|_| scenario.add_real_card(P0, "Caged Sun", Zone::Battlefield, db))
+        .collect();
+    let forest = scenario.add_real_card(P0, "Forest", Zone::Battlefield, db);
+    let gauntlet = board
+        .gauntlet
+        .then(|| scenario.add_real_card(P0, "Gauntlet of Power", Zone::Battlefield, db));
+    let aura = board.aura.map(|aura| {
+        let name = match aura {
+            ForestAura::FertileGround => "Fertile Ground",
+            ForestAura::UtopiaSprawl => "Utopia Sprawl",
+        };
+        (
+            aura,
+            scenario.add_real_card(P0, name, Zone::Battlefield, db),
+        )
+    });
+    let bears = scenario.add_real_card(P0, "Grizzly Bears", Zone::Hand, db);
+    let mut runner = scenario.build();
+    let state = runner.state_mut();
+    state.loop_detection = mode;
+    for &sun in &suns {
+        choose_color(state, sun, board.sun_color);
+        state.objects.get_mut(&sun).expect("the Sun").is_token = board.token_suns;
+    }
+    if let Some(gauntlet) = gauntlet {
+        choose_color(state, gauntlet, ManaColor::Green);
+    }
+    if let Some((aura, id)) = aura {
+        if matches!(aura, ForestAura::UtopiaSprawl) {
+            choose_color(state, id, ManaColor::Blue);
+        }
+        state.objects.get_mut(&id).expect("the Aura").attached_to =
+            Some(AttachTarget::Object(forest));
+        state
+            .objects
+            .get_mut(&forest)
+            .expect("the Forest")
+            .attachments
+            .push(id);
+    }
+    state.layers_dirty.mark_full();
+    Some((runner, forest, bears))
+}
+
+fn forest_tap(runner: &GameRunner, forest: ObjectId) -> GameAction {
+    let (_, _, grouped) = legal_actions_full(runner.state());
+    grouped
+        .get(&forest)
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| matches!(action, GameAction::TapLandForMana { .. }))
+        })
+        .cloned()
+        .expect("the Forest can tap for mana")
+}
+
+/// Drives `route` on a bounded thread.
+fn drive_suns(board: SunBoard, mode: LoopDetectionMode, route: SunRoute) -> Option<SunRun> {
+    returns_within(move || {
+        let (mut runner, forest, bears) = build_suns(board, mode)?;
+        let cast = |runner: &GameRunner, payment_mode| GameAction::CastSpell {
+            object_id: bears,
+            card_id: runner.state().objects[&bears].card_id,
+            targets: vec![],
+            payment_mode,
+        };
+        let first = match route {
+            SunRoute::TapForest => forest_tap(&runner, forest),
+            SunRoute::CastAuto => cast(&runner, CastPaymentMode::Auto),
+            SunRoute::CastManual => cast(&runner, CastPaymentMode::Manual),
+        };
+        let mut result = runner.act(first).expect("the first action applies");
+        let mut events = Vec::new();
+        if matches!(route, SunRoute::CastManual) {
+            assert!(
+                matches!(result.waiting_for, WaitingFor::ManaPayment { .. }),
+                "reach: the manual cast asks for payment, got {:?}",
+                result.waiting_for
+            );
+            events.append(&mut result.events);
+            let tap = forest_tap(&runner, forest);
+            result = runner.act(tap).expect("the Forest's tap applies");
+        }
+        events.extend(result.events);
+        Some(SunRun {
+            returned: result.waiting_for,
+            events,
+            runner,
+        })
+    })
+}
+
+/// CR 605.1b + CR 104.4b: under Toph, Caged Sun is a land, so the mana its own ability adds
+/// triggers that ability again with no way to stop it. The game is a draw whether the Forest is
+/// tapped for mana or to pay a cost.
+#[test]
+fn a_caged_sun_land_retriggering_itself_is_a_draw_on_every_route() {
+    for route in [
+        SunRoute::TapForest,
+        SunRoute::CastAuto,
+        SunRoute::CastManual,
+    ] {
+        let Some(run) = drive_suns(TOPH_GREEN_SUN, LoopDetectionMode::Interactive, route) else {
+            return;
+        };
+        assert_eq!(
+            run.produced_by("Forest"),
+            1,
+            "{route:?}: reach: the Forest's mana ability produced"
+        );
+        assert_eq!(
+            run.returned,
+            WaitingFor::GameOver { winner: None },
+            "{route:?}"
+        );
+        assert_eq!(
+            run.runner.state().waiting_for,
+            WaitingFor::GameOver { winner: None },
+            "{route:?}"
+        );
+        assert_eq!(
+            run.runner.state().game_end,
+            Some(GameEnd { winner: None }),
+            "{route:?}"
+        );
+        assert_eq!(run.game_overs(), 1, "{route:?}");
+    }
+}
+
+/// CR 104.4b: two self-retriggering Caged Suns end the game once.
+#[test]
+fn two_caged_suns_end_the_game_once() {
+    let board = SunBoard {
+        suns: 2,
+        ..TOPH_GREEN_SUN
+    };
+    let Some(run) = drive_suns(board, LoopDetectionMode::Interactive, SunRoute::TapForest) else {
+        return;
+    };
+    assert_eq!(
+        run.produced_by("Forest"),
+        1,
+        "reach: the Forest's mana ability produced"
+    );
+    assert_eq!(run.game_overs(), 1);
+    assert_eq!(run.runner.state().game_end, Some(GameEnd { winner: None }));
+}
+
+/// CR 605.1b: a Caged Sun that is not a land, or whose color the Forest does not add, does not
+/// retrigger itself, and an Aura's triggered mana ability is not a land's ability; each adds one
+/// mana. Only where loop detection samples is a triggered mana ability's production an event.
+#[test]
+fn one_extra_mana_without_a_self_retrigger() {
+    let no_toph = SunBoard {
+        toph: false,
+        ..TOPH_GREEN_SUN
+    };
+    let red_sun = SunBoard {
+        sun_color: ManaColor::Red,
+        ..TOPH_GREEN_SUN
+    };
+    let fertile = SunBoard {
+        aura: Some(ForestAura::FertileGround),
+        ..no_toph
+    };
+    let utopia = SunBoard {
+        aura: Some(ForestAura::UtopiaSprawl),
+        ..no_toph
+    };
+    // (board, the triggered source whose production is an event, green, blue, total)
+    let legs = [
+        (no_toph, Some("Caged Sun"), 2, 0, 2),
+        (red_sun, None, 1, 0, 1),
+        (fertile, Some("Fertile Ground"), 2, 0, 3),
+        (utopia, Some("Utopia Sprawl"), 2, 1, 3),
+    ];
+    for mode in MODES {
+        for (board, producer, green, blue, total) in legs {
+            let leg = format!("{mode:?} {board:?}");
+            let Some(run) = drive_suns(board, mode, SunRoute::TapForest) else {
+                return;
+            };
+            assert_eq!(
+                run.produced_by("Forest"),
+                1,
+                "{leg}: reach: the Forest's mana ability produced"
+            );
+            assert!(
+                matches!(run.returned, WaitingFor::Priority { .. }),
+                "{leg}: got {:?}",
+                run.returned
+            );
+            assert_eq!(
+                (
+                    run.pool(ManaType::Green),
+                    run.pool(ManaType::Blue),
+                    run.pool_total()
+                ),
+                (green, blue, total),
+                "{leg}"
+            );
+            match (mode.samples(), producer) {
+                (true, Some(producer)) => {
+                    assert_eq!(run.produced_by(producer), 1, "{leg}: {producer}")
+                }
+                (true, None) => assert_eq!(run.produced_by("Caged Sun"), 0, "{leg}"),
+                (false, _) => assert_eq!(
+                    ["Caged Sun", "Fertile Ground", "Utopia Sprawl"]
+                        .map(|name| run.produced_by(name)),
+                    [0; 3],
+                    "{leg}"
+                ),
+            }
+        }
+    }
+}
+
+/// CR 605.1b: under Toph, Gauntlet of Power is a land and a token Caged Sun is not, so the Sun
+/// adds one mana for the Forest's ability and one for Gauntlet's, and its own triggers nothing.
+/// Off forgoes the production event, so the Sun misses Gauntlet's ability.
+#[test]
+fn a_token_caged_sun_under_toph_adds_once_per_land_ability() {
+    let board = SunBoard {
+        token_suns: true,
+        gauntlet: true,
+        ..TOPH_GREEN_SUN
+    };
+    for (mode, green, gauntlet, sun) in [
+        (LoopDetectionMode::Interactive, 4, 1, 2),
+        (LoopDetectionMode::Off, 3, 0, 0),
+    ] {
+        let Some(run) = drive_suns(board, mode, SunRoute::TapForest) else {
+            return;
+        };
+        assert_eq!(
+            run.produced_by("Forest"),
+            1,
+            "{mode:?}: reach: the Forest's mana ability produced"
+        );
+        assert!(
+            matches!(run.returned, WaitingFor::Priority { .. }),
+            "{mode:?}: got {:?}",
+            run.returned
+        );
+        assert_eq!(run.pool(ManaType::Green), green, "{mode:?}");
+        assert_eq!(
+            (
+                run.produced_by("Gauntlet of Power"),
+                run.produced_by("Caged Sun")
+            ),
+            (gauntlet, sun),
+            "{mode:?}"
+        );
+        assert_eq!(run.game_overs(), 0, "{mode:?}");
     }
 }
