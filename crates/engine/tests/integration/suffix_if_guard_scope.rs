@@ -1,7 +1,7 @@
 //! CR 608.2c: a trailing "<instruction> if <condition>" guards that instruction
 //! alone; a leading "If <condition>, A, then B" still governs every instruction.
 
-use engine::game::scenario::{GameScenario, P0, P1};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
@@ -134,4 +134,54 @@ fn banish_into_fable_copies_once_per_guard_met() {
     assert_eq!(banish_into_fable_copies(true, false), 1);
     assert_eq!(banish_into_fable_copies(true, true), 2);
     assert_eq!(banish_into_fable_copies(false, false), 0);
+}
+
+/// The second guarded instruction is a delayed trigger.
+const DELAYED_SECOND_GUARD: &str = "Draw a card if you control an artifact, then draw a card at \
+the beginning of the next end step if you control an enchantment, then gain 1 life.";
+
+/// P0 casts `DELAYED_SECOND_GUARD` with no artifact; returns (cards drawn on
+/// resolution, life gained on resolution, cards drawn at the next end step).
+fn cast_delayed_second_guard(enchantment: bool) -> (i64, i32, usize) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand(P0, "Guarded", false)
+        .from_oracle_text(DELAYED_SECOND_GUARD)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    if enchantment {
+        scenario.add_enchantment_from_oracle(P0, "Enchantment", "");
+    }
+    for index in 0..5 {
+        scenario.add_card_to_library_top(P0, &format!("Library Card {index}"));
+    }
+    let mut runner = scenario.build();
+    let outcome = runner.cast(spell).resolve();
+    assert!(outcome.state().stack.is_empty(), "the spell resolved");
+    let resolved = (outcome.hand_drawn(P0), outcome.life_delta(P0));
+    let hand = |runner: &GameRunner| runner.state().players[0].hand.len();
+    let hand_after_resolution = hand(&runner);
+    runner.advance_to_end_step();
+    runner.advance_until_stack_empty();
+    assert_eq!(
+        runner.state().phase,
+        Phase::End,
+        "reached the next end step"
+    );
+    (
+        resolved.0,
+        resolved.1,
+        hand(&runner) - hand_after_resolution,
+    )
+}
+
+#[test]
+fn delayed_suffix_guard_is_evaluated_after_first_fails() {
+    assert_eq!(cast_delayed_second_guard(true), (0, 1, 1));
+}
+
+#[test]
+fn delayed_suffix_guard_false_skips_only_the_delayed_draw() {
+    assert_eq!(cast_delayed_second_guard(false), (0, 1, 0));
 }

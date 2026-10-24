@@ -3694,6 +3694,8 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                 // parent chain, so reset it to the default within-process step.
                 let lifted_sub_link = inner.sub_link;
                 inner.sub_link = SubAbilityLink::ContinuationStep;
+                // The clause's own guard scope belongs to the slot, like its link.
+                let lifted_sibling_condition = std::mem::take(&mut inner.sibling_condition);
                 let delayed_return_reader = inner.reads_return_result.take();
                 *current = AbilityDefinition::new(
                     kind,
@@ -3710,6 +3712,7 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                 current.repeat_for = lifted_repeat_for;
                 current.player_scope = lifted_player_scope;
                 current.sub_link = lifted_sub_link;
+                current.sibling_condition = lifted_sibling_condition;
             }
         }
 
