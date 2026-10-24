@@ -304,11 +304,11 @@ fn clause_delayed_combat_step(clause: &ClauseIr) -> Option<Phase> {
     }?;
     match condition {
         DelayedTriggerCondition::AtNextPhase { phase }
-        | DelayedTriggerCondition::AtNextPhaseForPlayer { phase, .. } => {
+        | DelayedTriggerCondition::AtNextPhaseForPlayer { phase, .. }
+        | DelayedTriggerCondition::AtBeginningOfAddedPhase { phase, .. } => {
             Some(*phase).filter(|phase| phase.is_combat())
         }
-        DelayedTriggerCondition::AtBeginningOfAddedPhase { .. }
-        | DelayedTriggerCondition::WhenLeavesPlay { .. }
+        DelayedTriggerCondition::WhenLeavesPlay { .. }
         | DelayedTriggerCondition::WhenDies { .. }
         | DelayedTriggerCondition::WhenLeavesPlayFiltered { .. }
         | DelayedTriggerCondition::WhenEntersBattlefield { .. }
