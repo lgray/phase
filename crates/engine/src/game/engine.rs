@@ -6080,9 +6080,9 @@ fn until_lethal_fallback(
 /// DORMANT for every Stage-2 crownable loop (Ruling B). The producer
 /// `game::interaction::materialize_loop_shortcut_response` emits a ONE-entry `Constant` on an
 /// `UntilLethal` offer and a `Piecewise` on a `Fixed` one, and NEITHER MOVES THIS FUNCTION'S
-/// ANSWER OFF 1 — the reason is which consumer sees which. This function's two consumers are
-/// [`shortcut_validated_range`]'s `UntilLethal` arm and `apply_until_lethal_shortcut`, both
-/// UNTIL-LETHAL paths, and the multi-STEP shape is minted only under a FIXED count, which reads
+/// ANSWER OFF 1 — the reason is which consumer sees which. This function's consumers are
+/// [`shortcut_validated_range`]'s `UntilLethal | WithoutEnd` arm and
+/// `apply_until_lethal_shortcut`, none of them a FIXED-count path, and the multi-STEP shape is minted only under a FIXED count, which reads
 /// its range off the count and never consults a schedule. A MULTI-entry `Constant` can still
 /// reach here from a decoded save — `declaration_conforms` refuses one at DECLARE, not at load —
 /// and it lands on the same `Constant(_)` arm and returns 1, correctly, since
@@ -6138,7 +6138,8 @@ fn shortcut_drive_period(
 /// the ACCEPTED COUNT will actually drive, read off the two drive loops themselves:
 /// `materialize_fixed_shortcut` drives `for i in 0..n` for a `Fixed(n)`, and
 /// `apply_until_lethal_shortcut` drives whole periods for `UntilLethal`, whose length is
-/// [`shortcut_drive_period`].
+/// [`shortcut_drive_period`]; `WithoutEnd` drives nothing itself, but a CR 732.2b shorten turns
+/// it into a `Fixed` count over the same template, so it takes the same range.
 ///
 /// THIS IS NOT `shortcut_drive_period`, and the difference is the whole point of the fix.
 /// That helper answers "how many cycles must one measurement aggregate" — a schedule property
