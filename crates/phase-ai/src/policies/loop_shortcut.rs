@@ -119,6 +119,8 @@ use super::registry::{DecisionKind, PolicyId, PolicyReason, PolicyVerdict, Tacti
 
 pub struct LoopShortcutPolicy;
 
+const DRAW_PROPOSAL_PREFERENCE: f64 = 1.0;
+
 impl TacticalPolicy for LoopShortcutPolicy {
     fn id(&self) -> PolicyId {
         PolicyId::LoopShortcut
@@ -205,6 +207,18 @@ impl TacticalPolicy for LoopShortcutPolicy {
             (None, IterationCount::UntilLethal) => {
                 PolicyVerdict::reject(PolicyReason::new("loop_shortcut_untillethal_cannot_crown"))
             }
+
+            // CR 104.4i + CR 732.2b: an offer naming no winner is proposed as a draw, which every
+            // other player may still shorten.
+            (None, IterationCount::WithoutEnd) => PolicyVerdict::preference(
+                DRAW_PROPOSAL_PREFERENCE,
+                PolicyReason::new("loop_shortcut_declare_draw_without_end"),
+            ),
+
+            // CR 732.2a: the engine refuses a proposal without end on an offer naming a winner.
+            (Some(_), IterationCount::WithoutEnd) => PolicyVerdict::reject(PolicyReason::new(
+                "loop_shortcut_without_end_names_a_winner",
+            )),
 
             // CR 732.2a: a ZERO-repetition declaration is representable, and the engine treats
             // it as legal — `a_zero_count_declaration_validates_over_an_empty_range_but_still_
@@ -548,7 +562,7 @@ mod tests {
     use super::*;
     use crate::config::{create_config, AiConfig, AiDifficulty, Platform};
     use crate::policies::context::SearchDepth;
-    use crate::policies::registry::STRONG_MAX;
+    use crate::policies::registry::{NUDGE_MAX, PREFERENCE_MAX, STRONG_MAX};
     use crate::search::{choose_action, score_candidates_with_session};
     use crate::session::AiSession;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
@@ -587,12 +601,19 @@ mod tests {
     }
 
     fn offer_state(predicted_winner: Option<PlayerId>) -> GameState {
+        offer_state_with(predicted_winner, ShortcutDecisionSchema::default())
+    }
+
+    fn offer_state_with(
+        predicted_winner: Option<PlayerId>,
+        schema: ShortcutDecisionSchema,
+    ) -> GameState {
         let mut state = GameState::new_two_player(0);
         state.waiting_for = WaitingFor::LoopShortcut {
             proposer: P0,
             predicted_winner,
             certificate: cert(),
-            schema: ShortcutDecisionSchema::default(),
+            schema,
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
             period: Default::default(),
@@ -747,6 +768,36 @@ mod tests {
             "an UntilLethal declare that cannot crown must be vetoed, got {v:?}"
         );
         assert_eq!(kind_of(&v), "loop_shortcut_untillethal_cannot_crown");
+    }
+
+    fn without_end_offer(predicted_winner: Option<PlayerId>) -> GameState {
+        offer_state_with(
+            predicted_winner,
+            ShortcutDecisionSchema {
+                iteration_count: IterationCount::WithoutEnd,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// CR 104.4i: an offer naming no winner is worth proposing as a draw; declining it is neutral.
+    #[test]
+    fn a_without_end_offer_naming_no_winner_prefers_the_draw() {
+        let state = without_end_offer(None);
+        let v = verdict_for(&state, &declare(IterationCount::WithoutEnd));
+        let delta = delta_of(&v);
+        assert!(delta > NUDGE_MAX && delta <= PREFERENCE_MAX, "{v:?}");
+        assert_eq!(kind_of(&v), "loop_shortcut_declare_draw_without_end");
+        assert_eq!(delta_of(&verdict_for(&state, &decline())), 0.0);
+    }
+
+    /// CR 732.2a: a proposal without end on an offer naming a winner is one the engine refuses.
+    #[test]
+    fn a_without_end_declare_against_a_named_winner_is_rejected() {
+        let state = without_end_offer(Some(P1));
+        let v = verdict_for(&state, &declare(IterationCount::WithoutEnd));
+        assert!(matches!(v, PolicyVerdict::Reject { .. }), "{v:?}");
+        assert_eq!(kind_of(&v), "loop_shortcut_without_end_names_a_winner");
     }
 
     /// Rows 3 + 5 + 7 — THE CLASS GUARD: `materialize_fixed_shortcut` COMMITS every cycle it
@@ -1665,6 +1716,32 @@ mod tests {
             declare_score - decline_score > STRONG_MAX,
             "a shortcut the proposer WINS must stay strongly preferred; declare = \
              {declare_score}, decline = {decline_score}"
+        );
+    }
+
+    #[test]
+    fn a_draw_offer_is_declared_as_one() {
+        let config = create_config(AiDifficulty::VeryEasy, Platform::Native);
+        let state = without_end_offer(None);
+        assert_both_candidates_reach_the_scorer(&state, &config);
+
+        let session = AiSession::arc_from_game(&state);
+        let scored = score_candidates_with_session(&state, P0, &config, &session);
+        let score_of = |wanted: &GameAction| {
+            scored
+                .iter()
+                .find(|(a, _)| a == wanted)
+                .map(|(_, s)| *s)
+                .unwrap_or_else(|| panic!("{wanted:?} is not scored: {scored:?}"))
+        };
+        let declare_score = score_of(&GameAction::DeclareShortcut {
+            count: IterationCount::WithoutEnd,
+            template: None,
+        });
+        let decline_score = score_of(&GameAction::DeclineShortcut);
+        assert!(
+            declare_score - decline_score > NUDGE_MAX,
+            "declare = {declare_score}, decline = {decline_score}"
         );
     }
 

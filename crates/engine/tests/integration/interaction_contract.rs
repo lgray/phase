@@ -4891,7 +4891,7 @@ fn a_multi_subject_schedule_states_the_head_its_drive_announces() {
         // A one-step schedule partitions the whole declared count, and nothing at all when the
         // proposal names no count.
         let partition = match &count {
-            IterationCount::UntilLethal => None,
+            IterationCount::UntilLethal | IterationCount::WithoutEnd => None,
             IterationCount::Fixed(n) => Some(vec![*n]),
         };
         for ((shape, tailed), (_, single)) in shapes(&TAILED).into_iter().zip(shapes(&HEAD)) {

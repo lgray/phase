@@ -278,6 +278,8 @@ impl ShortcutProposal {
             // CR 704.5a: the drain runs until a player loses, so the proposal names no count
             // and no place is past its end.
             IterationCount::UntilLethal => 0..=u32::MAX,
+            // CR 732.2b: a proposal with no ending point has no place past its end.
+            IterationCount::WithoutEnd => 0..=u32::MAX,
         }
     }
 }

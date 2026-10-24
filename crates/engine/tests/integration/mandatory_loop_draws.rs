@@ -8,12 +8,19 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use engine::ai_support::legal_actions_full;
+use engine::ai_support::{legal_actions, legal_actions_full};
+use engine::analysis::decision_template::{IterationCount, ShortcutDecisionSchema};
+use engine::analysis::loop_check::{LoopCertificate, OfferRoad, ShortcutResponse};
+use engine::game::engine::apply;
 use engine::game::game_object::{AttachTarget, GameObject};
+use engine::game::interaction::{
+    bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
+};
 use engine::game::perf_counters::play_trace_counters;
 use engine::game::period_confirm::mandatory_period_holds_for_tests;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
+use engine::game::visibility::filter_state_for_viewer;
 use engine::types::ability::ChosenAttribute;
 use engine::types::actions::{GameAction, PriorityYieldOp, ReplacementAutoChoice};
 use engine::types::counter::CounterType;
@@ -23,6 +30,11 @@ use engine::types::game_state::{
     MayTriggerAutoChoiceScope, StackEntryKind, WaitingFor, YieldScope,
 };
 use engine::types::identifiers::ObjectId;
+use engine::types::interaction::{
+    InteractionAvailability, InteractionOpportunityResponse, InteractionResponse,
+    InteractionResponseSpec, InteractionSessionId, InteractionShortcutCountSpec,
+    InteractionShortcutDecision, InteractionSubmission,
+};
 use engine::types::mana::{ManaColor, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
@@ -2058,4 +2070,284 @@ fn a_token_caged_sun_under_toph_adds_once_per_land_ability() {
         );
         assert_eq!(run.game_overs(), 0, "{mode:?}");
     }
+}
+
+fn dragon_trigger_on_top(state: &GameState) -> bool {
+    state.stack.back().is_some_and(|top| {
+        matches!(&top.kind, StackEntryKind::TriggeredAbility { source_id, .. }
+            if state.objects.get(source_id).is_some_and(|o| o.name == "Worldgorger Dragon"))
+    })
+}
+
+fn bolts_in_hand(state: &GameState, player: PlayerId) -> usize {
+    state.players[player.0 as usize]
+        .hand
+        .iter()
+        .filter(|id| {
+            state
+                .objects
+                .get(id)
+                .is_some_and(|o| o.name == "Lightning Bolt")
+        })
+        .count()
+}
+
+/// The Lightning Bolt board, passed until P0 holds priority over a Worldgorger Dragon trigger
+/// inside the recorded ring, with an offer to repeat the loop without end written there.
+fn at_a_without_end_offer() -> Option<GameRunner> {
+    let board = Board {
+        optional: true,
+        ..PLAIN
+    };
+    let Built { mut runner, .. } = build(board, LoopDetectionMode::Interactive)?;
+    for _ in 0..60 {
+        let state = runner.state();
+        if matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
+            && dragon_trigger_on_top(state)
+            && state.loop_detect_ring.len() >= 2
+        {
+            runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+                proposer: P0,
+                predicted_winner: None,
+                certificate: LoopCertificate {
+                    unbounded: Vec::new(),
+                    win_kind: None,
+                    win_kind_at: None,
+                    mandatory: false,
+                    residual_board_delta: Default::default(),
+                    per_cycle: None,
+                },
+                schema: ShortcutDecisionSchema {
+                    iteration_count: IterationCount::WithoutEnd,
+                    ..Default::default()
+                },
+                declaration: None,
+                road: OfferRoad::Ring,
+                period: Default::default(),
+            };
+            return Some(runner);
+        }
+        let action = match &state.waiting_for {
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+                order: (0..triggers.len()).collect(),
+            },
+            other => panic!("unexpected prompt {other:?}"),
+        };
+        runner.act(action).expect("a legal drive action");
+    }
+    panic!("P0 never held priority over a Worldgorger Dragon trigger in the ring");
+}
+
+const DECLARE_WITHOUT_END: GameAction = GameAction::DeclareShortcut {
+    count: IterationCount::WithoutEnd,
+    template: None,
+};
+
+/// CR 732.2a: the offer to drain P0 published no "without end", so declaring one is refused.
+#[test]
+fn a_proposal_without_end_is_refused_on_an_offer_that_did_not_publish_one() {
+    let with_out = Board {
+        archer: true,
+        p0_out: true,
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let Some(mut run) = run(with_out, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        match &run.state().waiting_for {
+            WaitingFor::LoopShortcut {
+                proposer,
+                predicted_winner,
+                schema,
+                ..
+            } => {
+                assert_eq!(*proposer, P0, "{drive:?}");
+                assert_eq!(*predicted_winner, Some(P1), "{drive:?}");
+                assert_eq!(schema.iteration_count, IterationCount::UntilLethal);
+            }
+            other => panic!("{drive:?}: no offer: {other:?}"),
+        }
+        let stack = run.state().stack.len();
+        let mut control = run.state().clone();
+        let until_lethal = apply(
+            &mut control,
+            P0,
+            GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: None,
+            },
+        )
+        .expect("the offer's own count is declarable");
+        assert!(
+            matches!(
+                until_lethal.waiting_for,
+                WaitingFor::RespondToShortcut { .. }
+            ),
+            "{drive:?}: {:?}",
+            until_lethal.waiting_for
+        );
+
+        run.runner
+            .act(DECLARE_WITHOUT_END)
+            .expect("a refused declaration hands priority back");
+        let state = run.state();
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0),
+            "{drive:?}: {:?}",
+            state.waiting_for
+        );
+        assert_eq!(state.stack.len(), stack, "{drive:?}");
+    }
+}
+
+/// CR 104.4i + CR 732.2c: once every player accepts a proposal to repeat the loop without end,
+/// the game is a draw and nothing the loop does is performed.
+#[test]
+fn a_proposal_without_end_every_player_accepts_is_a_draw() {
+    let Some(mut runner) = at_a_without_end_offer() else {
+        return;
+    };
+    assert_eq!(
+        legal_actions(runner.state()),
+        vec![DECLARE_WITHOUT_END, GameAction::DeclineShortcut]
+    );
+    assert_eq!(bolts_in_hand(runner.state(), P1), 1);
+
+    runner.act(DECLARE_WITHOUT_END).expect("declare");
+    match &runner.state().waiting_for {
+        WaitingFor::RespondToShortcut {
+            player,
+            remaining_players,
+            proposal,
+        } => {
+            assert_eq!(*player, P1);
+            assert!(remaining_players.is_empty());
+            assert_eq!(proposal.count, IterationCount::WithoutEnd);
+        }
+        other => panic!("no response window: {other:?}"),
+    }
+
+    let accepted = runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::GameOver { winner: None }
+    );
+    assert_eq!(
+        accepted
+            .events
+            .iter()
+            .filter(|event| matches!(event, GameEvent::GameOver { winner: None }))
+            .count(),
+        1
+    );
+    assert_eq!(bolts_in_hand(runner.state(), P1), 1);
+}
+
+/// CR 732.2b + CR 732.2c: shortened at the current place, the proposal takes nothing and the
+/// shortener holds priority over the same stack.
+#[test]
+fn a_proposal_without_end_shortened_at_the_current_place_gives_the_shortener_priority() {
+    let Some(mut runner) = at_a_without_end_offer() else {
+        return;
+    };
+    let stack = runner.state().stack.len();
+    runner.act(DECLARE_WITHOUT_END).expect("declare");
+    let shortened = runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Shorten { at_iteration: 0 },
+        })
+        .expect("place 0 is a place a responder may name");
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player } if player == P1),
+        "{:?}",
+        state.waiting_for
+    );
+    assert!(dragon_trigger_on_top(state));
+    assert_eq!(state.stack.len(), stack);
+    assert!(!shortened.events.iter().any(|event| matches!(
+        event,
+        GameEvent::ZoneChanged {
+            to: Zone::Battlefield,
+            ..
+        }
+    )));
+}
+
+/// CR 732.2a + CR 732.2b: the interaction publishes the proposal's count, answers its
+/// acceptance with the declaration, and offers the responder every place to shorten it.
+#[test]
+fn a_proposal_without_end_is_published_and_answered_through_the_interaction() {
+    let Some(mut runner) = at_a_without_end_offer() else {
+        return;
+    };
+    let mut offered = runner.state().clone();
+    bind_interaction_authority(
+        &mut offered,
+        InteractionSessionId("without-end-offer".into()),
+    )
+    .expect("bind");
+    let view = derive_viewer_interaction(&offered, &filter_state_for_viewer(&offered, P0), P0);
+    assert_eq!(view.availability, InteractionAvailability::InputRequired);
+    let opportunity = view.opportunities.first().expect("P0 is asked");
+    assert!(
+        matches!(
+            &opportunity.response,
+            InteractionOpportunityResponse::Schema {
+                spec: InteractionResponseSpec::Shortcut {
+                    count: InteractionShortcutCountSpec::WithoutEnd,
+                    points,
+                    allow_decline: true,
+                    ..
+                },
+                ..
+            } if points.is_empty()
+        ),
+        "{:?}",
+        opportunity.response
+    );
+    let resolved = resolve_interaction_response(
+        &offered,
+        P0,
+        &InteractionSubmission {
+            interaction_id: opportunity.interaction_id.clone(),
+            response: InteractionResponse::Shortcut {
+                decision: InteractionShortcutDecision::AcceptSuggested,
+                pins: Vec::new(),
+            },
+        },
+    )
+    .expect("accepting the suggestion resolves");
+    assert_eq!(resolved, DECLARE_WITHOUT_END);
+
+    runner.act(DECLARE_WITHOUT_END).expect("declare");
+    let mut declared = runner.state().clone();
+    bind_interaction_authority(
+        &mut declared,
+        InteractionSessionId("without-end-reply".into()),
+    )
+    .expect("bind");
+    let reply = derive_viewer_interaction(&declared, &filter_state_for_viewer(&declared, P1), P1);
+    let opportunity = reply.opportunities.first().expect("P1 is asked");
+    assert!(
+        matches!(
+            opportunity.response,
+            InteractionOpportunityResponse::Schema {
+                spec: InteractionResponseSpec::ShortcutReply {
+                    min_iteration: 0,
+                    max_iteration: u32::MAX,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{:?}",
+        opportunity.response
+    );
 }

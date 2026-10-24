@@ -2874,7 +2874,9 @@ fn shortcut_preview_entries(
 /// number to multiply a period by, so it yields no sample and the caller publishes nothing.
 fn shortcut_preview_counts(count: &InteractionShortcutCountSpec) -> Vec<u32> {
     match count {
-        InteractionShortcutCountSpec::UntilLethal => Vec::new(),
+        InteractionShortcutCountSpec::UntilLethal | InteractionShortcutCountSpec::WithoutEnd => {
+            Vec::new()
+        }
         InteractionShortcutCountSpec::Fixed {
             min,
             max,
@@ -3365,10 +3367,10 @@ fn completed_shortcut_declaration(
         ) => iterations,
         (InteractionShortcutDecision::Decline, _)
         | (
-            InteractionShortcutDecision::AcceptSuggested,
-            InteractionShortcutCountSpec::UntilLethal,
-        )
-        | (InteractionShortcutDecision::Fixed { .. }, InteractionShortcutCountSpec::UntilLethal) => {
+            InteractionShortcutDecision::AcceptSuggested
+            | InteractionShortcutDecision::Fixed { .. },
+            InteractionShortcutCountSpec::UntilLethal | InteractionShortcutCountSpec::WithoutEnd,
+        ) => {
             return None;
         }
     };
@@ -3453,12 +3455,10 @@ fn declared_shortcut_preview(
         ) => iterations,
         (InteractionShortcutDecision::Decline, _)
         | (
-            InteractionShortcutDecision::AcceptSuggested,
-            InteractionShortcutCountSpec::UntilLethal,
-        )
-        | (InteractionShortcutDecision::Fixed { .. }, InteractionShortcutCountSpec::UntilLethal) => {
-            return None
-        }
+            InteractionShortcutDecision::AcceptSuggested
+            | InteractionShortcutDecision::Fixed { .. },
+            InteractionShortcutCountSpec::UntilLethal | InteractionShortcutCountSpec::WithoutEnd,
+        ) => return None,
     };
     let basis = shortcut_preview_basis(interaction_id, &projection)?;
     let group = basis.group?;
@@ -3644,12 +3644,13 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
             suggested: iterations,
         },
         IterationCount::UntilLethal => InteractionShortcutCountSpec::UntilLethal,
+        IterationCount::WithoutEnd => InteractionShortcutCountSpec::WithoutEnd,
     };
     let declared_count = match proposal.count {
         IterationCount::Fixed(iterations) => Some(iterations),
-        // CR 732.1b: an until-lethal proposal names no count to partition, so every arm below
-        // declares an ORDER and no segment.
-        IterationCount::UntilLethal => None,
+        // CR 732.1b: an until-lethal or endless proposal names no count to partition, so every
+        // arm below declares an ORDER and no segment.
+        IterationCount::UntilLethal | IterationCount::WithoutEnd => None,
     };
 
     let mut candidates: Vec<LoopShortcutCandidateValue> = Vec::new();
@@ -3953,6 +3954,9 @@ fn loop_shortcut_projection(
         }
         crate::analysis::decision_template::IterationCount::UntilLethal => {
             InteractionShortcutCountSpec::UntilLethal
+        }
+        crate::analysis::decision_template::IterationCount::WithoutEnd => {
+            InteractionShortcutCountSpec::WithoutEnd
         }
     };
     // CR 732.2a: carry the measured per-period signature forward so the picker's numbers can
@@ -10793,6 +10797,10 @@ fn materialize_loop_shortcut_response(
             InteractionShortcutDecision::AcceptSuggested,
             InteractionShortcutCountSpec::UntilLethal,
         ) => IterationCount::UntilLethal,
+        (
+            InteractionShortcutDecision::AcceptSuggested,
+            InteractionShortcutCountSpec::WithoutEnd,
+        ) => IterationCount::WithoutEnd,
         (
             InteractionShortcutDecision::AcceptSuggested,
             InteractionShortcutCountSpec::Fixed { suggested, .. },

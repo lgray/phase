@@ -3735,10 +3735,20 @@ pub fn candidate_actions_broad_with_probe(
             // `template: None` declaration; where neither applies, `DeclineShortcut` really is
             // the only legal answer at the node, and representing that honestly is the point.
             let mut v = Vec::new();
-            if !schema.is_bounded() {
+            // CR 732.2a + CR 104.4i: an offer to repeat without end is declared as one.
+            let unbounded = match schema.iteration_count {
+                crate::analysis::decision_template::IterationCount::WithoutEnd => {
+                    Some(crate::analysis::decision_template::IterationCount::WithoutEnd)
+                }
+                crate::analysis::decision_template::IterationCount::Fixed(_)
+                | crate::analysis::decision_template::IterationCount::UntilLethal => (!schema
+                    .is_bounded())
+                .then_some(crate::analysis::decision_template::IterationCount::UntilLethal),
+            };
+            if let Some(count) = unbounded {
                 v.push(candidate(
                     GameAction::DeclareShortcut {
-                        count: crate::analysis::decision_template::IterationCount::UntilLethal,
+                        count,
                         template: None,
                     },
                     TacticalClass::Utility,
@@ -3778,7 +3788,8 @@ pub fn candidate_actions_broad_with_probe(
             // suggestion here has no count to name and emits nothing rather than guessing one.
             let suggested = match schema.iteration_count {
                 crate::analysis::decision_template::IterationCount::Fixed(n) => Some(n),
-                crate::analysis::decision_template::IterationCount::UntilLethal => None,
+                crate::analysis::decision_template::IterationCount::UntilLethal
+                | crate::analysis::decision_template::IterationCount::WithoutEnd => None,
             };
             if let Some(n) = suggested.filter(|_| {
                 schema.is_bounded()

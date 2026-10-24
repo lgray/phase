@@ -5337,6 +5337,7 @@ fn build_shortcut_schema(
     let iteration_count = match iteration_count {
         IterationCount::Fixed(n) => IterationCount::Fixed(n.min(deliverable_capacity)),
         IterationCount::UntilLethal => IterationCount::UntilLethal,
+        IterationCount::WithoutEnd => IterationCount::WithoutEnd,
     };
     // CR 702.51a: engine-owned total of untapped convoke-eligible creatures across every
     // ConvokeTaps point — the frontend renders this directly instead of re-deriving it from
@@ -5796,6 +5797,8 @@ fn apply_confirmed_shortcut(
             // Bounded elsewhere by the same constant: `apply_until_lethal_shortcut` drives
             // `shortcut_drive_period` cycles, which clamps to `MAX_SHORTCUT_CYCLES`.
             crate::analysis::decision_template::IterationCount::UntilLethal => false,
+            // The take drives no repetition: the accepted proposal is the draw.
+            crate::analysis::decision_template::IterationCount::WithoutEnd => false,
         }
         // CR 732.2c: the take performs the recorded period's own choices, so a proposal whose
         // declared choices differ from them is not the shortcut it would take.
@@ -5829,6 +5832,11 @@ fn apply_confirmed_shortcut(
         }
         crate::analysis::decision_template::IterationCount::Fixed(n) => {
             materialize_fixed_shortcut(state, result, proposal, n)
+        }
+        // CR 104.4i: every player agreed to repeat the loop without end, so the game is a draw.
+        crate::analysis::decision_template::IterationCount::WithoutEnd => {
+            super::elimination::end_game(state, None, &mut result.events);
+            result.waiting_for = state.waiting_for.clone();
         }
     }
 }
@@ -6163,6 +6171,8 @@ pub(crate) fn shortcut_validated_range(
         crate::analysis::decision_template::IterationCount::UntilLethal => {
             shortcut_drive_period(template)
         }
+        // A draw drives no repetition.
+        crate::analysis::decision_template::IterationCount::WithoutEnd => 0,
     }
 }
 
@@ -8175,6 +8185,7 @@ fn try_offer_object_growth_shortcut(
     let iteration_count = match shortcut_iteration_count(certificate.win_kind) {
         IterationCount::UntilLethal => IterationCount::UntilLethal,
         IterationCount::Fixed(_) => IterationCount::Fixed(MAX_SHORTCUT_CYCLES),
+        IterationCount::WithoutEnd => IterationCount::WithoutEnd,
     };
     let schema = build_shortcut_schema(
         // CR 732.2a: the points are the game choices the replay answered; an unresolvable one
@@ -8740,10 +8751,19 @@ fn handle_declare_shortcut(
             reject_shortcut_declaration(state, &mut result);
             return Ok(result);
         }
+        // CR 732.2a: a proposal without end is legal only on an offer that published one.
+        crate::analysis::decision_template::IterationCount::WithoutEnd
+            if offer.schema.iteration_count
+                != crate::analysis::decision_template::IterationCount::WithoutEnd =>
+        {
+            reject_shortcut_declaration(state, &mut result);
+            return Ok(result);
+        }
         // Under-cap `Fixed` and `UntilLethal` (period-bounded by `shortcut_drive_period`)
         // proceed to the proposal.
         crate::analysis::decision_template::IterationCount::Fixed(_)
-        | crate::analysis::decision_template::IterationCount::UntilLethal => {}
+        | crate::analysis::decision_template::IterationCount::UntilLethal
+        | crate::analysis::decision_template::IterationCount::WithoutEnd => {}
     }
     // A `template: None` declaration is not "no pins" — it is "no OVERRIDE of the pins this
     // offer already published". Resolve it against the offer's SUGGESTION

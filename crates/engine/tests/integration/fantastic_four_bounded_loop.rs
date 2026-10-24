@@ -95,7 +95,7 @@ pub(crate) fn published_suggestion(
 ) -> u32 {
     match schema.iteration_count {
         IterationCount::Fixed(n) => n,
-        IterationCount::UntilLethal => panic!(
+        IterationCount::UntilLethal | IterationCount::WithoutEnd => panic!(
             "a bounded offer publishes a `Fixed` suggestion; this one measured {:?}",
             schema.measured_repetition_bound
         ),
