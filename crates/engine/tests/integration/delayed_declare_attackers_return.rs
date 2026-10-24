@@ -452,7 +452,7 @@ fn aetherling_put_into_the_graveyard_and_exiled_again_before_the_end_step_is_not
     activate(&mut runner, aetherling);
     drain_stack(&mut runner);
     assert_eq!(zone(&runner, aetherling), Zone::Exile);
-    // Pull from Eternity's "target face-up exiled card" does not parse, so its move is made directly.
+    // Pull from Eternity's "target face-up exiled card" does not parse, so its move goes through the zone pipeline.
     put_into_graveyard(&mut runner, aetherling);
     let crypt_ability = activated_index(&runner, crypt);
     runner
