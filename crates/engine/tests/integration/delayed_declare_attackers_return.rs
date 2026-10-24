@@ -614,6 +614,7 @@ fn a_returned_attacker_removed_from_combat_keeps_the_declare_blockers_step() {
     assert!(entered(&runner, &events, Phase::DeclareBlockers));
     assert!(record.priority_steps.contains(&Phase::DeclareBlockers));
     assert!(entered(&runner, &events, Phase::CombatDamage));
+    assert!(record.priority_steps.contains(&Phase::CombatDamage));
     assert!(entered(&runner, &events, Phase::EndCombat));
 }
 
