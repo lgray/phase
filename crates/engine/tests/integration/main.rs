@@ -1497,6 +1497,7 @@ mod strefan_maurer_progenitor;
 mod strider_ranger_of_the_north;
 mod subject_anchored_optional_announcer;
 mod subtype_list_seams;
+mod suffix_if_guard_scope;
 mod summer_bloom_5979;
 mod summon_esper_valigarmanda_9213;
 mod summon_leviathan_subtype_list_triggers;

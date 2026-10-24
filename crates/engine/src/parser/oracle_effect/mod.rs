@@ -1470,7 +1470,7 @@ fn apply_outer_condition_to_clause(outer: &AbilityCondition, clause: &mut Clause
 /// replacement and its `else_ability` carries the unreplaced instructions, so a
 /// body with its own guard or otherwise branch resolves beneath a no-op carrier
 /// instead of surrendering them to the selector.
-pub(super) fn instead_override_definition(
+pub(crate) fn instead_override_definition(
     body: AbilityDefinition,
     selector: AbilityCondition,
 ) -> AbilityDefinition {
@@ -1480,6 +1480,48 @@ pub(super) fn instead_override_definition(
     AbilityDefinition::new(body.kind, Effect::NoOp)
         .condition(selector)
         .sub_ability(body)
+}
+
+/// CR 608.2c: a trailing "<instruction> if <condition>, then" guards that
+/// instruction alone, so the instruction after it is the next independent one and a
+/// following instruction with its own trailing guard is evaluated on that guard.
+/// `pushed_from` is the clause count before the guarded chunk pushed anything.
+fn settle_trailing_guard(
+    clauses: &mut [ClauseIr],
+    pushed_from: Option<usize>,
+    released: &mut bool,
+) {
+    let guarded = pushed_from
+        .and_then(|start| clauses.get_mut(start..))
+        .and_then(<[ClauseIr]>::last_mut)
+        .filter(|clause| {
+            clause.condition.is_some()
+                && !clause.is_optional
+                && matches!(clause.disposition, ClauseDisposition::Emit { .. })
+        });
+    let Some(clause) = guarded else {
+        *released = false;
+        return;
+    };
+    if *released {
+        clause.sibling_condition = SiblingCondition::ReplicatedOrBranch;
+    }
+    *released = matches!(clause.boundary, Some(ClauseBoundary::Then));
+    if *released {
+        clause.boundary = Some(ClauseBoundary::Sentence);
+    }
+}
+
+/// The replacement body of an [`instead_override_definition`] result: the
+/// carrier's sub when one was built, else the override itself.
+pub(crate) fn instead_override_body_mut(instead: &mut AbilityDefinition) -> &mut AbilityDefinition {
+    if matches!(*instead.effect, Effect::NoOp) && instead.sub_ability.is_some() {
+        return instead
+            .sub_ability
+            .as_deref_mut()
+            .expect("the carrier's body was checked");
+    }
+    instead
 }
 
 /// CR 608.2c: Propagate the committed `ChoiceType` from a chain's head
@@ -42763,7 +42805,17 @@ fn parse_effect_chain_ir_body(
     // statement-level `return` — so no value can escape to the caller.
     let outer_declared_object_target = ctx.chain_declared_object_target.take();
     let outer_declared_slots = std::mem::take(&mut ctx.chain_declared_slots);
+    // CR 608.2c: the clause count before the previous chunk's trailing-guarded
+    // instruction was pushed, and whether the instruction settled before it
+    // released its successor (see `settle_trailing_guard`).
+    let mut pending_trailing_guard: Option<usize> = None;
+    let mut trailing_guard_released = false;
     'chunks: for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        settle_trailing_guard(
+            builder.clauses_mut(),
+            pending_trailing_guard.take(),
+            &mut trailing_guard_released,
+        );
         // CR 601.2c + CR 608.2c: FIRST statement of the body, so the antecedent
         // is published PATH-INDEPENDENTLY — ahead of `try_parse_generic_instead_clause`
         // (the producer for the "If <cond>, instead <body>" rider that carries
@@ -44458,6 +44510,13 @@ fn parse_effect_chain_ir_body(
                 chunk.boundary_after,
             );
             continue;
+        }
+        if if_you_do.is_none()
+            && guard_condition.is_some()
+            && conditions::parse_leading_conditional_prefix(&normalized_text.to_lowercase())
+                .is_none()
+        {
+            pending_trailing_guard = Some(builder.clauses().len());
         }
         let condition = match (if_you_do, guard_condition) {
             (Some(reflexive), Some(guard)) if reflexive.has_when_you_do_marker() => {
@@ -47700,6 +47759,11 @@ fn parse_effect_chain_ir_body(
     ctx.chain_declared_object_target = outer_declared_object_target;
     ctx.chain_declared_slots = outer_declared_slots;
 
+    settle_trailing_guard(
+        builder.clauses_mut(),
+        pending_trailing_guard.take(),
+        &mut trailing_guard_released,
+    );
     // Once more after the loop: the final iteration's stamp has no next-iteration
     // top to check it. See the declaration of `pending_stamp` above.
     debug_assert!(
