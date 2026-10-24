@@ -372,7 +372,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     assert_eq!(
         (production.len(), in_test.len()),
-        (27, 29),
+        (28, 29),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
          The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
@@ -403,7 +403,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
             ("engine/src/ai_support/candidates.rs".to_string(), 1),
             ("engine/src/analysis/corpus.rs".to_string(), 1),
             ("engine/src/game/derived_views.rs".to_string(), 1),
-            ("engine/src/game/engine.rs".to_string(), 5),
+            ("engine/src/game/engine.rs".to_string(), 6),
             ("engine/src/game/interaction.rs".to_string(), 5),
             ("engine/src/game/play_trace.rs".to_string(), 1),
             ("engine/src/game/scenario.rs".to_string(), 1),

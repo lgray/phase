@@ -3573,16 +3573,7 @@ pub(super) fn handle_resolution_choice(
                     //       NOT ∞-gated, so a fresh manual re-loop re-offers and re-registers a
                     //       stash; and
                     //   (b) debug toggle-off — `engine_debug.rs`'s `clear_unbounded_loop` call.
-                    // NOTE: the enabler-departure clear (`clear_unbounded_loop` from
-                    // `zones::apply_zone_exit_cleanup`) is INERT for this object-growth ∞-mark
-                    // class, because `materialize_object_growth_shortcut` (engine.rs) never calls
-                    // `register_unbounded_loop_enablers` (only the Interactive Path-C arm does), so
-                    // `zones.rs`'s `unbounded_loop_enablers.contains(id)` gate never matches an
-                    // object-growth mark. It STAYS inert deliberately: `clear_unbounded_loop` drops
-                    // SIX maps including `pending_unbounded_materialization`, so registering
-                    // enablers here would let one departing token cancel the collapse the table
-                    // unanimously accepted (CR 732.2c: the shortcut is taken at the last accept).
-                    // The DISPLAY half of follow-up F2 is instead covered live at the projection by
+                    // The DISPLAY half of follow-up F2 is covered live at the projection by
                     // `derived_views::object_growth_backing`, which drops an ∞ row whose entire
                     // registered display set has left the battlefield without touching the stash.
                     // That cover now spans BOTH object-backed families — the token axis reads the

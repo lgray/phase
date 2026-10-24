@@ -2688,9 +2688,10 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
 ///   respond) it OFFERS the interactive shortcut (CR 732.2a) via `WaitingFor::LoopShortcut`.
 /// - **Path B — CR 732.4 all-mandatory, net-progress, no-loss draw**: a confirmed cycle
 ///   with no determinate winner that drives NO player toward a loss and that no living
-///   player can break is a draw (CR 104.4b / 104.4f).
+///   player can break is a draw (CR 104.4b / 104.4f). One whose only non-mandatory member is
+///   an out is offered as a draw instead (CR 732.5).
 ///
-/// Everything else (staggered-pod losses, optional pure-advantage loops) falls through
+/// Everything else (staggered-pod losses, optional loops holding more than an out) falls through
 /// with no action — the pre-feature halt/continue behavior. Runs inside the same
 /// top-level-only `!in_simulation_probe()` guard as the `On` arm.
 ///
@@ -2702,6 +2703,35 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
 /// second non-faller ⇒ `None` ⇒ neither Path A (no winner) nor Path B (a life-loss axis is
 /// present, so it is not a CR 732.4 no-loss draw) fires, and it falls through without crowning.
 fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
+    let order_proof = OrderProofCell::new();
+    interactive_loop_bridge_paths(state, result, &order_proof);
+    if let Some((_, Some((start, proof)))) = order_proof.get().copied() {
+        super::play_trace::note_order_proof(state, start, proof);
+    }
+}
+
+/// The every-order proof, computed at most once per bridge run and only by its first reader;
+/// the second half is a fresh proof the bridge keeps once its scans release the state.
+type OrderProofCell = std::cell::OnceCell<(
+    Option<super::period_confirm::OptionProof>,
+    Option<(usize, super::period_confirm::OptionProof)>,
+)>;
+
+/// CR 603.3b: the every-order proof read through `cell`, computing it on the first read.
+fn lazy_order_proof(
+    cell: &OrderProofCell,
+    state: &GameState,
+) -> super::period_confirm::OptionProof {
+    cell.get_or_init(|| trigger_order_proof(state))
+        .0
+        .unwrap_or(super::period_confirm::OptionProof::Undecided)
+}
+
+fn interactive_loop_bridge_paths(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    order_proof: &OrderProofCell,
+) {
     // The CONTAINER of the five reduction sites this function reaches, so the parts have
     // something to be a share of. A `Drop` guard, because each path returns from its own
     // exit and a duplicated `elapsed()` at one of them would eventually be the one missed.
@@ -2712,15 +2742,10 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // priority action that could break it)? The single mandatory-vs-optional signal the
     // engine already computes — not a new stored flag.
     let mandatory = no_living_player_has_meaningful_priority_action(state);
-    let order_proof = if mandatory {
-        trigger_order_proof(state)
-    } else {
-        None
-    };
-    let resolve = |profile: crate::types::game_state::LoopDecisionProfile| {
-        profile.with_option_proof(|| {
-            order_proof.unwrap_or(super::period_confirm::OptionProof::Undecided)
-        })
+    // CR 603.3b: an ordering point inside a period that holds an out is proved as in a
+    // mandatory one; the proof is asked only of a period that already recurs.
+    let resolve = |state: &GameState, profile: crate::types::game_state::LoopDecisionProfile| {
+        profile.with_option_proof(|| lazy_order_proof(order_proof, state))
     };
 
     // Path A: determinate lethal single-winner drain.
@@ -2733,17 +2758,20 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 .iter()
                 .position(|sample| std::sync::Arc::ptr_eq(sample, &prior))
                 .unwrap_or(0);
-            resolve(crate::types::game_state::LoopDecisionProfile::of_window(
-                state
-                    .loop_detect_ring
-                    .iter()
-                    .skip(start)
-                    .map(|sample| &**sample),
-                &crate::types::game_state::LoopDecisionMarks {
-                    tally: state.loop_decision_tally,
-                    out: crate::types::game_state::PriorityOut::Absent,
-                },
-            ))
+            resolve(
+                state,
+                crate::types::game_state::LoopDecisionProfile::of_window(
+                    state
+                        .loop_detect_ring
+                        .iter()
+                        .skip(start)
+                        .map(|sample| &**sample),
+                    &crate::types::game_state::LoopDecisionMarks {
+                        tally: state.loop_decision_tally,
+                        out: crate::types::game_state::PriorityOut::Absent,
+                    },
+                ),
+            )
             .is_forced()
         };
         if forced {
@@ -2808,14 +2836,22 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
 
     // Path B: CR 732.4 all-mandatory draw, on zero progress or on net progress with no loss
     // axis, over a period that left every unmeasured axis unchanged. Only reached when Path A
-    // found no determinate winner. `mandatory` gates it (CR 732.5); a loss axis or an
-    // optional loop falls through to the pre-feature halt.
-    if mandatory {
-        let _timed = crate::analysis::resource::CostTimer::start(|cost| {
-            (
-                &mut cost.recurrence_scan_mandatory_ns,
-                &mut cost.recurrence_scan_mandatory_calls,
-            )
+    // found no determinate winner.
+    {
+        let _timed = crate::analysis::resource::CostTimer::start(if mandatory {
+            |cost| {
+                (
+                    &mut cost.recurrence_scan_mandatory_ns,
+                    &mut cost.recurrence_scan_mandatory_calls,
+                )
+            }
+        } else {
+            |cost| {
+                (
+                    &mut cost.recurrence_scan_optional_ns,
+                    &mut cost.recurrence_scan_optional_calls,
+                )
+            }
         });
         let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
@@ -2825,11 +2861,16 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         // `state`, which is why the verdict is carried out of the scan and acted on below: a
         // mutation inside the walk would be a borrow-check error rather than a walk that keeps
         // comparing against a state it already changed.
-        // `mandatory` already rules out an out at the current position (CR 732.5).
+        // CR 732.5: `mandatory` is the out verdict at the current position.
         let current_marks = crate::types::game_state::LoopDecisionMarks {
             tally: state.loop_decision_tally,
-            out: crate::types::game_state::PriorityOut::Absent,
+            out: if mandatory {
+                crate::types::game_state::PriorityOut::Absent
+            } else {
+                crate::types::game_state::PriorityOut::Held
+            },
         };
+        let mut outs_offer: Option<usize> = None;
         let drawn = !priors.is_empty() && {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
             let ring_live: Vec<&GameState> = priors.iter().map(|sample| &sample.live).collect();
@@ -2866,37 +2907,38 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                             && has_no_loss_axis(&delta)))
                     // CR 104.4b: a period holding an optional action, a decision or an out is
                     // no draw.
-                    && resolve(crate::types::game_state::LoopDecisionProfile::of_window(
-                        priors[idx..].iter().map(|sample| &**sample),
-                        &current_marks,
-                    ))
-                    .is_forced()
+                    && {
+                        let profile = resolve(
+                            state,
+                            crate::types::game_state::LoopDecisionProfile::of_window(
+                                priors[idx..].iter().map(|sample| &**sample),
+                                &current_marks,
+                            ),
+                        );
+                        if outs_offer.is_none() && profile.holds_only_outs() {
+                            outs_offer = Some(idx);
+                        }
+                        profile.is_forced()
+                    }
             })
         };
         // CR 732.4: a period the ring cannot show recurring is drawn on its recorded witness.
-        let drawn =
-            drawn || mandatory_recurrence_witnessed(state, &priors, &current_marks, order_proof);
+        let drawn = drawn
+            || (mandatory
+                && mandatory_recurrence_witnessed(state, &priors, &current_marks, order_proof));
         if drawn {
             super::elimination::end_game(state, None, &mut result.events);
             return;
         }
+        // CR 732.5: a period whose only non-mandatory member is an out is offered, not drawn.
+        if let Some(idx) = outs_offer {
+            offer_draw_without_end(state, result, &priors[idx].normalized);
+            return;
+        }
     }
-    // PR-7 Phase 4c (B5): OPTIONAL beneficial (non-winning) loop ⇒ revocable-∞ capability.
-    // CR 104.4b: "Loops that contain an optional action don't result in a draw" — so an
-    // optional net-progress no-loss loop is neither crowned (Path A: no faller) nor drawn
-    // (Path B: !mandatory). It grinds under player control; record the unbounded capability
-    // (mark_unbounded_loop) + its enablers so an enabler's departure REVOKES it (defuse hook
-    // in zones.rs `apply_zone_exit_cleanup`). Reached only when Path A named no winner AND
-    // the loop is OPTIONAL (a player can break it) — the pre-feature halt already applied
-    // when Path B's `mandatory` gate excludes this branch, so this is a NEW arm, not a
-    // narrowing of one.
-    //
-    // CR-FIDELITY NOTE: CR 104.4b grants the controller "no draw + player control", NOT a
-    // persistent resource. The realization here reuses `unbounded_resources` /
-    // `refill_infinite_mana`, which is a DOCUMENTED DEBUG-ONLY DEPARTURE FROM THE RULES
-    // (mana_payment.rs top-up); reusing it for a real detected loop is team-lead's stated
-    // design intent (in-scope). The mark means "this player can grind this axis unboundedly
-    // under their own control", the closest live realization of CR 104.4b's grant.
+    // Path C: CR 104.4b + CR 732.5: an optional net-progress no-loss loop of advantage for the
+    // driver, recurring on a counter-growth cover too, is offered when its only non-mandatory
+    // member is an out.
     if !mandatory {
         let _timed = crate::analysis::resource::CostTimer::start(|cost| {
             (
@@ -2909,19 +2951,23 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
         // Hoisted for the same reason as Path B's, and with the same consequence: the frames
-        // borrow `state`, so the mark below happens after the scan rather than inside it.
+        // borrow `state`, so the offer below happens after the scan rather than inside it.
         let hit = if priors.is_empty() {
             None
         } else {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
-            priors.iter().find_map(|prior| {
-                let prior = &prior.normalized;
+            let held = crate::types::game_state::LoopDecisionMarks {
+                tally: state.loop_decision_tally,
+                out: crate::types::game_state::PriorityOut::Held,
+            };
+            priors.iter().enumerate().find_map(|(idx, sample)| {
+                let prior = &sample.normalized;
                 let delta = crate::analysis::resource::ResourceVector::delta(
                     &crate::analysis::resource::ResourceVector::snapshot(prior),
                     &cur,
                 );
-                // Same recurrence + net-progress predicate as Path B (byte-reused), minus the
-                // `mandatory` gate. The object-growth disjunct is the SHARED-BUT-DORMANT arm
+                // Same recurrence + net-progress predicate as Path B (byte-reused). The
+                // object-growth disjunct is the SHARED-BUT-DORMANT arm
                 // (empty residual today; lights up under 4a-live with no further edit).
                 //
                 // REDUNDANCY PROOF (R6, team-lead-verified): `has_no_loss_axis` (conjunct 3
@@ -2955,9 +3001,8 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 // the ring legs draw that board before either player reaches ten poison counters.
                 // CR 122.1 + CR 104.4b: the third disjunct is a pure preserved-`Generic`
                 // counter-growth cover (proliferate/charge Pentad Prism, burden The One
-                // Ring). Live revocable-∞ mark ONLY — this Path-C arm routes to
-                // `mark_unbounded_loop` + enabler registration below, which NEVER produces a
-                // GameOver; an over-claim is a revocable capability, not a wrongful game-end.
+                // Ring). It reaches only an offer, which ends the game only when every player
+                // accepts it (CR 732.2b + CR 104.4i).
                 // It is also the one disjunct the hoist leaves deriving: its current-side
                 // comparand is `equalize_generic_counters(prior, current)`, which depends on
                 // the prior.
@@ -2980,26 +3025,22 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 {
                     return None;
                 }
-                let axes = delta.unbounded_axes_for(controller);
-                if axes.is_empty() {
+                if delta.unbounded_axes_for(controller).is_empty() {
                     return None; // no unbounded axis for the driver ⇒ not this player's loop
                 }
-                // CR 110.1 + every-enabler: the stable recurring board is the enabler set.
-                // battlefield_ids(prior) ∩ battlefield_ids(state) — complete for battlefield-
-                // permanent enablers of a constant-depth loop, excludes intra-loop churn.
-                let enablers: std::collections::BTreeSet<ObjectId> = prior
-                    .battlefield
-                    .iter()
-                    .copied()
-                    .filter(|id| frames.current().battlefield.contains(id))
-                    .collect();
-                Some((axes, enablers))
+                resolve(
+                    state,
+                    crate::types::game_state::LoopDecisionProfile::of_window(
+                        priors[idx..].iter().map(|sample| &**sample),
+                        &held,
+                    ),
+                )
+                .holds_only_outs()
+                .then_some(idx)
             })
         };
-        if let Some((axes, enablers)) = hit {
-            // CR 104.4b: mark the revocable unbounded capability (idempotent set-union).
-            state.mark_unbounded_loop(controller, &axes);
-            state.register_unbounded_loop_enablers(controller, enablers);
+        if let Some(idx) = hit {
+            offer_draw_without_end(state, result, &priors[idx].normalized);
         }
     }
     // else: staggered-pod loss / non-beneficial optional loop ⇒ no auto-resolve; fall
@@ -3014,7 +3055,7 @@ fn mandatory_recurrence_witnessed(
     state: &mut GameState,
     priors: &[std::sync::Arc<crate::types::LoopDetectSample>],
     current_marks: &crate::types::game_state::LoopDecisionMarks,
-    order_proof: Option<super::period_confirm::OptionProof>,
+    order_proof: &OrderProofCell,
 ) -> bool {
     let Some(span) = super::play_trace::mandatory_recurrence(state) else {
         return false;
@@ -3033,7 +3074,7 @@ fn mandatory_recurrence_witnessed(
         priors[base..].iter().map(|sample| &**sample),
         current_marks,
     )
-    .with_option_proof(|| order_proof.unwrap_or(super::period_confirm::OptionProof::Undecided))
+    .with_option_proof(|| lazy_order_proof(order_proof, state))
     .is_forced()
     {
         return false;
@@ -3044,19 +3085,57 @@ fn mandatory_recurrence_witnessed(
 }
 
 /// CR 603.3b: the every-order proof of the mandatory span at `state`, kept per span start; `None`
-/// when no trigger order was made since the ring's first sample.
-fn trigger_order_proof(state: &mut GameState) -> Option<super::period_confirm::OptionProof> {
-    let first = state.loop_detect_ring.front()?.tally.trigger_order;
-    if state.loop_decision_tally.trigger_order == first {
-        return None;
+/// when no trigger order was made since the ring's first sample. A proof replayed here rather
+/// than read from the play trace is also returned with its span start, for the caller to keep.
+fn trigger_order_proof(
+    state: &GameState,
+) -> (
+    Option<super::period_confirm::OptionProof>,
+    Option<(usize, super::period_confirm::OptionProof)>,
+) {
+    let Some(first) = state.loop_detect_ring.front() else {
+        return (None, None);
+    };
+    if state.loop_decision_tally.trigger_order == first.tally.trigger_order {
+        return (None, None);
     }
-    let span = super::play_trace::mandatory_recurrence(state)?;
+    let Some(span) = super::play_trace::mandatory_recurrence(state) else {
+        return (None, None);
+    };
     if let Some(proof) = super::play_trace::order_proof(state, span.start) {
-        return Some(proof);
+        return (Some(proof), None);
     }
     let proof = super::period_confirm::trigger_orders(state, span);
-    super::play_trace::note_order_proof(state, span.start, proof);
-    Some(proof)
+    (Some(proof), Some((span.start, proof)))
+}
+
+/// CR 732.2a + CR 732.5: offers the priority holder a draw for a recurring period whose only
+/// non-mandatory member is an out; nobody is forced to use it.
+fn offer_draw_without_end(state: &mut GameState, result: &mut ActionResult, prior: &GameState) {
+    let WaitingFor::Priority { player: proposer } = state.waiting_for else {
+        unreachable!("interactive bridge only runs during priority")
+    };
+    state.waiting_for = WaitingFor::LoopShortcut {
+        proposer,
+        predicted_winner: None,
+        certificate: crate::analysis::loop_check::LoopCertificate {
+            unbounded: Vec::new(),
+            win_kind: None,
+            win_kind_at: None,
+            mandatory: false,
+            residual_board_delta: crate::analysis::resource::board_delta(prior, state),
+            per_cycle: None,
+        },
+        schema: build_shortcut_schema(
+            Vec::new(),
+            crate::analysis::decision_template::IterationCount::WithoutEnd,
+            None,
+        ),
+        declaration: None,
+        road: crate::analysis::loop_check::OfferRoad::Ring,
+        period: Default::default(),
+    };
+    result.waiting_for = state.waiting_for.clone();
 }
 
 /// PR-7 Phase 3: scan the live loop-detect ring for a determinate lethal single-winner,
@@ -3702,7 +3781,7 @@ fn bounded_offer_tail(
     } = frames;
 
     // (5) CR 732.2a: the conjunct that proves this class is DISJOINT from Path C's
-    // revocable-∞ advantage mark. An `Advantage` cycle drives nobody toward a CR 704
+    // advantage class. An `Advantage` cycle drives nobody toward a CR 704
     // threshold, so it has no bound to state and belongs to the other seam — unless its
     // cleanup discard bounds it (CR 514.1).
     if periodic.cleanup.is_none()
@@ -10845,8 +10924,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
     const FINGERPRINT_AFTER_ITERS: usize = 32;
     const MAX_LOOP_WINDOW: usize = 128;
     let mut mandatory_iters = 0usize;
-    let mut loop_window: VecDeque<(u64, GameState, crate::types::game_state::LoopDecisionMarks)> =
-        VecDeque::new();
+    let mut loop_window: VecDeque<(u64, crate::types::LoopDetectSample)> = VecDeque::new();
 
     let max_iterations = auto_pass_loop_max_iterations(state);
     let mut iteration = 0usize;
@@ -10957,16 +11035,17 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                         {
                             let fingerprint = state.loop_fingerprint();
                             let normalized = state.normalize_for_loop();
-                            let marks = state.loop_decision_marks();
-                            if loop_window.iter().enumerate().any(|(at, (fp, prior, _))| {
+                            // CR 732.5: the out verdict is read only for a repeat; it needs each
+                            // beat's live state.
+                            if loop_window.iter().enumerate().any(|(at, (fp, prior))| {
                                 *fp == fingerprint
                                     && crate::types::game_state::loop_states_equal(
                                         &normalized,
-                                        prior,
+                                        &prior.normalized,
                                     )
                                     && crate::types::game_state::LoopDecisionProfile::of_window(
-                                        loop_window.iter().skip(at).map(|(_, _, marks)| marks),
-                                        &marks,
+                                        loop_window.iter().skip(at).map(|(_, sample)| sample),
+                                        &state.loop_decision_marks(),
                                     )
                                     .is_forced()
                             }) {
@@ -11007,7 +11086,15 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
                             if loop_window.len() == MAX_LOOP_WINDOW {
                                 loop_window.pop_front();
                             }
-                            loop_window.push_back((fingerprint, normalized, marks));
+                            loop_window.push_back((
+                                fingerprint,
+                                crate::types::LoopDetectSample {
+                                    normalized,
+                                    live: state.loop_detect_live_sample(),
+                                    tally: state.loop_decision_tally,
+                                    trace_at: None,
+                                },
+                            ));
                         }
 
                         if stack_empty_or_grew || session_finished {
@@ -26334,7 +26421,7 @@ mod bounded_offer_conjunct_tests {
     /// STEP (5) `AdvantageOnlyCycle`. CR 732.2a: this producer's whole claim is that it measured
     /// a CR 704 threshold INSIDE the loop and divided the headroom by the per-period magnitude.
     /// An `Advantage` cycle drives nobody toward such a threshold, so it has no bound to state
-    /// and belongs to Path C's revocable-infinity mark instead.
+    /// and belongs to Path C's class instead.
     ///
     /// The pair is a SELF-mill against an OPPONENT-mill, which is exactly the discrimination
     /// `classify_win_kind` makes: `Decking` requires "an unbounded downward library delta on a
@@ -26368,7 +26455,7 @@ mod bounded_offer_conjunct_tests {
             try_offer_bounded_cycle_shortcut(&mill_ring(P0, 3), false),
             Err(BoundedOfferRefusal::AdvantageOnlyCycle),
             "CR 732.2a: a cycle that drives nobody toward a CR 704 threshold has no bound to \
-             state, so it belongs to Path C's revocable-infinity mark, not to this seam"
+             state, so it belongs to Path C's class, not to this seam"
         );
     }
 

@@ -391,10 +391,10 @@ pub struct LoopDetectCost {
     /// Path D — the bounded-cycle offer mint.
     pub bounded_offer_ns: u64,
     pub bounded_offer_calls: u32,
-    /// Path B — the CR 732.4 draw ring walk, reached only when the loop is mandatory.
+    /// Path B's ring walk under a mandatory verdict.
     pub recurrence_scan_mandatory_ns: u64,
     pub recurrence_scan_mandatory_calls: u32,
-    /// CR 104.4b Path C — the revocable-unbounded ring walk, reached only when it is not.
+    /// Path B and Path C's ring walks under an out verdict.
     pub recurrence_scan_optional_ns: u64,
     pub recurrence_scan_optional_calls: u32,
     /// The recorded road, below the reconcile block.
@@ -6154,9 +6154,10 @@ fn equalize_generic_counters(prior: &GameState, current: &GameState) -> GameStat
 /// EQUALITY), not the object-growth cover's Karp–Miller path, and `equalize_generic_counters`
 /// projects out an axis that base does not — so a dormant condition reading a GROWING `Generic`
 /// counter ("as long as ~ has three or more charge counters, …") is a new projected-axis
-/// observer. Sound by revocability, not parity: both wirings classify `WinKind::Advantage`
-/// (CR 104.4b — an optional loop is not a draw) and never crown a `GameOver`, so a
-/// mis-extrapolation is declinable or revocable; it is wired into no GameOver-capable seam.
+/// observer. Sound by declinability, not parity: both wirings classify `WinKind::Advantage`
+/// (CR 104.4b — an optional loop is not a draw) and never crown a `GameOver`; the live one
+/// reaches an offer that ends the game only when every player accepts it (CR 732.2b +
+/// CR 104.4i).
 pub(crate) fn loop_states_cover_modulo_counter_growth(
     prior: &GameState,
     current: &GameState,

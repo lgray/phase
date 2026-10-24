@@ -2136,4 +2136,79 @@ mod tests {
             }
         }
     }
+
+    /// CR 732.5 + CR 104.4b: Worldgorger Dragon under Animate Dead loops with P1's Lightning Bolt
+    /// outside it. Driven to the engine's offer of a draw without end, two AI seats play it out:
+    /// whether P0 declares (P1 shortens and bolts) or declines (P1 bolts), the loop is left with
+    /// no out and the game is a draw.
+    #[test]
+    fn ai_seats_play_an_out_only_loop_offer_to_a_draw() {
+        use crate::auto_play::{run_ai_actions_bounded, AiActionsStop};
+        use engine::game::scenario::GameScenario;
+        use engine::game::scenario_db::GameScenarioDbExt;
+        use engine::types::game_state::LoopDetectionMode;
+        use engine::types::mana::{ManaType, ManaUnit};
+        use engine::types::phase::Phase;
+        use std::collections::{HashMap, HashSet};
+
+        let db = integration_card_db();
+        for seed in [0, 1] {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let dragon = scenario.add_real_card(P0, "Worldgorger Dragon", Zone::Graveyard, &db);
+            let animate = scenario.add_real_card(P0, "Animate Dead", Zone::Hand, &db);
+            scenario.with_mana_pool(
+                P0,
+                (0..2)
+                    .map(|_| ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![]))
+                    .collect(),
+            );
+            scenario.add_real_card(P1, "Mountain", Zone::Battlefield, &db);
+            scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, &db);
+            for seat in [P0, P1] {
+                for _ in 0..10 {
+                    scenario.add_real_card(seat, "Swamp", Zone::Library, &db);
+                }
+            }
+            let mut runner = scenario.build();
+            runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+            drop(runner.cast(animate).target_object(dragon).commit());
+            for _ in 0..60 {
+                let action = match &runner.state().waiting_for {
+                    WaitingFor::Priority { .. } => GameAction::PassPriority,
+                    WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+                        order: (0..triggers.len()).collect(),
+                    },
+                    _ => break,
+                };
+                runner.act(action).expect("a legal drive action");
+            }
+            assert_eq!(
+                runner.state().waiting_for.variant_name(),
+                "LoopShortcut",
+                "seed {seed}: reach"
+            );
+
+            let mut state = runner.state().clone();
+            let session = AiSession::arc_from_game(&state);
+            let run = run_ai_actions_bounded(
+                &mut state,
+                &HashSet::from([P0, P1]),
+                &HashMap::from([(P0, AiConfig::default()), (P1, AiConfig::default())]),
+                &mut SmallRng::seed_from_u64(seed),
+                &session,
+                300,
+            );
+            assert_eq!(
+                state.waiting_for,
+                WaitingFor::GameOver { winner: None },
+                "seed {seed}"
+            );
+            assert!(
+                matches!(run.stop, AiActionsStop::NoEligibleAiActor),
+                "seed {seed}: {:?}",
+                run.stop
+            );
+        }
+    }
 }

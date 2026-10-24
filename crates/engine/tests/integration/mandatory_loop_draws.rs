@@ -9,8 +9,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use engine::ai_support::{legal_actions, legal_actions_full};
-use engine::analysis::decision_template::{IterationCount, ShortcutDecisionSchema};
-use engine::analysis::loop_check::{LoopCertificate, OfferRoad, ShortcutResponse};
+use engine::analysis::decision_template::IterationCount;
+use engine::analysis::loop_check::ShortcutResponse;
 use engine::game::engine::apply;
 use engine::game::game_object::{AttachTarget, GameObject};
 use engine::game::interaction::{
@@ -693,27 +693,84 @@ fn a_finite_reanimation_settles_without_a_draw() {
     assert_eq!(bears.zone, Zone::Battlefield, "reach: the Bears returned");
 }
 
-/// CR 104.4b: "Loops that contain an optional action don't result in a draw." P1 can
-/// cast Lightning Bolt at any point.
+/// CR 104.4b + CR 732.5: "Loops that contain an optional action don't result in a draw." P1
+/// can cast Lightning Bolt at any point and nobody is forced to, so P0 is offered a draw without
+/// end; Off runs on.
 #[test]
 fn worldgorger_with_an_optional_action_is_not_a_draw() {
     let board = Board {
         optional: true,
         ..PLAIN
     };
-    for drive in [Drive::Pass, Drive::UntilStackEmpty] {
+    for drive in EVERY_DRIVE {
         let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 300) else {
             return;
         };
-        assert!(
-            !matches!(run.terminal, Terminal::GameOver(_)),
-            "{drive:?}: {:?}",
-            run.terminal
-        );
+        assert_out_offer(&run, &format!("{drive:?}"));
         assert!(
             run.max_ring >= 2,
             "{drive:?}: reach: the loop accumulated a ring, max {}",
             run.max_ring
+        );
+    }
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(board, LoopDetectionMode::Off, drive, 40) else {
+            return;
+        };
+        assert_runs_on(&run, &format!("Off {drive:?}"));
+    }
+}
+
+/// Asserts the run stopped at P0's offer of a draw without end, naming no winner and marking
+/// nothing unbounded.
+fn assert_out_offer(run: &Run, leg: &str) {
+    assert_eq!(
+        run.terminal,
+        Terminal::Offer {
+            predicted_winner: None,
+            mandatory: false
+        },
+        "{leg}"
+    );
+    let state = run.state();
+    match &state.waiting_for {
+        WaitingFor::LoopShortcut {
+            proposer,
+            schema,
+            certificate,
+            ..
+        } => {
+            assert_eq!(*proposer, P0, "{leg}");
+            assert_eq!(schema.iteration_count, IterationCount::WithoutEnd, "{leg}");
+            assert!(certificate.unbounded.is_empty(), "{leg}");
+        }
+        other => panic!("{leg}: no offer: {other:?}"),
+    }
+    assert_eq!(
+        legal_actions(state),
+        vec![DECLARE_WITHOUT_END, GameAction::DeclineShortcut],
+        "{leg}"
+    );
+    assert!(state.unbounded_resources.is_empty(), "{leg}");
+}
+
+/// CR 104.4b + CR 603.5: P0 answers Leonin Snarecaster's "may" every cycle beside P1's Bolt, so
+/// the period holds an optional action and is neither drawn nor offered.
+#[test]
+fn a_may_beside_an_out_is_not_offered() {
+    let board = Board {
+        optional: true,
+        ..snarecaster(May::Prompted { accept: true })
+    };
+    for drive in EVERY_DRIVE {
+        let leg = format!("{drive:?}");
+        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 40) else {
+            return;
+        };
+        assert_runs_on(&run, &leg);
+        assert!(
+            run.prompted("OptionalEffectChoice") >= 2,
+            "{leg}: reach: the may was asked across cycles"
         );
     }
 }
@@ -856,9 +913,52 @@ fn a_target_chosen_every_cycle_is_not_a_draw() {
     }
 }
 
+/// CR 603.3b + CR 732.5: Soul Warden's trigger beside the Dragon's is an ordering point under
+/// which either order continues, so with P1's Bolt outside the loop P0 is offered a draw without
+/// end, and every player accepting it draws the game; Off runs on.
+#[test]
+fn a_loop_whose_every_trigger_order_continues_beside_an_out_is_offered() {
+    let board = Board {
+        optional: true,
+        soul_warden: Some(P0),
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let leg = format!("{drive:?}");
+        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 200) else {
+            return;
+        };
+        assert_out_offer(&run, &leg);
+        assert!(
+            run.prompted("OrderTriggers") >= 1,
+            "{leg}: reach: the triggers were ordered"
+        );
+    }
+    let Some(mut offered) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 200) else {
+        return;
+    };
+    offered.runner.act(DECLARE_WITHOUT_END).expect("declare");
+    offered
+        .runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+    assert_eq!(
+        offered.state().waiting_for,
+        WaitingFor::GameOver { winner: None }
+    );
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(board, LoopDetectionMode::Off, drive, 40) else {
+            return;
+        };
+        assert_runs_on(&run, &format!("Off {drive:?}"));
+    }
+}
+
 /// CR 104.4b + CR 732.5: P0 can cast Lightning Bolt whenever its Mountain is back on the
 /// battlefield, so the loop holds an out and is no draw, even judged from a position where
-/// the Mountain is exiled.
+/// the Mountain is exiled: Interactive offers P0 a draw without end, Off runs on.
 #[test]
 fn an_out_held_within_the_period_is_not_a_draw() {
     let p0_out = Board {
@@ -879,7 +979,11 @@ fn an_out_held_within_the_period_is_not_a_draw() {
                 let Some(run) = run(board, mode, drive, 40) else {
                     return;
                 };
-                assert_runs_on(&run, &leg);
+                if mode == LoopDetectionMode::Interactive {
+                    assert_out_offer(&run, &leg);
+                } else {
+                    assert_runs_on(&run, &leg);
+                }
                 if board.p0_out {
                     assert!(
                         run.out_beats >= 1,
@@ -2092,8 +2196,7 @@ fn bolts_in_hand(state: &GameState, player: PlayerId) -> usize {
         .count()
 }
 
-/// The Lightning Bolt board, passed until P0 holds priority over a Worldgorger Dragon trigger
-/// inside the recorded ring, with an offer to repeat the loop without end written there.
+/// The Lightning Bolt board, passed until the engine offers P0 a draw without end.
 fn at_a_without_end_offer() -> Option<GameRunner> {
     let board = Board {
         optional: true,
@@ -2101,33 +2204,8 @@ fn at_a_without_end_offer() -> Option<GameRunner> {
     };
     let Built { mut runner, .. } = build(board, LoopDetectionMode::Interactive)?;
     for _ in 0..60 {
-        let state = runner.state();
-        if matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0)
-            && dragon_trigger_on_top(state)
-            && state.loop_detect_ring.len() >= 2
-        {
-            runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
-                proposer: P0,
-                predicted_winner: None,
-                certificate: LoopCertificate {
-                    unbounded: Vec::new(),
-                    win_kind: None,
-                    win_kind_at: None,
-                    mandatory: false,
-                    residual_board_delta: Default::default(),
-                    per_cycle: None,
-                },
-                schema: ShortcutDecisionSchema {
-                    iteration_count: IterationCount::WithoutEnd,
-                    ..Default::default()
-                },
-                declaration: None,
-                road: OfferRoad::Ring,
-                period: Default::default(),
-            };
-            return Some(runner);
-        }
-        let action = match &state.waiting_for {
+        let action = match &runner.state().waiting_for {
+            WaitingFor::LoopShortcut { .. } => return Some(runner),
             WaitingFor::Priority { .. } => GameAction::PassPriority,
             WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
                 order: (0..triggers.len()).collect(),
@@ -2136,7 +2214,55 @@ fn at_a_without_end_offer() -> Option<GameRunner> {
         };
         runner.act(action).expect("a legal drive action");
     }
-    panic!("P0 never held priority over a Worldgorger Dragon trigger in the ring");
+    panic!("the engine never offered the loop");
+}
+
+/// Passes priority and orders triggers until another prompt opens, returning it.
+fn pass_on(runner: &mut GameRunner, beats: usize) -> WaitingFor {
+    for _ in 0..beats {
+        let action = match &runner.state().waiting_for {
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+                order: (0..triggers.len()).collect(),
+            },
+            _ => break,
+        };
+        runner.act(action).expect("a legal drive action");
+    }
+    runner.state().waiting_for.clone()
+}
+
+/// P1 casts its Lightning Bolt at P0 and it resolves; the loop then has no out left and the
+/// players pass on to a draw (CR 104.4b + CR 732.4).
+fn bolt_p0_then_draw(runner: &mut GameRunner) {
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player } if player == P1),
+        "{:?}",
+        state.waiting_for
+    );
+    let bolt = state.players[P1.0 as usize]
+        .hand
+        .iter()
+        .copied()
+        .find(|id| state.objects[id].name == "Lightning Bolt")
+        .expect("P1 holds its Bolt");
+    drop(runner.cast(bolt).target_player(P0).commit());
+    assert_eq!(pass_on(runner, 200), WaitingFor::GameOver { winner: None });
+    let state = runner.state();
+    assert_eq!(state.players[P0.0 as usize].life, 17, "the Bolt resolved");
+    assert_eq!(state.objects[&bolt].zone, Zone::Graveyard);
+}
+
+fn dragon_entries(runner: &GameRunner, events: &[GameEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(event, GameEvent::ZoneChanged { object_id, to: Zone::Battlefield, .. }
+                if runner.state().objects.get(object_id)
+                    .is_some_and(|o| o.name == "Worldgorger Dragon"))
+        })
+        .count()
 }
 
 const DECLARE_WITHOUT_END: GameAction = GameAction::DeclareShortcut {
@@ -2278,6 +2404,57 @@ fn a_proposal_without_end_shortened_at_the_current_place_gives_the_shortener_pri
             ..
         }
     )));
+    bolt_p0_then_draw(&mut runner);
+}
+
+/// CR 732.2b + CR 732.2c: shortened at a later place, the proposal performs the loop up to it
+/// and the shortener holds priority there.
+#[test]
+fn a_proposal_without_end_shortened_at_a_later_place_drives_the_loop_to_it() {
+    let Some(mut runner) = at_a_without_end_offer() else {
+        return;
+    };
+    runner.act(DECLARE_WITHOUT_END).expect("declare");
+    let shortened = runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Shorten { at_iteration: 2 },
+        })
+        .expect("place 2 is a place a responder may name");
+    assert_eq!(dragon_entries(&runner, &shortened.events), 2);
+    assert!(dragon_trigger_on_top(runner.state()));
+    bolt_p0_then_draw(&mut runner);
+}
+
+/// CR 732.2a: a declined offer hands P0 priority; P1 may then use its out, after which the loop
+/// is a draw, and a loop left alone is offered again.
+#[test]
+fn a_declined_offer_without_end_leaves_the_out_and_is_offered_again() {
+    let Some(mut runner) = at_a_without_end_offer() else {
+        return;
+    };
+    runner.act(GameAction::DeclineShortcut).expect("decline");
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
+        "{:?}",
+        runner.state().waiting_for
+    );
+    for _ in 0..20 {
+        if matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1) {
+            break;
+        }
+        runner.act(GameAction::PassPriority).expect("pass");
+    }
+    bolt_p0_then_draw(&mut runner);
+
+    let Some(mut again) = at_a_without_end_offer() else {
+        return;
+    };
+    again.act(GameAction::DeclineShortcut).expect("decline");
+    assert!(
+        matches!(pass_on(&mut again, 60), WaitingFor::LoopShortcut { .. }),
+        "{:?}",
+        again.state().waiting_for
+    );
 }
 
 /// CR 732.2a + CR 732.2b: the interaction publishes the proposal's count, answers its

@@ -22012,6 +22012,11 @@ impl LoopDecisionProfile {
         self.members.is_empty()
     }
 
+    /// CR 732.5: the period's only non-mandatory member is an out.
+    pub fn holds_only_outs(&self) -> bool {
+        self.members.len() == 1 && self.members.contains(&LoopDecision::Outs)
+    }
+
     /// CR 603.3b + CR 104.4b: the profile with its trigger orders read by `proof`, asked only when
     /// the period holds one: no choice when every order continues the loop, an optional action
     /// when some order ends it, and a decision while unproven.
@@ -23218,20 +23223,6 @@ declare_game_state! {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>,
 
-    /// CR 104.4b / CR 732.2a: for each controller with a marked revocable-∞ capability
-    /// (`unbounded_resources`), the set of battlefield permanents whose presence enables the
-    /// loop (the stable recurring board: `battlefield_ids(prior) ∩ battlefield_ids(state)`).
-    /// Populated ONLY by the Interactive B5 bridge arm (`interactive_loop_bridge` Path C);
-    /// the `apply_zone_exit_cleanup` defuse hook clears the whole capability when ANY member
-    /// leaves the battlefield (CR 110.1 / CR 700.4).
-    ///
-    /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and `loop_fingerprint`
-    /// (same family as `unbounded_resources`): revocation annotation, not rules state for
-    /// equality — a populated live state must still compare equal to the empty-enabler ring
-    /// snapshots, or loop detection yields false negatives.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub unbounded_loop_enablers: BTreeMap<PlayerId, BTreeSet<ObjectId>>,
-
     /// CR 732.2a display state: for the winning controller of an accepted
     /// object-growth loop shortcut, the set of that controller's *tapped*
     /// fodder-class members (CR 110.1 permanents) forming the visible "∞ pile".
@@ -23239,11 +23230,11 @@ declare_game_state! {
     /// and projected to `DerivedViews::unbounded_pile`; the frontend renders ∞
     /// (vs ×N) on any battlefield group whose members are all pile members.
     /// Written ONLY by `register_unbounded_loop_pile`; cleared (in lockstep with
-    /// `unbounded_resources` / `unbounded_loop_enablers`) by `clear_unbounded_loop`.
+    /// `unbounded_resources`) by `clear_unbounded_loop`.
     ///
     /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and
-    /// `loop_fingerprint` (same family as `unbounded_resources` /
-    /// `unbounded_loop_enablers`): display state, not rules state for equality —
+    /// `loop_fingerprint` (same family as `unbounded_resources`): display state, not rules
+    /// state for equality —
     /// a populated live state must still compare equal to the empty-pile ring
     /// snapshots, or CR 104.4b/CR 732.2a loop detection yields false negatives.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -23301,7 +23292,7 @@ declare_game_state! {
     ///
     /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and
     /// `loop_fingerprint` (same unbounded family as `unbounded_resources` /
-    /// `unbounded_loop_enablers` / `unbounded_loop_pile`): deferred-materialization
+    /// `unbounded_loop_pile`): deferred-materialization
     /// annotation, not rules state for equality — a populated live state must still
     /// compare equal to the empty ring snapshots, or CR 104.4b loop detection
     /// yields false negatives.
@@ -30895,7 +30886,6 @@ impl GameState {
             debug_permitted: BTreeSet::new(),
             debug_infinite_mana: BTreeSet::new(),
             unbounded_resources: BTreeMap::new(),
-            unbounded_loop_enablers: BTreeMap::new(),
             unbounded_loop_pile: BTreeMap::new(),
             unbounded_counter_targets: BTreeMap::new(),
             pending_unbounded_materialization: BTreeMap::new(),
@@ -31970,6 +31960,9 @@ impl GameState {
     /// times can compare equal on everything a mandatory action could change.
     pub(crate) fn normalize_for_loop(&self) -> GameState {
         let mut clone = self.clone();
+        // apply() resets these at the start of every player action, so a position compares as
+        // the next action starts from it.
+        clone.clear_player_action_transients();
         clone.state_revision = 0;
         clone.next_timestamp = 0;
         clone.next_object_id = 0;
@@ -33415,22 +33408,6 @@ impl GameState {
         entry.extend(axes.iter().copied());
     }
 
-    /// Single write authority for `unbounded_loop_enablers` (an engine bookkeeping map; no CR
-    /// mandates it) —
-    /// only the Interactive B5 bridge arm (`interactive_loop_bridge` Path C) calls
-    /// this. Overwrites (idempotent re-registration each re-detection beat with the
-    /// same stable board). A no-op for an empty set (nothing to defuse on later).
-    pub fn register_unbounded_loop_enablers(
-        &mut self,
-        controller: PlayerId,
-        enablers: BTreeSet<ObjectId>,
-    ) {
-        if enablers.is_empty() {
-            return;
-        }
-        self.unbounded_loop_enablers.insert(controller, enablers);
-    }
-
     /// CR 732.2a / CR 110.1: single write authority for `unbounded_loop_pile` —
     /// only `game::engine::materialize_object_growth_shortcut` calls this, with the
     /// winning controller's tapped fodder-class members (the visible "∞ pile").
@@ -33614,7 +33591,7 @@ impl GameState {
     /// than the paper procedure, never fewer.
     ///
     /// While it is pending, the `∞` HUD rows, the ∞ object pile and the ∞ counter pills all keep
-    /// projecting, because the marks and their enablers are still live. This set says nothing
+    /// projecting, because the marks are still live. This set says nothing
     /// about them — it names what the boundary will REMOVE, not what the display may show.
     ///
     /// No item kind names a `Mana(_)` axis. Note the two axis classes end their `∞` by
@@ -33622,12 +33599,6 @@ impl GameState {
     /// boundary applies the growth; a `Mana(_)` is already materialized in the pool
     /// (`mana_payment::refill_infinite_mana` re-tops it off this very store) and its `∞` ends at
     /// the CR 500.5 step/phase end instead.
-    ///
-    /// Removing at the boundary rather than filtering the store meanwhile is load-bearing:
-    /// the store keeps `unbounded_resources` and `unbounded_loop_enablers` in lockstep — an
-    /// ENGINE-STATE invariant required by no CR, held for exactly one consumer:
-    /// `zones::apply_zone_exit_cleanup` reads the enabler map to defuse a capability whose
-    /// enabler leaves between accept and boundary.
     ///
     /// FAIL-CLOSED: only an axis some REGISTERED item actually collapses is returned, so an
     /// ∞ axis with no registration (a mana engine registers nothing) is never removed here —
@@ -33663,7 +33634,6 @@ impl GameState {
     /// added when multiple producers coexist on one controller.
     pub fn clear_unbounded_loop(&mut self, controller: PlayerId) {
         self.unbounded_resources.remove(&controller);
-        self.unbounded_loop_enablers.remove(&controller); // keep the maps in lockstep
         self.unbounded_loop_pile.remove(&controller);
         self.unbounded_counter_targets.remove(&controller); // display-only counter analog of the pile
         self.pending_unbounded_materialization.remove(&controller);
@@ -33684,9 +33654,7 @@ impl GameState {
     /// PRESERVES any coexisting NON-collapsed axis (a debug `SetInfiniteMana` `Mana(_)`
     /// axis, or a second uncollapsed loop). The `Tokens` / `Counters` / `Life` items never name a
     /// `Mana(_)` axis, so a collapse preserves mana by construction.
-    /// Drops `unbounded_resources[controller]`
-    /// (and its `unbounded_loop_enablers` entry in engine-state lockstep, mirroring
-    /// `clear_unbounded_mana_loop`) only when its axis set becomes empty. Always removes
+    /// Drops `unbounded_resources[controller]` only when its axis set becomes empty. Always removes
     /// the whole `pending_unbounded_materialization` list (owned by `take_` at the submit
     /// site). Leaves `clear_unbounded_mana_loop` / `clear_unbounded_loop` untouched.
     pub fn clear_collapsed_materializations(
@@ -33748,7 +33716,6 @@ impl GameState {
             axes.retain(|a| !axes_to_remove.contains(a));
             if axes.is_empty() {
                 self.unbounded_resources.remove(&controller);
-                self.unbounded_loop_enablers.remove(&controller); // engine-state lockstep
             }
         }
         self.pending_unbounded_materialization.remove(&controller);
@@ -33757,24 +33724,15 @@ impl GameState {
 
     /// CR 500.5 + CR 106.4: end a loop-backed ∞-mana capability at a step/phase boundary — an
     /// AXIS-SCOPED clear, not the whole-player `clear_unbounded_loop`. Removes every
-    /// `ResourceAxis::Mana(_)` axis from `unbounded_resources`. If that empties the player's axis
-    /// set, drop the player key AND its `unbounded_loop_enablers` entry IN LOCKSTEP (an engine-state
-    /// invariant, not a rules requirement):
-    /// enablers track the PRESENCE of any unbounded axis, and the `zones.rs` defuse hook
-    /// (`apply_zone_exit_cleanup`) whole-clears a controller's capability when ANY
-    /// enabler leaves. Leaving enablers orphaned (no backing axis) is a landmine — a later
-    /// `SetInfiniteMana` re-marks that controller, then the stale enabler leaving mis-fires
-    /// `clear_unbounded_loop`, silently killing the debug toggle. If a coexisting NON-Mana axis
-    /// remains (e.g. a Path-C `{Mana, Counter}` cover, or a `TokensCreated` loop mid-collapse),
-    /// KEEP the enablers — they still back the surviving axis. Mana carries no
+    /// `ResourceAxis::Mana(_)` axis from `unbounded_resources`, dropping the player key once its
+    /// axis set is empty. Mana carries no
     /// `unbounded_loop_pile` / `pending_unbounded_materialization` (a mana engine reproduces no
-    /// fodder), so — unlike `clear_unbounded_token_loop` — this touches only the axis + enabler maps.
+    /// fodder), so — unlike `clear_unbounded_token_loop` — this touches only the axis map.
     pub fn clear_unbounded_mana_loop(&mut self, controller: PlayerId) {
         if let Some(axes) = self.unbounded_resources.get_mut(&controller) {
             axes.retain(|a| !matches!(a, ResourceAxis::Mana(_)));
             if axes.is_empty() {
                 self.unbounded_resources.remove(&controller);
-                self.unbounded_loop_enablers.remove(&controller); // engine-state lockstep-iff-empty
             }
         }
     }
@@ -34100,7 +34058,6 @@ fn _gamestate_partition_is_total(s: &GameState) {
         debug_permitted: _,
         debug_infinite_mana: _,
         unbounded_resources: _,
-        unbounded_loop_enablers: _,
         unbounded_loop_pile: _,
         unbounded_counter_targets: _,
         pending_unbounded_materialization: _,
@@ -35321,6 +35278,22 @@ mod loop_decision_profile_tests {
         assert_eq!(
             members(&[base, marks(2, 3, Held)], marks(2, 4, Absent)),
             vec![Outs, Decision]
+        );
+    }
+
+    /// CR 732.5: only a period whose sole non-mandatory member is an out holds only outs.
+    #[test]
+    fn holds_only_outs_names_a_period_whose_only_member_is_an_out() {
+        use crate::analysis::decision_template::ChoicePoint;
+        let profile = |members: &[LoopDecision]| LoopDecisionProfile {
+            members: members.iter().copied().collect(),
+        };
+        assert!(profile(&[Outs]).holds_only_outs());
+        assert!(!profile(&[]).holds_only_outs());
+        assert!(!profile(&[Optional]).holds_only_outs());
+        assert!(!profile(&[Outs, Decision]).holds_only_outs());
+        assert!(
+            !profile(&[Outs, LoopDecision::Unproven(ChoicePoint::TriggerOrder)]).holds_only_outs()
         );
     }
 
@@ -45286,41 +45259,8 @@ mod tests {
         );
     }
 
-    /// PR-7 Phase 4c (B5, R3): sibling of `unbounded_resources_excluded_from_loop_equality`
-    /// — the new `unbounded_loop_enablers` field follows the identical exclusion-by-omission
-    /// discipline (never appears in the `impl PartialEq` `&&` chain).
-    ///
-    /// REVERT-PROBE: add `&& self.unbounded_loop_enablers == other.unbounded_loop_enablers`
-    /// to the manual `impl PartialEq for GameState` → all three assertions below fail.
-    #[test]
-    fn unbounded_loop_enablers_excluded_from_loop_equality() {
-        use crate::analysis::resource::loop_states_equal_modulo_resources;
-
-        let a = GameState::new_two_player(7);
-        let mut b = a.clone();
-        b.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(1)]));
-        // Sanity: the populated field really does differ between the two states.
-        assert_ne!(
-            a.unbounded_loop_enablers, b.unbounded_loop_enablers,
-            "fixture must actually differ in unbounded_loop_enablers"
-        );
-
-        assert!(
-            a == b,
-            "manual PartialEq must exclude unbounded_loop_enablers (revocation annotation)"
-        );
-        assert!(
-            loop_states_equal(&a, &b),
-            "loop_states_equal (CR 104.4b/732.2a) must exclude unbounded_loop_enablers"
-        );
-        assert!(
-            loop_states_equal_modulo_resources(&a, &b),
-            "the PR-0/PR-2 modulo path must exclude unbounded_loop_enablers"
-        );
-    }
-
     /// PR-7 DESIGN STEP 4 (∞-pile display): sibling of
-    /// `unbounded_loop_enablers_excluded_from_loop_equality` — the new
+    /// `unbounded_resources_excluded_from_loop_equality` — the new
     /// `unbounded_loop_pile` field follows the identical exclusion-by-omission
     /// discipline (never appears in the `impl PartialEq` `&&` chain).
     ///
@@ -45527,27 +45467,21 @@ mod tests {
         );
     }
 
-    /// PR-7 Phase 4c (B5 defuse): `clear_unbounded_loop` must remove ALL SIX per-controller
-    /// maps in lockstep — `unbounded_resources` / `unbounded_loop_enablers` /
-    /// `unbounded_loop_pile` / `unbounded_counter_targets` /
-    /// `pending_unbounded_materialization` / `pending_materialization_count`. The `zones.rs`
-    /// defuse hook relies on a single call revoking the whole capability.
+    /// `clear_unbounded_loop` must remove ALL FIVE per-controller maps in lockstep —
+    /// `unbounded_resources` / `unbounded_loop_pile` / `unbounded_counter_targets` /
+    /// `pending_unbounded_materialization` / `pending_materialization_count`.
     ///
     /// The last two are why this call is NOT a display clear and must never be wired to an
     /// object-growth mark: dropping the stash and its CR 732.2c bound cancels growth every
     /// player already accepted. Anything that only wants to stop RENDERING an ∞ belongs at
     /// the projection (`derived_views::object_growth_backing`), not here.
-    ///
-    /// (Renamed from `..._removes_both_maps_in_lockstep`: the old name said TWO and the old
-    /// body asserted THREE, while the function has cleared six since the stash landed.)
     #[test]
-    fn clear_unbounded_loop_removes_all_six_maps_in_lockstep() {
+    fn clear_unbounded_loop_removes_all_five_maps_in_lockstep() {
         let mut state = GameState::new_two_player(7);
         state.mark_unbounded_loop(
             PlayerId(0),
             &[crate::analysis::resource::ResourceAxis::Life(PlayerId(0))],
         );
-        state.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(1)]));
         state.register_unbounded_loop_pile(PlayerId(0), BTreeSet::from([ObjectId(1)]));
         state.register_unbounded_counter_targets(
             PlayerId(0),
@@ -45562,7 +45496,6 @@ mod tests {
         );
         state.pending_materialization_count.insert(PlayerId(0), 7);
         assert!(state.unbounded_resources.contains_key(&PlayerId(0)));
-        assert!(state.unbounded_loop_enablers.contains_key(&PlayerId(0)));
         assert!(state.unbounded_loop_pile.contains_key(&PlayerId(0)));
         assert!(state.unbounded_counter_targets.contains_key(&PlayerId(0)));
         assert!(state
@@ -45577,10 +45510,6 @@ mod tests {
         assert!(
             !state.unbounded_resources.contains_key(&PlayerId(0)),
             "clear_unbounded_loop must remove the unbounded_resources entry"
-        );
-        assert!(
-            !state.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "clear_unbounded_loop must remove the unbounded_loop_enablers entry"
         );
         assert!(
             !state.unbounded_loop_pile.contains_key(&PlayerId(0)),
@@ -45811,18 +45740,6 @@ mod tests {
         );
     }
 
-    /// `register_unbounded_loop_enablers` is a no-op for an empty set — no entry to
-    /// defuse on later (mirrors `mark_unbounded_loop`'s idempotent set-union contract).
-    #[test]
-    fn register_unbounded_loop_enablers_empty_set_is_noop() {
-        let mut state = GameState::new_two_player(7);
-        state.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::new());
-        assert!(
-            !state.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "an empty enabler set must not create an entry"
-        );
-    }
-
     /// T-C (CR 500.5 mana boundary drain): `clear_unbounded_mana_loop` is AXIS-SCOPED —
     /// it removes ONLY the `Mana(_)` axes and PRESERVES any coexisting non-Mana axis
     /// (e.g. a `TokensCreated` loop mid-collapse) together with its token-associated
@@ -45916,85 +45833,6 @@ mod tests {
         assert!(
             !state.unbounded_resources.contains_key(&PlayerId(0)),
             "with Mana the only axis, the player key must be dropped entirely"
-        );
-    }
-
-    /// T-E (blocker #1, CR 110.1 enabler lockstep-iff-empty): when clearing the Mana
-    /// axis empties the player's axis set, `clear_unbounded_mana_loop` must ALSO drop
-    /// the `unbounded_loop_enablers` entry in lockstep — an orphaned enabler (no backing
-    /// axis) is a landmine: a later `SetInfiniteMana` re-marks the controller, then the
-    /// stale enabler leaving the battlefield mis-fires the `zones.rs` defuse hook
-    /// (`clear_unbounded_loop`), silently killing the debug toggle. But when a coexisting
-    /// NON-Mana axis survives (a Path-C `{Mana, Counter}` cover), the enablers still back
-    /// that axis and MUST be preserved. MEASURED: PROBE_LOCKSTEP_A/B.
-    ///
-    /// REVERT-PROBE (discriminating): drop the `unbounded_loop_enablers.remove(&controller)`
-    /// line → case (a) leaves the enabler entry orphaned → assertion (a2) FLIPS.
-    #[test]
-    fn clear_unbounded_mana_loop_drops_enablers_in_lockstep() {
-        use crate::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
-        use crate::types::mana::ManaType;
-
-        // Case (a): mana-only → clearing the Mana axis empties the set → axis AND
-        // enablers both drop.
-        let mut a = GameState::new_two_player(7);
-        a.mark_unbounded_loop(PlayerId(0), &[ResourceAxis::Mana(ManaType::Colorless)]);
-        a.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(7)]));
-        // Non-vacuity: the enabler entry really exists pre-clear.
-        assert!(
-            a.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "case (a) precondition: P0 has an enabler entry"
-        );
-
-        a.clear_unbounded_mana_loop(PlayerId(0));
-
-        assert!(
-            !a.unbounded_resources.contains_key(&PlayerId(0)),
-            "case (a1): the lone Mana axis is cleared, dropping the player key"
-        );
-        assert!(
-            !a.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "case (a2) DISCRIMINATOR: enablers drop in lockstep when the last axis goes (CR 110.1)"
-        );
-
-        // Case (b): mixed `{Mana, Counter}` cover → the Counter axis survives → the
-        // enablers still back it and MUST be preserved.
-        let mut b = GameState::new_two_player(7);
-        b.mark_unbounded_loop(
-            PlayerId(0),
-            &[
-                ResourceAxis::Mana(ManaType::Colorless),
-                ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature),
-            ],
-        );
-        b.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(7)]));
-        // Non-vacuity: both axes + the enabler entry exist pre-clear.
-        assert_eq!(
-            b.unbounded_resources.get(&PlayerId(0)),
-            Some(&BTreeSet::from([
-                ResourceAxis::Mana(ManaType::Colorless),
-                ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature),
-            ])),
-            "case (b) precondition: P0 holds both a Mana axis and a Counter axis"
-        );
-        assert!(
-            b.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "case (b) precondition: P0 has an enabler entry"
-        );
-
-        b.clear_unbounded_mana_loop(PlayerId(0));
-
-        assert_eq!(
-            b.unbounded_resources.get(&PlayerId(0)),
-            Some(&BTreeSet::from([ResourceAxis::Counter(
-                CounterClass::Plus1Plus1,
-                ObjectClass::Creature
-            )])),
-            "case (b1): the coexisting Counter axis survives the mana-axis clear"
-        );
-        assert!(
-            b.unbounded_loop_enablers.contains_key(&PlayerId(0)),
-            "case (b2): enablers are PRESERVED — they still back the surviving Counter axis"
         );
     }
 

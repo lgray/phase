@@ -498,7 +498,7 @@ pub(crate) fn live_mandatory_loop_winner(
     // would be the seam a future counter-growth loop that ALSO carries a life-faller
     // could ride into a GameOver). Left fail-closed by design; the counter-growth
     // cover only ever routes through the offline `detect_loop` cert and the live
-    // Path-C revocable capability mark, neither of which can end the game.
+    // Path-C offer, which ends the game only when every player accepts it.
     if !(loop_states_equal_modulo_resources(cycle_start, cycle_end)
         || loop_states_cover_modulo_growth(cycle_start, cycle_end))
     {
