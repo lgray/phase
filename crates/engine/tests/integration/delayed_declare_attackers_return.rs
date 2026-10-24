@@ -477,11 +477,11 @@ enum Response {
 /// Noctis warp-strikes in the first main phase, P0 declares no attackers, and
 /// Noctis's delayed return goes on the stack, where P0 makes `response`.
 /// Drives to the postcombat main phase and returns the events emitted from
-/// the declaration on, P1's life total at the declaration, and P0's mana pool
-/// size as the end of combat step began.
+/// the declaration on, P1's life total at the declaration, and the
+/// [`finish_combat`] record.
 fn noctis_return_after_an_empty_declaration(
     response: Response,
-) -> (GameRunner, ObjectId, Vec<GameEvent>, i32, Option<usize>) {
+) -> (GameRunner, ObjectId, Vec<GameEvent>, i32, CombatRecord) {
     let mut scenario = scenario();
     let noctis = add_noctis(&mut scenario, P0);
     let stifle = add_spell(&mut scenario, "Stifle", true, STIFLE, vec![], 0);
@@ -536,14 +536,36 @@ fn noctis_return_after_an_empty_declaration(
             assert!(!attacking(&runner, noctis));
         }
     }
-    let mut pool_at_end_of_combat = None;
+    let record = finish_combat(&mut runner, &mut events);
+    (runner, noctis, events, life, record)
+}
+
+/// The steps in which a priority prompt appeared, and P0's mana pool size as
+/// the end of combat step began.
+struct CombatRecord {
+    priority_steps: Vec<Phase>,
+    pool_at_end_of_combat: Option<usize>,
+}
+
+/// Steps to the postcombat main phase, appending the emitted events.
+fn finish_combat(runner: &mut GameRunner, events: &mut Vec<GameEvent>) -> CombatRecord {
+    let mut record = CombatRecord {
+        priority_steps: Vec::new(),
+        pool_at_end_of_combat: None,
+    };
     while runner.state().phase != Phase::PostCombatMain {
-        if runner.state().phase == Phase::EndCombat {
-            pool_at_end_of_combat.get_or_insert(runner.state().players[0].mana_pool.total());
+        let phase = runner.state().phase;
+        if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
+            record.priority_steps.push(phase);
         }
-        events.extend(step(&mut runner));
+        if phase == Phase::EndCombat {
+            record
+                .pool_at_end_of_combat
+                .get_or_insert(runner.state().players[0].mana_pool.total());
+        }
+        events.extend(step(runner));
     }
-    (runner, noctis, events, life, pool_at_end_of_combat)
+    record
 }
 
 fn entered(runner: &GameRunner, events: &[GameEvent], step: Phase) -> bool {
@@ -560,7 +582,7 @@ fn entered(runner: &GameRunner, events: &[GameEvent], step: Phase) -> bool {
 
 #[test]
 fn a_countered_return_after_an_empty_declaration_skips_blockers_and_damage() {
-    let (runner, noctis, events, _, pool) =
+    let (runner, noctis, events, _, record) =
         noctis_return_after_an_empty_declaration(Response::CounterIt);
     assert_eq!(zone(&runner, noctis), Zone::Exile);
     assert!(runner.state().delayed_triggers.is_empty());
@@ -569,7 +591,7 @@ fn a_countered_return_after_an_empty_declaration_skips_blockers_and_damage() {
     assert!(!entered(&runner, &events, Phase::DeclareBlockers));
     assert!(!entered(&runner, &events, Phase::CombatDamage));
     // CR 500.5: mana floated in the declare attackers step empties as that step ends.
-    assert_eq!(pool, Some(0));
+    assert_eq!(record.pool_at_end_of_combat, Some(0));
 }
 
 #[test]
@@ -585,10 +607,47 @@ fn a_resolved_return_after_an_empty_declaration_keeps_blockers_and_damage() {
 
 #[test]
 fn a_returned_attacker_removed_from_combat_keeps_the_declare_blockers_step() {
-    let (runner, noctis, events, _, _) =
+    let (runner, noctis, events, _, record) =
         noctis_return_after_an_empty_declaration(Response::RemoveNoctisFromCombat);
     assert_eq!(zone(&runner, noctis), Zone::Battlefield);
-    // CR 508.8: Noctis was put onto the battlefield attacking, so the step is not skipped.
+    // CR 508.8: Noctis was put onto the battlefield attacking, so the steps are not skipped.
     assert!(entered(&runner, &events, Phase::DeclareBlockers));
+    assert!(record.priority_steps.contains(&Phase::DeclareBlockers));
+    assert!(entered(&runner, &events, Phase::CombatDamage));
     assert!(entered(&runner, &events, Phase::EndCombat));
+}
+
+#[test]
+fn a_declared_attacker_removed_from_combat_keeps_blockers_and_damage() {
+    let mut scenario = scenario();
+    let bears = scenario.add_creature(P0, "Grizzly Bears", 2, 2).id();
+    let reconnaissance = scenario
+        .add_enchantment_from_oracle(P0, "Reconnaissance", RECONNAISSANCE)
+        .id();
+    let mut runner = scenario.build();
+
+    pass_until(&mut runner, awaiting_declaration);
+    let life = runner.state().players[1].life;
+    let mut events = runner
+        .declare_attackers(&[(bears, AttackTarget::Player(P1))])
+        .expect("Grizzly Bears can attack")
+        .events;
+    assert!(attacking(&runner, bears));
+    let ability = activated_index(&runner, reconnaissance);
+    runner
+        .activate(reconnaissance, ability)
+        .target_object(bears)
+        .resolve();
+    assert!(!attacking(&runner, bears));
+    assert_eq!(runner.state().phase, Phase::DeclareAttackers);
+
+    let record = finish_combat(&mut runner, &mut events);
+    // CR 508.8 + CR 509.2 + CR 510.3: Grizzly Bears was declared, so both steps
+    // happen and give priority even though nothing is attacking.
+    assert!(entered(&runner, &events, Phase::DeclareBlockers));
+    assert!(record.priority_steps.contains(&Phase::DeclareBlockers));
+    assert!(entered(&runner, &events, Phase::CombatDamage));
+    assert!(record.priority_steps.contains(&Phase::CombatDamage));
+    assert!(entered(&runner, &events, Phase::EndCombat));
+    assert_eq!(runner.state().players[1].life, life);
 }
