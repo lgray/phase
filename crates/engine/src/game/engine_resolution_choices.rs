@@ -7,15 +7,15 @@ use rand::seq::SliceRandom;
 use crate::types::ability::{
     AbilityCost, ChoiceType, ChosenAttribute, DigRestOrder, DigRestSplitScope, Effect, EffectKind,
     ForwardedResultContext, GuessOutcome, LibraryPosition, ParentTargetMissingReason, QuantityExpr,
-    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TargetRef,
+    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
 };
 use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    ActionResult, BatchCompletion, CastOfferKind, ChosenDamageSource, CopyChosenSelection,
-    GameState, OutsideGameChoiceSource, PayableResource, PendingContinuation,
-    PendingPlayerScopeSacrificeCompletion, PersistentAxisMaterialization, WaitingFor,
-    ZoneOpponentChooserPurpose,
+    ActionResult, BatchCompletion, CastOfferKind, ChosenDamageSource, ContinuationXAnnouncement,
+    CopyChosenSelection, CostResume, GameState, OutsideGameChoiceSource, PayCostKind,
+    PayableResource, PendingContinuation, PendingPlayerScopeSacrificeCompletion,
+    PersistentAxisMaterialization, WaitingFor, ZoneOpponentChooserPurpose,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::resolved_commands::{
@@ -5537,6 +5537,26 @@ pub(super) fn handle_resolution_choice(
                     state.waiting_for.clone(),
                 ));
             }
+            // CR 115.10a + CR 608.2d: this answer selects only a sticker
+            // recipient. It is neither a partition nor a completed placement.
+            let sticker_recipient = state
+                .active_ability_continuation()
+                .filter(|cont| {
+                    matches!(cont.chain.effect, Effect::PutSticker { .. })
+                        && effects::awaits_resolution_object_choice(&cont.chain)
+                })
+                .and_then(|_| chosen.first())
+                .and_then(|id| {
+                    state.objects.get(id).map(|object| {
+                        (
+                            *id,
+                            crate::types::identifiers::ObjectIncarnationRef::of(
+                                *id,
+                                object.incarnation,
+                            ),
+                        )
+                    })
+                });
             // CR 608.2c: When the parked continuation consumes the chain's
             // tracked set (a `GrantCastingPermission { target: TrackedSet }` /
             // any `TrackedSet`-referencing downstream effect — e.g. End-Blaze
@@ -5557,6 +5577,7 @@ pub(super) fn handle_resolution_choice(
                 state.active_ability_continuation().is_some_and(|cont| {
                     effects::chain_references_tracked_set(&cont.chain)
                         && !effects::resolution_choice_head_publishes_on_resume(&cont.chain)
+                        && sticker_recipient.is_none()
                 });
             if continuation_consumes_tracked_set {
                 effects::publish_fresh_tracked_set(state, chosen.clone());
@@ -5601,7 +5622,9 @@ pub(super) fn handle_resolution_choice(
                 .then(|| Box::new(ForwardedResultContext::from_object_ids(state, &unchosen)));
             if let Some(frame) = state.active_ability_continuation_frame_mut() {
                 let cont = &mut frame.pending;
-                if let Some(snapshot) = counter_kind_choice {
+                if let Some((id, pin)) = sticker_recipient {
+                    effects::stickers::bind_recipient(&mut cont.chain, id, pin);
+                } else if let Some(snapshot) = counter_kind_choice {
                     if let crate::types::ability::Effect::ChooseCounterKind { target, .. } =
                         &mut cont.chain.effect
                     {
@@ -5649,8 +5672,11 @@ pub(super) fn handle_resolution_choice(
                 // list. Neither is a parked untargeted `TargetOnly` chooser
                 // ("choose a creature you control", CR 115.10a): the pick is
                 // the whole choice, and the unchosen candidates are not "the
-                // rest". Gate the forward on the continuation's own effect.
-                let is_partition = continuation_forwards_unchosen_complement(&cont.chain);
+                // rest". A sticker-recipient answer selects only that
+                // recipient, so it forwards nothing either. Gate the forward
+                // on the continuation's own effect.
+                let is_partition = continuation_forwards_unchosen_complement(&cont.chain)
+                    && sticker_recipient.is_none();
                 if is_partition {
                     if let Some(ref mut next_sub) = cont.chain.sub_ability {
                         // CR 707.12a: A `CastCopyOfCard` continuation casts the
@@ -9506,6 +9532,79 @@ fn finish_with_continuation(
     state.waiting_for.clone()
 }
 
+/// CR 107.3f + CR 118.12: the X announcement a just-paused resolution-time payment makes for
+/// the instructions that follow it, keyed by the prompt the payment opened:
+/// * a "tap X untapped ..." payment (`TapCreaturesSelectionMode::VariableX`) announces the
+///   count tapped; a fixed count or a power threshold (Crew/Saddle shape) announces nothing;
+/// * a "pay any amount of energy / life" or unannounced-X mana payment (CR 107.14, CR 119.4)
+///   announces the amount paid. A mana ability's own amount prompt (`pending_mana_ability`)
+///   and a loop-collapse count are not resolution-time payments of an effect.
+pub(crate) fn paused_payment_x_announcement(
+    paying: &ResolvedAbility,
+    waiting_for: &WaitingFor,
+) -> Option<ContinuationXAnnouncement> {
+    if !matches!(paying.effect, Effect::PayCost { .. }) {
+        return None;
+    }
+    match waiting_for {
+        WaitingFor::PayCost {
+            kind: PayCostKind::TapCreatures { mode },
+            resume: CostResume::Resolution,
+            ..
+        } => match mode {
+            TapCreaturesSelectionMode::VariableX => Some(ContinuationXAnnouncement::TappedCount),
+            TapCreaturesSelectionMode::Fixed | TapCreaturesSelectionMode::Aggregate(_) => None,
+        },
+        WaitingFor::PayAmountChoice {
+            resource,
+            pending_mana_ability: None,
+            ..
+        } => match resource {
+            PayableResource::Energy
+            | PayableResource::Life
+            | PayableResource::ManaGeneric { .. } => Some(ContinuationXAnnouncement::PaidAmount),
+            PayableResource::Counters
+            | PayableResource::Speed
+            | PayableResource::LoopCollapse { .. } => None,
+        },
+        _ => None,
+    }
+}
+
+/// CR 107.3f + CR 107.3i + CR 608.2c: X announced by a resolution-time payment (a count of
+/// permanents tapped, an amount paid) is X for the instructions after that payment, and for no
+/// other chain. Finds the rider the paused payment parked (the frame marked with
+/// `announcement`, see `PendingContinuation::x_announcement`, located by
+/// `ResolutionStack::x_announcement_rider_mut` even when an unmarked chain was parked above
+/// it), consumes the mark, and stamps `value` on that rider's chain and every sub/else branch.
+/// No other frame is touched: a payment with no rider parked nothing, so an enclosing
+/// continuation keeps its own X, and a chain parked above the rider keeps its own X.
+///
+/// A paid amount is not stamped onto a rider that opens with its own unannounced-X payment
+/// prompt: that prompt asks for its X itself (the next `PayAmountChoice` accumulates).
+pub(crate) fn stamp_paused_payment_rider_x(
+    state: &mut GameState,
+    announcement: ContinuationXAnnouncement,
+    value: u32,
+) {
+    let Some(frame) = state
+        .resolution_stack
+        .x_announcement_rider_mut(announcement)
+    else {
+        return;
+    };
+    frame.pending.x_announcement = None;
+    let asks_for_its_own_x = match announcement {
+        ContinuationXAnnouncement::PaidAmount => {
+            starts_with_pay_amount_prompt(&frame.pending.chain)
+        }
+        ContinuationXAnnouncement::TappedCount => false,
+    };
+    if !asks_for_its_own_x {
+        frame.pending.chain.set_chosen_x_recursive(value);
+    }
+}
+
 /// CR 118.12 + CR 119.4 + CR 616.1: Complete the outer pay-amount action only
 /// after any interactive post-replacement child of the life payment has
 /// settled. Shared by the direct submit path and the deferred-life resumer.
@@ -9516,14 +9615,7 @@ pub(crate) fn finish_pay_amount_choice(
     events: &mut Vec<GameEvent>,
 ) -> WaitingFor {
     state.last_effect_count = Some(total as i32);
-    let pending_starts_with_pay_amount = state
-        .active_ability_continuation()
-        .is_some_and(|cont| starts_with_pay_amount_prompt(&cont.chain));
-    if !pending_starts_with_pay_amount {
-        if let Some(frame) = state.active_ability_continuation_frame_mut() {
-            frame.pending.chain.set_chosen_x_recursive(total);
-        }
-    }
+    stamp_paused_payment_rider_x(state, ContinuationXAnnouncement::PaidAmount, total);
     let mut waiting_for = finish_with_continuation(state, player, events);
     if let WaitingFor::PayAmountChoice {
         accumulated: next_accumulated,

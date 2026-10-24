@@ -974,6 +974,7 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::TriggeringSource
         | TargetFilter::EventTarget
         | TargetFilter::DefendingPlayer
+        | TargetFilter::AttackedPlayerOrPlaneswalker
         | TargetFilter::ExiledCardByIndex { .. }
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
@@ -1358,6 +1359,7 @@ fn zone_change_clause_matches(
                     from,
                     filter,
                     &ctx,
+                    Some(record),
                 )
             }
             (false, _) => super::filter::matches_target_filter_on_zone_change_record_licensed(

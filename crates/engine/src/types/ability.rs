@@ -143,6 +143,9 @@ pub enum ZoneChoiceChooser {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         player: Option<PlayerId>,
     },
+    /// CR 608.2c + CR 608.2d: the player announced as the target of the chain
+    /// clause declaring `group` ("That player chooses …").
+    DeclaredPlayer { group: ChosenGroupId },
 }
 
 impl From<Chooser> for ZoneChoiceChooser {
@@ -6338,8 +6341,9 @@ pub enum DelayedTriggerPlayerBinding {
     /// target artifact or creature. Return that card to the battlefield
     /// under its owner's control at the beginning of that player's next end
     /// step" — the exiled permanent may belong to any player, so "that
-    /// player" (its owner, CR 400.3) is resolved from the parent target at
-    /// delayed-trigger creation, not assumed to be the controller.
+    /// player" (its owner, CR 400.3) is resolved from the parent target, or
+    /// else the object the parent moved, at delayed-trigger creation, not
+    /// assumed to be the controller.
     ParentTargetOwner,
 }
 
@@ -7043,9 +7047,16 @@ pub enum CombatRelationSubject {
 }
 
 /// CR 701.3a + CR 303.4b: What a [`FilterProp::AttachedTo`] candidate must be
-/// attached to. Object referents (`Source`, `Recipient`, `DeclaredTarget`) and
-/// the player referent (`Player`) resolve through separate authorities in
-/// `game::filter`; only the relation is shared.
+/// attached to. Object referents (`Source`, `Recipient`, `DeclaredTarget`,
+/// `Host`) and the player referent (`Player`) resolve through separate
+/// authorities in `game::filter`; only the relation is shared.
+///
+/// The enum splits into two grammatical classes: referents BOUND to one object
+/// or player (`Source`, `Recipient`, `Player`, `DeclaredTarget`) and referents
+/// MATCHED against a filter (`Host`). A bound referent names one identity the
+/// resolver already owns; a matched referent names a set the resolver must
+/// evaluate ("attached to any creature", "attached to that creature" resolved
+/// from the event, "attached to the announced host").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AttachmentReferent {
@@ -7069,11 +7080,38 @@ pub enum AttachmentReferent {
     /// else the chain root) and is read only through
     /// `targeting::declared_slot_referent`.
     DeclaredTarget { slot: usize },
+    /// CR 701.3a + CR 603.7c + CR 608.2h (+ CR 601.2c for an announced host):
+    /// the filter-matched host axis — "attached to any object in `filter`'s
+    /// referent set". Covers a mass object set defined by attachment to a
+    /// referenced permanent (the player axis lowers to
+    /// [`Self::Player`](AttachmentReferent::Player) or declines): "destroy all
+    /// Auras attached to that
+    /// creature" (Treefolk Mystic, Corrosive Ooze), "… attached to that
+    /// creature to ~" (Rhuk, Hexgold Nabber), "… attached to creatures" (End
+    /// Hostilities), "destroy all Auras and Equipment attached to target
+    /// creature" (Strip Bare). `filter` is the same `TargetFilter` algebra the
+    /// target-slot parser produces, so one variant spans every referent the
+    /// class needs; the at-resolution read is
+    /// `filter::attached_to_host_filter`.
+    ///
+    /// INVARIANT — no declared-slot host: a host phrase whose antecedent is a
+    /// numbered declared slot lowers to `DeclaredTarget` (the chain-wide
+    /// authority `oracle_effect::resolve_declared_slot_anaphor`), and a host
+    /// phrase the step-5 target parse resolves only against the
+    /// Choose-head-local `ctx.declared_target_slots` registry declines the
+    /// whole clause, so `Host { filter: ParentTargetSlot { .. } }` never
+    /// exists. `reads_declared_slot` therefore stays `false` for `Host`; the
+    /// `ParentTargetSlot` population leg of the mass set is handled by
+    /// `filter::concretize_mass_population_parent_legs` instead.
+    Host { filter: Box<TargetFilter> },
 }
 
 impl AttachmentReferent {
     /// Whether evaluating this referent reads a declared target slot of the
     /// resolving chain (and therefore needs a declared-slot view or carrier).
+    ///
+    /// `Host` is `false` by the variant's no-declared-slot invariant: a
+    /// slot-indexed host phrase maps to `DeclaredTarget`, never to `Host`.
     pub fn reads_declared_slot(&self) -> bool {
         matches!(self, AttachmentReferent::DeclaredTarget { .. })
     }
@@ -8490,6 +8528,17 @@ pub enum TargetFilter {
     TriggeringPlayer,
     /// CR 603.7c: Resolves to the source object of the triggering event.
     TriggeringSource,
+    /// CR 506.3 + CR 115.10a: "the player or planeswalker it's attacking" /
+    /// "... that creature is attacking" — the player or planeswalker the
+    /// referred-to attacking creature is attacking, read at resolution by
+    /// `combat::resolve_attacked_player_or_planeswalker`. A context reference,
+    /// never a declared target. Kind-preserving: an attacked player is a player
+    /// recipient and an attacked planeswalker is that permanent, never collapsed
+    /// to its controller (the CR 508.5 collapse of [`TargetFilter::DefendingPlayer`]
+    /// is the contrast). An attacked battle, a creature that is no longer
+    /// attacking, and a planeswalker that is gone are no referent: the recipient
+    /// resolves to nothing.
+    AttackedPlayerOrPlaneswalker,
     /// CR 603.2: Resolves to the object targeted or receiving the current
     /// trigger event — the target counterpart to [`TargetFilter::TriggeringSource`]
     /// and the `TargetFilter`-side analogue of [`ObjectScope::EventTarget`].
@@ -14599,11 +14648,17 @@ impl From<NinjutsuVariant> for CastVariantPaid {
     }
 }
 
-/// CR 702.49: Identifies which dedicated engine path handles a RuntimeHandled ability.
+/// CR 702.49 / CR 608.2c: Identifies how a RuntimeHandled node is handled: by a dedicated engine path (ninjutsu) or by the chain driver itself (the repeat directive).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeHandler {
     /// Handled by GameAction::ActivateNinjutsu path.
     NinjutsuFamily,
+    /// CR 608.2c: the "repeat this process" directive of "If C, do A and
+    /// repeat this process". Parsed as the tail child of A's gated clause, so
+    /// it is reached only when A's gate held; reaching it sets
+    /// `GameState::repeat_process_requested`, which the chain root's
+    /// `EffectOutcomeSignal::RepeatDirectiveReached` loop predicate reads.
+    RepeatProcess,
 }
 
 /// Which object a Host/Augment combine effect should merge onto a Host.
@@ -15215,7 +15270,12 @@ pub enum AbilityCost {
         count: u32,
     },
     Reveal {
-        count: u32,
+        /// CR 701.20a + CR 107.3a: how many cards are revealed. A `Variable("X")`
+        /// count is the X announced while casting or activating ("Reveal X red
+        /// cards from your hand" — Martyr cycle); legacy bare-integer data
+        /// deserializes as `Fixed`.
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         /// Filter on what must be revealed (e.g., "a Dragon card from your hand").
         /// None means reveal any card (self-reveal).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -15379,7 +15439,7 @@ macro_rules! define_ability_cost_quantity_walk {
             AbilityCost::PayLife { amount }
             | AbilityCost::PayEnergy { amount }
             | AbilityCost::PaySpeed { amount } => f(amount),
-            AbilityCost::Discard { count, .. } => f(count),
+            AbilityCost::Discard { count, .. } | AbilityCost::Reveal { count, .. } => f(count),
             // --- Recursive forms: every nested cost's quantities are part of
             // --- paying THIS cost, so recurse.
             AbilityCost::Composite { costs } | AbilityCost::OneOf { costs } => {
@@ -15411,7 +15471,6 @@ macro_rules! define_ability_cost_quantity_walk {
             | AbilityCost::Mill { .. }
             | AbilityCost::Exert
             | AbilityCost::Blight { .. }
-            | AbilityCost::Reveal { .. }
             | AbilityCost::Behold { .. }
             | AbilityCost::Waterbend { .. }
             | AbilityCost::NinjutsuFamily { .. }
@@ -17035,13 +17094,8 @@ impl StepSkipTarget {
             Self::Step(Phase::PostCombatMain) => &[Phase::PostCombatMain],
             Self::Step(Phase::End) => &[Phase::End],
             Self::Step(Phase::Cleanup) => &[Phase::Cleanup],
-            Self::CombatPhase => &[
-                Phase::BeginCombat,
-                Phase::DeclareAttackers,
-                Phase::DeclareBlockers,
-                Phase::CombatDamage,
-                Phase::EndCombat,
-            ],
+            // CR 506.1: the combat phase's five steps.
+            Self::CombatPhase => PhaseGroup::Combat.steps(),
         }
     }
 }
@@ -23106,6 +23160,8 @@ impl TargetFilter {
                 | TargetFilter::TriggeringSource
                 | TargetFilter::EventTarget
                 | TargetFilter::DefendingPlayer
+                // CR 506.3 + CR 115.10a: read from combat at resolution, never declared.
+                | TargetFilter::AttackedPlayerOrPlaneswalker
                 // CR 608.2c + CR 115.1: "that token" / "those tokens"
                 // continuations bind to objects created earlier in the same
                 // resolution; they are never declared as player-chosen targets.
@@ -23507,6 +23563,17 @@ enum CreatedReferentPublisher {
 }
 
 impl Effect {
+    /// CR 608.2c: true for the structural "repeat this process" directive
+    /// node (`RuntimeHandled { RepeatProcess }`).
+    pub fn is_repeat_directive(&self) -> bool {
+        matches!(
+            self,
+            Effect::RuntimeHandled {
+                handler: RuntimeHandler::RepeatProcess
+            }
+        )
+    }
+
     /// Single authority for constructing the "parser couldn't handle this"
     /// effect. Parser code must use this instead of a literal
     /// `Effect::Unimplemented { .. }` (enforced for new code by
@@ -28010,6 +28077,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ModifyAnnouncedX { .. } => "ModifyAnnouncedX",
         Effect::RuntimeHandled { handler } => match handler {
             RuntimeHandler::NinjutsuFamily => "RuntimeHandled:NinjutsuFamily",
+            RuntimeHandler::RepeatProcess => "RuntimeHandled:RepeatProcess",
         },
         Effect::Learn => "Learn",
         Effect::Forage => "Forage",
@@ -30204,6 +30272,12 @@ pub enum EffectOutcomeSignal {
     /// trigger takes the slot at materialization). A generic "When you do"
     /// after a reveal-until carries no such guard.
     RevealUntilMatched,
+    /// CR 608.2c: the "repeat this process" directive was reached during the
+    /// current pass of a looped chain (`RuntimeHandler::RepeatProcess`). Read
+    /// from the transient `GameState::repeat_process_requested` slot, which
+    /// the loop head clears every pass; it is a loop predicate, never a
+    /// reflexive or optional-decline gate.
+    RepeatDirectiveReached,
 }
 
 /// CR 602.2a + CR 608.2c: which per-turn tally of a single printed ability
@@ -31104,7 +31178,8 @@ impl AbilityCondition {
                 signal:
                     EffectOutcomeSignal::CurrentScopeSucceeded
                     | EffectOutcomeSignal::Guessed { .. }
-                    | EffectOutcomeSignal::RevealUntilMatched,
+                    | EffectOutcomeSignal::RevealUntilMatched
+                    | EffectOutcomeSignal::RepeatDirectiveReached,
             } => false,
             AbilityCondition::TriggerEventTargetDamagedBySourceThisTurn
             | AbilityCondition::TriggerEventTargetExploitedBySource
@@ -32252,6 +32327,12 @@ pub enum TriggerCondition {
     /// `phases` is parameterized so grouped phrases like "main phase" can map to
     /// both concrete main phases without proliferating condition variants.
     CastDuringPhase { phases: Vec<Phase> },
+    /// CR 500.1 + CR 506.1 + CR 603.2: True when the game is currently in one
+    /// of `phases`. Mirror of `ParsedCondition::CurrentPhaseIs` /
+    /// `AbilityCondition::CurrentPhaseIs`; turn-owner scope composes via `And`
+    /// with `DuringPlayersTurn`. Produced inside `EventTime` for the trailing
+    /// "during combat" / "during the <step>" qualifier of an event trigger.
+    CurrentPhaseIs { phases: Vec<Phase> },
     /// CR 601.3b + CR 702.8a: The source permanent came from a spell cast using
     /// a specific timing permission this turn.
     CastTimingPermission { permission: CastTimingPermission },
@@ -32461,6 +32542,9 @@ pub enum TriggerCondition {
     /// its trigger event, read when the game state matches it and not rechecked
     /// on resolution — Plague Boiler's ruling: removing a counter in response
     /// won't stop the effect. An intervening "if" beside it is still rechecked.
+    /// CR 603.2: a trailing "during <window>" qualifier on an event-trigger head
+    /// ("dies during combat", "enters during your turn") is part of the trigger
+    /// event and is likewise read at the event only.
     EventTime { condition: Box<TriggerCondition> },
 }
 
@@ -32559,6 +32643,7 @@ impl TriggerCondition {
             | TriggerCondition::DefendingPlayerControlsNone { .. }
             | TriggerCondition::TributeNotPaid
             | TriggerCondition::CastDuringPhase { .. }
+            | TriggerCondition::CurrentPhaseIs { .. }
             | TriggerCondition::CastTimingPermission { .. }
             | TriggerCondition::ManaColorSpent { .. }
             | TriggerCondition::ManaSpentCondition { .. }
@@ -44555,6 +44640,95 @@ mod tests {
         assert_eq!(visited, vec![QuantityExpr::Fixed { value: 2 }]);
     }
 
+    fn red_card_filter() -> TargetFilter {
+        TargetFilter::Typed(TypedFilter::card().properties(vec![FilterProp::HasColor {
+            color: ManaColor::Red,
+        }]))
+    }
+
+    fn variable_x() -> QuantityExpr {
+        QuantityExpr::Ref {
+            qty: QuantityRef::Variable { name: "X".into() },
+        }
+    }
+
+    /// Legacy card data serialized `AbilityCost::Reveal.count` as a bare
+    /// integer; it still loads as `Fixed`, and a symbolic X count round-trips.
+    #[test]
+    fn reveal_cost_count_accepts_legacy_bare_integer() {
+        let legacy: AbilityCost = serde_json::from_str(r#"{"type":"Reveal","count":1}"#).unwrap();
+        assert_eq!(
+            legacy,
+            AbilityCost::Reveal {
+                count: QuantityExpr::Fixed { value: 1 },
+                filter: None,
+            }
+        );
+        let missing: AbilityCost = serde_json::from_str(r#"{"type":"Reveal"}"#).unwrap();
+        assert_eq!(missing, legacy, "a missing count defaults to one card");
+
+        let symbolic = AbilityCost::Reveal {
+            count: variable_x(),
+            filter: Some(red_card_filter()),
+        };
+        let json = serde_json::to_string(&symbolic).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AbilityCost>(&json).unwrap(),
+            symbolic
+        );
+    }
+
+    /// CR 107.3a: a reveal count is a cost quantity, so the cost-quantity walk
+    /// visits (and can rewrite) it like a discard count.
+    #[test]
+    fn reveal_cost_count_is_visited_by_quantity_walk() {
+        let reveal = AbilityCost::Reveal {
+            count: variable_x(),
+            filter: Some(red_card_filter()),
+        };
+        let mut visited = Vec::new();
+        reveal.for_each_quantity_expr(&mut |quantity| visited.push(quantity.clone()));
+        assert_eq!(visited, vec![variable_x()]);
+
+        let mut composite = AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Mana {
+                    cost: ManaCost::generic(1),
+                },
+                reveal.clone(),
+                AbilityCost::Sacrifice(SacrificeCost::count(TargetFilter::SelfRef, 1)),
+            ],
+        };
+        visited.clear();
+        composite.for_each_quantity_expr(&mut |quantity| visited.push(quantity.clone()));
+        assert_eq!(visited, vec![variable_x()]);
+
+        composite.for_each_quantity_expr_mut(&mut |quantity| {
+            *quantity = QuantityExpr::Fixed { value: 3 };
+        });
+        let AbilityCost::Composite { costs } = &composite else {
+            unreachable!("the composite keeps its shape");
+        };
+        assert_eq!(
+            costs[1],
+            AbilityCost::Reveal {
+                count: QuantityExpr::Fixed { value: 3 },
+                filter: Some(red_card_filter()),
+            }
+        );
+
+        // Positive control: the sibling discard count is visited too.
+        let discard = AbilityCost::Discard {
+            count: variable_x(),
+            filter: None,
+            selection: CardSelectionMode::Chosen,
+            self_scope: DiscardSelfScope::FromHand,
+        };
+        visited.clear();
+        discard.for_each_quantity_expr(&mut |quantity| visited.push(quantity.clone()));
+        assert_eq!(visited, vec![variable_x()]);
+    }
+
     #[test]
     fn reveal_hand_private_look_serializes_false_and_roundtrips() {
         let effect = Effect::RevealHand {
@@ -44809,7 +44983,7 @@ mod tests {
                 (
                     "reveal",
                     AbilityCost::Reveal {
-                        count: 1,
+                        count: QuantityExpr::Fixed { value: 1 },
                         filter: None,
                     },
                     vec![CostCategory::Reveals],
@@ -47706,6 +47880,32 @@ mod chain_description_backfill_tests {
                 .as_deref(),
             Some("tap"),
         );
+    }
+}
+
+#[cfg(test)]
+mod attacked_referent_variant_tests {
+    use super::*;
+
+    /// CR 506.3 + CR 115.10a: a context reference that is never declared, enumerated,
+    /// bound in advance, or placed in a zone; every catch-all accessor answers the
+    /// "not a population, not a fixed player, not a chosen player" default.
+    #[test]
+    fn attacked_referent_variant_defaults() {
+        let f = TargetFilter::AttackedPlayerOrPlaneswalker;
+        assert!(f.is_context_ref());
+        assert!(!f.names_one_player());
+        assert!(!f.names_bound_single_object());
+        assert!(!f.is_player_scope());
+        assert!(!f.names_enumerable_population());
+        assert!(!f.denotes_player_target());
+        assert!(!f.denotes_battlefield_objects());
+        assert_eq!(f.chosen_player_index(), None);
+        assert_eq!(f.extract_in_zone(), None);
+        assert!(f.extract_zones().is_empty());
+        assert!(f.population_zones().is_empty());
+        let json = serde_json::to_value(&f).unwrap();
+        assert_eq!(json["type"], "AttackedPlayerOrPlaneswalker");
     }
 }
 
