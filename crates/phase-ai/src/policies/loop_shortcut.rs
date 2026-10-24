@@ -215,7 +215,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
                 PolicyReason::new("loop_shortcut_declare_draw_without_end"),
             ),
 
-            // CR 732.2a: the engine refuses a proposal without end on an offer naming a winner.
+            // A proposal without end names no winner, so an offer naming one is not a draw offer.
             (Some(_), IterationCount::WithoutEnd) => PolicyVerdict::reject(PolicyReason::new(
                 "loop_shortcut_without_end_names_a_winner",
             )),
@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(delta_of(&verdict_for(&state, &decline())), 0.0);
     }
 
-    /// CR 732.2a: a proposal without end on an offer naming a winner is one the engine refuses.
+    /// A without-end declaration on an offer naming a winner is not proposed as a draw.
     #[test]
     fn a_without_end_declare_against_a_named_winner_is_rejected() {
         let state = without_end_offer(Some(P1));

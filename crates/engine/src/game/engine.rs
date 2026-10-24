@@ -6168,11 +6168,10 @@ pub(crate) fn shortcut_validated_range(
 ) -> crate::analysis::decision_template::IterationIndex {
     match count {
         crate::analysis::decision_template::IterationCount::Fixed(n) => *n,
-        crate::analysis::decision_template::IterationCount::UntilLethal => {
+        crate::analysis::decision_template::IterationCount::UntilLethal
+        | crate::analysis::decision_template::IterationCount::WithoutEnd => {
             shortcut_drive_period(template)
         }
-        // A draw drives no repetition.
-        crate::analysis::decision_template::IterationCount::WithoutEnd => 0,
     }
 }
 

@@ -14891,6 +14891,26 @@ fn declared_count_beyond_the_published_schedule_window_is_refused() {
     );
 }
 
+/// CR 732.2b: a shortened proposal without end drives the template, so the declare firewall
+/// validates it over the drive period.
+#[test]
+fn a_without_end_declaration_is_validated_over_the_drive_period() {
+    assert!(
+        matches!(
+            g1_declare_verdict(false, IterationCount::WithoutEnd, &round_robin_a_b, false),
+            WaitingFor::Priority { .. }
+        ),
+        "a rotation into an unpublished arm is refused without end as it is at count 2"
+    );
+    assert!(
+        matches!(
+            g1_declare_verdict(true, IterationCount::WithoutEnd, &round_robin_a_b, false),
+            WaitingFor::RespondToShortcut { .. }
+        ),
+        "with both arms published the same declaration is ingested"
+    );
+}
+
 /// R7 arms D1 / D2 / D3 — the range is EXACTLY the driven range, not a padded one.
 ///
 /// * **D1 (over-refusal fix, ⚠ behaviour change).** A `RoundRobin[A,B]` rotation with only A
