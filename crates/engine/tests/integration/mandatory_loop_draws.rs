@@ -1076,13 +1076,18 @@ fn a_choice_tree_past_the_budget_is_not_offered() {
         banisher: Some(3),
         ..PLAIN
     };
-    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+    // The ring first asks the proof on this board's seventh cycle.
+    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 90) else {
         return;
     };
     assert_runs_on(&run, "Pass");
     assert!(
         run.prompted("TriggerTargetSelection") >= 3,
         "reach: a target was chosen across cycles"
+    );
+    assert!(
+        run.replays.iter().any(|&(_, _, replays)| replays > 1),
+        "reach: the every-option proof expanded the choices"
     );
 }
 
