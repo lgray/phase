@@ -951,48 +951,78 @@ fn a_remembered_optional_prevention_is_not_a_draw() {
     }
 }
 
-/// CR 601.2c + CR 732.2a: Banisher Priest's trigger chooses between two creatures each cycle,
-/// and the loop continues whichever is exiled, in either trigger order, so P0 is offered a draw
-/// without end, and every player accepting it draws the game; Off runs on.
-#[test]
-fn a_target_chosen_every_cycle_is_offered() {
-    let two = Board {
-        banisher: Some(2),
-        ..PLAIN
-    };
-    // With Animate Dead's trigger first, the first cycle's one target choice is the period read.
-    for (first, choices) in [(None, 2), (Some("Animate Dead"), 1)] {
-        for pick in [Pick::First, Pick::Alternate] {
-            let board = Board { first, pick, ..two };
-            for drive in EVERY_DRIVE {
-                let leg = format!("{first:?} {pick:?} {drive:?}");
-                let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
-                    return;
-                };
-                assert_out_offer(&run, &leg);
-                assert!(
-                    run.prompted("TriggerTargetSelection") >= choices,
-                    "{leg}: reach: a target was chosen {choices} times, prompts {:?}",
-                    run.prompts
-                );
-            }
+/// Asserts that, under each of `picks`, every drive at `board` stops at P0's offer of a draw
+/// without end after at least `choices` prompts of `prompt`, and returns the first drive's run.
+fn offered_on_every_drive(
+    board: Board,
+    picks: &[Pick],
+    prompt: &str,
+    choices: usize,
+) -> Option<Run> {
+    let mut first_run = None;
+    for &pick in picks {
+        let board = Board { pick, ..board };
+        for drive in EVERY_DRIVE {
+            let leg = format!("{:?} {pick:?} {drive:?}", board.first);
+            let run = run(board, LoopDetectionMode::Interactive, drive, 60)?;
+            assert_out_offer(&run, &leg);
+            assert!(
+                run.prompted(prompt) >= choices,
+                "{leg}: reach: {prompt} was answered {choices} times, prompts {:?}",
+                run.prompts
+            );
+            first_run.get_or_insert(run);
         }
     }
-    offer_accepted_is_a_draw(two);
+    first_run
+}
+
+const TWO_TARGETS: Board = Board {
+    banisher: Some(2),
+    ..PLAIN
+};
+
+/// CR 601.2c + CR 732.2a: Banisher Priest's trigger chooses between two creatures each cycle,
+/// and the loop continues whichever is exiled, so P0 is offered a draw without end, and every
+/// player accepting it draws the game; Off runs on.
+#[test]
+fn a_target_chosen_every_cycle_is_offered() {
+    let Some(offered) = offered_on_every_drive(
+        TWO_TARGETS,
+        &[Pick::First, Pick::Alternate],
+        "TriggerTargetSelection",
+        2,
+    ) else {
+        return;
+    };
+    offer_accepted_is_a_draw(offered);
     for drive in EVERY_DRIVE {
-        let Some(run) = run(two, LoopDetectionMode::Off, drive, 40) else {
+        let Some(run) = run(TWO_TARGETS, LoopDetectionMode::Off, drive, 40) else {
             return;
         };
         assert_runs_on(&run, &format!("Off {drive:?}"));
     }
 }
 
-/// Declares the offer `board` reaches when P0 passes, and asserts every player accepting it draws
-/// the game.
-fn offer_accepted_is_a_draw(board: Board) {
-    let Some(mut offered) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
-        return;
+/// CR 601.2c + CR 732.2a: with Animate Dead's trigger first, the first cycle's one target choice
+/// is the period read, and the loop continues whichever creature Banisher Priest exiles, so P0 is
+/// offered a draw without end.
+#[test]
+fn a_target_chosen_every_cycle_after_animate_deads_trigger_is_offered() {
+    let board = Board {
+        first: Some("Animate Dead"),
+        ..TWO_TARGETS
     };
+    offered_on_every_drive(
+        board,
+        &[Pick::First, Pick::Alternate],
+        "TriggerTargetSelection",
+        1,
+    );
+}
+
+/// Declares the offer `offered` stopped at, and asserts every player accepting it draws the game.
+fn offer_accepted_is_a_draw(mut offered: Run) {
     assert_out_offer(&offered, "accepted");
     offered.runner.act(DECLARE_WITHOUT_END).expect("declare");
     offered
@@ -1018,21 +1048,10 @@ const TWO_CARDS: Board = Board {
 /// end, and every player accepting it draws the game; Off runs on.
 #[test]
 fn a_card_chosen_every_cycle_is_offered() {
-    for pick in [Pick::First, Pick::Alternate] {
-        let board = Board { pick, ..TWO_CARDS };
-        for drive in EVERY_DRIVE {
-            let leg = format!("{pick:?} {drive:?}");
-            let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
-                return;
-            };
-            assert_out_offer(&run, &leg);
-            assert!(
-                run.prompted("RevealChoice") >= 2,
-                "{leg}: reach: a card was chosen across cycles"
-            );
-        }
-    }
-    offer_accepted_is_a_draw(TWO_CARDS);
+    let Some(offered) = offered_on_every_drive(TWO_CARDS, &[Pick::First], "RevealChoice", 2) else {
+        return;
+    };
+    offer_accepted_is_a_draw(offered);
     for drive in EVERY_DRIVE {
         let Some(run) = run(TWO_CARDS, LoopDetectionMode::Off, drive, 40) else {
             return;
@@ -1041,7 +1060,14 @@ fn a_card_chosen_every_cycle_is_offered() {
     }
 }
 
-/// CR 104.4b + CR 601.2c: Oblivion Ring's trigger may exile P0's own Animate Dead, which ends the
+/// CR 608.2d + CR 732.2a: P0 choosing P1's Lightning Bolt and Murder in turn at Brain Maggot's
+/// trigger each cycle is offered a draw without end, since the loop continues whichever is exiled.
+#[test]
+fn a_card_chosen_in_turn_every_cycle_is_offered() {
+    offered_on_every_drive(TWO_CARDS, &[Pick::Alternate], "RevealChoice", 2);
+}
+
+/// CR 104.4b + CR 601.2c: Oblivion Ring's trigger can target P0's own Animate Dead, which ends the
 /// loop, so choosing its target each cycle holds an optional action even when P0 always exiles
 /// P1's Grizzly Bears, and the loop is neither drawn nor offered.
 #[test]
@@ -1076,7 +1102,6 @@ fn a_choice_tree_past_the_budget_is_not_offered() {
         banisher: Some(3),
         ..PLAIN
     };
-    // The ring first asks the proof on this board's seventh cycle.
     let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 90) else {
         return;
     };

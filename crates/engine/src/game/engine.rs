@@ -2932,7 +2932,7 @@ fn interactive_loop_bridge_paths(
             super::elimination::end_game(state, None, &mut result.events);
             return;
         }
-        // CR 732.5: an offered period is offered, not drawn.
+        // CR 732.2a + CR 732.5: a period of outs and choices proven to continue is offered, not drawn.
         if let Some(idx) = outs_offer {
             offer_draw_without_end(state, result, &priors[idx].normalized);
             return;

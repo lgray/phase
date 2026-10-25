@@ -616,17 +616,47 @@ fn order_indices(labels: &[Label], order: &[Label]) -> Option<Vec<usize>> {
         .collect()
 }
 
-/// The priority frame before a decision point, and the state at its prompt.
-struct Point {
-    frame: GameState,
-    prompt: GameState,
+/// How an ordered replay answers the decision prompts it meets before it stops at one.
+enum Answering<'a> {
+    /// These answers in turn; the replay stops at the first prompt past them.
+    Path(std::collections::VecDeque<(PromptKey, PointAnswer)>),
+    /// The road's answer at each prompt of the first run of prompts, or the prompt's first
+    /// answer where the road has none; the replay stops at the first prompt after priority.
+    Road(&'a Road),
 }
 
-/// Where an ordered replay stops: decision prompts are answered from `answers` while it lasts,
-/// and the next one is kept in `reached`.
-struct PointStop {
-    answers: std::collections::VecDeque<PointAnswer>,
-    reached: Option<Point>,
+/// Where an ordered replay stops: the prompts it answered, and, once it stops at a decision
+/// prompt, the priority frame before that prompt, `None` when the prompt follows an answer with
+/// no priority between.
+struct PointStop<'a> {
+    answering: Answering<'a>,
+    taken: KeyedPath,
+    reached: Option<Option<GameState>>,
+}
+
+impl PointStop<'_> {
+    /// The answer at the decision prompt at `replay`, or `None` where the replay stops.
+    fn answer(
+        &mut self,
+        replay: &GameState,
+        after_priority: bool,
+    ) -> Result<Option<(PromptKey, PointAnswer)>, OfferRefusal> {
+        match &mut self.answering {
+            Answering::Path(answers) => Ok(answers.pop_front()),
+            Answering::Road(_) if after_priority && !self.taken.is_empty() => Ok(None),
+            Answering::Road(road) => {
+                let (key, answers) =
+                    decision_prompt(replay, ORDER_EDGES).ok_or(OfferRefusal::UnanswerablePrompt)?;
+                let answer = road
+                    .iter()
+                    .find(|(taken, _)| *taken == key)
+                    .map(|(_, answer)| answer.clone())
+                    .or_else(|| answers.into_iter().next())
+                    .ok_or(OfferRefusal::UnanswerablePrompt)?;
+                Ok(Some((key, answer)))
+            }
+        }
+    }
 }
 
 /// One answer at a decision prompt: an order of its triggers, or one of its options.
@@ -780,7 +810,7 @@ fn replay_cycle_ordered(
     choices: &mut Vec<PinnedDecision>,
     mut frames: Option<&mut Vec<GameState>>,
     events: &mut Vec<GameEvent>,
-    mut stop: Option<&mut PointStop>,
+    mut stop: Option<&mut PointStop<'_>>,
 ) -> Result<Vec<String>, OfferRefusal> {
     let mut done = vec![false; items.len()];
     let mut performed = Vec::new();
@@ -831,15 +861,8 @@ fn replay_cycle_ordered(
                 .waiting_for
                 .acting_player()
                 .ok_or(OfferRefusal::UnanswerablePrompt)?;
-            let Some(answer) = stop.answers.pop_front() else {
-                // A prompt following another with no priority between is no node frame.
-                let frame = last_priority
-                    .take()
-                    .ok_or(OfferRefusal::UnanswerablePrompt)?;
-                stop.reached = Some(Point {
-                    frame,
-                    prompt: replay.clone(),
-                });
+            let Some((key, answer)) = stop.answer(replay, last_priority.is_some())? else {
+                stop.reached = Some(last_priority.take());
                 return Ok(performed);
             };
             let action = answer_action(replay, &answer).ok_or(OfferRefusal::UnanswerablePrompt)?;
@@ -850,6 +873,7 @@ fn replay_cycle_ordered(
                 OfferRefusal::UnanswerablePrompt,
                 events,
             )?;
+            stop.taken.push((key, answer));
             last_priority = None;
             continue;
         }
@@ -1621,15 +1645,29 @@ fn frame_closure<N, K: PartialEq>(
 /// The answer a road took at each prompt key; a later prompt with that key reuses it.
 type Road = Vec<(PromptKey, PointAnswer)>;
 
-/// A node of the proof: the priority frame before a decision point, the point's key and answer
-/// paths, and the road to it.
+/// A node of the proof: the priority frame before a decision point, the state at its prompt, the
+/// point's key, and the road to it.
 struct PointNode {
     frame: GameState,
+    prompt: GameState,
     key: PromptKey,
-    paths: Vec<KeyedPath>,
     road: Road,
+    /// The point's answer paths, found when the closure first counts them; `None` past the budget.
+    edges: std::cell::OnceCell<Option<Vec<Edge>>>,
     /// The frames before the next two points with this node's key, along `road`.
     onward: std::cell::OnceCell<Result<[GameState; 2], Halt>>,
+}
+
+impl PointNode {
+    fn edges(&self, find: impl FnOnce() -> Option<Vec<Edge>>) -> Option<&[Edge]> {
+        self.edges.get_or_init(find).as_deref()
+    }
+}
+
+/// One answer path at a node, with the node its replay reached when finding the path replayed it.
+struct Edge {
+    path: KeyedPath,
+    reached: std::cell::RefCell<Option<Result<PointNode, Halt>>>,
 }
 
 fn point_key(labels: &[Label]) -> Vec<Label> {
@@ -1659,12 +1697,15 @@ pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof
     let s0 = replay_base(frame, holder);
     let end = FrameEnd::of(&s0, holder, span.reach);
     let living = seats(frame);
-    let step = |from: &GameState, path: &[(PromptKey, PointAnswer)], road: Road| {
+    // The replay from `from` to the decision prompt it stops at: the frame before the prompt, the
+    // state at it, and the answers given on the way.
+    let replay_from = |from: &GameState, answering: Answering| {
         #[cfg(feature = "test-support")]
         crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
         let mut replay = from.clone();
         let mut stop = PointStop {
-            answers: path.iter().map(|(_, answer)| answer.clone()).collect(),
+            answering,
+            taken: Vec::new(),
             reached: None,
         };
         let out = replay_cycle_ordered(
@@ -1677,74 +1718,103 @@ pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof
             Some(&mut stop),
         );
         match (out, stop.reached) {
-            (Ok(_), Some(point)) => {
-                let (key, paths) =
-                    decision_paths(&point.prompt, ORDER_EDGES).ok_or(Halt::Undecided)?;
-                Ok(PointNode {
-                    frame: point.frame,
-                    key,
-                    paths,
-                    road,
-                    onward: std::cell::OnceCell::new(),
-                })
-            }
+            (Ok(_), Some(frame)) => Ok((frame, replay, stop.taken)),
             (Ok(_), None) => Err(Halt::Undecided),
             (Err(refusal), _) => Err(halt(&replay, &refusal)),
         }
     };
-    let road_with = |node: &PointNode, path: &[(PromptKey, PointAnswer)]| {
-        let mut road = node.road.clone();
-        for (key, answer) in path {
+    let road_with = |road: &Road, taken: &[(PromptKey, PointAnswer)]| {
+        let mut road = road.clone();
+        for (key, answer) in taken {
             road.retain(|(k, _)| k != key);
             road.push((key.clone(), answer.clone()));
         }
         road
     };
-    // The path `node`'s road takes: the first agreeing with the road wherever it has the key.
-    let road_path = |node: &PointNode| {
-        node.paths
-            .iter()
-            .find(|path| {
-                path.iter().all(|(key, answer)| {
-                    node.road
-                        .iter()
-                        .find(|(k, _)| k == key)
-                        .is_none_or(|(_, taken)| taken == answer)
-                })
-            })
-            .cloned()
-            .ok_or(Halt::Undecided)
-    };
-    // The frame before the next point with `node`'s key, each point answered along the road.
-    let onward = |node: &PointNode| -> Result<PointNode, Halt> {
-        let mut at = PointNode {
-            frame: node.frame.clone(),
-            key: node.key.clone(),
-            paths: node.paths.clone(),
-            road: node.road.clone(),
+    let node_at = |frame: Option<GameState>, prompt: GameState, road: Road| {
+        // A prompt following another with no priority between is no node frame.
+        let frame = frame.ok_or(Halt::Undecided)?;
+        let (key, _) = decision_prompt(&prompt, ORDER_EDGES).ok_or(Halt::Undecided)?;
+        Ok(PointNode {
+            frame,
+            prompt,
+            key,
+            road,
+            edges: std::cell::OnceCell::new(),
             onward: std::cell::OnceCell::new(),
-        };
+        })
+    };
+    let step = |node: &PointNode, path: &[(PromptKey, PointAnswer)]| {
+        let (frame, prompt, taken) =
+            replay_from(&node.frame, Answering::Path(path.iter().cloned().collect()))?;
+        node_at(frame, prompt, road_with(&node.road, &taken))
+    };
+    // CR 603.3b + CR 601.2c + CR 608.2d: `node`'s answer paths, found by replaying each answer at
+    // its prompt and keeping that replay as the edge when no decision prompt follows the answer.
+    let answer_edges = |node: &PointNode| {
+        let (key, answers) = decision_prompt(&node.prompt, ORDER_EDGES)?;
+        let mut edges = Vec::new();
+        for answer in answers {
+            let path = vec![(key.clone(), answer)];
+            match replay_from(&node.frame, Answering::Path(path.iter().cloned().collect())) {
+                Ok((None, prompt, _)) => {
+                    let (_, tails) = decision_paths(&prompt, ORDER_EDGES)?;
+                    edges.extend(tails.into_iter().map(|tail| Edge {
+                        path: [path.as_slice(), &tail].concat(),
+                        reached: std::cell::RefCell::new(None),
+                    }));
+                }
+                reached => {
+                    let reached = reached.and_then(|(frame, prompt, taken)| {
+                        node_at(frame, prompt, road_with(&node.road, &taken))
+                    });
+                    edges.push(Edge {
+                        path,
+                        reached: std::cell::RefCell::new(Some(reached)),
+                    });
+                }
+            }
+            if edges.len() > ORDER_EDGES {
+                return None;
+            }
+        }
+        Some(edges)
+    };
+    // The node at the next point with `node`'s key, each point answered along the road.
+    let onward = |node: &PointNode| -> Result<PointNode, Halt> {
+        let mut held: Option<PointNode> = None;
         for _ in 0..ONWARD_POINTS {
-            let path = road_path(&at)?;
-            let next = step(&at.frame, &path, road_with(&at, &path))?;
+            let at = held.as_ref().unwrap_or(node);
+            let (frame, prompt, taken) = replay_from(&at.frame, Answering::Road(&at.road))?;
+            let next = node_at(frame, prompt, road_with(&at.road, &taken))?;
             if next.key == node.key {
                 return Ok(next);
             }
-            at = next;
+            held = Some(next);
         }
         Err(Halt::Undecided)
     };
-    let Ok(root) = step(&s0, &[], Vec::new()) else {
+    let Ok(root) = replay_from(&s0, Answering::Path(Default::default()))
+        .and_then(|(frame, prompt, _)| node_at(frame, prompt, Vec::new()))
+    else {
         return OptionProof::Undecided;
     };
     frame_closure(
         root,
         ORDER_EDGES,
         |node| node.key.clone(),
-        |node| node.paths.len(),
+        // A point whose paths are past the budget counts past it.
+        |node| {
+            node.edges(|| answer_edges(node))
+                .map_or(ORDER_EDGES + 1, <[Edge]>::len)
+        },
         |node, at| {
-            let path = &node.paths[at];
-            step(&node.frame, path, road_with(node, path))
+            let edge = node
+                .edges(|| answer_edges(node))
+                .and_then(|edges| edges.get(at))
+                .ok_or(Halt::Undecided)?;
+            let reached = edge.reached.take();
+            reached.unwrap_or_else(|| step(node, &edge.path))
         },
         |seen, next| {
             let chain = next.onward.get_or_init(|| {
