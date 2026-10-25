@@ -83,6 +83,9 @@ pub(crate) struct PeriodItem {
     /// Ids from here up to `next_object_id` were minted in the period before it was recorded.
     minted_since: u64,
     cost_move: Option<CostMove>,
+    /// The decision point the answer was made at, which the every-option proof enumerates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    point: Option<ChoicePoint>,
 }
 
 /// CR 732.2a: the plays and answers of a confirmed period, as an offer carries them to its take.
@@ -276,12 +279,13 @@ fn period_items(
                     next_object_id: entry.next_object_id + minted,
                     minted_since: entry.next_object_id,
                     cost_move: None,
+                    point: None,
                 });
             }
             let minted_since = entries[at.saturating_sub(len)].next_object_id;
-            let (action, play, cost_move, mandatory_answer) = match &entry.kind {
+            let (action, play, cost_move, mandatory_answer, point) = match &entry.kind {
                 EntryKind::Play { action, .. } => {
-                    (action, Some((entry.depth, entry.prompt)), None, false)
+                    (action, Some((entry.depth, entry.prompt)), None, false, None)
                 }
                 EntryKind::Answer {
                     action: GameAction::PassPriority,
@@ -291,12 +295,14 @@ fn period_items(
                     action,
                     cost_move,
                     optional,
+                    point,
                     ..
                 } => (
                     action,
                     None,
                     cost_move.clone(),
                     *optional == AnswerOptionality::Mandatory,
+                    *point,
                 ),
                 EntryKind::Resolution { .. } => return None,
             };
@@ -308,6 +314,7 @@ fn period_items(
                 next_object_id: entry.next_object_id,
                 minted_since,
                 cost_move,
+                point,
             })
         })
         .collect()
@@ -609,21 +616,163 @@ fn order_indices(labels: &[Label], order: &[Label]) -> Option<Vec<usize>> {
         .collect()
 }
 
-/// The priority frame before an ordering point, and the point's labels.
+/// The priority frame before a decision point, and the state at its prompt.
 struct Point {
     frame: GameState,
-    labels: Vec<Label>,
+    prompt: GameState,
 }
 
-/// Where an ordered replay stops: the first ordering point is answered by `order` when given, and
-/// the next one is kept in `reached`.
-struct PointStop<'a> {
-    order: Option<&'a [Label]>,
+/// Where an ordered replay stops: decision prompts are answered from `answers` while it lasts,
+/// and the next one is kept in `reached`.
+struct PointStop {
+    answers: std::collections::VecDeque<PointAnswer>,
     reached: Option<Point>,
 }
 
-/// [`replay_cycle`]; with `stop`, priority never ends the cycle and the replay stops at an
-/// ordering point, answering any other prompt no recorded answer takes with its forced answer.
+/// One answer at a decision prompt: an order of its triggers, or one of its options.
+#[derive(Debug, Clone, PartialEq)]
+enum PointAnswer {
+    Order(Vec<Label>),
+    Option(GameAction),
+}
+
+/// What makes two decision prompts the same point: an ordering point's occurrences, or the
+/// choice, the triggered ability asking it, and how many options it offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PromptKey {
+    Order(Vec<Label>),
+    Choice {
+        point: ChoicePoint,
+        asker: Occurrence,
+        // CR 104.4b: a covered decision point offers exactly the start's options.
+        options: usize,
+    },
+}
+
+/// One answer at each decision prompt of a run of prompts with no priority between.
+type KeyedPath = Vec<(PromptKey, PointAnswer)>;
+
+/// CR 601.2c + CR 608.2d: each option of the target or card choice at `replay`, as its answer.
+fn choice_options(replay: &GameState) -> Vec<GameAction> {
+    match &replay.waiting_for {
+        WaitingFor::TriggerTargetSelection { selection, .. } => selection
+            .current_legal_targets
+            .iter()
+            .map(|target| GameAction::ChooseTarget {
+                target: Some(target.clone()),
+            })
+            .collect(),
+        WaitingFor::RevealChoice { cards, .. } => cards
+            .iter()
+            .map(|&card| GameAction::SelectCards { cards: vec![card] })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// CR 400.7: the triggered ability asking the choice at `replay`, by its source and text: the one
+/// being put on the stack for a target, the one resolving for a card.
+fn choice_asker(replay: &GameState) -> Option<Occurrence> {
+    match &replay.waiting_for {
+        WaitingFor::TriggerTargetSelection {
+            source_id,
+            description,
+            ..
+        } => {
+            let source = replay.objects.get(&(*source_id)?)?;
+            Some(Occurrence::of(&source.name, description.as_ref()))
+        }
+        _ => match &replay.resolving_stack_entry.as_ref()?.kind {
+            StackEntryKind::TriggeredAbility {
+                source_name,
+                description,
+                ..
+            } => Some(Occurrence::of(source_name, description.as_ref())),
+            _ => None,
+        },
+    }
+}
+
+/// The decision prompt at `replay`: its key and every answer; `None` past `limit` answers or
+/// where the prompt cannot be keyed.
+fn decision_prompt(replay: &GameState, limit: usize) -> Option<(PromptKey, Vec<PointAnswer>)> {
+    let point = replay.waiting_for.option_point()?;
+    match point {
+        ChoicePoint::TriggerOrder => {
+            let labels = point_labels(replay)?;
+            if order_count(labels.len()) > limit {
+                return None;
+            }
+            let answers = class_orders(&labels)
+                .into_iter()
+                .map(PointAnswer::Order)
+                .collect();
+            Some((PromptKey::Order(point_key(&labels)), answers))
+        }
+        ChoicePoint::AnnouncedTarget | ChoicePoint::ResolutionSet => {
+            let options = choice_options(replay);
+            if options.len() > limit {
+                return None;
+            }
+            let key = PromptKey::Choice {
+                point,
+                asker: choice_asker(replay)?,
+                options: options.len(),
+            };
+            Some((key, options.into_iter().map(PointAnswer::Option).collect()))
+        }
+        ChoicePoint::MayGate
+        | ChoicePoint::TapCost
+        | ChoicePoint::ProliferateSet
+        | ChoicePoint::ManaColor
+        | ChoicePoint::ConvokeTaps
+        | ChoicePoint::Mode
+        | ChoicePoint::UnlessBreak => None,
+    }
+}
+
+/// The action that gives `answer` at the prompt at `replay`; an option is answered only by the
+/// same action among the prompt's options, never by its position.
+fn answer_action(replay: &GameState, answer: &PointAnswer) -> Option<GameAction> {
+    match answer {
+        PointAnswer::Order(order) => Some(GameAction::OrderTriggers {
+            order: order_indices(&point_labels(replay)?, order)?,
+        }),
+        PointAnswer::Option(chosen) => choice_options(replay)
+            .contains(chosen)
+            .then(|| chosen.clone()),
+    }
+}
+
+/// CR 603.3b + CR 601.2c + CR 608.2d: every answer sequence from the decision prompt at `prompt`
+/// through the decision prompts that follow it with no priority between, each later prompt read
+/// in its own branch; `None` past `limit` sequences or at a prompt that cannot be answered.
+fn decision_paths(prompt: &GameState, limit: usize) -> Option<(PromptKey, Vec<KeyedPath>)> {
+    let (key, answers) = decision_prompt(prompt, limit)?;
+    let seat = prompt.waiting_for.acting_player()?;
+    let mut paths: Vec<KeyedPath> = Vec::new();
+    for answer in answers {
+        let mut next = prompt.clone();
+        let action = answer_action(&next, &answer)?;
+        apply(&mut next, seat, action).ok()?;
+        let tails = if next.waiting_for.option_point().is_some() {
+            decision_paths(&next, limit)?.1
+        } else {
+            vec![Vec::new()]
+        };
+        for mut tail in tails {
+            tail.insert(0, (key.clone(), answer.clone()));
+            paths.push(tail);
+            if paths.len() > limit {
+                return None;
+            }
+        }
+    }
+    Some((key, paths))
+}
+
+/// [`replay_cycle`]; with `stop`, priority never ends the cycle and the replay stops at a
+/// decision point, answering any other prompt no recorded answer takes with its forced answer.
 fn replay_cycle_ordered(
     replay: &mut GameState,
     items: &[PeriodItem],
@@ -677,24 +826,27 @@ fn replay_cycle_ordered(
             }
             continue;
         }
-        if let (Some(stop), WaitingFor::OrderTriggers { player, .. }) =
-            (stop.as_deref_mut(), &replay.waiting_for)
-        {
-            let player = *player;
-            let labels = point_labels(replay).ok_or(OfferRefusal::UnanswerablePrompt)?;
-            let Some(order) = stop.order.take() else {
+        if let (Some(stop), Some(_)) = (stop.as_deref_mut(), replay.waiting_for.option_point()) {
+            let player = replay
+                .waiting_for
+                .acting_player()
+                .ok_or(OfferRefusal::UnanswerablePrompt)?;
+            let Some(answer) = stop.answers.pop_front() else {
                 // A prompt following another with no priority between is no node frame.
                 let frame = last_priority
                     .take()
                     .ok_or(OfferRefusal::UnanswerablePrompt)?;
-                stop.reached = Some(Point { frame, labels });
+                stop.reached = Some(Point {
+                    frame,
+                    prompt: replay.clone(),
+                });
                 return Ok(performed);
             };
-            let order = order_indices(&labels, order).ok_or(OfferRefusal::UnanswerablePrompt)?;
+            let action = answer_action(replay, &answer).ok_or(OfferRefusal::UnanswerablePrompt)?;
             step(
                 replay,
                 player,
-                GameAction::OrderTriggers { order },
+                action,
                 OfferRefusal::UnanswerablePrompt,
                 events,
             )?;
@@ -1336,12 +1488,12 @@ pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool
             .is_none_or(|&grew| grew <= 0)
 }
 
-/// CR 603.3b: what the every-order proof found of a period's trigger orders.
+/// CR 603.3b: what the every-option proof found of a period's decision points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OptionProof {
-    /// Under every sequence of orders the loop comes round to a frame the closure covers.
+    /// Under every sequence of answers the loop comes round to a frame the closure covers.
     Continues,
-    /// Under some sequence of orders the loop ends: the game ends or priority settles on an
+    /// Under some sequence of answers the loop ends: the game ends or priority settles on an
     /// empty stack.
     Ends,
     /// Some sequence neither comes round nor ends within the budget.
@@ -1367,8 +1519,8 @@ fn halt(replay: &GameState, refusal: &OfferRefusal) -> Halt {
     }
 }
 
-/// The most closure edges the proof makes, an edge being one order replayed at one point; with
-/// at most `1 + 2 * ONWARD_POINTS` replays per edge, the replays are linear in the budget.
+/// The most closure edges the proof makes, an edge being one answer path replayed at one point;
+/// with at most `1 + 2 * ONWARD_POINTS` replays per edge, the replays are linear in the budget.
 const ORDER_EDGES: usize = 25;
 
 /// The most ordering points a cover check replays, per onward frame, to come back to a node's
@@ -1399,8 +1551,8 @@ fn class_orders(labels: &[Label]) -> Vec<Vec<Label>> {
     out
 }
 
-/// CR 603.3b + CR 104.4b: closes the frames reachable from `root` under every order at every
-/// ordering point: each node is expanded once under each of its orders, and a successor no seen
+/// CR 603.3b + CR 104.4b: closes the frames reachable from `root` under every answer at every
+/// decision point: each node is expanded once under each of its answers, and a successor no seen
 /// node with its key covers becomes a node. Ends when an edge or a cover's replay ends the loop;
 /// Undecided on a refusal or when the edges made and pending exceed `budget`.
 fn frame_closure<N, K: PartialEq>(
@@ -1466,12 +1618,15 @@ fn frame_closure<N, K: PartialEq>(
     }
 }
 
-/// The order a road took at each point key; a later point with that key reuses it.
-type Road = Vec<(Vec<Label>, Vec<Label>)>;
+/// The answer a road took at each prompt key; a later prompt with that key reuses it.
+type Road = Vec<(PromptKey, PointAnswer)>;
 
-/// A node of the proof: the priority frame before an ordering point, and the road to it.
+/// A node of the proof: the priority frame before a decision point, the point's key and answer
+/// paths, and the road to it.
 struct PointNode {
-    point: Point,
+    frame: GameState,
+    key: PromptKey,
+    paths: Vec<KeyedPath>,
     road: Road,
     /// The frames before the next two points with this node's key, along `road`.
     onward: std::cell::OnceCell<Result<[GameState; 2], Halt>>,
@@ -1483,11 +1638,11 @@ fn point_key(labels: &[Label]) -> Vec<Label> {
     key
 }
 
-/// CR 603.3b + CR 104.4b: replays the span `span` from `frame` under every order at every
-/// ordering point it meets, with saved orders asked rather than applied, closing over the frames
+/// CR 603.3b + CR 104.4b: replays the span `span` from `frame` under every answer at every
+/// decision point it meets, with saved orders asked rather than applied, closing over the frames
 /// before each point; a frame is covered when the recorded road's certification, with each
 /// frame's floor, equates it with a node at the same point.
-pub(crate) fn trigger_orders(frame: &GameState, span: NamedSpan) -> OptionProof {
+pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof {
     let WaitingFor::Priority { player: holder } = frame.waiting_for else {
         return OptionProof::Undecided;
     };
@@ -1496,7 +1651,7 @@ pub(crate) fn trigger_orders(frame: &GameState, span: NamedSpan) -> OptionProof 
     };
     let items: Vec<PeriodItem> = period_items(entries, span, frame)
         .into_iter()
-        .filter(|item| !matches!(item.action, GameAction::OrderTriggers { .. }))
+        .filter(|item| item.point.is_none())
         .collect();
     let casts = period_casts(&items);
     let _probe = SimulationProbeGuard::enter();
@@ -1504,12 +1659,12 @@ pub(crate) fn trigger_orders(frame: &GameState, span: NamedSpan) -> OptionProof 
     let s0 = replay_base(frame, holder);
     let end = FrameEnd::of(&s0, holder, span.reach);
     let living = seats(frame);
-    let step = |from: &GameState, order: Option<&[Label]>, road: Road| -> Result<PointNode, Halt> {
+    let step = |from: &GameState, path: &[(PromptKey, PointAnswer)], road: Road| {
         #[cfg(feature = "test-support")]
         crate::game::perf_counters::record_play_trace(|counters| counters.confirm_drives += 1);
         let mut replay = from.clone();
         let mut stop = PointStop {
-            order,
+            answers: path.iter().map(|(_, answer)| answer.clone()).collect(),
             reached: None,
         };
         let out = replay_cycle_ordered(
@@ -1522,73 +1677,86 @@ pub(crate) fn trigger_orders(frame: &GameState, span: NamedSpan) -> OptionProof 
             Some(&mut stop),
         );
         match (out, stop.reached) {
-            (Ok(_), Some(point)) => Ok(PointNode {
-                point,
-                road,
-                onward: std::cell::OnceCell::new(),
-            }),
+            (Ok(_), Some(point)) => {
+                let (key, paths) =
+                    decision_paths(&point.prompt, ORDER_EDGES).ok_or(Halt::Undecided)?;
+                Ok(PointNode {
+                    frame: point.frame,
+                    key,
+                    paths,
+                    road,
+                    onward: std::cell::OnceCell::new(),
+                })
+            }
             (Ok(_), None) => Err(Halt::Undecided),
             (Err(refusal), _) => Err(halt(&replay, &refusal)),
         }
     };
-    let road_with = |node: &PointNode, order: &[Label]| {
-        let key = point_key(&node.point.labels);
+    let road_with = |node: &PointNode, path: &[(PromptKey, PointAnswer)]| {
         let mut road = node.road.clone();
-        road.retain(|(k, _)| *k != key);
-        road.push((key, order.to_vec()));
+        for (key, answer) in path {
+            road.retain(|(k, _)| k != key);
+            road.push((key.clone(), answer.clone()));
+        }
         road
     };
-    // The frame before the next point with `node`'s key, each point answered by its key's order
-    // on the road, or by its prompt order where the road has none.
+    // The path `node`'s road takes: the first agreeing with the road wherever it has the key.
+    let road_path = |node: &PointNode| {
+        node.paths
+            .iter()
+            .find(|path| {
+                path.iter().all(|(key, answer)| {
+                    node.road
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .is_none_or(|(_, taken)| taken == answer)
+                })
+            })
+            .cloned()
+            .ok_or(Halt::Undecided)
+    };
+    // The frame before the next point with `node`'s key, each point answered along the road.
     let onward = |node: &PointNode| -> Result<PointNode, Halt> {
-        let key = point_key(&node.point.labels);
         let mut at = PointNode {
-            point: Point {
-                frame: node.point.frame.clone(),
-                labels: node.point.labels.clone(),
-            },
+            frame: node.frame.clone(),
+            key: node.key.clone(),
+            paths: node.paths.clone(),
             road: node.road.clone(),
             onward: std::cell::OnceCell::new(),
         };
         for _ in 0..ONWARD_POINTS {
-            let here = point_key(&at.point.labels);
-            let order = at
-                .road
-                .iter()
-                .find(|(k, _)| *k == here)
-                .map_or_else(|| at.point.labels.clone(), |(_, order)| order.clone());
-            let next = step(&at.point.frame, Some(&order), road_with(&at, &order))?;
-            if point_key(&next.point.labels) == key {
+            let path = road_path(&at)?;
+            let next = step(&at.frame, &path, road_with(&at, &path))?;
+            if next.key == node.key {
                 return Ok(next);
             }
             at = next;
         }
         Err(Halt::Undecided)
     };
-    let Ok(root) = step(&s0, None, Vec::new()) else {
+    let Ok(root) = step(&s0, &[], Vec::new()) else {
         return OptionProof::Undecided;
     };
     frame_closure(
         root,
         ORDER_EDGES,
-        |node| point_key(&node.point.labels),
-        |node| order_count(node.point.labels.len()),
-        |node, order| {
-            let order = class_orders(&node.point.labels).swap_remove(order);
-            step(&node.point.frame, Some(&order), road_with(node, &order))
+        |node| node.key.clone(),
+        |node| node.paths.len(),
+        |node, at| {
+            let path = &node.paths[at];
+            step(&node.frame, path, road_with(node, path))
         },
         |seen, next| {
             let chain = next.onward.get_or_init(|| {
                 let first = onward(next)?;
                 let second = onward(&first)?;
-                Ok([first.point.frame, second.point.frame])
+                Ok([first.frame, second.frame])
             });
             let [y1, y2] = chain.as_ref().map_err(|halt| *halt)?;
-            let floors =
-                period_floors([&seen.point.frame, &next.point.frame, y1], Some(y2), &casts);
+            let floors = period_floors([&seen.frame, &next.frame, y1], Some(y2), &casts);
             Ok(living.iter().all(|&seat| {
                 certify_object_growth_frames(
-                    [&seen.point.frame, &next.point.frame, y1],
+                    [&seen.frame, &next.frame, y1],
                     |state| normalize_cast_frame(state, &casts),
                     seat,
                     Some(floors),
@@ -1995,5 +2163,118 @@ mod tests {
         let base = replay_base(&frame, PlayerId(0));
         assert!(base.auto_pass.is_empty());
         assert!(base.stack_resolution_session.is_none());
+    }
+
+    /// P0 casts Banisher Priest beside Soul Warden with `bears` creatures on P1's battlefield,
+    /// stopping at the order of the two triggers.
+    fn exiler_order_prompt(bears: usize) -> GameState {
+        use crate::game::scenario::GameScenario;
+        use crate::types::phase::Phase;
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.add_creature_from_oracle(
+            PlayerId(0),
+            "Soul Warden",
+            1,
+            1,
+            "Whenever another creature enters, you gain 1 life.",
+        );
+        let priest = scenario
+            .add_creature_to_hand_from_oracle(
+                PlayerId(0),
+                "Banisher Priest",
+                2,
+                2,
+                "When this creature enters, exile target creature an opponent controls until this creature leaves the battlefield.",
+            )
+            .id();
+        for _ in 0..bears {
+            scenario.add_creature(PlayerId(1), "Grizzly Bears", 2, 2);
+        }
+        let mut runner = scenario.build();
+        drop(runner.cast(priest).commit());
+        for _ in 0..8 {
+            if matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }) {
+                return runner.state().clone();
+            }
+            runner
+                .act(GameAction::PassPriority)
+                .expect("each player may pass priority");
+        }
+        panic!("no trigger order: {:?}", runner.state().waiting_for);
+    }
+
+    /// CR 603.3b + CR 601.2c: a trigger order followed, with no priority between, by a target
+    /// choice is one path per order and target, the target choice read in each order's branch.
+    #[test]
+    fn decision_paths_run_through_consecutive_decision_prompts() {
+        let prompt = exiler_order_prompt(2);
+        let (key, paths) = decision_paths(&prompt, ORDER_EDGES)
+            .expect("two orders and two targets fit the budget");
+        assert!(matches!(key, PromptKey::Order(_)), "{key:?}");
+        assert_eq!(paths.len(), 4, "{paths:?}");
+        for path in &paths {
+            assert!(
+                matches!(
+                    path.as_slice(),
+                    [
+                        (PromptKey::Order(_), PointAnswer::Order(_)),
+                        (
+                            PromptKey::Choice {
+                                point: ChoicePoint::AnnouncedTarget,
+                                options: 2,
+                                ..
+                            },
+                            PointAnswer::Option(GameAction::ChooseTarget { .. })
+                        )
+                    ]
+                ),
+                "{path:?}"
+            );
+        }
+        let orders = class_orders(&point_labels(&prompt).expect("an ordering point"));
+        assert_eq!(orders.len(), 2);
+        for order in orders {
+            let targets: Vec<&PointAnswer> = paths
+                .iter()
+                .filter(|path| path[0].1 == PointAnswer::Order(order.clone()))
+                .map(|path| &path[1].1)
+                .collect();
+            assert_eq!(targets.len(), 2, "{order:?}");
+            assert_ne!(targets[0], targets[1], "{order:?}");
+        }
+        assert_eq!(decision_paths(&prompt, 3), None);
+    }
+
+    /// CR 104.4b: a target choice offering one more creature than the start's is another point,
+    /// so no cover is sought between them; the same options key the same point.
+    #[test]
+    fn a_target_choice_offering_another_option_is_another_point() {
+        let target_key = |bears| {
+            let mut prompt = exiler_order_prompt(bears);
+            apply(
+                &mut prompt,
+                PlayerId(0),
+                GameAction::OrderTriggers { order: vec![0, 1] },
+            )
+            .expect("P0 orders its triggers");
+            decision_prompt(&prompt, ORDER_EDGES)
+                .expect("the target choice is a decision point")
+                .0
+        };
+        let two = target_key(2);
+        assert!(
+            matches!(
+                two,
+                PromptKey::Choice {
+                    point: ChoicePoint::AnnouncedTarget,
+                    options: 2,
+                    ..
+                }
+            ),
+            "{two:?}"
+        );
+        assert_eq!(target_key(2), two);
+        assert_ne!(target_key(3), two);
     }
 }

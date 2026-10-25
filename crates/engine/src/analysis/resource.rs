@@ -16044,9 +16044,9 @@ mod tests {
                 false,
             ),
             (
-                "RevealChoice, non-optional with two cards — which card is a real choice",
+                "RevealChoice, non-optional with two cards (CR 608.2d — the ring survives the choice)",
                 reveal_choice(vec![in_hand, on_board[0]], false),
-                false,
+                true,
             ),
             (
                 "RevealChoice, non-optional with no card",

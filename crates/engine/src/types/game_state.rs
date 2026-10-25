@@ -19830,6 +19830,11 @@ impl WaitingFor {
     /// without anyone remembering to update this list.
     pub fn is_forced_cascade_window(&self) -> bool {
         self.is_forced_one_option_choice()
+            // CR 608.2d: a reveal choice the chooser cannot decline is no stop.
+            || matches!(
+                self,
+                WaitingFor::RevealChoice { optional: false, cards, .. } if cards.len() >= 2
+            )
             || matches!(
                 self,
                 WaitingFor::OrderTriggers { .. }
@@ -19861,6 +19866,31 @@ impl WaitingFor {
     /// CR 608.2d + CR 732.4: a non-optional choice with one eligible card is no player decision.
     pub fn is_forced_one_option_choice(&self) -> bool {
         self.forced_one_option_answer().is_some()
+    }
+
+    /// CR 603.3b + CR 601.2c + CR 608.2d: the decision point the every-option proof enumerates at this prompt.
+    pub(crate) fn option_point(&self) -> Option<crate::analysis::decision_template::ChoicePoint> {
+        use crate::analysis::decision_template::ChoicePoint;
+        match self {
+            WaitingFor::OrderTriggers { .. } => Some(ChoicePoint::TriggerOrder),
+            WaitingFor::TriggerTargetSelection {
+                target_slots,
+                selection,
+                ..
+            } if target_slots
+                .get(selection.current_slot)
+                .is_some_and(|slot| !slot.optional)
+                && selection.current_legal_targets.len() >= 2 =>
+            {
+                Some(ChoicePoint::AnnouncedTarget)
+            }
+            WaitingFor::RevealChoice {
+                optional: false,
+                cards,
+                ..
+            } if cards.len() >= 2 => Some(ChoicePoint::ResolutionSet),
+            _ => None,
+        }
     }
 
     /// CR 608.2d: the only answer a forced one-option choice has.
@@ -22011,6 +22041,8 @@ pub enum LoopDecision {
     Unproven(crate::analysis::decision_template::ChoicePoint),
     /// CR 603.3b + CR 616.1: a choice among several options was made, prompted or remembered.
     Decision,
+    /// CR 104.4b + CR 732.2a: a target or card choice every option of which continues the loop, so the period is offered.
+    Continuing,
 }
 
 /// Answered loop decisions so far; monotone, so only the difference between two reads means
@@ -22020,6 +22052,17 @@ pub struct LoopDecisionTally {
     pub optional: u64,
     pub decision: u64,
     pub trigger_order: u64,
+    pub announced_target: u64,
+    pub resolution_set: u64,
+}
+
+impl LoopDecisionTally {
+    /// Whether a choice the every-option proof reads was made since `first`.
+    pub(crate) fn provable_moved_since(&self, first: &Self) -> bool {
+        self.trigger_order != first.trigger_order
+            || self.announced_target != first.announced_target
+            || self.resolution_set != first.resolution_set
+    }
 }
 
 /// CR 732.5: whether some living player held a meaningful priority action at a sampled beat.
@@ -22098,10 +22141,27 @@ impl LoopDecisionProfile {
         if current.tally.decision != first.decision {
             members.insert(LoopDecision::Decision);
         }
-        if current.tally.trigger_order != first.trigger_order {
-            members.insert(LoopDecision::Unproven(
-                crate::analysis::decision_template::ChoicePoint::TriggerOrder,
-            ));
+        use crate::analysis::decision_template::ChoicePoint;
+        for (point, now, then) in [
+            (
+                ChoicePoint::TriggerOrder,
+                current.tally.trigger_order,
+                first.trigger_order,
+            ),
+            (
+                ChoicePoint::AnnouncedTarget,
+                current.tally.announced_target,
+                first.announced_target,
+            ),
+            (
+                ChoicePoint::ResolutionSet,
+                current.tally.resolution_set,
+                first.resolution_set,
+            ),
+        ] {
+            if now != then {
+                members.insert(LoopDecision::Unproven(point));
+            }
         }
         if !members.contains(&LoopDecision::Optional)
             && (current.out == PriorityOut::Held
@@ -22117,31 +22177,64 @@ impl LoopDecisionProfile {
         self.members.is_empty()
     }
 
-    /// CR 732.5: the period's only non-mandatory member is an out.
-    pub fn holds_only_outs(&self) -> bool {
-        self.members.len() == 1 && self.members.contains(&LoopDecision::Outs)
+    /// CR 732.2a + CR 732.5: the period is offered: its non-mandatory members are outs or choices proven to continue.
+    pub fn is_offered(&self) -> bool {
+        !self.members.is_empty()
+            && self
+                .members
+                .iter()
+                .all(|member| matches!(member, LoopDecision::Outs | LoopDecision::Continuing))
     }
 
-    /// CR 603.3b + CR 104.4b: the profile with its trigger orders read by `proof`, asked only when
-    /// the period holds one: no choice when every order continues the loop, an optional action
-    /// when some order ends it, and a decision while unproven.
+    /// Whether the period holds a target or card choice no proof has yet read.
+    pub(crate) fn holds_unproven_option(&self) -> bool {
+        use crate::analysis::decision_template::ChoicePoint;
+        self.members.iter().any(|member| {
+            matches!(
+                member,
+                LoopDecision::Unproven(ChoicePoint::AnnouncedTarget | ChoicePoint::ResolutionSet)
+            )
+        })
+    }
+
+    /// CR 603.3b + CR 104.4b: the profile with its unproven choices read by one `proof`, asked
+    /// only when the period holds one: when every option continues the loop an order is no
+    /// choice and a target or card choice is `Continuing`; an optional action when some option
+    /// ends it, and a decision while unproven.
     pub(crate) fn with_option_proof(
         mut self,
         proof: impl FnOnce() -> crate::game::period_confirm::OptionProof,
     ) -> Self {
+        use crate::analysis::decision_template::ChoicePoint;
         use crate::game::period_confirm::OptionProof;
-        let unproven =
-            LoopDecision::Unproven(crate::analysis::decision_template::ChoicePoint::TriggerOrder);
-        if self.members.remove(&unproven) {
-            match proof() {
-                OptionProof::Continues => {}
-                OptionProof::Ends => {
-                    self.members.insert(LoopDecision::Optional);
-                    self.members.remove(&LoopDecision::Outs);
+        let unproven: Vec<ChoicePoint> = self
+            .members
+            .iter()
+            .filter_map(|member| match member {
+                LoopDecision::Unproven(point) => Some(*point),
+                _ => None,
+            })
+            .collect();
+        if unproven.is_empty() {
+            return self;
+        }
+        self.members
+            .retain(|member| !matches!(member, LoopDecision::Unproven(_)));
+        match proof() {
+            OptionProof::Continues => {
+                if unproven
+                    .iter()
+                    .any(|&point| point != ChoicePoint::TriggerOrder)
+                {
+                    self.members.insert(LoopDecision::Continuing);
                 }
-                OptionProof::Undecided => {
-                    self.members.insert(LoopDecision::Decision);
-                }
+            }
+            OptionProof::Ends => {
+                self.members.insert(LoopDecision::Optional);
+                self.members.remove(&LoopDecision::Outs);
+            }
+            OptionProof::Undecided => {
+                self.members.insert(LoopDecision::Decision);
             }
         }
         self
@@ -34318,6 +34411,36 @@ impl GameState {
         self.loop_decision_tally.trigger_order += 1;
     }
 
+    /// CR 104.4b: one answered loop decision at the prompt's decision point `point`, counted
+    /// where the every-option proof reads it when the answer could not be declined.
+    pub(crate) fn record_point_answer(
+        &mut self,
+        answer: crate::game::play_trace::AnswerOptionality,
+        point: Option<crate::analysis::decision_template::ChoicePoint>,
+    ) {
+        use crate::analysis::decision_template::ChoicePoint;
+        use crate::game::play_trace::AnswerOptionality;
+        let Some(point) = point else {
+            return self.record_loop_decision(answer);
+        };
+        let provable = match point {
+            ChoicePoint::TriggerOrder => return self.record_trigger_order(),
+            ChoicePoint::AnnouncedTarget => &mut self.loop_decision_tally.announced_target,
+            ChoicePoint::ResolutionSet => &mut self.loop_decision_tally.resolution_set,
+            ChoicePoint::MayGate
+            | ChoicePoint::TapCost
+            | ChoicePoint::ProliferateSet
+            | ChoicePoint::ManaColor
+            | ChoicePoint::ConvokeTaps
+            | ChoicePoint::Mode
+            | ChoicePoint::UnlessBreak => return self.record_loop_decision(answer),
+        };
+        match answer {
+            AnswerOptionality::Mandatory => *provable += 1,
+            AnswerOptionality::Optional => self.record_loop_decision(answer),
+        }
+    }
+
     /// CR 104.4b: one answered loop decision — `Optional` for a declinable choice (CR 603.5,
     /// CR 616.1e), `Mandatory` for a choice among several options (CR 616.1).
     pub(crate) fn record_loop_decision(
@@ -35998,6 +36121,64 @@ mod forced_cascade_window_tests {
         }
     }
 
+    /// CR 603.3b + CR 601.2c + CR 608.2d: a trigger order, a required target with several legal
+    /// targets and a card choice among several that cannot be declined are decision points; a
+    /// choice with one option, or one that may be declined, is not.
+    #[test]
+    fn option_point_names_only_a_choice_among_several_options() {
+        use crate::analysis::decision_template::ChoicePoint;
+        let targets = |legal: u64, optional: bool| {
+            let legal: Vec<TargetRef> = (20..20 + legal)
+                .map(|id| TargetRef::Object(ObjectId(id)))
+                .collect();
+            WaitingFor::TriggerTargetSelection {
+                player: PlayerId(0),
+                trigger_controller: None,
+                trigger_event: None,
+                trigger_events: Vec::new(),
+                target_slots: vec![TargetSelectionSlot {
+                    legal_targets: legal.clone(),
+                    optional,
+                    chooser: None,
+                    effect_kind: EffectKind::NoOp,
+                    effect_detail: TargetEffectDetail::None,
+                }],
+                mode_labels: Vec::new(),
+                target_constraints: Vec::new(),
+                selection: TargetSelectionProgress {
+                    current_slot: 0,
+                    selected_slots: Vec::new(),
+                    current_legal_targets: legal,
+                },
+                source_id: None,
+                description: None,
+            }
+        };
+        let order = WaitingFor::OrderTriggers {
+            player: PlayerId(0),
+            triggers: Vec::new(),
+        };
+        assert_eq!(order.option_point(), Some(ChoicePoint::TriggerOrder));
+        assert_eq!(
+            targets(2, false).option_point(),
+            Some(ChoicePoint::AnnouncedTarget)
+        );
+        assert_eq!(targets(1, false).option_point(), None);
+        assert_eq!(targets(2, true).option_point(), None);
+        assert_eq!(
+            reveal_choice(vec![ObjectId(13), ObjectId(14)], false).option_point(),
+            Some(ChoicePoint::ResolutionSet)
+        );
+        assert_eq!(
+            reveal_choice(vec![ObjectId(13)], false).option_point(),
+            None
+        );
+        assert_eq!(
+            reveal_choice(vec![ObjectId(13), ObjectId(14)], true).option_point(),
+            None
+        );
+    }
+
     fn certificate() -> crate::analysis::loop_check::LoopCertificate {
         crate::analysis::loop_check::LoopCertificate {
             unbounded: vec![crate::analysis::resource::ResourceAxis::Life(PlayerId(1))],
@@ -36204,16 +36385,16 @@ mod forced_cascade_window_tests {
                 "RevealChoice, non-optional with one eligible card (CR 608.2d — one legal option)",
                 reveal_choice(vec![ObjectId(13)], false),
             ),
+            (
+                "RevealChoice, non-optional with two cards (CR 608.2d — the ring survives the choice)",
+                reveal_choice(vec![ObjectId(13), ObjectId(14)], false),
+            ),
         ];
 
         let not_forced: Vec<(&str, WaitingFor)> = vec![
             (
                 "RevealChoice, optional with one card — declining is a real choice",
                 reveal_choice(vec![ObjectId(13)], true),
-            ),
-            (
-                "RevealChoice, non-optional with two cards — which card is a real choice",
-                reveal_choice(vec![ObjectId(13), ObjectId(14)], false),
             ),
             (
                 "RevealChoice, non-optional with no card — not a single-option choice",
@@ -36355,7 +36536,7 @@ mod loop_decision_profile_tests {
             tally: LoopDecisionTally {
                 optional,
                 decision,
-                trigger_order: 0,
+                ..Default::default()
             },
             out,
         }
@@ -36394,20 +36575,109 @@ mod loop_decision_profile_tests {
         );
     }
 
-    /// CR 732.5: only a period whose sole non-mandatory member is an out holds only outs.
+    /// CR 732.2a + CR 732.5: a period is offered when every non-mandatory member is an out or a
+    /// choice proven to continue.
     #[test]
-    fn holds_only_outs_names_a_period_whose_only_member_is_an_out() {
+    fn is_offered_names_a_period_of_outs_and_continuing_choices() {
         use crate::analysis::decision_template::ChoicePoint;
+        use LoopDecision::Continuing;
         let profile = |members: &[LoopDecision]| LoopDecisionProfile {
             members: members.iter().copied().collect(),
         };
-        assert!(profile(&[Outs]).holds_only_outs());
-        assert!(!profile(&[]).holds_only_outs());
-        assert!(!profile(&[Optional]).holds_only_outs());
-        assert!(!profile(&[Outs, Decision]).holds_only_outs());
+        assert!(profile(&[Outs]).is_offered());
+        assert!(profile(&[Continuing]).is_offered());
+        assert!(profile(&[Outs, Continuing]).is_offered());
+        assert!(!profile(&[]).is_offered());
+        assert!(!profile(&[Optional]).is_offered());
+        assert!(!profile(&[Outs, Decision]).is_offered());
+        assert!(!profile(&[Continuing, Decision]).is_offered());
+        assert!(!profile(&[Outs, LoopDecision::Unproven(ChoicePoint::TriggerOrder)]).is_offered());
+    }
+
+    /// A period asks the witness its holds replay first only when it holds an unproven target or
+    /// card choice.
+    #[test]
+    fn holds_unproven_option_names_a_target_or_card_choice() {
+        use crate::analysis::decision_template::ChoicePoint::{
+            AnnouncedTarget, ResolutionSet, TriggerOrder,
+        };
+        use LoopDecision::Unproven;
+        let profile = |members: &[LoopDecision]| LoopDecisionProfile {
+            members: members.iter().copied().collect(),
+        };
+        assert!(!profile(&[Unproven(TriggerOrder)]).holds_unproven_option());
+        assert!(!profile(&[Unproven(TriggerOrder), Outs]).holds_unproven_option());
+        assert!(profile(&[Unproven(AnnouncedTarget)]).holds_unproven_option());
+        assert!(profile(&[Unproven(ResolutionSet)]).holds_unproven_option());
         assert!(
-            !profile(&[Outs, LoopDecision::Unproven(ChoicePoint::TriggerOrder)]).holds_only_outs()
+            profile(&[Unproven(TriggerOrder), Unproven(AnnouncedTarget)]).holds_unproven_option()
         );
+    }
+
+    /// CR 104.4b + CR 732.2a: a target or card choice is `Continuing` when every option continues,
+    /// Optional over an out when some option ends the loop, and a Decision unproven; one proof
+    /// reads every unproven point, an order beside it included.
+    #[test]
+    fn target_and_card_choices_are_read_by_one_proof() {
+        use crate::analysis::decision_template::ChoicePoint::{
+            AnnouncedTarget, ResolutionSet, TriggerOrder,
+        };
+        use crate::game::period_confirm::OptionProof;
+        use LoopDecision::{Continuing, Unproven};
+        let at = |trigger_order, announced_target, resolution_set, out| LoopDecisionMarks {
+            tally: LoopDecisionTally {
+                trigger_order,
+                announced_target,
+                resolution_set,
+                ..Default::default()
+            },
+            out,
+        };
+        let none = at(0, 0, 0, Absent);
+        assert_eq!(
+            members(&[none], at(0, 1, 0, Absent)),
+            vec![Unproven(AnnouncedTarget)]
+        );
+        assert_eq!(
+            members(&[none], at(0, 0, 1, Absent)),
+            vec![Unproven(ResolutionSet)]
+        );
+        assert_eq!(
+            members(&[none], at(1, 1, 1, Absent)),
+            vec![
+                Unproven(AnnouncedTarget),
+                Unproven(TriggerOrder),
+                Unproven(ResolutionSet)
+            ]
+        );
+        let read = |current: LoopDecisionMarks, proof: OptionProof| {
+            let asked = std::cell::Cell::new(0);
+            let read: Vec<LoopDecision> = LoopDecisionProfile::of_window(&[none], &current)
+                .with_option_proof(|| {
+                    asked.set(asked.get() + 1);
+                    proof
+                })
+                .members
+                .into_iter()
+                .collect();
+            assert_eq!(asked.get(), 1, "{current:?} {proof:?}");
+            read
+        };
+        for current in [
+            at(0, 1, 0, Absent),
+            at(0, 0, 1, Absent),
+            at(1, 1, 0, Absent),
+        ] {
+            assert_eq!(read(current, OptionProof::Continues), vec![Continuing]);
+            assert_eq!(read(current, OptionProof::Ends), vec![Optional]);
+            assert_eq!(read(current, OptionProof::Undecided), vec![Decision]);
+        }
+        assert_eq!(
+            read(at(0, 1, 0, Held), OptionProof::Continues),
+            vec![Outs, Continuing]
+        );
+        assert_eq!(read(at(1, 1, 0, Held), OptionProof::Ends), vec![Optional]);
+        assert_eq!(read(at(1, 0, 0, Absent), OptionProof::Continues), vec![]);
     }
 
     /// CR 603.3b + CR 104.4b: a trigger order is no member when every order continues, Optional
@@ -36417,9 +36687,8 @@ mod loop_decision_profile_tests {
         use crate::game::period_confirm::OptionProof;
         let ordered = LoopDecisionMarks {
             tally: LoopDecisionTally {
-                optional: 0,
-                decision: 0,
                 trigger_order: 1,
+                ..Default::default()
             },
             out: Absent,
         };

@@ -1406,7 +1406,7 @@ pub(super) fn apply_action_boundary_with_stack_limit(
     }
     let trace_snapshot = super::play_trace::begin_action(state, semantic_owner, &action);
     let answered = super::play_trace::answered_choice(&action, &state.waiting_for);
-    let ordered = matches!(state.waiting_for, WaitingFor::OrderTriggers { .. });
+    let point = state.waiting_for.option_point();
     let result = apply_action_boundary_core(
         state,
         authenticated_actor,
@@ -1418,11 +1418,7 @@ pub(super) fn apply_action_boundary_with_stack_limit(
     .and_then(|raw| {
         // CR 104.4b: recorded before this action's own auto-pass drive samples the loop.
         if let Some(answer) = answered.filter(|_| raw.result.disposition.is_applied()) {
-            if ordered {
-                state.record_trigger_order();
-            } else {
-                state.record_loop_decision(answer);
-            }
+            state.record_point_answer(answer, point);
         }
         finish_action_boundary(state, raw, mode)
     });
@@ -2703,26 +2699,26 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
 /// second non-faller ⇒ `None` ⇒ neither Path A (no winner) nor Path B (a life-loss axis is
 /// present, so it is not a CR 732.4 no-loss draw) fires, and it falls through without crowning.
 fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
-    let order_proof = OrderProofCell::new();
-    interactive_loop_bridge_paths(state, result, &order_proof);
-    if let Some((_, Some((start, proof)))) = order_proof.get().copied() {
+    let option_proof = OptionProofCell::new();
+    interactive_loop_bridge_paths(state, result, &option_proof);
+    if let Some((_, Some((start, proof)))) = option_proof.get().copied() {
         super::play_trace::note_order_proof(state, start, proof);
     }
 }
 
-/// The every-order proof, computed at most once per bridge run and only by its first reader;
+/// The every-option proof, computed at most once per bridge run and only by its first reader;
 /// the second half is a fresh proof the bridge keeps once its scans release the state.
-type OrderProofCell = std::cell::OnceCell<(
+type OptionProofCell = std::cell::OnceCell<(
     Option<super::period_confirm::OptionProof>,
     Option<(usize, super::period_confirm::OptionProof)>,
 )>;
 
-/// CR 603.3b: the every-order proof read through `cell`, computing it on the first read.
-fn lazy_order_proof(
-    cell: &OrderProofCell,
+/// CR 603.3b: the every-option proof read through `cell`, computing it on the first read.
+fn lazy_option_proof(
+    cell: &OptionProofCell,
     state: &GameState,
 ) -> super::period_confirm::OptionProof {
-    cell.get_or_init(|| trigger_order_proof(state))
+    cell.get_or_init(|| option_proof(state))
         .0
         .unwrap_or(super::period_confirm::OptionProof::Undecided)
 }
@@ -2730,7 +2726,7 @@ fn lazy_order_proof(
 fn interactive_loop_bridge_paths(
     state: &mut GameState,
     result: &mut ActionResult,
-    order_proof: &OrderProofCell,
+    option_proof: &OptionProofCell,
 ) {
     // The CONTAINER of the five reduction sites this function reaches, so the parts have
     // something to be a share of. A `Drop` guard, because each path returns from its own
@@ -2742,10 +2738,10 @@ fn interactive_loop_bridge_paths(
     // priority action that could break it)? The single mandatory-vs-optional signal the
     // engine already computes — not a new stored flag.
     let mandatory = no_living_player_has_meaningful_priority_action(state);
-    // CR 603.3b: an ordering point inside a period that holds an out is proved as in a
+    // CR 603.3b: a decision point inside a period that holds an out is proved as in a
     // mandatory one; the proof is asked only of a period that already recurs.
     let resolve = |state: &GameState, profile: crate::types::game_state::LoopDecisionProfile| {
-        profile.with_option_proof(|| lazy_order_proof(order_proof, state))
+        profile.with_option_proof(|| lazy_option_proof(option_proof, state))
     };
 
     // Path A: determinate lethal single-winner drain.
@@ -2915,7 +2911,7 @@ fn interactive_loop_bridge_paths(
                                 &current_marks,
                             ),
                         );
-                        if outs_offer.is_none() && profile.holds_only_outs() {
+                        if outs_offer.is_none() && profile.is_offered() {
                             outs_offer = Some(idx);
                         }
                         profile.is_forced()
@@ -2925,12 +2921,18 @@ fn interactive_loop_bridge_paths(
         // CR 732.4: a period the ring cannot show recurring is drawn on its recorded witness.
         let drawn = drawn
             || (mandatory
-                && mandatory_recurrence_witnessed(state, &priors, &current_marks, order_proof));
+                && mandatory_recurrence_witnessed(
+                    state,
+                    &priors,
+                    &current_marks,
+                    option_proof,
+                    &mut outs_offer,
+                ) == super::play_trace::Witnessed::Declared);
         if drawn {
             super::elimination::end_game(state, None, &mut result.events);
             return;
         }
-        // CR 732.5: a period whose only non-mandatory member is an out is offered, not drawn.
+        // CR 732.5: an offered period is offered, not drawn.
         if let Some(idx) = outs_offer {
             offer_draw_without_end(state, result, &priors[idx].normalized);
             return;
@@ -3035,7 +3037,7 @@ fn interactive_loop_bridge_paths(
                         &held,
                     ),
                 )
-                .holds_only_outs()
+                .is_offered()
                 .then_some(idx)
             })
         };
@@ -3047,20 +3049,24 @@ fn interactive_loop_bridge_paths(
     // through to the pre-feature behavior (halt / continue).
 }
 
-/// CR 104.4b + CR 732.4: whether the mandatory span the play trace holds at the top of the stack
-/// is a draw. The ring's last sample at or before the span's start must be in this window and
-/// begin a period of mandatory actions alone; the span's replayed reading is kept per span start,
-/// so each recorded period is replayed once.
+/// CR 104.4b + CR 732.4: what the mandatory span the play trace holds at the top of the stack
+/// is: declared a draw, offered, or neither. The ring's last sample at or before the span's start
+/// must be in this window and begin the period read; an offered period's sample index is written
+/// to `outs_offer` when it holds none. The span's replayed reading is kept per span start, so each
+/// recorded period is replayed once.
 fn mandatory_recurrence_witnessed(
     state: &mut GameState,
     priors: &[std::sync::Arc<crate::types::LoopDetectSample>],
     current_marks: &crate::types::game_state::LoopDecisionMarks,
-    order_proof: &OrderProofCell,
-) -> bool {
+    option_proof: &OptionProofCell,
+    outs_offer: &mut Option<usize>,
+) -> super::play_trace::Witnessed {
+    use super::play_trace::Witnessed;
     let Some(span) = super::play_trace::mandatory_recurrence(state) else {
-        return false;
+        return Witnessed::Refused;
     };
-    if let Some(verdict) = super::play_trace::witnessed(state, span.start) {
+    let kept = super::play_trace::witnessed(state, span.start);
+    if let Some(verdict @ (Witnessed::Declared | Witnessed::Refused)) = kept {
         return verdict;
     }
     let window = super::play_trace::WindowKey::of(state);
@@ -3068,26 +3074,58 @@ fn mandatory_recurrence_witnessed(
         sample.trace_at.is_some_and(|at| at <= span.start)
             && super::play_trace::WindowKey::of(&sample.live) == window
     }) else {
-        return false;
+        return Witnessed::Refused;
     };
-    if !crate::types::game_state::LoopDecisionProfile::of_window(
-        priors[base..].iter().map(|sample| &**sample),
-        current_marks,
-    )
-    .with_option_proof(|| lazy_order_proof(order_proof, state))
-    .is_forced()
-    {
-        return false;
+    let verdict = match kept {
+        Some(verdict) => verdict,
+        None => {
+            let profile = crate::types::game_state::LoopDecisionProfile::of_window(
+                priors[base..].iter().map(|sample| &**sample),
+                current_marks,
+            );
+            let verdict = if profile.holds_unproven_option() {
+                // An option tree costs more than the replay, so only a period that holds is asked it.
+                if !super::period_confirm::mandatory_period_holds(state, span) {
+                    Witnessed::Refused
+                } else {
+                    let profile =
+                        profile.with_option_proof(|| lazy_option_proof(option_proof, state));
+                    if profile.is_forced() {
+                        Witnessed::Declared
+                    } else if profile.is_offered() {
+                        Witnessed::Offered
+                    } else {
+                        Witnessed::Refused
+                    }
+                }
+            } else {
+                if !profile
+                    .with_option_proof(|| lazy_option_proof(option_proof, state))
+                    .is_forced()
+                {
+                    return Witnessed::Refused;
+                }
+                if super::period_confirm::mandatory_period_holds(state, span) {
+                    Witnessed::Declared
+                } else {
+                    Witnessed::Refused
+                }
+            };
+            super::play_trace::note_witnessed(state, span.start, verdict);
+            verdict
+        }
+    };
+    if verdict == Witnessed::Offered && outs_offer.is_none() {
+        *outs_offer = Some(base);
     }
-    let verdict = super::period_confirm::mandatory_period_holds(state, span);
-    super::play_trace::note_witnessed(state, span.start, verdict);
     verdict
 }
 
-/// CR 603.3b: the every-order proof of the mandatory span at `state`, kept per span start; `None`
-/// when no trigger order was made since the ring's first sample. A proof replayed here rather
-/// than read from the play trace is also returned with its span start, for the caller to keep.
-fn trigger_order_proof(
+/// CR 603.3b: the every-option proof of the mandatory span at `state`, kept per span start;
+/// `None` when no choice the proof reads was made since the ring's first sample. A proof replayed
+/// here rather than read from the play trace is also returned with its span start, for the caller
+/// to keep.
+fn option_proof(
     state: &GameState,
 ) -> (
     Option<super::period_confirm::OptionProof>,
@@ -3096,7 +3134,7 @@ fn trigger_order_proof(
     let Some(first) = state.loop_detect_ring.front() else {
         return (None, None);
     };
-    if state.loop_decision_tally.trigger_order == first.tally.trigger_order {
+    if !state.loop_decision_tally.provable_moved_since(&first.tally) {
         return (None, None);
     }
     let Some(span) = super::play_trace::mandatory_recurrence(state) else {
@@ -3105,7 +3143,7 @@ fn trigger_order_proof(
     if let Some(proof) = super::play_trace::order_proof(state, span.start) {
         return (Some(proof), None);
     }
-    let proof = super::period_confirm::trigger_orders(state, span);
+    let proof = super::period_confirm::decision_points(state, span);
     (Some(proof), Some((span.start, proof)))
 }
 
@@ -30408,8 +30446,7 @@ At the beginning of combat on your turn, you may choose two. Each mode must targ
             runner.state().loop_decision_tally,
             LoopDecisionTally {
                 optional: 1,
-                decision: 0,
-                trigger_order: 0,
+                ..Default::default()
             }
         );
     }

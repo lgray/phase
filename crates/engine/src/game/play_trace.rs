@@ -349,6 +349,8 @@ pub enum EntryKind {
         asked_by: Option<usize>,
         /// Set when the answer chose the objects an object-moving cost moves.
         cost_move: Option<CostMove>,
+        /// The decision point the answered prompt is, which the every-option proof enumerates.
+        point: Option<crate::analysis::decision_template::ChoicePoint>,
     },
 }
 
@@ -481,8 +483,8 @@ pub(crate) struct PlayTrace {
     /// Each seat's carrying index, kept across windows.
     carrying: im::HashMap<PlayerId, CarryingIndex>,
     /// The mandatory-recurrence verdict kept for the span starting at this entry.
-    witnessed: Option<(usize, bool)>,
-    /// The every-order proof kept for the mandatory span starting at this entry.
+    witnessed: Option<(usize, Witnessed)>,
+    /// The every-option proof kept for the mandatory span starting at this entry.
     ordered: Option<(usize, crate::game::period_confirm::OptionProof)>,
 }
 
@@ -1390,6 +1392,7 @@ pub(crate) fn begin_action(
             }
             Choice::Answer(answer) => {
                 let optional = answer_optionality(&state.waiting_for, answer);
+                let point = state.waiting_for.option_point();
                 let asking = state
                     .resolving_stack_entry
                     .as_ref()
@@ -1404,6 +1407,7 @@ pub(crate) fn begin_action(
                         optional,
                         asked_by,
                         cost_move: None,
+                        point,
                     },
                     depth,
                     prompt,
@@ -1756,8 +1760,16 @@ pub(crate) fn mandatory_recurrence_span(state: &GameState) -> Option<NamedSpan> 
     mandatory.then(|| NamedSpan::in_window(start, end, NamingCause::MandatoryRecurrence))
 }
 
+/// CR 104.4b + CR 732.2a: what a mandatory-recurrence span was read as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Witnessed {
+    Declared,
+    Offered,
+    Refused,
+}
+
 /// The verdict kept for the mandatory-recurrence span of the current window starting at `start`.
-pub(crate) fn witnessed(state: &GameState, start: usize) -> Option<bool> {
+pub(crate) fn witnessed(state: &GameState, start: usize) -> Option<Witnessed> {
     current(state)?
         .witnessed
         .filter(|&(at, _)| at == start)
@@ -1765,7 +1777,7 @@ pub(crate) fn witnessed(state: &GameState, start: usize) -> Option<bool> {
 }
 
 /// Keeps `verdict` for the mandatory-recurrence span of the current window starting at `start`.
-pub(crate) fn note_witnessed(state: &mut GameState, start: usize, verdict: bool) {
+pub(crate) fn note_witnessed(state: &mut GameState, start: usize, verdict: Witnessed) {
     let window = WindowKey::of(state);
     if let Some(trace) = state
         .play_trace
@@ -1776,7 +1788,7 @@ pub(crate) fn note_witnessed(state: &mut GameState, start: usize, verdict: bool)
     }
 }
 
-/// The every-order proof kept for the mandatory span of the current window starting at `start`.
+/// The every-option proof kept for the mandatory span of the current window starting at `start`.
 pub(crate) fn order_proof(
     state: &GameState,
     start: usize,

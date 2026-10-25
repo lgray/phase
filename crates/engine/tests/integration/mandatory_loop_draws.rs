@@ -2,7 +2,8 @@
 //! through it or take the auto-pass shortcut over it (CR 732.1), and even when each cycle
 //! only re-mints identities, discloses a card, or asks a choice with one legal option. A
 //! loop holding an optional action — a "may" answered or remembered, a remembered optional
-//! replacement, a choice among several targets, or an out some player holds — is not.
+//! replacement, or a choice one of whose options ends it — is not; one holding an out or a
+//! choice every option of which continues it is offered.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
@@ -21,7 +22,7 @@ use engine::game::period_confirm::mandatory_period_holds_for_tests;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::visibility::filter_state_for_viewer;
-use engine::types::ability::ChosenAttribute;
+use engine::types::ability::{ChosenAttribute, TargetRef};
 use engine::types::actions::{GameAction, PriorityYieldOp, ReplacementAutoChoice};
 use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
@@ -61,6 +62,31 @@ enum May {
     Remembered { accept: bool },
 }
 
+/// Which option P0 takes at a target or card choice among several.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Pick {
+    #[default]
+    First,
+    /// The option after the one the previous choice took, by position.
+    Alternate,
+    /// The option with this name.
+    Named(&'static str),
+}
+
+impl Pick {
+    /// The position of the option this pick takes among `names`, at the run's `made`th choice.
+    fn index(self, names: &[String], made: usize) -> usize {
+        match self {
+            Pick::First => 0,
+            Pick::Alternate => made % names.len(),
+            Pick::Named(name) => names
+                .iter()
+                .position(|option| option == name)
+                .expect("the named option is offered"),
+        }
+    }
+}
+
 const EVERY_DRIVE: [Drive; 3] = [
     Drive::Pass,
     Drive::UntilTurnBoundary,
@@ -71,6 +97,12 @@ const EVERY_DRIVE: [Drive; 3] = [
 struct Board {
     /// This many Brain Maggots on P0's battlefield, and a Lightning Bolt in P1's hand.
     maggots: usize,
+    /// A Murder in P1's hand.
+    murder: bool,
+    /// Oblivion Ring on P0's battlefield.
+    oring: bool,
+    /// How P0 answers a target or card choice among several.
+    pick: Pick,
     /// Animate Dead targets Grizzly Bears instead of Worldgorger Dragon.
     bears: bool,
     /// P1 has a Mountain on the battlefield and a Lightning Bolt in hand.
@@ -230,6 +262,12 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
         }
         scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, db);
     }
+    if board.murder {
+        scenario.add_real_card(P1, "Murder", Zone::Hand, db);
+    }
+    if board.oring {
+        scenario.add_real_card(P0, "Oblivion Ring", Zone::Battlefield, db);
+    }
     if board.optional {
         scenario.add_real_card(P1, "Mountain", Zone::Battlefield, db);
         scenario.add_real_card(P1, "Lightning Bolt", Zone::Hand, db);
@@ -387,6 +425,7 @@ fn run_observed(
     let (mut entries, mut entries_at_half, mut reveals, mut reveals_at_half, mut max_ring) =
         (0, 0, 0, 0, 0);
     let (mut max_entries_per_action, mut out_beats, mut remembered) = (0, 0, false);
+    let mut picks = 0;
     let mut prompts = BTreeMap::new();
     let mut replays = Vec::new();
     let mut terminal = Terminal::BeatsExhausted;
@@ -463,9 +502,13 @@ fn run_observed(
             }
             WaitingFor::RevealChoice { cards, .. } => {
                 reveals += 1;
-                GameAction::SelectCards {
-                    cards: cards.clone(),
-                }
+                let names: Vec<String> = cards
+                    .iter()
+                    .map(|card| state.objects[card].name.clone())
+                    .collect();
+                let card = cards[board.pick.index(&names, picks)];
+                picks += 1;
+                GameAction::SelectCards { cards: vec![card] }
             }
             WaitingFor::OptionalEffectChoice {
                 may_trigger_key,
@@ -499,10 +542,25 @@ fn run_observed(
                 }
             }
             WaitingFor::ReplacementChoice { .. } => GameAction::ChooseReplacement { index: 0 },
+            WaitingFor::TriggerTargetSelection { selection, .. } if board.pick != Pick::First => {
+                let targets = &selection.current_legal_targets;
+                let names: Vec<String> = targets
+                    .iter()
+                    .map(|target| match target {
+                        TargetRef::Object(id) => state.objects[id].name.clone(),
+                        TargetRef::Player(player) => format!("{player:?}"),
+                    })
+                    .collect();
+                let target = targets[board.pick.index(&names, picks)].clone();
+                picks += 1;
+                GameAction::ChooseTarget {
+                    target: Some(target),
+                }
+            }
             WaitingFor::TriggerTargetSelection { .. } => engine::ai_support::legal_actions(state)
                 .into_iter()
                 .next()
-                .expect("Banisher Priest has a creature to target"),
+                .expect("the trigger has a target"),
             other => {
                 terminal = Terminal::OtherPrompt(format!("{other:?}"));
                 break;
@@ -573,6 +631,9 @@ fn until_stack_empty() -> GameAction {
 
 const PLAIN: Board = Board {
     maggots: 0,
+    murder: false,
+    oring: false,
+    pick: Pick::First,
     bears: false,
     optional: false,
     snarecaster: None,
@@ -890,18 +951,111 @@ fn a_remembered_optional_prevention_is_not_a_draw() {
     }
 }
 
-/// CR 104.4b + CR 601.2c: Banisher Priest's trigger chooses between two creatures each
-/// cycle, so the loop is no draw.
+/// CR 601.2c + CR 732.2a: Banisher Priest's trigger chooses between two creatures each cycle,
+/// and the loop continues whichever is exiled, in either trigger order, so P0 is offered a draw
+/// without end, and every player accepting it draws the game; Off runs on.
 #[test]
-fn a_target_chosen_every_cycle_is_not_a_draw() {
-    let board = Board {
+fn a_target_chosen_every_cycle_is_offered() {
+    let two = Board {
         banisher: Some(2),
         ..PLAIN
     };
+    // With Animate Dead's trigger first, the first cycle's one target choice is the period read.
+    for (first, choices) in [(None, 2), (Some("Animate Dead"), 1)] {
+        for pick in [Pick::First, Pick::Alternate] {
+            let board = Board { first, pick, ..two };
+            for drive in EVERY_DRIVE {
+                let leg = format!("{first:?} {pick:?} {drive:?}");
+                let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                    return;
+                };
+                assert_out_offer(&run, &leg);
+                assert!(
+                    run.prompted("TriggerTargetSelection") >= choices,
+                    "{leg}: reach: a target was chosen {choices} times, prompts {:?}",
+                    run.prompts
+                );
+            }
+        }
+    }
+    offer_accepted_is_a_draw(two);
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(two, LoopDetectionMode::Off, drive, 40) else {
+            return;
+        };
+        assert_runs_on(&run, &format!("Off {drive:?}"));
+    }
+}
+
+/// Declares the offer `board` reaches when P0 passes, and asserts every player accepting it draws
+/// the game.
+fn offer_accepted_is_a_draw(board: Board) {
+    let Some(mut offered) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+        return;
+    };
+    assert_out_offer(&offered, "accepted");
+    offered.runner.act(DECLARE_WITHOUT_END).expect("declare");
+    offered
+        .runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+    assert_eq!(
+        offered.state().waiting_for,
+        WaitingFor::GameOver { winner: None }
+    );
+}
+
+const TWO_CARDS: Board = Board {
+    maggots: 1,
+    murder: true,
+    ..PLAIN
+};
+
+/// CR 608.2d + CR 732.2a: Brain Maggot's trigger makes P0 choose between P1's Lightning Bolt and
+/// Murder each cycle, and the loop continues whichever is exiled, so P0 is offered a draw without
+/// end, and every player accepting it draws the game; Off runs on.
+#[test]
+fn a_card_chosen_every_cycle_is_offered() {
+    for pick in [Pick::First, Pick::Alternate] {
+        let board = Board { pick, ..TWO_CARDS };
+        for drive in EVERY_DRIVE {
+            let leg = format!("{pick:?} {drive:?}");
+            let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            assert_out_offer(&run, &leg);
+            assert!(
+                run.prompted("RevealChoice") >= 2,
+                "{leg}: reach: a card was chosen across cycles"
+            );
+        }
+    }
+    offer_accepted_is_a_draw(TWO_CARDS);
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(TWO_CARDS, LoopDetectionMode::Off, drive, 40) else {
+            return;
+        };
+        assert_runs_on(&run, &format!("Off {drive:?}"));
+    }
+}
+
+/// CR 104.4b + CR 601.2c: Oblivion Ring's trigger may exile P0's own Animate Dead, which ends the
+/// loop, so choosing its target each cycle holds an optional action even when P0 always exiles
+/// P1's Grizzly Bears, and the loop is neither drawn nor offered.
+#[test]
+fn a_target_choice_that_can_end_the_loop_is_not_offered() {
+    let board = Board {
+        oring: true,
+        p1_bears: true,
+        pick: Pick::Named("Grizzly Bears"),
+        ..PLAIN
+    };
     for mode in MODES {
-        for drive in [Drive::Pass, Drive::UntilTurnBoundary] {
+        for drive in EVERY_DRIVE {
             let leg = format!("{mode:?} {drive:?}");
-            let Some(run) = run(board, mode, drive, 60) else {
+            let Some(run) = run(board, mode, drive, 40) else {
                 return;
             };
             assert_runs_on(&run, &leg);
@@ -910,6 +1064,46 @@ fn a_target_chosen_every_cycle_is_not_a_draw() {
                 "{leg}: reach: a target was chosen across cycles"
             );
         }
+    }
+}
+
+/// CR 104.4b + CR 601.2c: Banisher Priest's trigger chooses among three creatures each cycle;
+/// every choice continues the loop, but its choices are past the every-option proof's budget, so
+/// the loop is not offered.
+#[test]
+fn a_choice_tree_past_the_budget_is_not_offered() {
+    let board = Board {
+        banisher: Some(3),
+        ..PLAIN
+    };
+    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+        return;
+    };
+    assert_runs_on(&run, "Pass");
+    assert!(
+        run.prompted("TriggerTargetSelection") >= 3,
+        "reach: a target was chosen across cycles"
+    );
+}
+
+/// CR 603.3b + CR 608.2d + CR 732.4: with Animate Dead's trigger resolving first, the period's
+/// only decision is the saved trigger order, and under the other order Brain Maggot's choice
+/// between two revealed cards continues the loop whichever is chosen, so the loop is a draw.
+#[test]
+fn worldgorger_choosing_between_two_revealed_cards_under_a_saved_order_is_a_draw() {
+    let board = Board {
+        first: Some("Animate Dead"),
+        ..TWO_CARDS
+    };
+    for drive in [Drive::Pass, Drive::UntilTurnBoundary] {
+        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 150) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            run.prompted("OrderTriggers") >= 1,
+            "{drive:?}: reach: the triggers were ordered"
+        );
     }
 }
 
@@ -1714,6 +1908,10 @@ fn an_ordering_point_past_the_proof_budget_is_not_a_draw() {
         run.prompted("OrderTriggers"),
         1,
         "reach: the order was asked once and then saved"
+    );
+    assert!(
+        run.replays.iter().all(|&(_, _, replays)| replays <= 1),
+        "an order-only period is asked its proof without the holds replay"
     );
 }
 
