@@ -1652,7 +1652,8 @@ struct PointNode {
     prompt: GameState,
     key: PromptKey,
     road: Road,
-    /// The point's answer paths, found when the closure first counts them; `None` past the budget.
+    /// The point's answer paths, found when the closure first counts them; `None` when they
+    /// cannot all be listed.
     edges: std::cell::OnceCell<Option<Vec<Edge>>>,
     /// The frames before the next two points with this node's key, along `road`.
     onward: std::cell::OnceCell<Result<[GameState; 2], Halt>>,
@@ -1750,7 +1751,8 @@ pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof
         node_at(frame, prompt, road_with(&node.road, &taken))
     };
     // CR 603.3b + CR 601.2c + CR 608.2d: `node`'s answer paths, found by replaying each answer at
-    // its prompt and keeping that replay as the edge when no decision prompt follows the answer.
+    // its prompt and keeping that replay as the edge when priority comes before the next decision
+    // prompt.
     let answer_edges = |node: &PointNode| {
         let (key, answers) = decision_prompt(&node.prompt, ORDER_EDGES)?;
         let mut edges = Vec::new();
@@ -1803,7 +1805,7 @@ pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof
         root,
         ORDER_EDGES,
         |node| node.key.clone(),
-        // A point whose paths are past the budget counts past it.
+        // A point whose paths cannot all be listed counts past the budget.
         |node| {
             node.edges(|| answer_edges(node))
                 .map_or(ORDER_EDGES + 1, <[Edge]>::len)
