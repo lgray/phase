@@ -22038,7 +22038,7 @@ pub struct HeldLoopWindow {
     pub samples: std::collections::VecDeque<std::sync::Arc<LoopDetectSample>>,
 }
 
-/// CR 104.4b: a kind of non-mandatory action a loop period can hold.
+/// CR 104.4b: something a loop period holds that keeps it from being declared a draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LoopDecision {
     /// CR 603.5 + CR 616.1e: a declinable choice was answered, prompted or remembered.
@@ -22137,8 +22137,8 @@ impl LoopDecisionMark for LoopDetectSample {
     }
 }
 
-/// CR 104.4b + CR 732.4: the non-mandatory members of a loop period; only a period with none
-/// is a draw.
+/// CR 104.4b + CR 732.4: what a loop period holds besides its mandatory actions; only a period
+/// with none is a draw.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoopDecisionProfile {
     pub members: BTreeSet<LoopDecision>,
@@ -22203,7 +22203,8 @@ impl LoopDecisionProfile {
         self.members.is_empty()
     }
 
-    /// CR 732.2a + CR 732.5: the period is offered: its non-mandatory members are outs, choices proven to continue, or randomness.
+    /// CR 732.2a + CR 732.5: the period is offered: its members are all outs, choices proven to
+    /// continue, or randomness.
     pub fn is_offered(&self) -> bool {
         !self.members.is_empty()
             && self.members.iter().all(|member| {
