@@ -35029,18 +35029,15 @@ impl GameState {
     }
 }
 
-/// PR-3 (Option C): max retained CR 732.2a loop-detection snapshots. A determinate
-/// drain has period ≤ 2; 16 covers ≥ 8 cycles and any loop whose repeating phase
-/// begins within a 16-resolution preamble. A longer-period/longer-preamble loop
-/// simply falls back to the natural CR 704.5a SBA death (fail-safe — never a wrong
-/// win). Kept small because the live `GameState` carries it through every clone.
+/// Max retained CR 732.2a loop-detection snapshots: `record_loop_detect_sample` evicts the
+/// oldest at this cap, so a ring scan compares only periods that recur within the retained
+/// samples. Kept small because the live `GameState` carries it through every clone.
 const LOOP_DETECT_RING_CAP: usize = 16;
 
 /// CR 104.4b confirmation between two states that have BOTH already been
 /// `normalize_for_loop`d. Reuses `PartialEq` for the non-object fields and
 /// supplements its `objects.len()`-only object check with per-object content
-/// equality. Only a true match permits a draw, so the cheap `loop_fingerprint`
-/// can never cause a wrongful draw.
+/// equality.
 pub(crate) fn loop_states_equal(a: &GameState, b: &GameState) -> bool {
     a.is_loop_comparable()
         && b.is_loop_comparable()
@@ -35112,11 +35109,6 @@ pub(crate) fn objects_content_eq(a: &ObjectMap, b: &ObjectMap) -> bool {
 /// grepping the consult symbols (`object_content_eq`, `objects_content_eq`,
 /// `fodder_content_eq`, `loop_states_equal`) to their enclosing `fn` and reading that call's
 /// frames; a feed list written here would be falsified by the next call site added.
-///
-/// Strictness here is FAIL-SAFE for the shared 2p CR 104.4b path: a stricter
-/// equality can only SUPPRESS a wrongful draw, and every compared field represents
-/// REAL accumulated progress, so two states differing in it are correctly NOT a
-/// repeat.
 pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
     x.controller == y.controller
         && x.zone == y.zone
@@ -35163,7 +35155,7 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
         && x.exiled_by == y.exiled_by // CR 406.6 + CR 607.2b exiling player
         && x.saddled_by == y.saddled_by // CR 702.171c saddle set
         // #6865: a cast occurrence is resolution-semantic provenance while the
-        // spell remains on the stack. Comparing it is fail-safe for loop detection.
+        // spell remains on the stack.
         && x.cast_occurrence == y.cast_occurrence
         && x.spell_announcement == y.spell_announcement
 }
@@ -35813,9 +35805,6 @@ impl PartialEq for GameState {
             && self.spell_cast_reversal == other.spell_cast_reversal
             && self.pending_resolution_completion == other.pending_resolution_completion
             && self.resolving_spell_final_part == other.resolving_spell_final_part
-            // CR 104.4b: volatile resolution-scoped flip result. A flip already
-            // advances `state.rng`, so iterations differ regardless; comparing
-            // this field never masks a real repeat (safe to include).
             && self.resolution_coin_flip == other.resolution_coin_flip
             && self.pending_player_scope_sacrifice_choice
                 == other.pending_player_scope_sacrifice_choice

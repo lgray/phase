@@ -61,9 +61,7 @@ mod verdict_memo {
     /// therefore still exhausts the budget and refuses fail-closed.
     pub(crate) const PROBE_BUDGET: u32 = 26;
 
-    /// CR 732.2a: cost is a COVERAGE knob, never a soundness knob — an
-    /// unaffordable probe degrades to honest-red (no certificate, no offer),
-    /// never to a wrong certificate and never to an unbounded stall.
+    /// A denied charge makes `probe_resolution` answer `Prompted`, the answer a real prompt gets.
     ///
     /// **Derive list pinned to exactly `#[derive(Debug)]`** — no `Default`, no
     /// `Clone`/`Copy`. A derived constructor recompiles the construction escape
@@ -778,8 +776,7 @@ pub struct ResourceVector {
     /// **Event-fed.** NOTE: the scheduled "take an extra turn after this one"
     /// turn-control path (`turns.rs` `grant_extra_turn_after`) pushes onto
     /// `state.extra_turns` WITHOUT emitting `EffectResolved{ExtraTurn}`, so that
-    /// less-common class is not counted on this axis — an honest coverage gap, not
-    /// a regression.
+    /// less-common class is not counted on this axis.
     pub extra_turns: i64,
 
     /// CR 700.4 + CR 603.6c: "dies" (leaves-the-battlefield-to-graveyard)
@@ -1076,10 +1073,8 @@ impl PeriodicDelta {
         observed: &ResourceVector,
         pins: &[crate::analysis::decision_template::PinnedDecision],
     ) -> bool {
-        // THE IDENTITY, BY CONSTRUCTION: the union of the two vectors' seat-keyed KEYS retains
-        // every entry on both sides, so this compares exactly what it compared before the
-        // population became a parameter. Said once here, in code, instead of being restated at
-        // each of the callers that leaves unedited.
+        // The population is the union of both vectors' seat-keyed keys, so `conforms_in` drops
+        // no seat-keyed entry from either side.
         //
         // NOT `BTreeSet::new()`. An empty population is not the identity — it is the VACUOUS
         // predicate: `retained_seats` drops every seat-keyed axis on both sides, the two
@@ -1327,7 +1322,7 @@ impl PeriodicDelta {
     /// A withheld slot is charged against EVERY seat in `declarable_victims`, and forces the
     /// net term to the dip for each of them, even when that slot can only name some other seat:
     /// the certificate publishes one reach union, never a per-slot reach, so which seats a
-    /// withheld slot can name is not recoverable here. That is a fail-closed over-charge.
+    /// withheld slot can name is not recoverable here.
     ///
     /// Both templates resolve through [`decision_template::resolve`], the authority the drive
     /// replays a declaration with, once per repetition because a scheduled pin may name a
@@ -1588,8 +1583,7 @@ impl PeriodicDelta {
     /// ([`PeriodicDelta::conforms_in`]) refuses a cycle whose observed period moved on a seat
     /// still in the game; the departure verdict refuses a departure at a repetition no entry
     /// names or with a seat set no entry holds; and the live CR 704.3 sweep is what actually
-    /// removes a seat, never this prediction. The engine's own measurement of what the committed
-    /// boards do is in this branch's probe record, not restated here.
+    /// removes a seat, never this prediction.
     // Each parameter is a separate authority the caller states, for the reason
     // `PeriodicDelta::seat_crossing` gives.
     #[allow(clippy::too_many_arguments)]
@@ -3273,8 +3267,6 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
         // most recent `2k` deltas, which does not establish that the whole ring is periodic
         // with period `k`, so a larger `k'` need not be a multiple of `k` and its per-period
         // delta can be non-zero. Refusing outright costs a missed offer, never a wrong one.
-        // If that missed class ever needs to certify, `continue` is sound here for the same
-        // reason the return is safe: each candidate `k` is validated independently.
         if per_period == ResourceVector::default() {
             return None;
         }
@@ -3753,9 +3745,8 @@ fn optional_cleared_classification(
 /// CR 732.2a: the facts a CALLER has PROVED about the loop window it is asking a
 /// window predicate to certify. Every field is a *proof obligation discharged by the
 /// caller*, never a request: a caller that has proved nothing passes
-/// [`LoopWindowScope::unproven`] and gets byte-identical pre-change behaviour, so the
-/// design is FAIL-CLOSED BY CONSTRUCTION — forgetting to thread a proof can only make
-/// a predicate more conservative, never less.
+/// [`LoopWindowScope::unproven`], so forgetting to thread a proof can only make a predicate
+/// refuse more, never less.
 ///
 /// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`] because
 /// every guard that reads a field sits inside an `if let Some(..)` / `is_some_and`.
@@ -3810,9 +3801,7 @@ impl LoopWindowScope<'static> {
             phase_invariant: None,
             pinned: None,
             cast_card_ids: None,
-            // DELIBERATE, and it is the whole meaning of this constructor: a
-            // caller that has proved nothing gets byte-identical pre-change
-            // behaviour. `Option<&PeriodTouch>` is const-constructible as
+            // No period proof. `Option<&PeriodTouch>` is const-constructible as
             // `None`, so this stays a `const fn` on `LoopWindowScope<'static>`.
             period: None,
         }
@@ -3872,7 +3861,7 @@ fn window_scope_from_cover_frames<'a>(
 /// enforced HERE. That makes this predicate strictly NARROWER than the mint's, the safe
 /// direction. `frame` must be the pair's CARRYING frame (the board that minted `f`), never a
 /// second one; it is a parameter because `PeriodVerdicts.frames` is private, and dropping it
-/// would COMPILE and be fail-OPEN. Fail-closed in every other branch too.
+/// would COMPILE and be fail-OPEN.
 fn entry_target_choice_is_pinned(
     board: &GameState,
     f: FrameIx,
@@ -4016,16 +4005,10 @@ fn auto_may_choice_relief(
     }
 }
 
-/// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound GIVEN the
-/// in-loop transition relation — the WHOLE beat: top-of-stack resolution (CR 608.1) with its
-/// resolution-time payments (CR 605.3a / CR 608.2g), trigger collection (CR 603.4),
-/// replacement application (CR 614.1), static condition gating (CR 604.1 / CR 613.1), SBA
-/// application (CR 704.3 / CR 704.5) and elimination processing (CR 800.4a) — is invariant
-/// under the projected-out player-level resources. Enforced by construction: object/board
-/// axes are STRICT-COMPARED ([`object_resource_axes_match`]); the remaining projected set is
-/// scanned fail-closed on BOTH read surfaces ([`stack_entry_reads_projected_resource`],
-/// [`fire_time_conditions_read_projected_resource`]); player-life SBAs are the modeled
-/// outcome itself; library/poison drift is firewalled to `None` by the winner predicate.
+/// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021): `current` covers
+/// `prior` only when the object/board axes compare strictly ([`object_resource_axes_match`]) and
+/// no current-stack entry or fire-time condition reads a still-projected resource
+/// ([`stack_entry_reads_projected_resource`], [`fire_time_conditions_read_projected_resource`]).
 /// Depth-independence of top-of-stack resolution: CR 608.1 / CR 405.5. NOTE that the shipped
 /// constant-depth 2p path ([`loop_states_equal_modulo_resources`]) makes the SAME
 /// extrapolation with NONE of these — that assumption is documented there, not claimed as a
@@ -4035,8 +4018,7 @@ pub(crate) fn loop_states_cover_modulo_growth<'a, C: CurrentSide<'a>>(
     current: C,
 ) -> bool {
     // The zero-proof container: frames = `[current]`, no proposer ⇒ nothing published ⇒ no
-    // relief, which is byte-identically what an `unproven()` scope already meant. The four
-    // production callers of this 2-arg entry point are therefore untouched.
+    // relief.
     let mut verdicts = PeriodVerdicts::unproven(current.state());
     loop_states_cover_modulo_growth_scoped(
         prior,
@@ -4453,7 +4435,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a, C: CurrentSide<'a>>(
 }
 
 // ===========================================================================
-// Offline object-growth loop detection (soundness core).
+// Offline object-growth loop detection.
 //
 // The object-axis analogue of `loop_states_cover_modulo_growth`: `current`'s
 // battlefield = `prior`'s + a set of INERT grown permanents G (Karp–Miller
@@ -4462,7 +4444,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a, C: CurrentSide<'a>>(
 // behavior can depend on |G| or G's members. OFFLINE: this predicate certifies
 // and rejects NOTHING at runtime — it is wired only into the offline classifier
 // `analysis::loop_check::detect_loop`. False-negative acceptable; false-positive
-// (a wrongful CR 104.2a win) is NOT — every gate fails closed.
+// (a wrongful CR 104.2a win) is NOT.
 // ===========================================================================
 
 /// CR 110.1: absolute-ObjectId battlefield membership. Module-level twin of
@@ -4703,9 +4685,6 @@ pub(crate) struct CertifiedInstructedDeparture {
 /// EXCLUDING the actions it can tell apart — so what it publishes is the magnitude and the
 /// direction of advantage the whole class shares, never the word *mill*.
 ///
-/// `None` is "nothing certified", which is today's behaviour, so the fail-closed default is
-/// the type's default path.
-///
 /// THIS PREDICATE SCANS NO LIBRARY AND NO HAND, and does not need to: its caller has already
 /// made the frames it compares the proposer's own information set
 /// (`game::visibility::proposer_hidden_view`). The action conjunct does not breach that
@@ -4745,8 +4724,8 @@ pub(crate) struct CertifiedInstructedDeparture {
 /// avoid, and one the cover's own projection clears anyway. So what survives every exclusion
 /// above is an instructed, choiceless, non-caster top-of-library departure that is not a
 /// mill. It publishes the same magnitude and the same direction of advantage as a mill, and
-/// this certificate publishes nothing else, so the relief is sound for it; what is not earned
-/// is the WORD, which is why this function does not use it. RETIREMENT CONDITION: the drive's
+/// this certificate publishes nothing else, which is why this function never names a mill.
+/// RETIREMENT CONDITION: the drive's
 /// `apply_action` results are discarded at every call site; delivering them turns this into a
 /// POSITIVE per-id tie once the mill has a per-card action event that survives a CR 614.6
 /// destination redirect.
@@ -4948,9 +4927,9 @@ pub(crate) fn certify_instructed_opponent_library_departure(
 /// which pays the real convoke+affinity cost on a clone and measures sustainability
 /// empirically, so the offline "models no cost ⇒ reject any board-scaling cost keyword"
 /// rejector does not apply. `detect_loop` keeps that firewall on the object-growth predicate.
-/// LIVE, not tree-scoped: reached from `apply()`'s empty-stack offer hook via
-/// `game::engine`'s `try_offer_object_growth_shortcut`, so a change here can move a SHIPPED
-/// offer verdict. `fodder_class` is a CONTENT authority (a representative `&GameObject`),
+/// The refusals this wraps are LIVE: `game::engine::certify_object_growth_frames` calls
+/// [`fodder_growth_cover_refusals`], so a change there can move a SHIPPED offer verdict.
+/// `fodder_class` is a CONTENT authority (a representative `&GameObject`),
 /// compared LIVE each call via [`fodder_content_eq`] (modulo tapped) — not latched by
 /// ObjectId, because fodder tokens are not id-stable. Covers any inert fungible token class
 /// (Saproling, Elf Warrior, Thopter, …), so it builds for the class not a card.
@@ -6172,10 +6151,8 @@ fn equalize_generic_counters(prior: &GameState, current: &GameState) -> GameStat
 /// EQUALITY), not the object-growth cover's Karp–Miller path, and `equalize_generic_counters`
 /// projects out an axis that base does not — so a dormant condition reading a GROWING `Generic`
 /// counter ("as long as ~ has three or more charge counters, …") is a new projected-axis
-/// observer. Sound by declinability, not parity: both wirings classify `WinKind::Advantage`
-/// (CR 104.4b — an optional loop is not a draw) and never crown a `GameOver`; the live one
-/// reaches an offer that ends the game only when every player accepts it (CR 732.2b +
-/// CR 104.4i).
+/// observer. Its callers are the offline classifier and offers that name no winner and end
+/// the game only when every player accepts them.
 pub(crate) fn loop_states_cover_modulo_counter_growth(
     prior: &GameState,
     current: &GameState,
@@ -6986,8 +6963,7 @@ pub(crate) fn unmeasured_resource_axes_match(prior: &GameState, current: &GameSt
 /// and the entire `kind` payload (`condition`, `trigger_event`,
 /// `subject_match_count`, `die_result`, `description`, `source_name`) — a residual
 /// content difference only SUPPRESSES a match (fail-safe). Two same-controller
-/// entries differing only in `source_id` (two Blight-Priest copies) resolve
-/// identically after the item-4 guard, so identifying them is sound.
+/// entries differing only in `source_id` (two Blight-Priest copies) normalize to one kind.
 fn normalized_stack_entries(state: &GameState) -> Vec<(StackEntry, Option<TriggerFiring>)> {
     state
         .stack
@@ -7507,8 +7483,8 @@ fn board_has_functioning_trigger(state: &GameState, class: BoardTriggerClass) ->
 /// itself. Deliberately NOT folded into it (that predicate also gates the offer firewall, where
 /// this shape is not an observation) and deliberately NOT a registration-cancelling suppressor
 /// (the axis can be MIXED-cause, and the batched `Life` registration is per-player, so dropping
-/// it would under-apply the non-ETB half). A sound OVER-approximation in the same idiom as its
-/// siblings: a true result routes to the discrete N-cycle driver, which is always correct.
+/// it would under-apply the non-ETB half). An OVER-approximation in the same idiom as its
+/// siblings: a true result routes to the discrete N-cycle driver, which performs each period.
 pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
     board_has_functioning_trigger(state, BoardTriggerClass::EnterBattlefield)
 }
@@ -7522,8 +7498,8 @@ pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
 ///
 /// SHAPE-AGNOSTIC, exactly as [`board_has_functioning_etb_trigger`]: the `SpellCast` payload is
 /// DISCARDED, so a trigger narrowed to "whenever you cast a creature spell" still routes a loop
-/// that casts an Instant. A sound OVER-approximation — a true result routes to the discrete
-/// N-cycle driver, which is always correct, only slower. Narrowing it by running the trigger's
+/// that casts an Instant. An OVER-approximation — a true result routes to the discrete
+/// N-cycle driver, which performs each period, only slower. Narrowing it by running the trigger's
 /// own matcher against the captured cast is DEFERRED, gated on an undischarged proof that the
 /// matcher's verdict is invariant across cycles; a false negative there re-opens the fidelity
 /// gap this predicate closes.
@@ -7806,9 +7782,9 @@ pub(crate) fn board_has_active_replacement_among(
 }
 
 /// CR 732.2a + CR 122.1 / CR 701.34a: is the growing COUNTER axis OBSERVED — does any live
-/// trigger, replacement, or count-reader react to a counter placement each cycle? A sound
-/// OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (always
-/// safe), never a wrong single-batch. Returns true iff ANY:
+/// trigger, replacement, or count-reader react to a counter placement each cycle? An
+/// OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver instead of
+/// a single batch. Returns true iff ANY:
 /// - [`fire_time_conditions_read_growing_class`] — counter count-readers (a charge-count static;
 ///   a counter-reading condition / body / cost).
 /// - a battlefield-functioning `CounterAdded` trigger ("whenever a +1/+1 counter is put …").
@@ -7853,13 +7829,13 @@ pub(crate) fn counter_growth_is_observed(state: &GameState) -> bool {
 }
 
 /// CR 732.2a + CR 119.3: is the growing LIFE axis OBSERVED — does any live trigger,
-/// replacement, or projected-life-total reader react to a life gain each cycle? A sound
-/// OVER-approximation (true ⇒ drive, always safe). Returns true iff ANY:
+/// replacement, or projected-life-total reader react to a life gain each cycle? An
+/// OVER-approximation (true ⇒ drive). Returns true iff ANY:
 /// - a player-level projected life-total read off-stack
 ///   ([`fire_time_conditions_read_projected_resource`]) or on-stack
 ///   ([`stack_entry_reads_projected_resource`]).
 /// - a battlefield-functioning `LifeChanged` trigger (Heliod "whenever you gain life …"; also
-///   `LifeLost` via the shared event key — an over-approximation, still safe).
+///   `LifeLost` via the shared event key — an over-approximation).
 /// - an active battlefield/command `GainLife` replacement (Rhox's doubler), MINUS the
 ///   self-scoped ones — see below.
 ///
@@ -7910,9 +7886,9 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
 }
 
 /// CR 614.1a + CR 603.6a + CR 111.3 + CR 732.2a: is the growing TOKEN axis OBSERVED — does
-/// anything live re-derive a count from, or react to, the events the batched mint collapses? A
-/// sound OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (always
-/// correct, only slower). Third member of the axis-firewall family with
+/// anything live re-derive a count from, or react to, the events the batched mint collapses? An
+/// OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (only
+/// slower). Third member of the axis-firewall family with
 /// [`counter_growth_is_observed`] and [`life_growth_is_observed`].
 ///
 /// TWO EVENTS, because the mint emits two. (1) `ProposedEvent::CreateToken` — an active
@@ -8140,9 +8116,8 @@ fn project_out_resources(state: &GameState) -> GameState {
     }
 
     // Per-turn / per-game *bookkeeping* accumulators the dynamic Engine-A path perturbs each
-    // cycle. This block runs ONLY in the offline `loop_states_equal_modulo_resources` comparison
-    // and never touches a live game state, so it cannot affect the strict CR 104.4b
-    // mandatory-draw path. The accumulators partition into two classes handled OPPOSITELY:
+    // cycle. This block edits only the projected clone, never a live game state. The
+    // accumulators partition into two classes handled OPPOSITELY:
     //   * repetition-BLOCKING legality gates (per-turn/per-game activation tallies,
     //     once-per-turn/N-times trigger limits, per-object loyalty activation count) —
     //     PRESERVED (or compared analysis-locally) so a GATED loop compares UNEQUAL and is not
@@ -15587,8 +15562,7 @@ mod tests {
     /// and vice-versa (an incidental board observer of one axis never mis-routes a disjoint-axis
     /// loop). Matched pairs: a benign board is UNOBSERVED on both axes; adding a per-event observer
     /// of ONE class (Heliod-like `LifeGained` / `CounterAdded` trigger, or a `GainLife`/`AddCounter`
-    /// replacement) FLIPS ONLY that axis. This is the CORRECTNESS gate — the batched apply fires a
-    /// lump observer once, not N×.
+    /// replacement) FLIPS ONLY that axis. The batched apply fires a lump observer once, not N×.
     ///
     /// REVERT-PROBE (discriminating): delete the per-event trigger scan (block 2) ⇒ the
     /// `LifeGained` / `CounterAdded` rows flip to false; delete the replacement scan (block 3) ⇒
@@ -20854,9 +20828,8 @@ mod tests {
         // zero-payload classes: every counter/damage/draw resolver short-circuits
         // above the pipeline at zero. So no zero-payload `ProposedEvent` is reachable
         // through the six allow-listed classes and the refusal below is arm 3
-        // (`is_empty`), not the zero-payload accounting guard. Fail-CLOSED either way.
-        // That guard remains correct defence-in-depth for events proposed by
-        // non-allow-listed routes and is pinned directly on the partition in BOTH
+        // (`is_empty`), not the zero-payload accounting guard. That guard serves events
+        // proposed by non-allow-listed routes and is pinned directly on the partition in BOTH
         // directions by
         // `resolution_prompt::tests::an_unaccounted_derived_event_is_prompted_in_the_resolver`.
         let zero_entry = counter_entry(0);
@@ -21553,8 +21526,7 @@ mod tests {
     /// the extent, so a skip placed there raises the count to 2.
     ///
     /// COMMENT LINES ARE EXCLUDED: a comment reads nothing, and counting
-    /// one would make the tripwire fire on prose. (The extent carries exactly one such line —
-    /// item (4)'s "`frozen_ids` is deliberately not read here".)
+    /// one would make the tripwire fire on prose.
     ///
     /// REVERT-PROBE: add a `frozen_ids.contains(&e.id)` skip to item (4)'s closure ⇒ the read
     /// count goes 1 → 2 ⇒ FLIPS.
@@ -24225,8 +24197,6 @@ mod tests {
     /// | (I) infeasible optional `RemoveCounter` | zero matching counters | **`None`** |
     /// | (I-pos) the SAME entry, feasible | one counter on the source | **`Some`** |
     ///
-    /// Direction: strictly FEWER offers, never more.
-    ///
     /// REVERT-PROBE: delete `optional_for.is_some() ⇒ None` from the authority ⇒ (O) publishes
     /// ⇒ FLIPS. Delete the feasibility conjunct ⇒ (I) publishes ⇒ FLIPS. (P) and (I-pos) are
     /// the paired positives that keep both negatives out of "the mint publishes nothing".
@@ -24879,8 +24849,8 @@ mod tests {
     fn board_trigger_class_matches_reads_its_class_argument() {
         use crate::types::triggers::TriggerEventKey;
 
-        // The payload is DISCARDED by design (a sound over-approximation — see each wrapper's
-        // doc), so a payload-bearing key must still match its own class.
+        // The payload is DISCARDED by design, so a payload-bearing key must still match its own
+        // class.
         let etb = TriggerEventKey::EnterBattlefield(None);
         let cast = TriggerEventKey::SpellCast(None);
 
