@@ -3033,7 +3033,7 @@ fn mandatory_recurrence_witnessed(
     let verdict = match kept {
         Some(verdict) => verdict,
         None => {
-            // CR 104.4b + CR 704.5a + CR 704.5b + CR 704.5c: a recorded period with neither progress nor stack growth, or with a loss axis, is refused before any proof or replay.
+            // CR 104.4b + CR 704.5a + CR 704.5b + CR 704.5c: with an out held, a recorded period with neither progress nor stack growth, or with a loss axis, is refused before any proof or replay.
             match out {
                 PriorityOut::Held if !recorded_window_recurs(&priors[base].live, state) => {
                     return Witnessed::Refused;
