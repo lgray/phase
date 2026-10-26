@@ -9434,6 +9434,21 @@ impl GameState {
             .unwrap_or_default()
     }
 
+    fn is_current_library_fact(&self, fact: &ProductKnowledgeFact) -> bool {
+        fact.zone == Zone::Library
+            && fact.library_epoch == Some(self.library_knowledge_epoch(fact.owner))
+    }
+
+    /// Whether some player learned a card of `owner`'s library since its last reorder.
+    pub(crate) fn has_current_library_fact(&self, owner: PlayerId) -> bool {
+        let holder = self.shared_zone_holder(Zone::Library);
+        let owner = holder.unwrap_or(owner);
+        self.product_knowledge_state
+            .facts
+            .iter()
+            .any(|fact| holder.unwrap_or(fact.owner) == owner && self.is_current_library_fact(fact))
+    }
+
     pub(crate) fn library_knowledge_boundary_generation(&self, owner: PlayerId) -> u64 {
         let owner = self.zone_storage_seat(Zone::Library, owner);
         self.product_knowledge_state
@@ -9446,15 +9461,8 @@ impl GameState {
     /// Removes an epoch once no current library fact relies on it, keeping
     /// equivalent product-knowledge states equal and serialized identically.
     fn canonicalize_library_knowledge_epoch(&mut self, owner: PlayerId) {
-        let holder = self.shared_zone_holder(Zone::Library);
-        let owner = holder.unwrap_or(owner);
-        let current_epoch = self.library_knowledge_epoch(owner);
-        let has_live_library_fact = self.product_knowledge_state.facts.iter().any(|fact| {
-            holder.unwrap_or(fact.owner) == owner
-                && fact.zone == Zone::Library
-                && fact.library_epoch == Some(current_epoch)
-        });
-        if !has_live_library_fact {
+        let owner = self.zone_storage_seat(Zone::Library, owner);
+        if !self.has_current_library_fact(owner) {
             if let Some(epoch) = self
                 .product_knowledge_state
                 .library_epochs
@@ -22043,6 +22051,8 @@ pub enum LoopDecision {
     Decision,
     /// CR 104.4b + CR 732.2a: a target or card choice every option of which continues the loop, so the period is offered.
     Continuing,
+    /// CR 104.4b: randomness drawn inside the window keeps the period from repeating exactly, so it is offered, never declared.
+    Random,
 }
 
 /// Answered loop decisions so far; monotone, so only the difference between two reads means
@@ -22088,6 +22098,7 @@ impl PriorityOut {
 pub trait LoopDecisionMark {
     fn tally(&self) -> LoopDecisionTally;
     fn out(&self) -> PriorityOut;
+    fn rng_position(&self) -> u128;
 }
 
 /// A beat's marks with the out verdict already taken.
@@ -22095,6 +22106,7 @@ pub trait LoopDecisionMark {
 pub struct LoopDecisionMarks {
     pub tally: LoopDecisionTally,
     pub out: PriorityOut,
+    pub rng_position: u128,
 }
 
 impl LoopDecisionMark for LoopDecisionMarks {
@@ -22105,6 +22117,10 @@ impl LoopDecisionMark for LoopDecisionMarks {
     fn out(&self) -> PriorityOut {
         self.out
     }
+
+    fn rng_position(&self) -> u128 {
+        self.rng_position
+    }
 }
 
 impl LoopDecisionMark for LoopDetectSample {
@@ -22114,6 +22130,10 @@ impl LoopDecisionMark for LoopDetectSample {
 
     fn out(&self) -> PriorityOut {
         PriorityOut::at(&self.live)
+    }
+
+    fn rng_position(&self) -> u128 {
+        self.live.rng.get_word_pos()
     }
 }
 
@@ -22134,7 +22154,13 @@ impl LoopDecisionProfile {
     ) -> Self {
         let mut window = window.into_iter().peekable();
         let first = window.peek().map_or(current.tally, |first| first.tally());
+        let first_rng = window
+            .peek()
+            .map_or(current.rng_position, |first| first.rng_position());
         let mut members = BTreeSet::new();
+        if current.rng_position != first_rng {
+            members.insert(LoopDecision::Random);
+        }
         if current.tally.optional != first.optional {
             members.insert(LoopDecision::Optional);
         }
@@ -22177,13 +22203,15 @@ impl LoopDecisionProfile {
         self.members.is_empty()
     }
 
-    /// CR 732.2a + CR 732.5: the period is offered: its non-mandatory members are outs or choices proven to continue.
+    /// CR 732.2a + CR 732.5: the period is offered: its non-mandatory members are outs, choices proven to continue, or randomness.
     pub fn is_offered(&self) -> bool {
         !self.members.is_empty()
-            && self
-                .members
-                .iter()
-                .all(|member| matches!(member, LoopDecision::Outs | LoopDecision::Continuing))
+            && self.members.iter().all(|member| {
+                matches!(
+                    member,
+                    LoopDecision::Outs | LoopDecision::Continuing | LoopDecision::Random
+                )
+            })
     }
 
     /// Whether the period holds a target or card choice no proof has yet read.
@@ -33223,8 +33251,29 @@ impl GameState {
             .product_knowledge_state
             .zone_change_library_knowledge_stamps
             .clear();
+        let unknown: Vec<PlayerId> = clone
+            .players
+            .iter()
+            .map(|player| player.id)
+            .filter(|&id| !clone.has_current_library_fact(id))
+            .collect();
+        for player in clone.players.iter_mut() {
+            if unknown.contains(&player.id) {
+                // CR 701.24a: a library no current knowledge fact names compares as its cards, in no order.
+                player.library.sort();
+            }
+        }
         // CR 701.20a + CR 104.4b: revealed-card knowledge is disclosure history, not game position.
-        clone.product_knowledge_state.facts.clear();
+        // A current library fact stays at the cleared epoch, so normalizing the clone again keeps the same order.
+        let facts = std::mem::take(&mut clone.product_knowledge_state.facts);
+        clone.product_knowledge_state.facts = facts
+            .into_iter()
+            .filter(|fact| clone.is_current_library_fact(fact))
+            .map(|fact| ProductKnowledgeFact {
+                library_epoch: Some(0),
+                ..fact
+            })
+            .collect();
         clone.product_knowledge_state.library_epochs.clear();
         // Private shortcut capabilities are live interaction state, never part
         // of a CR 104.4b position sample.
@@ -34458,9 +34507,15 @@ impl GameState {
     /// This beat's decision marks: the tally so far, and whether any living player holds a
     /// meaningful priority action here (CR 732.5).
     pub(crate) fn loop_decision_marks(&self) -> LoopDecisionMarks {
+        self.loop_decision_marks_with(PriorityOut::at(self))
+    }
+
+    /// This beat's decision marks with the out verdict `out` already taken.
+    pub(crate) fn loop_decision_marks_with(&self, out: PriorityOut) -> LoopDecisionMarks {
         LoopDecisionMarks {
             tally: self.loop_decision_tally,
-            out: PriorityOut::at(self),
+            out,
+            rng_position: self.rng.get_word_pos(),
         }
     }
 
@@ -36528,7 +36583,7 @@ mod forced_cascade_window_tests {
 #[cfg(test)]
 mod loop_decision_profile_tests {
     use super::*;
-    use LoopDecision::{Decision, Optional, Outs};
+    use LoopDecision::{Decision, Optional, Outs, Random};
     use PriorityOut::{Absent, Held};
 
     fn marks(optional: u64, decision: u64, out: PriorityOut) -> LoopDecisionMarks {
@@ -36539,6 +36594,7 @@ mod loop_decision_profile_tests {
                 ..Default::default()
             },
             out,
+            rng_position: 0,
         }
     }
 
@@ -36573,6 +36629,50 @@ mod loop_decision_profile_tests {
             members(&[base, marks(2, 3, Held)], marks(2, 4, Absent)),
             vec![Outs, Decision]
         );
+        let drawn = |out| LoopDecisionMarks {
+            rng_position: 8,
+            ..marks(2, 3, out)
+        };
+        assert_eq!(members(&[base], drawn(Absent)), vec![Random]);
+        assert_eq!(members(&[drawn(Absent)], drawn(Absent)), vec![]);
+        assert_eq!(members(&[base], drawn(Held)), vec![Outs, Random]);
+    }
+
+    /// CR 104.4b: randomness drawn before the window's first beat is no member of its period.
+    #[test]
+    fn randomness_drawn_before_the_window_is_not_a_member() {
+        use crate::game::effects::change_zone::shuffle_library;
+        let mut state = GameState::new_two_player(7);
+        for card in [71, 72] {
+            crate::game::zones::create_object(
+                &mut state,
+                crate::types::identifiers::CardId(card),
+                PlayerId(0),
+                "Library Card".to_string(),
+                Zone::Library,
+            );
+        }
+        let mut events = Vec::new();
+        shuffle_library(&mut state, PlayerId(0), &mut events);
+        let sample = LoopDetectSample {
+            normalized: state.normalize_for_loop(),
+            live: state.clone(),
+            tally: state.loop_decision_tally,
+            trace_at: None,
+        };
+        let read = |state: &GameState| -> Vec<LoopDecision> {
+            LoopDecisionProfile::of_window([&sample], &state.loop_decision_marks_with(Absent))
+                .members
+                .into_iter()
+                .collect()
+        };
+        assert!(
+            state.rng.get_word_pos() > 0,
+            "reach: the shuffle drew before the window"
+        );
+        assert_eq!(read(&state), vec![]);
+        shuffle_library(&mut state, PlayerId(0), &mut events);
+        assert_eq!(read(&state), vec![Random]);
     }
 
     /// CR 732.2a + CR 732.5: a period is offered when every non-mandatory member is an out or a
@@ -36592,6 +36692,12 @@ mod loop_decision_profile_tests {
         assert!(!profile(&[Outs, Decision]).is_offered());
         assert!(!profile(&[Continuing, Decision]).is_offered());
         assert!(!profile(&[Outs, LoopDecision::Unproven(ChoicePoint::TriggerOrder)]).is_offered());
+        assert!(profile(&[Random]).is_offered());
+        assert!(profile(&[Outs, Random]).is_offered());
+        assert!(profile(&[Continuing, Random]).is_offered());
+        assert!(!profile(&[Optional, Random]).is_offered());
+        assert!(!profile(&[Decision, Random]).is_offered());
+        assert!(!profile(&[Random]).is_forced());
     }
 
     /// A period asks the witness its holds replay first only when it holds an unproven target or
@@ -36632,6 +36738,7 @@ mod loop_decision_profile_tests {
                 ..Default::default()
             },
             out,
+            rng_position: 0,
         };
         let none = at(0, 0, 0, Absent);
         assert_eq!(
@@ -36691,6 +36798,7 @@ mod loop_decision_profile_tests {
                 ..Default::default()
             },
             out: Absent,
+            rng_position: 0,
         };
         let read = |first: LoopDecisionMarks, proof: OptionProof| -> Vec<LoopDecision> {
             LoopDecisionProfile::of_window(&[first], &ordered)
@@ -36733,6 +36841,10 @@ mod loop_decision_profile_tests {
         fn out(&self) -> PriorityOut {
             self.reads.set(self.reads.get() + 1);
             self.marks.out
+        }
+
+        fn rng_position(&self) -> u128 {
+            self.marks.rng_position
         }
     }
 
@@ -45590,6 +45702,77 @@ mod tests {
             !normalized_equal(&state, &tapped),
             "control: tapping still differs"
         );
+    }
+
+    fn library_cards(state: &mut GameState, owner: PlayerId, count: u64) -> Vec<ObjectId> {
+        (1..=count)
+            .map(|card| {
+                create_object(
+                    state,
+                    CardId(card),
+                    owner,
+                    format!("Library Card {card}"),
+                    Zone::Library,
+                )
+            })
+            .collect()
+    }
+
+    /// CR 701.24a: a library no player knows compares as its cards, in no order.
+    #[test]
+    fn normalize_for_loop_compares_a_library_no_player_knows_by_its_cards() {
+        let mut state = GameState::new_two_player(7);
+        let cards = library_cards(&mut state, PlayerId(0), 3);
+        let mut reordered = state.clone();
+        reordered.players[0].library = cards.iter().rev().copied().collect();
+        assert_ne!(state, reordered, "reach: the raw libraries differ");
+        assert!(normalized_equal(&state, &reordered));
+        let mut replaced = reordered.clone();
+        replaced.players[0].library = im::vector![cards[2], cards[1], cards[1]];
+        assert!(
+            !normalized_equal(&state, &replaced),
+            "control: a library of other cards still differs"
+        );
+    }
+
+    /// CR 701.24a + CR 400.1: a library a player knows keeps its order, a shared pile included.
+    #[test]
+    fn normalize_for_loop_keeps_the_order_of_a_library_a_player_knows() {
+        for (format, shared) in [
+            (FormatConfig::standard(), false),
+            (FormatConfig::dandan(), true),
+        ] {
+            let mut state = GameState::new(format, 2, 7);
+            let owner = PlayerId(1);
+            let cards = library_cards(&mut state, owner, 2);
+            state.remember_card_identities([PlayerId(0)], &[cards[0]]);
+            let mut reordered = state.clone();
+            *reordered.library_of_mut(owner) = cards.iter().rev().copied().collect();
+            assert!(
+                reordered.viewer_knows_card_identity(PlayerId(0), cards[0]),
+                "reach: shared={shared}: the fact is current"
+            );
+            assert_eq!(
+                state.zone_storage_seat(Zone::Library, owner) != owner,
+                shared,
+                "reach: in the shared pile the card's owner does not store it"
+            );
+            assert!(!normalized_equal(&state, &reordered), "shared={shared}");
+        }
+    }
+
+    /// CR 701.24a: normalizing a normalized position keeps a known library's order.
+    #[test]
+    fn normalize_for_loop_twice_keeps_a_known_library_order() {
+        let mut state = GameState::new_two_player(7);
+        let cards = library_cards(&mut state, PlayerId(0), 2);
+        let (a, b) = (cards[0], cards[1]);
+        state.players[0].library = im::vector![b, a];
+        state.remember_card_identities([PlayerId(0)], &[b]);
+        let once = state.normalize_for_loop();
+        let twice = once.normalize_for_loop();
+        assert!(loop_states_equal(&once, &twice));
+        assert_eq!(twice.players[0].library, im::vector![b, a]);
     }
 
     /// CR 400.7 + CR 104.4b: every incarnation a zone-change record names is ranked,

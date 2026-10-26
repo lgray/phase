@@ -4761,9 +4761,12 @@ pub(crate) struct CertifiedInstructedDeparture {
 /// projected consumable by `driving_resources_non_decreasing`; a battlefield entry by guard
 /// 1's stable-partition compare; a cost or legality change by the drive aborting on the second
 /// cycle. The failure mode is an UNDER-stated bonus, not an over-stated promise.
+///
+/// CR 701.17a: `libraries` are the frames before projection; a departure leaves from the top, so C1b compares their order.
 pub(crate) fn certify_instructed_opponent_library_departure(
     prior: &GameState,
     current: &GameState,
+    libraries: [&GameState; 2],
     caster: PlayerId,
 ) -> Option<CertifiedInstructedDeparture> {
     // C1a, action conjunct. `record_drawn_card` PUSHES, so within one turn each player's
@@ -4845,9 +4848,17 @@ pub(crate) fn certify_instructed_opponent_library_departure(
             .filter(|id| !departed.contains(id))
             .collect()
     };
+    let [prior_order, current_order] = libraries;
+    let library = |frame: &GameState, id: PlayerId| {
+        frame
+            .players
+            .iter()
+            .find(|player| player.id == id)
+            .map(|player| residual(&player.library))
+    };
     for (prior_player, current_player) in prior.players.iter().zip(current.players.iter()) {
         if prior_player.id != current_player.id
-            || residual(&prior_player.library) != residual(&current_player.library)
+            || library(prior_order, prior_player.id) != library(current_order, current_player.id)
             || residual(&prior_player.graveyard) != residual(&current_player.graveyard)
         {
             return None;
@@ -5032,7 +5043,7 @@ pub(crate) fn fodder_growth_cover_refusals(
     // authority each obligation would re-derive the set from its own frames and the four could
     // drift, which is the same reason `project_out_player_consumables` and
     // `projected_player_axes` exist as a pair.
-    let certified = certify_instructed_opponent_library_departure(&pa, &pb, caster);
+    let certified = certify_instructed_opponent_library_departure(&pa, &pb, [&pf, &cf], caster);
 
     // The GROWING set = ALL fodder ids in BOTH projected frames (the drifting/growing pile)
     // UNIONED with every id the certificate accounts. Unlike the object-growth
@@ -5343,9 +5354,12 @@ fn certifying_cover(
     }
     // CR 701.17b: the fodder arm's certificate, asked on the fodder arm's frames.
     let cf = flush_clone(current);
+    let projected_prior = project_out_resources(&flush_clone(prior));
+    let projected_current = project_out_resources(&cf);
     let departure = certify_instructed_opponent_library_departure(
-        &project_out_resources(&flush_clone(prior)),
-        &project_out_resources(&cf),
+        &projected_prior,
+        &projected_current,
+        [prior, current],
         caster,
     )
     .is_some_and(|certified| {
@@ -5748,6 +5762,10 @@ pub(crate) fn turn_cycle_covers(prior: &GameState, current: &GameState, caster: 
     let mut library: im::Vector<ObjectId> = drawn.iter().copied().collect();
     library.append(copy.library_of(caster).clone());
     *copy.library_of_mut(caster) = library;
+    // CR 121.1: the caster's draws read its library from the top, so the cycle keeps its order.
+    if copy.library_of(caster) != before_library {
+        return false;
+    }
     for id in &drawn {
         if let Some(object) = copy.objects.get_mut(id) {
             // allow-raw-zone: equalizes the caster's draws in a discarded comparison clone, not a gameplay zone event.
@@ -25347,7 +25365,7 @@ mod tests {
     }
 
     fn certify(prior: &GameState, current: &GameState) -> Option<CertifiedInstructedDeparture> {
-        certify_instructed_opponent_library_departure(prior, current, CERT_CASTER)
+        certify_instructed_opponent_library_departure(prior, current, [prior, current], CERT_CASTER)
     }
 
     /// Put one battlefield permanent carrying exactly `def` on `current`, so the C2 walk has
@@ -26030,6 +26048,58 @@ mod tests {
             !fodder_cover(&prior, &current),
             "an unnamed card's drift is refused even though a certificate exists for 900"
         );
+    }
+
+    /// CR 701.17a: a departure leaves from the top, so beside a reordered victim library it is
+    /// refused through both projected-frame callers, though their projections compare equal.
+    #[test]
+    fn a_departure_beside_a_reordered_victim_library_is_refused() {
+        fn beside(pair: (GameState, GameState)) -> (GameState, GameState, GameState) {
+            let (mut prior, mut current) = pair;
+            for state in [&mut prior, &mut current] {
+                cover_library_card(state, 901, PlayerId(1));
+                cover_library_card(state, 902, PlayerId(1));
+            }
+            let mut reordered = current.clone();
+            reordered.players[1].library = im::vector![ObjectId(902), ObjectId(901)];
+            (prior, current, reordered)
+        }
+        let only_the_projection_hides_the_order = |current: &GameState, reordered: &GameState| {
+            current.players[1].library != reordered.players[1].library
+                && project_out_resources(current).players[1].library
+                    == project_out_resources(reordered).players[1].library
+        };
+
+        let (prior, current, reordered) =
+            beside(no_mint_pair_with_departure(PlayerId(1), Zone::Graveyard));
+        assert_eq!(
+            resource_recurrence_covers(&prior, &current, PlayerId(0), None),
+            Some(PairCover::Certified(
+                CoveredGrowth::PerformedOnly,
+                RecurrenceCover::Departure
+            )),
+            "reach: the in-order pair certifies"
+        );
+        assert!(
+            only_the_projection_hides_the_order(&current, &reordered),
+            "reach: the no-mint frames differ only before projection"
+        );
+        assert_eq!(
+            resource_recurrence_covers(&prior, &reordered, PlayerId(0), None),
+            None
+        );
+
+        let (prior, current, reordered) =
+            beside(fodder_cover_with_departure(PlayerId(1), Zone::Graveyard));
+        assert!(
+            fodder_cover(&prior, &current),
+            "reach: the in-order fodder pair covers"
+        );
+        assert!(
+            only_the_projection_hides_the_order(&current, &reordered),
+            "reach: the fodder frames differ only before projection"
+        );
+        assert!(!fodder_cover(&prior, &reordered));
     }
 
     /// Two otherwise identical frames holding card 900 in `owner`'s library, departed to `to` in

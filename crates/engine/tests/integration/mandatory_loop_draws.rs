@@ -144,6 +144,8 @@ struct Board {
     ichor_rats: bool,
     /// The card whose trigger P0 orders to resolve first; otherwise Animate Dead's resolves last.
     first: Option<&'static str>,
+    /// Wood Elves on P0's battlefield, and this many Swamps, no Forest, in P0's library.
+    wood_elves: Option<usize>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -327,8 +329,11 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
     for _ in 0..board.p0_bears {
         scenario.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
     }
-    for seat in [P0, P1] {
-        for _ in 0..10 {
+    if board.wood_elves.is_some() {
+        scenario.add_real_card(P0, "Wood Elves", Zone::Battlefield, db);
+    }
+    for (seat, swamps) in [(P0, board.wood_elves.unwrap_or(10)), (P1, 10)] {
+        for _ in 0..swamps {
             scenario.add_real_card(seat, "Swamp", Zone::Library, db);
         }
     }
@@ -653,6 +658,7 @@ const PLAIN: Board = Board {
     rest_in_peace: false,
     p0_bears: 0,
     first: None,
+    wood_elves: None,
 };
 
 const ANCHOR: Board = Board {
@@ -2755,4 +2761,130 @@ fn a_proposal_without_end_is_published_and_answered_through_the_interaction() {
         "{:?}",
         opportunity.response
     );
+}
+
+/// CR 603.3b + CR 701.24a: with Animate Dead's trigger first, Wood Elves' trigger is buried each
+/// cycle, and the order that resolves it first shuffles a library no player knows, which recurs by
+/// its cards, so every order continues and the loop is a draw; Off runs on.
+#[test]
+fn a_shuffle_buried_under_animate_deads_trigger_is_a_draw() {
+    let board = Board {
+        wood_elves: Some(10),
+        first: Some("Animate Dead"),
+        ..PLAIN
+    };
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 40) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{drive:?}");
+        assert!(
+            run.prompted("OrderTriggers") >= 1,
+            "{drive:?}: reach: the triggers were ordered"
+        );
+        assert!(run.entries >= 1, "{drive:?}: reach: the Dragon entered");
+    }
+    for drive in EVERY_DRIVE {
+        if run_off(board, drive, 40).is_none() {
+            return;
+        }
+    }
+}
+
+const WOOD_ELVES: Board = Board {
+    wood_elves: Some(10),
+    ..PLAIN
+};
+
+/// Asserts every drive at `board` stops at P0's offer of a draw without end over its shuffled
+/// library, that every player accepting it draws the game, and that Off runs on.
+fn a_shuffle_is_offered(board: Board) {
+    let Some(offered) = offered_on_every_drive(board, &[Pick::First], "OrderTriggers", 1) else {
+        return;
+    };
+    let state = offered.state();
+    assert_eq!(
+        state.library_of(P0).len(),
+        10,
+        "reach: P0's library kept its cards"
+    );
+    assert!(
+        state.rng.get_word_pos() > 0,
+        "reach: the shuffles drew randomness"
+    );
+    offer_accepted_is_a_draw(offered);
+    for drive in EVERY_DRIVE {
+        if run_off(board, drive, 40).is_none() {
+            return;
+        }
+    }
+}
+
+/// CR 701.24a + CR 732.2a: Wood Elves' trigger finds no Forest and shuffles P0's library each
+/// cycle, and nothing reads the order, so the period differs only in randomness and is offered,
+/// never declared.
+#[test]
+fn a_shuffle_no_player_observes_is_offered() {
+    a_shuffle_is_offered(WOOD_ELVES);
+}
+
+/// CR 701.24a + CR 732.2a: P1's Lightning Bolt beside the shuffle is an out, so the period is
+/// offered.
+#[test]
+fn a_shuffle_beside_an_out_is_offered() {
+    a_shuffle_is_offered(Board {
+        optional: true,
+        ..WOOD_ELVES
+    });
+}
+
+/// CR 104.4b + CR 732.4: shuffling a one-card library draws no randomness, so the period repeats
+/// exactly and is a draw; Off runs on.
+#[test]
+fn a_shuffle_of_a_one_card_library_is_a_draw() {
+    let board = Board {
+        wood_elves: Some(1),
+        ..PLAIN
+    };
+    let Some(run) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 40) else {
+        return;
+    };
+    assert_eq!(run.terminal, Terminal::GameOver(None));
+    assert!(run.entries >= 2, "reach: the Dragon entered at least twice");
+    assert_eq!(run.state().rng.get_word_pos(), 0, "reach: no shuffle drew");
+    run_off(board, Drive::Pass, 40);
+}
+
+/// CR 732.2b + CR 701.24a: beside Wood Elves' shuffle, Poison-Tip Archer's drain is offered with
+/// P1 as its predicted winner, not won outright.
+#[test]
+fn a_drain_beside_a_shuffle_is_offered_not_won() {
+    let board = Board {
+        archer: true,
+        ..WOOD_ELVES
+    };
+    for drive in EVERY_DRIVE {
+        let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert!(
+            matches!(
+                run.terminal,
+                Terminal::Offer {
+                    predicted_winner: Some(P1),
+                    ..
+                }
+            ),
+            "{drive:?}: {:?}",
+            run.terminal
+        );
+        assert!(
+            run.state().rng.get_word_pos() > 0,
+            "{drive:?}: reach: the shuffles drew randomness"
+        );
+        assert!(
+            (1..20).contains(&run.life(P0)),
+            "{drive:?}: reach: P0 was drained before the drain ended"
+        );
+    }
 }

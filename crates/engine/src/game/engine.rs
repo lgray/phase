@@ -2762,10 +2762,7 @@ fn interactive_loop_bridge_paths(
                         .iter()
                         .skip(start)
                         .map(|sample| &**sample),
-                    &crate::types::game_state::LoopDecisionMarks {
-                        tally: state.loop_decision_tally,
-                        out: crate::types::game_state::PriorityOut::Absent,
-                    },
+                    &state.loop_decision_marks_with(crate::types::game_state::PriorityOut::Absent),
                 ),
             )
             .is_forced()
@@ -2858,14 +2855,11 @@ fn interactive_loop_bridge_paths(
         // mutation inside the walk would be a borrow-check error rather than a walk that keeps
         // comparing against a state it already changed.
         // CR 732.5: `mandatory` is the out verdict at the current position.
-        let current_marks = crate::types::game_state::LoopDecisionMarks {
-            tally: state.loop_decision_tally,
-            out: if mandatory {
-                crate::types::game_state::PriorityOut::Absent
-            } else {
-                crate::types::game_state::PriorityOut::Held
-            },
-        };
+        let current_marks = state.loop_decision_marks_with(if mandatory {
+            crate::types::game_state::PriorityOut::Absent
+        } else {
+            crate::types::game_state::PriorityOut::Held
+        });
         let mut outs_offer: Option<usize> = None;
         let drawn = !priors.is_empty() && {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
@@ -2958,10 +2952,7 @@ fn interactive_loop_bridge_paths(
             None
         } else {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
-            let held = crate::types::game_state::LoopDecisionMarks {
-                tally: state.loop_decision_tally,
-                out: crate::types::game_state::PriorityOut::Held,
-            };
+            let held = state.loop_decision_marks_with(crate::types::game_state::PriorityOut::Held);
             priors.iter().enumerate().find_map(|(idx, sample)| {
                 let prior = &sample.normalized;
                 let delta = crate::analysis::resource::ResourceVector::delta(
@@ -8409,7 +8400,10 @@ pub(crate) fn period_sign_check(
     // into a draw (CR 104.4b needs the game state to REPEAT, and a shrinking library does not).
     let certified_departure =
         crate::analysis::resource::certify_instructed_opponent_library_departure(
-            s_n1, s_n2, caster,
+            s_n1,
+            s_n2,
+            [s_n1, s_n2],
+            caster,
         );
     let sign_check_delta = match &certified_departure {
         Some(certified) => delta.without_certified_departure(&certified.per_victim),
