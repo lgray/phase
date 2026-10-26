@@ -143,7 +143,7 @@ fn ltb_resolved(events: &[GameEvent], source: ObjectId) -> bool {
     })
 }
 
-/// R1 — CR 607.2a + the Fiend Hunter ruling: the Hunter leaves while its
+/// CR 607.2a + the Fiend Hunter ruling: the Hunter leaves while its
 /// accepted ETB is on the stack, so its LTB resolves first and returns nothing;
 /// the ETB then exiles the Bears for good.
 #[test]
@@ -194,7 +194,7 @@ fn fiend_hunter_leaving_before_its_etb_resolves_exiles_indefinitely() {
     );
 }
 
-/// R1 sibling — declining Fiend Hunter's optional exile leaves nothing linked,
+/// Declining Fiend Hunter's optional exile leaves nothing linked,
 /// so the LTB resolves with an empty pile.
 #[test]
 fn fiend_hunter_declined_exile_ltb_returns_nothing() {
@@ -225,7 +225,7 @@ fn fiend_hunter_declined_exile_ltb_returns_nothing() {
     assert_eq!(runner.state().objects[&bears].zone, Zone::Battlefield);
 }
 
-/// R2 + R3 — CR 607.2a + CR 110.2a: the exiled card stays in exile while the
+/// CR 607.2a + CR 110.2a: the exiled card stays in exile while the
 /// LTB is on the stack, then returns under its owner's control (owner P1 is not
 /// the LTB's controller P0).
 #[test]
@@ -279,7 +279,7 @@ fn removal_of_exiler_returns_card_when_ltb_resolves_under_owner() {
     }
 }
 
-/// R4 — the resolution-choice member: Wormfang Newt's "exile a land you
+/// The resolution-choice member: Wormfang Newt's "exile a land you
 /// control" is chosen at resolution, links to the Newt, and returns on its LTB.
 #[test]
 fn wormfang_newt_chosen_land_returns_when_ltb_resolves() {
@@ -314,7 +314,7 @@ fn wormfang_newt_chosen_land_returns_when_ltb_resolves() {
     assert_eq!(runner.state().objects[&island].controller, P0);
 }
 
-/// R5 — with each loop event triggering exactly one ability (Dragon ETB →
+/// With each loop event triggering exactly one ability (Dragon ETB →
 /// Animate Dead's sacrifice → Dragon LTB → Animate Dead's return), the
 /// Worldgorger Dragon + Animate Dead loop never stacks more than one object.
 #[test]
@@ -387,7 +387,7 @@ fn assert_returned_unmerged(state: &GameState, ids: &[ObjectId], label: &str) {
     }
 }
 
-/// R9 — CR 607.2a + CR 730.3c: Oblivion Ring's LTB finds every object its
+/// CR 607.2a + CR 730.3c: Oblivion Ring's LTB finds every object its
 /// exiled merged permanent became, and only those: Journey to Nowhere's merged
 /// pile, co-located in exile, stays there.
 #[test]
@@ -437,7 +437,7 @@ fn class_ltb_return_brings_back_every_merged_component_of_its_own_pile() {
     );
 }
 
-/// R10 — CR 607.2a + CR 730.3c: Admonition Angel's "return all cards exiled
+/// CR 607.2a + CR 730.3c: Admonition Angel's "return all cards exiled
 /// with it" brings back every component of a merged permanent it exiled.
 #[test]
 fn admonition_angel_return_brings_back_every_merged_component() {
@@ -472,7 +472,7 @@ fn admonition_angel_return_brings_back_every_merged_component() {
     assert_returned_unmerged(state, &[host, rider], "Admonition Angel's pile");
 }
 
-/// R11 — CR 400.7 + CR 607.2a + CR 730.3c: a component split from a merged
+/// CR 400.7 + CR 607.2a + CR 730.3c: a component split from a merged
 /// permanent is found only through the survivor's incarnation that split it.
 /// Once that survivor changes zones again (graveyard, battlefield, then a
 /// second, linked exile), the linked return brings back the survivor alone.

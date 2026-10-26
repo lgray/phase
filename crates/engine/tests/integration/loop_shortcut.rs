@@ -2574,7 +2574,7 @@ fn b3_declare_refuses_a_schedule_breaking_inside_the_declared_count() {
     );
 }
 
-// ═══════════════════ PR-7 Phase 4c — draw gate + LOW-2 ═══════════════════
+// ═══════════════════ Interactive draw gate ═══════════════════
 
 /// Poison rider for the DRAW-gate behavioral test: fires on the SAME "whenever you gain
 /// life" event the SELF_LIFE_ENGINE cascade pumps, dripping a poison counter onto each

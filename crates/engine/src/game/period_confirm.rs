@@ -1465,6 +1465,8 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
 /// no loss axis (CR 704.5c), no driving resource falling on a carried permanent (CR 704.5g,
 /// CR 704.5i, CR 704.5q), and no -1/-1 counter growth (CR 704.5f).
 pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool {
+    #[cfg(feature = "test-support")]
+    crate::game::perf_counters::record_play_trace(|counters| counters.mandatory_replays += 1);
     let Ok(period @ ReplayedPeriod { second: Ok(_), .. }) = replay_period(frame, span) else {
         return false;
     };
@@ -1494,15 +1496,10 @@ pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool
     if !covered {
         return false;
     }
-    let mut delta = ResourceVector::delta(
-        &ResourceVector::snapshot(&s_n1),
-        &ResourceVector::snapshot(&s_n2),
-    );
-    delta.tokens_created += minted_battlefield_ids(&s_n1, &s_n2).len() as i64;
+    let delta = period_delta(&s_n1, &s_n2);
     // CR 104.4b + CR 405.5: entries the period buries are its unbounded axis.
     let buried_rises = buried_growth && floors[2] > floors[1];
-    (delta.is_net_progress() || buried_rises)
-        && has_no_loss_axis(&delta)
+    period_recurs_without_end(&delta, buried_rises)
         && living
             .iter()
             .all(|&seat| driving_resources_non_decreasing_carried(&s_n1, &s_n2, seat, Some(&s_n)))
@@ -1510,6 +1507,22 @@ pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool
             .counters
             .get(&(CounterClass::Minus1Minus1, ObjectClass::Creature))
             .is_none_or(|&grew| grew <= 0)
+}
+
+/// The resources a period from `before` to `after` moved, counting each token it mints.
+pub(crate) fn period_delta(before: &GameState, after: &GameState) -> ResourceVector {
+    let mut delta = ResourceVector::delta(
+        &ResourceVector::snapshot(before),
+        &ResourceVector::snapshot(after),
+    );
+    delta.tokens_created += minted_battlefield_ids(before, after).len() as i64;
+    delta
+}
+
+/// CR 104.4b + CR 704.5a + CR 704.5b + CR 704.5c: a period recurs without end only with net
+/// progress or buried entries, and no loss axis.
+pub(crate) fn period_recurs_without_end(delta: &ResourceVector, buried_rises: bool) -> bool {
+    (delta.is_net_progress() || buried_rises) && has_no_loss_axis(delta)
 }
 
 /// CR 603.3b: what the every-option proof found of a period's decision points.

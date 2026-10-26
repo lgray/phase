@@ -2905,16 +2905,15 @@ fn interactive_loop_bridge_paths(
                     }
             })
         };
-        // CR 732.4: a period the ring cannot show recurring is drawn on its recorded witness.
+        // CR 732.4 + CR 732.5: a period the ring cannot show recurring is drawn or offered on its recorded witness.
         let drawn = drawn
-            || (mandatory
-                && mandatory_recurrence_witnessed(
-                    state,
-                    &priors,
-                    &current_marks,
-                    option_proof,
-                    &mut outs_offer,
-                ) == super::play_trace::Witnessed::Declared);
+            || mandatory_recurrence_witnessed(
+                state,
+                &priors,
+                &current_marks,
+                option_proof,
+                &mut outs_offer,
+            ) == super::play_trace::Witnessed::Declared;
         if drawn {
             super::elimination::end_game(state, None, &mut result.events);
             return;
@@ -3005,8 +3004,8 @@ fn interactive_loop_bridge_paths(
 /// CR 104.4b + CR 732.4: what the mandatory span the play trace holds at the top of the stack
 /// is: declared a draw, offered, or neither. The ring's last sample at or before the span's start
 /// must be in this window and begin the period read; an offered period's sample index is written
-/// to `outs_offer` when it holds none. The span's replayed reading is kept per span start, so each
-/// recorded period is replayed once.
+/// to `outs_offer` when it holds none. The span's replayed reading is kept per span start and out
+/// verdict, so a verdict computed under one out verdict is never read under the other.
 fn mandatory_recurrence_witnessed(
     state: &mut GameState,
     priors: &[std::sync::Arc<crate::types::LoopDetectSample>],
@@ -3015,10 +3014,12 @@ fn mandatory_recurrence_witnessed(
     outs_offer: &mut Option<usize>,
 ) -> super::play_trace::Witnessed {
     use super::play_trace::Witnessed;
+    use crate::types::game_state::PriorityOut;
     let Some(span) = super::play_trace::mandatory_recurrence(state) else {
         return Witnessed::Refused;
     };
-    let kept = super::play_trace::witnessed(state, span.start);
+    let out = current_marks.out;
+    let kept = super::play_trace::witnessed(state, span.start, out);
     if let Some(verdict @ (Witnessed::Declared | Witnessed::Refused)) = kept {
         return verdict;
     }
@@ -3032,39 +3033,58 @@ fn mandatory_recurrence_witnessed(
     let verdict = match kept {
         Some(verdict) => verdict,
         None => {
+            // CR 104.4b + CR 704.5a + CR 704.5b + CR 704.5c: a recorded period with neither progress nor stack growth, or with a loss axis, is refused before any proof or replay.
+            match out {
+                PriorityOut::Held if !recorded_window_recurs(&priors[base].live, state) => {
+                    return Witnessed::Refused;
+                }
+                PriorityOut::Held | PriorityOut::Absent => {}
+            }
             let profile = crate::types::game_state::LoopDecisionProfile::of_window(
                 priors[base..].iter().map(|sample| &**sample),
                 current_marks,
             );
-            let verdict = if profile.holds_unproven_option() {
-                // An option tree costs more than the replay, so only a period that holds is asked it.
-                if !super::period_confirm::mandatory_period_holds(state, span) {
-                    Witnessed::Refused
-                } else {
-                    let profile =
-                        profile.with_option_proof(|| lazy_option_proof(option_proof, state));
-                    if profile.is_forced() {
-                        Witnessed::Declared
-                    } else if profile.is_offered() {
-                        Witnessed::Offered
-                    } else {
-                        Witnessed::Refused
-                    }
-                }
-            } else {
-                if !profile
-                    .with_option_proof(|| lazy_option_proof(option_proof, state))
-                    .is_forced()
-                {
-                    return Witnessed::Refused;
-                }
-                if super::period_confirm::mandatory_period_holds(state, span) {
+            let settle = |profile: &crate::types::game_state::LoopDecisionProfile| {
+                if profile.is_forced() {
                     Witnessed::Declared
+                } else if profile.is_offered() {
+                    Witnessed::Offered
                 } else {
                     Witnessed::Refused
                 }
             };
-            super::play_trace::note_witnessed(state, span.start, verdict);
+            let verdict = if profile.holds_unproven_option() {
+                // An option tree costs more than the replay, so only a period that holds is asked it.
+                if super::period_confirm::mandatory_period_holds(state, span) {
+                    settle(&profile.with_option_proof(|| lazy_option_proof(option_proof, state)))
+                } else {
+                    Witnessed::Refused
+                }
+            } else {
+                let verdict =
+                    settle(&profile.with_option_proof(|| lazy_option_proof(option_proof, state)));
+                // A profile neither drawn nor offered is refused before any replay.
+                if verdict == Witnessed::Refused {
+                    return Witnessed::Refused;
+                }
+                // CR 104.4b + CR 704.5a + CR 704.5b + CR 704.5c: with no out held, an offered period is replayed only when its recorded window shows progress or stack growth and no loss axis.
+                if verdict == Witnessed::Offered {
+                    match out {
+                        PriorityOut::Absent
+                            if !recorded_window_recurs(&priors[base].live, state) =>
+                        {
+                            return Witnessed::Refused;
+                        }
+                        PriorityOut::Absent | PriorityOut::Held => {}
+                    }
+                }
+                if super::period_confirm::mandatory_period_holds(state, span) {
+                    verdict
+                } else {
+                    Witnessed::Refused
+                }
+            };
+            super::play_trace::note_witnessed(state, span.start, out, verdict);
             verdict
         }
     };
@@ -3072,6 +3092,15 @@ fn mandatory_recurrence_witnessed(
         *outs_offer = Some(base);
     }
     verdict
+}
+
+/// Whether the recorded window from `before` to `now` shows progress or stack growth, standing in
+/// for buried entries, and no loss axis.
+fn recorded_window_recurs(before: &GameState, now: &GameState) -> bool {
+    super::period_confirm::period_recurs_without_end(
+        &super::period_confirm::period_delta(before, now),
+        now.stack.len() > before.stack.len(),
+    )
 }
 
 /// CR 603.3b: the every-option proof of the mandatory span at `state`, kept per span start;

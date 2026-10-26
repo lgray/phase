@@ -19,8 +19,8 @@ use crate::types::ability::{
 use crate::types::actions::GameAction;
 use crate::types::card::PrintedCardRef;
 use crate::types::game_state::{
-    printed_trigger_origin, ActionDisposition, GameState, PayCostKind, ReplacementChoiceKind,
-    RetargetScope, StackEntry, StackEntryKind, WaitingFor,
+    printed_trigger_origin, ActionDisposition, GameState, PayCostKind, PriorityOut,
+    ReplacementChoiceKind, RetargetScope, StackEntry, StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
@@ -482,8 +482,9 @@ pub(crate) struct PlayTrace {
     carried_named: im::Vector<CarriedSpan>,
     /// Each seat's carrying index, kept across windows.
     carrying: im::HashMap<PlayerId, CarryingIndex>,
-    /// The mandatory-recurrence verdict kept for the span starting at this entry.
-    witnessed: Option<(usize, Witnessed)>,
+    /// The mandatory-recurrence verdict kept for the span starting at this entry, one slot per out
+    /// verdict.
+    witnessed: [Option<(usize, Witnessed)>; 2],
     /// The every-option proof kept for the mandatory span starting at this entry.
     ordered: Option<(usize, crate::game::period_confirm::OptionProof)>,
 }
@@ -512,7 +513,7 @@ impl PlayTrace {
             carried: im::Vector::new(),
             carried_named: im::Vector::new(),
             carrying: im::HashMap::new(),
-            witnessed: None,
+            witnessed: [None; 2],
             ordered: None,
         }
     }
@@ -1768,23 +1769,36 @@ pub(crate) enum Witnessed {
     Refused,
 }
 
-/// The verdict kept for the mandatory-recurrence span of the current window starting at `start`.
-pub(crate) fn witnessed(state: &GameState, start: usize) -> Option<Witnessed> {
-    current(state)?
-        .witnessed
+fn out_slot(out: PriorityOut) -> usize {
+    match out {
+        PriorityOut::Absent => 0,
+        PriorityOut::Held => 1,
+    }
+}
+
+/// The verdict kept for the mandatory-recurrence span of the current window starting at `start`,
+/// computed under `out`.
+pub(crate) fn witnessed(state: &GameState, start: usize, out: PriorityOut) -> Option<Witnessed> {
+    current(state)?.witnessed[out_slot(out)]
         .filter(|&(at, _)| at == start)
         .map(|(_, verdict)| verdict)
 }
 
-/// Keeps `verdict` for the mandatory-recurrence span of the current window starting at `start`.
-pub(crate) fn note_witnessed(state: &mut GameState, start: usize, verdict: Witnessed) {
+/// Keeps `verdict` for the mandatory-recurrence span of the current window starting at `start`,
+/// computed under `out`.
+pub(crate) fn note_witnessed(
+    state: &mut GameState,
+    start: usize,
+    out: PriorityOut,
+    verdict: Witnessed,
+) {
     let window = WindowKey::of(state);
     if let Some(trace) = state
         .play_trace
         .as_deref_mut()
         .filter(|trace| trace.window == window)
     {
-        trace.witnessed = Some((start, verdict));
+        trace.witnessed[out_slot(out)] = Some((start, verdict));
     }
 }
 
@@ -2243,6 +2257,20 @@ mod tests {
             keep_is_distinct: Vec::new(),
             legal_new_targets: vec![],
         }
+    }
+
+    #[test]
+    fn a_kept_witness_verdict_is_read_only_under_the_out_verdict_it_was_computed_under() {
+        use PriorityOut::{Absent, Held};
+        let mut state = GameState::new_two_player(1);
+        state.play_trace = Some(Box::new(PlayTrace::new(WindowKey::of(&state))));
+        note_witnessed(&mut state, 3, Absent, Witnessed::Refused);
+        assert_eq!(witnessed(&state, 3, Absent), Some(Witnessed::Refused));
+        assert_eq!(witnessed(&state, 3, Held), None);
+        note_witnessed(&mut state, 3, Held, Witnessed::Offered);
+        assert_eq!(witnessed(&state, 3, Held), Some(Witnessed::Offered));
+        assert_eq!(witnessed(&state, 3, Absent), Some(Witnessed::Refused));
+        assert_eq!(witnessed(&state, 4, Absent), None);
     }
 
     #[test]

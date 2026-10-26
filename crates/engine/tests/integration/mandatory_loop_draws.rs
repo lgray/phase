@@ -1620,7 +1620,8 @@ fn a_drain_with_an_out_outside_the_loop_is_offered_not_won() {
 }
 
 /// CR 117.3d + CR 732.4: the mandatory period reads the same whichever player holds priority,
-/// including a frame where P1's standing pass is paused by its own meaningful action.
+/// including a frame where P1's standing pass is paused by its own meaningful action; P1's
+/// untapped Prodigal Sorcerer brings an offer P0 declines (CR 732.5).
 #[test]
 fn a_mandatory_token_copy_loop_reads_the_same_on_either_holder() {
     let board = Board {
@@ -1628,24 +1629,37 @@ fn a_mandatory_token_copy_loop_reads_the_same_on_either_holder() {
         ..RAPTOR
     };
     let mut readings: Vec<(PlayerId, bool, bool)> = Vec::new();
-    let observe = |state: &GameState| {
+    let mut observe = |state: &GameState| {
         if let WaitingFor::Priority { player } = state.waiting_for {
             if let Some(holds) = mandatory_period_holds_for_tests(state) {
                 readings.push((player, state.stack_resolution_session.is_some(), holds));
             }
         }
     };
-    if run_observed(
+    let Some(Run { mut runner, .. }) = run_observed(
         board,
         LoopDetectionMode::Interactive,
         Drive::UntilStackEmpty,
         30,
-        observe,
-    )
-    .is_none()
-    {
+        &mut observe,
+    ) else {
         return;
+    };
+    let mut declined = 0;
+    for _ in 0..30 {
+        let state = runner.state();
+        observe(state);
+        let action = match &state.waiting_for {
+            WaitingFor::LoopShortcut { .. } => {
+                declined += 1;
+                GameAction::DeclineShortcut
+            }
+            WaitingFor::Priority { .. } => until_stack_empty(),
+            other => panic!("unexpected prompt {other:?}"),
+        };
+        runner.act(action).expect("a legal drive action");
     }
+    assert!(declined >= 1, "reach: P0 was offered the loop");
     assert!(
         readings
             .iter()
@@ -2886,5 +2900,234 @@ fn a_drain_beside_a_shuffle_is_offered_not_won() {
             (1..20).contains(&run.life(P0)),
             "{drive:?}: reach: P0 was drained before the drain ended"
         );
+    }
+}
+
+const RAPTOR_DRIVES: [Drive; 4] = [
+    Drive::Pass,
+    Drive::UntilTurnBoundary,
+    Drive::UntilStackEmpty,
+    Drive::P0UntilStackEmpty,
+];
+
+/// `seat` casts its Lightning Bolt at Marauding Raptor; the Raptor dies and the turn moves on to
+/// combat.
+fn bolt_the_raptor_and_play_on(runner: &mut GameRunner, seat: PlayerId) {
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player } if player == seat),
+        "{:?}",
+        state.waiting_for
+    );
+    let bolt = state.players[seat.0 as usize]
+        .hand
+        .iter()
+        .copied()
+        .find(|id| state.objects[id].name == "Lightning Bolt")
+        .expect("the seat holds its Bolt");
+    let raptor = state
+        .battlefield
+        .iter()
+        .copied()
+        .find(|id| state.objects[id].name == "Marauding Raptor")
+        .expect("the Raptor is on the battlefield");
+    drop(runner.cast(bolt).target_object(raptor).commit());
+    assert!(
+        matches!(pass_on(runner, 200), WaitingFor::DeclareAttackers { .. }),
+        "{:?}",
+        runner.state().waiting_for
+    );
+    let state = runner.state();
+    assert_eq!(state.objects[&raptor].zone, Zone::Graveyard);
+    assert_eq!(state.objects[&bolt].zone, Zone::Graveyard);
+}
+
+fn raptor_copies_keep_coming_off(board: Board) {
+    for drive in RAPTOR_DRIVES {
+        let Some(run) = run(board, LoopDetectionMode::Off, drive, 60) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::BeatsExhausted, "Off {drive:?}");
+        assert!(
+            run.on_battlefield("Polyraptor").len() >= 4,
+            "Off {drive:?}: reach: the copies kept coming"
+        );
+    }
+}
+
+fn raptor_full_yields_are_offered(board: Board) {
+    let Some(terminal) = full_yield_drive_returns(board, 6, |run| run.terminal) else {
+        return;
+    };
+    assert_eq!(
+        terminal,
+        Terminal::Offer {
+            predicted_winner: None,
+            mandatory: false
+        },
+        "FullYields"
+    );
+}
+
+/// CR 732.5 + CR 732.2a: P1's Lightning Bolt kills Marauding Raptor (CR 704.5g), so the
+/// token-copy loop is offered to P0 on every drive and accepting it draws; Off runs on.
+#[test]
+fn a_token_copy_loop_beside_p1s_bolt_is_offered() {
+    let board = Board {
+        optional: true,
+        ..RAPTOR
+    };
+    for drive in RAPTOR_DRIVES {
+        let leg = format!("{drive:?}");
+        let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_out_offer(&offered, &leg);
+        assert!(
+            offered.on_battlefield("Polyraptor").len() >= 2,
+            "{leg}: reach: a copy entered"
+        );
+        offer_accepted_is_a_draw(offered);
+
+        let Some(mut shortened) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        let stack = shortened.state().stack.len();
+        shortened.runner.act(DECLARE_WITHOUT_END).expect("declare");
+        shortened
+            .runner
+            .act(GameAction::RespondToShortcut {
+                response: ShortcutResponse::Shorten { at_iteration: 0 },
+            })
+            .expect("the current place");
+        assert_eq!(shortened.state().stack.len(), stack, "{leg}");
+        bolt_the_raptor_and_play_on(&mut shortened.runner, P1);
+    }
+    raptor_full_yields_are_offered(board);
+    raptor_copies_keep_coming_off(board);
+}
+
+/// CR 732.5 + CR 732.2a: P0's Lightning Bolt kills Marauding Raptor (CR 704.5g), so the
+/// token-copy loop is offered to P0 on every drive, accepting it draws, and declining it lets P0
+/// end it by play; Off runs on.
+#[test]
+fn a_token_copy_loop_beside_p0s_bolt_is_offered() {
+    let board = Board {
+        p0_out: true,
+        ..RAPTOR
+    };
+    for drive in RAPTOR_DRIVES {
+        let leg = format!("{drive:?}");
+        let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        assert_out_offer(&offered, &leg);
+        assert!(
+            offered.on_battlefield("Polyraptor").len() >= 2,
+            "{leg}: reach: a copy entered"
+        );
+        offer_accepted_is_a_draw(offered);
+
+        let Some(mut declined) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        declined
+            .runner
+            .act(GameAction::DeclineShortcut)
+            .expect("decline");
+        bolt_the_raptor_and_play_on(&mut declined.runner, P0);
+    }
+    raptor_full_yields_are_offered(board);
+    raptor_copies_keep_coming_off(board);
+}
+
+/// A period the recording shows without progress is refused before any replay, and a growth
+/// period is replayed.
+#[test]
+fn a_period_recorded_without_progress_is_offered_without_a_replay() {
+    for (board, replayed) in [
+        (
+            Board {
+                optional: true,
+                ..PLAIN
+            },
+            false,
+        ),
+        (
+            Board {
+                optional: true,
+                ..RAPTOR
+            },
+            true,
+        ),
+    ] {
+        for drive in EVERY_DRIVE {
+            let leg = format!("raptor={} {drive:?}", board.raptor);
+            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            assert_out_offer(&offered, &leg);
+            let replays: u64 = offered.replays.iter().map(|&(_, _, n)| n).sum();
+            assert_eq!(replays > 0, replayed, "{leg}: {replays} replays");
+        }
+    }
+}
+
+/// CR 701.24a + CR 732.2a: with no out held, the shuffle's recorded period shows neither
+/// progress nor stack growth, so it is offered without the witness replaying it; Board B with no
+/// out is replayed and declared.
+#[test]
+fn an_offered_period_recorded_without_progress_is_not_replayed() {
+    for drive in EVERY_DRIVE {
+        let leg = format!("{drive:?}");
+        let before = play_trace_counters();
+        let Some(offered) = run(WOOD_ELVES, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        let replays = play_trace_counters().since(before).mandatory_replays;
+        assert_out_offer(&offered, &leg);
+        assert_eq!(replays, 0, "{leg}");
+
+        let before = play_trace_counters();
+        let Some(declared) = run(RAPTOR, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        let replays = play_trace_counters().since(before).mandatory_replays;
+        assert_eq!(declared.terminal, Terminal::GameOver(None), "{leg}");
+        assert!(replays >= 1, "{leg}: reach: the growth period was replayed");
+    }
+}
+
+/// CR 701.24a + CR 732.2a: Wood Elves' shuffle each cycle beside Lumberknot's +1/+1 counter at
+/// each Dragon death, with no out held, is offered without end on every drive and accepting it
+/// draws; Off runs on.
+#[test]
+fn a_shuffle_beside_counter_growth_nothing_reads_is_offered() {
+    let board = Board {
+        lumberknot: true,
+        ..WOOD_ELVES
+    };
+    for drive in EVERY_DRIVE {
+        let leg = format!("{drive:?}");
+        let before = play_trace_counters();
+        let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        let replays = play_trace_counters().since(before).mandatory_replays;
+        assert_out_offer(&offered, &leg);
+        assert!(
+            replays >= 1,
+            "{leg}: reach: the witness replayed the period"
+        );
+        assert!(
+            offered.counters_on("Lumberknot", CounterType::Plus1Plus1) >= 1,
+            "{leg}: reach: Lumberknot grew"
+        );
+        assert!(
+            offered.state().rng.get_word_pos() > 0,
+            "{leg}: reach: the shuffles drew randomness"
+        );
+        offer_accepted_is_a_draw(offered);
+        run_off(board, drive, 60);
     }
 }

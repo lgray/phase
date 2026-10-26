@@ -166,10 +166,7 @@ fn an_out_only_charge_growth_loop_is_offered_not_marked() {
     );
 }
 
-/// PR-7 #7 (#4603 OFF gate): under `LoopDetectionMode::Off` the SAME charge-growth
-/// fixture never marks a revocable capability — the detector is fully dormant (the
-/// sampler never records under Off), restoring exact pre-feature behavior. Paired with
-/// #6 (Interactive offers), this proves the user-controllable toggle gates the feature.
+/// Under `LoopDetectionMode::Off` the charge-growth fixture is neither marked nor offered and never ends, because the sampler records nothing under Off.
 #[test]
 fn live_charge_growth_off_never_marks() {
     let (mut runner, kickoff, rider) = setup_2p_optional_charge_growth(LoopDetectionMode::Off);
