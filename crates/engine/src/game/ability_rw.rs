@@ -3226,7 +3226,6 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::PutCounterAll { count, target, .. }
         | Effect::Connive { target, count }
         | Effect::GivePlayerCounter { count, target, .. }
-        | Effect::PutAtLibraryPosition { target, count, .. }
         | Effect::ExtraTurn { target, count }
         | Effect::SkipNextTurn { target, count }
         | Effect::SkipNextStep { target, count, .. }
@@ -3234,6 +3233,16 @@ fn legacy_effect(x: &Effect) -> bool {
             amount: count,
             target,
         } => legacy_quantity_expr(count) || legacy_target_filter(target),
+        Effect::PutAtLibraryPosition {
+            target,
+            count,
+            arranger,
+            ..
+        } => {
+            legacy_quantity_expr(count)
+                || legacy_target_filter(target)
+                || arranger.as_ref().is_some_and(legacy_target_filter)
+        }
         Effect::AdditionalPhase {
             recipient, count, ..
         } => legacy_quantity_expr(count) || legacy_target_filter(recipient.as_target_filter()),
@@ -4388,6 +4397,7 @@ fn walk_ability(
         chosen_players: _,
         sub_link: _,
         target_reads: _, // origin of `Target` reads; the reads are profiled on condition/effect
+        entry_onset: _,  // CR 611.2e onset tag, no read or write
         sibling_condition: _, // replication marker, no read/write effect
         replacement_applied: _,
         parent_target_missing_reason: _,
@@ -4523,6 +4533,7 @@ fn walk_definition(
         target_selection_mode: _,
         sub_link: _,
         target_reads: _, // origin of `Target` reads; the reads are profiled on condition/effect
+        entry_onset: _,  // CR 611.2e onset tag, no read or write
         iteration_kind_binding: _,
         sibling_condition: _,
         // Parser scratch, not runtime state: `parse_oracle_pipeline` settles every
@@ -4971,6 +4982,7 @@ fn rw_effect(
             target: _,
             count,
             position: _,
+            arranger: _,
         } => {
             let mut p = ext_write(StateKind::HandLibrary);
             p.merge(rw_quantity_expr(count));
@@ -8890,6 +8902,7 @@ mod tests {
             target: t,
             count: qfix(1),
             position: LibraryPosition::Top,
+            arranger: None,
         };
         let destroy = |t: TargetFilter| Effect::Destroy {
             target: t,
