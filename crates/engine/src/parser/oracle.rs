@@ -4898,7 +4898,7 @@ fn apply_etb_exile_ltb_return(
                 // object's linked exile put there.
                 // CR 110.2a: the printed "under its/their owner's control" overrides the
                 // instructing-player default; enters_under: None resolves to the owner.
-                execute.effect = Box::new(Effect::ChangeZoneAll {
+                *execute.effect = Effect::ChangeZoneAll {
                     origin: Some(Zone::Exile),
                     destination: Zone::Battlefield,
                     target: TargetFilter::ExiledBySource,
@@ -4910,7 +4910,7 @@ fn apply_etb_exile_ltb_return(
                     library_position: None,
                     library_shuffle: Default::default(),
                     random_order: false,
-                });
+                };
             }
             LinkedReturnOutcome::ModifierUnsupported { fragment } => {
                 let Some(pos) = position_of(trigger_ids, *ltb_return) else {

@@ -1357,7 +1357,7 @@ mod tests {
         assert_eq!(
             live_mandatory_loop_winner(&start, &end, &delta),
             None,
-            "a determinate single-loser outcome is unambiguous only in 2-player"
+            "a bystander that does not fall leaves two non-fallers, so there is no single winner"
         );
     }
 

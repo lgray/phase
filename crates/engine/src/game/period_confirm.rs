@@ -2220,7 +2220,7 @@ mod tests {
         let standing = AutoPassMode::UntilTurnBoundary {
             until: TurnBoundary::MyNextTurnStart,
         };
-        frame.auto_pass.insert(PlayerId(1), standing.clone());
+        frame.auto_pass.insert(PlayerId(1), standing);
         frame.stack_resolution_session = Some(StackResolutionSession {
             entries: Vec::new(),
             cursor: 0,
