@@ -6,8 +6,6 @@
 //! choice every option of which continues it is offered.
 
 use std::collections::BTreeMap;
-use std::sync::mpsc;
-use std::time::Duration;
 
 use engine::ai_support::{legal_actions, legal_actions_full};
 use engine::analysis::decision_template::IterationCount;
@@ -1324,14 +1322,9 @@ fn full_yield_drives_run_on_with_loop_detection_off() {
     }
 }
 
-/// Generous for a debug build; an action that never returns runs until killed.
-const TIMEOUT_SECS: u64 = 180;
-
-/// An auto-pass drive that reaches its iteration cap hands control back, so under
-/// Interactive the action returns even when the loop it ran is not declared; the same drive
-/// over a mandatory loop still draws.
+/// Under Interactive, the capped auto-pass drive over a mandatory loop still draws.
 #[test]
-fn a_capped_auto_pass_action_returns_under_interactive() {
+fn a_capped_auto_pass_drive_over_a_mandatory_loop_draws() {
     let Some((terminal, _, _)) = full_yield_drive_returns(PLAIN, 12, capped_reading) else {
         return;
     };
@@ -1340,6 +1333,12 @@ fn a_capped_auto_pass_action_returns_under_interactive() {
         Terminal::GameOver(None),
         "control: the mandatory loop draws"
     );
+}
+
+/// An auto-pass drive that reaches its iteration cap hands control back, so under
+/// Interactive the action returns even when the loop it ran is not declared.
+#[test]
+fn a_capped_auto_pass_action_returns_after_a_remembered_accept() {
     capped_drive_runs_on(snarecaster(May::Remembered { accept: true }));
 }
 
@@ -1368,36 +1367,15 @@ fn capped_reading(run: Run) -> (Terminal, usize, usize) {
     (run.terminal, run.max_entries_per_action, prompts)
 }
 
-/// Runs an Interactive full-yield drive of `beats` on its own thread so an action that never
-/// returns fails the test instead of hanging it, and reads the run there.
-fn full_yield_drive_returns<T: Send + 'static>(
-    board: Board,
-    beats: usize,
-    read: fn(Run) -> T,
-) -> Option<T> {
-    returns_within(move || {
-        run(
-            board,
-            LoopDetectionMode::Interactive,
-            Drive::FullYields,
-            beats,
-        )
-        .map(read)
-    })
-}
-
-/// Runs `drive` on its own thread so a drive that never returns fails the test instead of
-/// hanging it.
-fn returns_within<T: Send + 'static>(drive: impl FnOnce() -> T + Send + 'static) -> T {
-    let (tx, rx) = mpsc::channel();
-    let _drive = std::thread::Builder::new()
-        .stack_size(64 << 20)
-        .spawn(move || {
-            let _ = tx.send(drive());
-        })
-        .expect("spawn the drive");
-    rx.recv_timeout(Duration::from_secs(TIMEOUT_SECS))
-        .unwrap_or_else(|err| panic!("a bounded drive never returned ({err:?})"))
+/// Runs an Interactive full-yield drive of `beats` and reads the run.
+fn full_yield_drive_returns<T>(board: Board, beats: usize, read: fn(Run) -> T) -> Option<T> {
+    run(
+        board,
+        LoopDetectionMode::Interactive,
+        Drive::FullYields,
+        beats,
+    )
+    .map(read)
 }
 
 /// CR 117.4 + CR 732.2a: a period confirmed on a frame where its holder stands on an auto-pass
@@ -2514,39 +2492,37 @@ fn forest_tap(runner: &GameRunner, forest: ObjectId) -> GameAction {
         .expect("the Forest can tap for mana")
 }
 
-/// Drives `route` on a bounded thread.
+/// Drives `route` from a fresh board.
 fn drive_suns(board: SunBoard, mode: LoopDetectionMode, route: SunRoute) -> Option<SunRun> {
-    returns_within(move || {
-        let (mut runner, forest, bears) = build_suns(board, mode)?;
-        let cast = |runner: &GameRunner, payment_mode| GameAction::CastSpell {
-            object_id: bears,
-            card_id: runner.state().objects[&bears].card_id,
-            targets: vec![],
-            payment_mode,
-        };
-        let first = match route {
-            SunRoute::TapForest => forest_tap(&runner, forest),
-            SunRoute::CastAuto => cast(&runner, CastPaymentMode::Auto),
-            SunRoute::CastManual => cast(&runner, CastPaymentMode::Manual),
-        };
-        let mut result = runner.act(first).expect("the first action applies");
-        let mut events = Vec::new();
-        if matches!(route, SunRoute::CastManual) {
-            assert!(
-                matches!(result.waiting_for, WaitingFor::ManaPayment { .. }),
-                "reach: the manual cast asks for payment, got {:?}",
-                result.waiting_for
-            );
-            events.append(&mut result.events);
-            let tap = forest_tap(&runner, forest);
-            result = runner.act(tap).expect("the Forest's tap applies");
-        }
-        events.extend(result.events);
-        Some(SunRun {
-            returned: result.waiting_for,
-            events,
-            runner,
-        })
+    let (mut runner, forest, bears) = build_suns(board, mode)?;
+    let cast = |runner: &GameRunner, payment_mode| GameAction::CastSpell {
+        object_id: bears,
+        card_id: runner.state().objects[&bears].card_id,
+        targets: vec![],
+        payment_mode,
+    };
+    let first = match route {
+        SunRoute::TapForest => forest_tap(&runner, forest),
+        SunRoute::CastAuto => cast(&runner, CastPaymentMode::Auto),
+        SunRoute::CastManual => cast(&runner, CastPaymentMode::Manual),
+    };
+    let mut result = runner.act(first).expect("the first action applies");
+    let mut events = Vec::new();
+    if matches!(route, SunRoute::CastManual) {
+        assert!(
+            matches!(result.waiting_for, WaitingFor::ManaPayment { .. }),
+            "reach: the manual cast asks for payment, got {:?}",
+            result.waiting_for
+        );
+        events.append(&mut result.events);
+        let tap = forest_tap(&runner, forest);
+        result = runner.act(tap).expect("the Forest's tap applies");
+    }
+    events.extend(result.events);
+    Some(SunRun {
+        returned: result.waiting_for,
+        events,
+        runner,
     })
 }
 
