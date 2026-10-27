@@ -2660,6 +2660,7 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
                 schema,
                 declaration,
                 road: crate::analysis::loop_check::OfferRoad::RecordedPeriod,
+                counted_take: crate::analysis::loop_check::CountedTake::Performs,
                 period,
             };
             result.waiting_for = state.waiting_for.clone();
@@ -2795,6 +2796,7 @@ fn interactive_loop_bridge_paths(
                 // empty), so there is nothing for a declaration to pin.
                 declaration: None,
                 road: crate::analysis::loop_check::OfferRoad::Ring,
+                counted_take: crate::analysis::loop_check::CountedTake::Performs,
                 period: Default::default(),
             };
             result.waiting_for = state.waiting_for.clone();
@@ -2853,7 +2855,7 @@ fn interactive_loop_bridge_paths(
         } else {
             crate::types::game_state::PriorityOut::Held
         });
-        let mut outs_offer: Option<usize> = None;
+        let mut outs_offer: Option<(usize, crate::analysis::loop_check::CountedTake)> = None;
         let drawn = !priors.is_empty() && {
             let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
             let ring_live: Vec<&GameState> = priors.iter().map(|sample| &sample.live).collect();
@@ -2898,8 +2900,14 @@ fn interactive_loop_bridge_paths(
                                 &current_marks,
                             ),
                         );
+                        // The ring legs recur on the drain's own delimiter, so only a choice
+                        // refuses their counted take.
                         if outs_offer.is_none() && profile.is_offered() {
-                            outs_offer = Some(idx);
+                            outs_offer = Some((
+                                idx,
+                                crate::analysis::loop_check::CountedTake::Performs
+                                    .naming_the_choice(&profile),
+                            ));
                         }
                         profile.is_forced()
                     }
@@ -2919,8 +2927,8 @@ fn interactive_loop_bridge_paths(
             return;
         }
         // CR 732.2a + CR 732.5: a period of outs and choices proven to continue is offered, not drawn.
-        if let Some(idx) = outs_offer {
-            offer_draw_without_end(state, result, &priors[idx].normalized);
+        if let Some((idx, counted_take)) = outs_offer {
+            offer_draw_without_end(state, result, &priors[idx].normalized, counted_take);
             return;
         }
     }
@@ -2961,14 +2969,15 @@ fn interactive_loop_bridge_paths(
                 // It is also the one disjunct the hoist leaves deriving: its current-side
                 // comparand is `equalize_generic_counters(prior, current)`, which depends on
                 // the prior.
-                let recurs =
+                let delimited =
                     crate::analysis::resource::loop_states_equal_modulo_resources_side(
                         prior, &frames,
-                    ) || crate::analysis::resource::loop_states_cover_modulo_growth(prior, &frames)
-                        || crate::analysis::resource::loop_states_cover_modulo_counter_growth(
-                            prior,
-                            frames.current(),
-                        );
+                    ) || crate::analysis::resource::loop_states_cover_modulo_growth(prior, &frames);
+                let recurs = delimited
+                    || crate::analysis::resource::loop_states_cover_modulo_counter_growth(
+                        prior,
+                        frames.current(),
+                    );
                 if !(recurs
                     && delta.is_net_progress()
                     && has_no_loss_axis(&delta)
@@ -2983,19 +2992,28 @@ fn interactive_loop_bridge_paths(
                 if delta.unbounded_axes_for(controller).is_empty() {
                     return None; // no unbounded axis for the driver ⇒ not this player's loop
                 }
-                resolve(
+                let profile = resolve(
                     state,
                     crate::types::game_state::LoopDecisionProfile::of_window(
                         priors[idx..].iter().map(|sample| &**sample),
                         &held,
                     ),
-                )
-                .is_offered()
-                .then_some(idx)
+                );
+                // The drain's delimiter never reads the counter-growth cover.
+                let counted_take = if delimited {
+                    crate::analysis::loop_check::CountedTake::Performs
+                } else {
+                    crate::analysis::loop_check::CountedTake::Unperformable(
+                        crate::analysis::loop_check::UnperformableCause::UndelimitedCover,
+                    )
+                };
+                profile
+                    .is_offered()
+                    .then(|| (idx, counted_take.naming_the_choice(&profile)))
             })
         };
-        if let Some(idx) = hit {
-            offer_draw_without_end(state, result, &priors[idx].normalized);
+        if let Some((idx, counted_take)) = hit {
+            offer_draw_without_end(state, result, &priors[idx].normalized, counted_take);
         }
     }
     // else: staggered-pod loss / non-beneficial optional loop ⇒ nothing is offered or decided.
@@ -3003,15 +3021,15 @@ fn interactive_loop_bridge_paths(
 
 /// CR 104.4b + CR 732.4: what the mandatory span the play trace holds at the top of the stack
 /// is: declared a draw, offered, or neither. The ring's last sample at or before the span's start
-/// must be in this window and begin the period read; an offered period's sample index is written
-/// to `outs_offer` when it holds none. The span's replayed reading is kept per span start and out
+/// must be in this window and begin the period read; an offered period's sample index and counted
+/// take are written to `outs_offer` when it holds none. The span's replayed reading is kept per span start and out
 /// verdict, so a verdict computed under one out verdict is never read under the other.
 fn mandatory_recurrence_witnessed(
     state: &mut GameState,
     priors: &[std::sync::Arc<crate::types::LoopDetectSample>],
     current_marks: &crate::types::game_state::LoopDecisionMarks,
     option_proof: &OptionProofCell,
-    outs_offer: &mut Option<usize>,
+    outs_offer: &mut Option<(usize, crate::analysis::loop_check::CountedTake)>,
 ) -> super::play_trace::Witnessed {
     use super::play_trace::Witnessed;
     use crate::types::game_state::PriorityOut;
@@ -3044,31 +3062,46 @@ fn mandatory_recurrence_witnessed(
                 priors[base..].iter().map(|sample| &**sample),
                 current_marks,
             );
-            let settle = |profile: &crate::types::game_state::LoopDecisionProfile| {
-                if profile.is_forced() {
-                    Witnessed::Declared
-                } else if profile.is_offered() {
-                    Witnessed::Offered
-                } else {
-                    Witnessed::Refused
-                }
+            let settle =
+                |profile: &crate::types::game_state::LoopDecisionProfile,
+                 counted_take: crate::analysis::loop_check::CountedTake| {
+                    if profile.is_forced() {
+                        Witnessed::Declared
+                    } else if profile.is_offered() {
+                        Witnessed::Offered(counted_take.naming_the_choice(profile))
+                    } else {
+                        Witnessed::Refused
+                    }
+                };
+            // CR 701.24a: randomness the replayed period draws is a member of the period too.
+            let joined = |mut profile: crate::types::game_state::LoopDecisionProfile,
+                          held: &super::period_confirm::HeldPeriod| {
+                profile
+                    .members
+                    .extend(held.replayed.members.iter().copied());
+                profile
             };
             let verdict = if profile.holds_unproven_option() {
                 // An option tree costs more than the replay, so only a period that holds is asked it.
-                if super::period_confirm::mandatory_period_holds(state, span) {
-                    settle(&profile.with_option_proof(|| lazy_option_proof(option_proof, state)))
-                } else {
-                    Witnessed::Refused
+                match super::period_confirm::mandatory_period_holds(state, span) {
+                    Some(held) => settle(
+                        &joined(
+                            profile.with_option_proof(|| lazy_option_proof(option_proof, state)),
+                            &held,
+                        ),
+                        held.counted_take,
+                    ),
+                    None => Witnessed::Refused,
                 }
             } else {
-                let verdict =
-                    settle(&profile.with_option_proof(|| lazy_option_proof(option_proof, state)));
+                let profile = profile.with_option_proof(|| lazy_option_proof(option_proof, state));
+                let verdict = settle(&profile, crate::analysis::loop_check::CountedTake::Performs);
                 // A profile neither drawn nor offered is refused before any replay.
                 if verdict == Witnessed::Refused {
                     return Witnessed::Refused;
                 }
                 // CR 104.4b + CR 704.5a + CR 704.5b + CR 704.5c: with no out held, an offered period is replayed only when its recorded window shows progress or stack growth and no loss axis.
-                if verdict == Witnessed::Offered {
+                if matches!(verdict, Witnessed::Offered(_)) {
                     match out {
                         PriorityOut::Absent
                             if !recorded_window_recurs(&priors[base].live, state) =>
@@ -3078,18 +3111,17 @@ fn mandatory_recurrence_witnessed(
                         PriorityOut::Absent | PriorityOut::Held => {}
                     }
                 }
-                if super::period_confirm::mandatory_period_holds(state, span) {
-                    verdict
-                } else {
-                    Witnessed::Refused
+                match super::period_confirm::mandatory_period_holds(state, span) {
+                    Some(held) => settle(&joined(profile, &held), held.counted_take),
+                    None => Witnessed::Refused,
                 }
             };
             super::play_trace::note_witnessed(state, span.start, out, verdict);
             verdict
         }
     };
-    if verdict == Witnessed::Offered && outs_offer.is_none() {
-        *outs_offer = Some(base);
+    if let Witnessed::Offered(counted_take) = verdict {
+        outs_offer.get_or_insert((base, counted_take));
     }
     verdict
 }
@@ -3131,7 +3163,12 @@ fn option_proof(
 
 /// CR 732.2a + CR 732.5: offers the priority holder a draw for a recurring period whose only
 /// non-mandatory member is an out; nobody is forced to use it.
-fn offer_draw_without_end(state: &mut GameState, result: &mut ActionResult, prior: &GameState) {
+fn offer_draw_without_end(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    prior: &GameState,
+    counted_take: crate::analysis::loop_check::CountedTake,
+) {
     let WaitingFor::Priority { player: proposer } = state.waiting_for else {
         unreachable!("interactive bridge only runs during priority")
     };
@@ -3153,6 +3190,7 @@ fn offer_draw_without_end(state: &mut GameState, result: &mut ActionResult, prio
         ),
         declaration: None,
         road: crate::analysis::loop_check::OfferRoad::Ring,
+        counted_take,
         period: Default::default(),
     };
     result.waiting_for = state.waiting_for.clone();
@@ -3742,6 +3780,7 @@ fn certified_bounded_cycle_offer<'a>(
             schema,
             declaration,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: crate::analysis::loop_check::CountedTake::Performs,
             period: Default::default(),
         },
     )
@@ -5910,14 +5949,7 @@ fn apply_until_lethal_shortcut(
     // captures (the cover/equal-modulo checks normalize internally, so this is a
     // self-contained canonical frame). `snapshot`'s life/poison/library axes are unaffected by
     // `normalize_for_loop`, so `before` is the pre-drive resource baseline.
-    let boundary = {
-        let mut seed = committed.clone();
-        priority::reset_priority(&mut seed);
-        seed.waiting_for = WaitingFor::Priority {
-            player: seed.active_player,
-        };
-        seed.normalize_for_loop()
-    };
+    let boundary = take_boundary(&committed);
     let before = crate::analysis::resource::ResourceVector::snapshot(&boundary);
     let period = shortcut_drive_period(proposal.template.as_ref());
 
@@ -6117,9 +6149,8 @@ fn until_lethal_fallback(
 /// DORMANT for every Stage-2 crownable loop (Ruling B). The producer
 /// `game::interaction::materialize_loop_shortcut_response` emits a ONE-entry `Constant` on an
 /// `UntilLethal` offer and a `Piecewise` on a `Fixed` one, and NEITHER MOVES THIS FUNCTION'S
-/// ANSWER OFF 1 — the reason is which consumer sees which. This function's consumers are
-/// [`shortcut_validated_range`]'s `UntilLethal | WithoutEnd` arm and
-/// `apply_until_lethal_shortcut`, none of them a FIXED-count path, and the multi-STEP shape is minted only under a FIXED count, which reads
+/// ANSWER OFF 1 — the reason is which consumer sees which. Its consumer is
+/// `apply_until_lethal_shortcut`, not a FIXED-count path, and the multi-STEP shape is minted only under a FIXED count, which reads
 /// its range off the count and never consults a schedule. A MULTI-entry `Constant` can still
 /// reach here from a decoded save — `declaration_conforms` refuses one at DECLARE, not at load —
 /// and it lands on the same `Constant(_)` arm and returns 1, since
@@ -6128,11 +6159,24 @@ fn until_lethal_fallback(
 /// fallers, and a loop whose targets do not rotate produces no NEW player faller per cycle to
 /// aggregate.
 ///
-/// SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. Both consumers
-/// derive their `0..period` range from this one helper (`validate_pins` and
-/// `apply_until_lethal_shortcut`), so the clamp bounds validate + drive coherently.
+/// SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. The validated extent
+/// is clamped the same way.
 fn shortcut_drive_period(
     template: Option<&crate::analysis::decision_template::DecisionTemplate>,
+) -> crate::analysis::decision_template::IterationIndex {
+    use crate::analysis::decision_template::TargetSchedule;
+    schedule_bound(template, |schedule| match schedule {
+        TargetSchedule::RoundRobin(steps) => steps.len() as u32,
+        TargetSchedule::Piecewise(steps) => steps.len() as u32,
+        TargetSchedule::Constant(_) => 1,
+    })
+}
+
+/// The largest `measure` of the template's rotating target schedules; a `Constant` schedule, any
+/// other pin, or no template counts 1.
+fn schedule_bound(
+    template: Option<&crate::analysis::decision_template::DecisionTemplate>,
+    measure: impl Fn(&crate::analysis::decision_template::TargetSchedule) -> u32,
 ) -> crate::analysis::decision_template::IterationIndex {
     use crate::analysis::decision_template::{PinnedDecision, TargetPin, TargetSchedule};
     let Some(t) = template else { return 1 };
@@ -6142,8 +6186,9 @@ fn shortcut_drive_period(
             PinnedDecision::Targets { targets, .. } => targets
                 .iter()
                 .map(|tp| match tp {
-                    TargetPin::Scheduled(TargetSchedule::RoundRobin(v)) => v.len() as u32,
-                    TargetPin::Scheduled(TargetSchedule::Piecewise(v)) => v.len() as u32,
+                    TargetPin::Scheduled(
+                        schedule @ (TargetSchedule::RoundRobin(_) | TargetSchedule::Piecewise(_)),
+                    ) => measure(schedule),
                     TargetPin::Scheduled(TargetSchedule::Constant(_))
                     | TargetPin::ByIdentity(_)
                     | TargetPin::Player(_) => 1,
@@ -6165,11 +6210,10 @@ fn shortcut_drive_period(
 }
 
 /// CR 732.2a: the index range the declare-time firewall must validate a pin over — the range
-/// the ACCEPTED COUNT will actually drive, read off the two drive loops themselves:
+/// the accepted count, or any CR 732.2b shorten of it, can drive:
 /// `materialize_fixed_shortcut` drives `for i in 0..n` for a `Fixed(n)`, and
-/// `apply_until_lethal_shortcut` drives whole periods for `UntilLethal`, whose length is
-/// [`shortcut_drive_period`]; `WithoutEnd` drives nothing itself, but a CR 732.2b shorten turns
-/// it into a `Fixed` count over the same template, so it takes the same range.
+/// `UntilLethal` and `WithoutEnd` name no count, and a CR 732.2b shorten may name any index, so
+/// they take the schedule's extent, past which every schedule repeats its value.
 ///
 /// THIS IS NOT `shortcut_drive_period`, and the difference is the whole point of the fix.
 /// That helper answers "how many cycles must one measurement aggregate" — a schedule property
@@ -6201,7 +6245,16 @@ pub(crate) fn shortcut_validated_range(
         crate::analysis::decision_template::IterationCount::Fixed(n) => *n,
         crate::analysis::decision_template::IterationCount::UntilLethal
         | crate::analysis::decision_template::IterationCount::WithoutEnd => {
-            shortcut_drive_period(template)
+            use crate::analysis::decision_template::TargetSchedule;
+            schedule_bound(template, |schedule| match schedule {
+                TargetSchedule::RoundRobin(steps) => steps.len() as u32,
+                TargetSchedule::Piecewise(steps) => steps
+                    .iter()
+                    .map(|(start, _)| start.saturating_add(1))
+                    .max()
+                    .unwrap_or(1),
+                TargetSchedule::Constant(_) => 1,
+            })
         }
     }
 }
@@ -6286,6 +6339,23 @@ fn seats_in_game(state: &GameState) -> usize {
 /// `waiting_for` being `Priority` at the sample point, so they stay in the settle arm.
 fn published_period_elapsed(frames_this_cycle: u32, frames_per_period: Option<u32>) -> bool {
     frames_per_period.is_some_and(|k| frames_this_cycle >= k)
+}
+
+/// The board a shortcut take compares its settle frames against: `state` seeded to its active
+/// player's priority and normalized.
+pub(crate) fn take_boundary(state: &GameState) -> GameState {
+    let mut seed = state.clone();
+    priority::reset_priority(&mut seed);
+    seed.waiting_for = WaitingFor::Priority {
+        player: seed.active_player,
+    };
+    seed.normalize_for_loop()
+}
+
+/// Whether a settle frame recurs against `boundary` on the take's board predicates.
+pub(crate) fn settle_recurs(boundary: &GameState, settled: &GameState) -> bool {
+    crate::analysis::resource::loop_states_equal_modulo_resources(boundary, settled)
+        || crate::analysis::resource::loop_states_cover_modulo_growth(boundary, settled)
 }
 
 /// PR-7 Combo-UI Stage 2: drive ONE whole cycle of a confirmed loop shortcut on a fresh clone
@@ -6419,8 +6489,7 @@ fn drive_one_shortcut_cycle(
                     frames_this_cycle += 1;
                 }
                 let norm = work.normalize_for_loop();
-                if crate::analysis::resource::loop_states_equal_modulo_resources(boundary, &norm)
-                    || crate::analysis::resource::loop_states_cover_modulo_growth(boundary, &norm)
+                if settle_recurs(boundary, &norm)
                     || published_period_elapsed(frames_this_cycle, frames_per_period)
                 {
                     return CycleOutcome::Recurred {
@@ -7050,14 +7119,7 @@ fn materialize_fixed_shortcut(
     // → `normalize_for_loop`), so the extra `.normalize_for_loop()` here is redundant with
     // that internal call but harmless (idempotent) — kept for a self-contained boundary
     // value whose `waiting_for`/ring fields are already canonical at the call sites below.
-    let boundary = {
-        let mut seed = committed.clone();
-        priority::reset_priority(&mut seed);
-        seed.waiting_for = WaitingFor::Priority {
-            player: seed.active_player,
-        };
-        seed.normalize_for_loop()
-    };
+    let boundary = take_boundary(&committed);
 
     let cycle_beat_cap = auto_pass_loop_max_iterations(&committed);
 
@@ -8627,6 +8689,7 @@ struct LoopShortcutOffer<'a> {
     /// resolves against it.
     declaration: Option<&'a crate::analysis::decision_template::DecisionTemplate>,
     road: crate::analysis::loop_check::OfferRoad,
+    counted_take: crate::analysis::loop_check::CountedTake,
     period: &'a super::period_confirm::ConfirmedPeriod,
 }
 
@@ -8856,6 +8919,25 @@ fn handle_declare_shortcut(
         }
         None => {}
     }
+    // Refused before any state write, so the proposer keeps the offer and can declare without
+    // end or decline.
+    match &count {
+        crate::analysis::decision_template::IterationCount::Fixed(n) => {
+            if let Some(cause) = offer.counted_take.refusal(*n) {
+                return Err(EngineError::InvalidAction(cause.reason().to_string()));
+            }
+        }
+        crate::analysis::decision_template::IterationCount::UntilLethal
+            if offer.predicted_winner.is_none() =>
+        {
+            return Err(EngineError::InvalidAction(
+                "CR 732.2a: an offer naming no winner has no ending point where a player loses"
+                    .to_string(),
+            ));
+        }
+        crate::analysis::decision_template::IterationCount::UntilLethal
+        | crate::analysis::decision_template::IterationCount::WithoutEnd => {}
+    }
     let proposal = crate::analysis::loop_check::ShortcutProposal {
         proposer: offer.proposer,
         predicted_winner: offer.predicted_winner,
@@ -8875,6 +8957,7 @@ fn handle_declare_shortcut(
         published_declaration: offer.declaration.cloned(),
         leading_aims: offer.schema.leading_aims.clone(),
         road: offer.road,
+        counted_take: offer.counted_take,
         period: offer.period.clone(),
     };
     // CR 732.2b: living opponents in APNAP turn order, starting after the proposer.
@@ -8981,6 +9064,9 @@ fn handle_respond_to_shortcut(
                 "Shortcut place {at_iteration} is inside the proposed sequence, but this engine \
                  will not take the sequence there"
             )));
+        }
+        if let Some(cause) = proposal.counted_take.refusal(at_iteration) {
+            return Err(EngineError::InvalidAction(cause.reason().to_string()));
         }
     }
     let mut result = ActionResult::applied(std::mem::take(events), state.waiting_for.clone());
@@ -14178,6 +14264,7 @@ fn apply_non_priority_pass_action(
                 // proposal against the SAME offer.
                 declaration,
                 road,
+                counted_take,
                 period,
             },
             GameAction::DeclareShortcut { count, template },
@@ -14191,6 +14278,7 @@ fn apply_non_priority_pass_action(
                     schema,
                     declaration: declaration.as_ref(),
                     road: *road,
+                    counted_take: *counted_take,
                     period,
                 },
                 count,
@@ -22343,6 +22431,7 @@ mod stage2_injector_tests {
             published_declaration: None,
             leading_aims: Vec::new(),
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         let mut result =
@@ -22495,6 +22584,7 @@ mod stage2_injector_tests {
             published_declaration: None,
             leading_aims: Vec::new(),
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         let mut result =
@@ -24943,6 +25033,7 @@ mod stage2_injector_tests {
             },
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::RecordedPeriod,
+            counted_take: Default::default(),
             period: Default::default(),
         };
     }

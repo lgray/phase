@@ -1113,6 +1113,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     let wf_b = WaitingFor::LoopShortcut {
@@ -1122,6 +1123,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     assert_eq!(wf_a.acting_player(), Some(P1));
@@ -1141,6 +1143,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         published_declaration: None,
         leading_aims: Vec::new(),
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     let wf_r = WaitingFor::RespondToShortcut {
@@ -1164,6 +1167,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     apply(&mut delegated, P0, GameAction::DeclineShortcut)
@@ -1757,6 +1761,7 @@ fn injected_3p_one_faller_no_crown() {
         schema: ShortcutDecisionSchema::default(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     runner
@@ -1792,11 +1797,9 @@ fn injected_3p_one_faller_no_crown() {
     );
 }
 
-/// Test C ⭐ (LATENT FIX, item 5 object-growth branch): an object-growth ADVANTAGE token loop
-/// declared `UntilLethal` (the AI hardcode shape) does NOT crown — the E1 object-growth branch
-/// drives one recast, measures NO life/poison faller (only tokens grew), so
-/// `live_mandatory_loop_winner` returns None and the shortcut falls back to manual play.
-/// REVERT-PROBE: the pre-E1 unconditional UntilLethal crown wrongly ends the game here.
+/// CR 732.2a: an object-growth ADVANTAGE token loop's offer names no winner, so an `UntilLethal`
+/// declaration names no ending point where a player loses and is refused with the offer, the
+/// board and the trace unchanged.
 #[test]
 fn object_growth_advantage_untillethal_no_crown() {
     let (mut runner, sprout, fodder) = sprout_swarm_scenario(4);
@@ -1820,30 +1823,35 @@ fn object_growth_advantage_untillethal_no_crown() {
         "the real cast must have grown the board (object-growth branch reachable)"
     );
 
-    runner
+    let board = |state: &GameState| {
+        (
+            state.waiting_for.clone(),
+            state.stack.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            state
+                .objects
+                .iter()
+                .map(|(id, object)| (*id, object.zone))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+            format!("{:?}", engine::game::play_trace_view(state)),
+        )
+    };
+    let offer = board(runner.state());
+    let refused = runner
         .act(GameAction::DeclareShortcut {
             count: IterationCount::UntilLethal,
             template: None,
         })
-        .expect("P0 declares UntilLethal on the Advantage offer (AI-hardcode shape)");
-    accept_all_opponents(&mut runner);
-
+        .err();
     assert!(
-        !matches!(runner.state().waiting_for, WaitingFor::GameOver { .. }),
-        "an inert Advantage token loop must NOT crown under UntilLethal, got {:?}",
-        runner.state().waiting_for
+        matches!(refused, Some(EngineError::InvalidAction(_))),
+        "{refused:?}"
     );
     assert!(
-        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
-        "the E1 object-growth measure hands back to manual play, got {:?}",
+        board(runner.state()) == offer,
+        "the offer, the board and the trace are the offer's, got {:?}",
         runner.state().waiting_for
     );
-    for p in [P0, P1] {
-        assert!(
-            life(&runner, p) > 0,
-            "no player crossed lethal (no drain axis)"
-        );
-    }
 }
 
 /// Test E ⭐ (SOUNDNESS #1 firewall, item 3): the declare-time `validate_pins` firewall REJECTS
@@ -1906,6 +1914,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         schema: schema.clone(),
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     runner
@@ -1929,6 +1938,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         schema,
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     runner2
@@ -1988,6 +1998,7 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         runner
@@ -4270,6 +4281,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
         schema,
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
 
@@ -4403,6 +4415,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                 published_declaration: None,
                 leading_aims: Vec::new(),
                 road: engine::analysis::loop_check::OfferRoad::Ring,
+                counted_take: Default::default(),
                 period: Default::default(),
             },
         };
@@ -6063,6 +6076,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                 published_declaration: None,
                 leading_aims: Vec::new(),
                 road: engine::analysis::loop_check::OfferRoad::Ring,
+                counted_take: Default::default(),
                 period: Default::default(),
             },
         };
@@ -7182,6 +7196,7 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
                 schema: schema.clone(),
                 declaration: None,
                 road: engine::analysis::loop_check::OfferRoad::Ring,
+                counted_take: Default::default(),
                 period,
             };
             runner
@@ -9361,6 +9376,7 @@ fn bounded_offer_parts(
             schema,
             declaration: _,
             road: _,
+            counted_take: _,
             period: _,
         } => (*proposer, certificate, schema),
         other => panic!("expected a bounded LoopShortcut offer, got {other:?}"),
@@ -11410,8 +11426,8 @@ fn declining_a_shortcut_discards_only_the_decliners_own_driving_period() {
 /// CR 732.2a — an aborted `UntilLethal` drive ends at priority without re-raising the offer it
 /// abandoned, and discards only the proposer's own plays from the window's trace.
 ///
-/// The object-growth fixture is used because the fallback is reached only when the drive refuses
-/// to crown, and `object_growth_advantage_untillethal_no_crown` shows this board does exactly that.
+/// The three-player drain with unequal opponent lives is used because its take refuses to crown
+/// (`injected_3p_unequal_life_pin_all_no_crown`) on an offer naming P0.
 ///
 /// | arm | trace at the accept | assertion |
 /// |---|---|---|
@@ -11419,72 +11435,78 @@ fn declining_a_shortcut_discards_only_the_decliners_own_driving_period() {
 /// | OWN | the proposer's own, as played | discarded, no re-offer |
 #[test]
 fn an_aborted_until_lethal_drive_discards_only_the_proposers_own_driving_period() {
-    // The shipped abort path, re-derived per arm: cast the recast, take the object-growth offer,
-    // declare `UntilLethal` (the AI's hardcoded shape), and let every opponent accept.
     let offer_state = || {
-        let (mut runner, sprout, fodder) = sprout_swarm_scenario(4);
-        let _ = runner
-            .cast(sprout)
-            .accept_optional()
-            .convoke_with(&[fodder[0]])
-            .commit()
-            .resolve();
-        let WaitingFor::LoopShortcut { proposer, .. } = runner.state().waiting_for.clone() else {
-            panic!(
-                "REACH-GUARD: the object-growth cast must OFFER, got {:?}",
-                runner.state().waiting_for
-            )
+        let (mut runner, kickoff) = setup_3p_both_fall(LoopDetectionMode::Interactive, 1000, 1050);
+        let _ = runner.cast(kickoff).resolve();
+        let (_events, _wf, primed, _declined) =
+            drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
+        assert!(primed, "REACH-GUARD: the drain reached its recurring state");
+        runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+            proposer: P0,
+            predicted_winner: Some(P0),
+            certificate: synthetic_lethal_cert(),
+            schema: ShortcutDecisionSchema::default(),
+            declaration: None,
+            road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
+            period: Default::default(),
         };
         runner
             .act(GameAction::DeclareShortcut {
                 count: IterationCount::UntilLethal,
                 template: None,
             })
-            .expect("the proposer declares UntilLethal on its own object-growth offer");
-        (runner, proposer, sprout)
+            .expect("P0 declares UntilLethal on an offer naming P0");
+        runner
     };
-    // ── FOREIGN: seat B's play stands in the trace when seat A's drive aborts ──
-    let (mut runner, proposer, _) = offer_state();
-    let opp = runner
-        .state()
-        .players
-        .iter()
-        .map(|p| p.id)
-        .find(|p| *p != proposer)
-        .expect("REACH-GUARD: the foreign period needs a second seat to belong to");
+    let lives = |runner: &GameRunner| (life(runner, P1), life(runner, P2));
+
+    // ── FOREIGN: P1's play stands in the trace when P0's drive aborts ──
+    let mut runner = offer_state();
     engine::game::install_plays_for_tests(
         runner.state_mut(),
-        &[(opp, engine::game::PlayLocus::Unread)],
+        &[(P1, engine::game::PlayLocus::Unread)],
     );
+    let before = lives(&runner);
     accept_all_opponents(&mut runner);
-    assert!(
-        !matches!(runner.state().waiting_for, WaitingFor::GameOver { .. }),
-        "REACH-GUARD: this row is about the FALLBACK, so the drive must refuse to crown — a \
-         crowned drive never reaches the clear and the assertion below would be vacuous; got {:?}",
-        runner.state().waiting_for
+    assert_eq!(
+        lives(&runner),
+        before,
+        "REACH-GUARD: the take fell back to the offer's board rather than crowning"
     );
     assert_eq!(
         trace_seats(runner.state()),
-        vec![opp],
-        "CR 732.2a: {proposer:?}'s aborted drive must leave {opp:?}'s accumulating period intact"
+        vec![P1],
+        "CR 732.2a: P0's aborted drive must leave P1's accumulating period intact"
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
+        "no re-offer; got {:?}",
+        runner.state().waiting_for
     );
 
     // ── OWN: the must-not-flip half. The clear is the anti-livelock suppressor for the proposer. ──
-    let (mut runner, proposer, _) = offer_state();
+    let mut runner = offer_state();
     assert!(
-        trace_seats(runner.state()).contains(&proposer),
-        "REACH-GUARD: the real recast must have traced the PROPOSER'S own plays, else this arm \
-         tests an empty trace that is cleared by doing nothing"
+        trace_seats(runner.state()).contains(&P0),
+        "REACH-GUARD: the drain traced the PROPOSER'S own plays, else this arm tests an empty \
+         trace that is cleared by doing nothing"
     );
+    let before = lives(&runner);
     accept_all_opponents(&mut runner);
+    assert_eq!(
+        lives(&runner),
+        before,
+        "REACH-GUARD: the take fell back to the offer's board rather than crowning"
+    );
     assert!(
-        !trace_seats(runner.state()).contains(&proposer),
+        !trace_seats(runner.state()).contains(&P0),
         "CR 732.2a: the proposer's OWN plays must still be discarded — without them gone the \
          reconcile re-names the loop just abandoned and livelocks; seats = {:?}",
         trace_seats(runner.state())
     );
     assert!(
-        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
         "and the abandoned offer must not have been re-raised; got {:?}",
         runner.state().waiting_for
     );
@@ -12336,6 +12358,7 @@ fn restored_proposal(
         published_declaration: None,
         leading_aims: Vec::new(),
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     }
 }
@@ -14605,6 +14628,7 @@ fn g1_declare_verdict(
         schema,
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     runner
@@ -14670,6 +14694,117 @@ fn declared_count_beyond_the_published_schedule_window_is_refused() {
         ),
         "attribution control: with BOTH arms published, count 8 is conforming — so A's \
          refusal is the published set and not the count"
+    );
+}
+
+/// CR 732.2a + CR 732.2b: an unbounded declaration names no count, and a shorten may name any
+/// place, so its pins are validated over the schedule's extent: a schedule switching to an
+/// unpublished target at index 5 is refused into the manual-play handback without end and until
+/// lethal, as at count 7, while a count short of the switch, or both targets published, is
+/// ingested. On the live drain the same refusal leaves P1's life untouched, and the schedule that
+/// stays on the published Cleric crowns P0.
+#[test]
+fn an_unbounded_declaration_is_validated_over_its_schedules_extent() {
+    for count in [IterationCount::UntilLethal, IterationCount::WithoutEnd] {
+        assert!(
+            matches!(
+                g1_declare_verdict(false, count.clone(), &piecewise_a_then_b, false),
+                WaitingFor::Priority { player: P0 }
+            ),
+            "{count:?}: the schedule reaches the unpublished target"
+        );
+        assert!(
+            matches!(
+                g1_declare_verdict(true, count.clone(), &piecewise_a_then_b, false),
+                WaitingFor::RespondToShortcut { .. }
+            ),
+            "{count:?}: attribution: with both targets published the declaration is ingested"
+        );
+    }
+    assert!(
+        matches!(
+            g1_declare_verdict(false, IterationCount::Fixed(5), &piecewise_a_then_b, false),
+            WaitingFor::RespondToShortcut { .. }
+        ),
+        "reach-guard: a count short of the switch is ingested"
+    );
+
+    let drain_template = |cleric: ObjectId, later: ObjectId| {
+        let source = |id: ObjectId| YieldTarget::ThisObject {
+            source_id: id,
+            incarnation: None,
+            trigger_description: None,
+        };
+        DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::Targets {
+                slot: pin_slot(source(cleric)),
+                targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
+                    (0, obj_rank(source(cleric))),
+                    (5, obj_rank(source(later))),
+                ]))],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(
+                std::slice::from_ref(&source(cleric)),
+                DecisionKind::LoopChoice,
+            ),
+        }
+    };
+    let drained = |unpublished: bool| {
+        let (mut runner, l0, cleric) = reach_2p_optional_drain_offer();
+        let source = YieldTarget::ThisObject {
+            source_id: cleric,
+            incarnation: None,
+            trigger_description: None,
+        };
+        publish_targets_point(
+            &mut runner,
+            pin_slot(source),
+            vec![TargetRef::Object(cleric)],
+        );
+        let later = if unpublished {
+            ObjectId(u64::MAX)
+        } else {
+            cleric
+        };
+        runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: Some(drain_template(cleric, later)),
+            })
+            .expect("declare dispatch succeeds (a refusal is a manual handback)");
+        (runner, l0)
+    };
+    let (refused, l0) = drained(true);
+    assert!(
+        matches!(
+            refused.state().waiting_for,
+            WaitingFor::Priority { player: P0 }
+        ),
+        "{:?}",
+        refused.state().waiting_for
+    );
+    assert_eq!(
+        life(&refused, P1),
+        l0,
+        "the refused declaration drives nothing"
+    );
+    let (mut admitted, _) = drained(false);
+    assert!(
+        matches!(
+            admitted.state().waiting_for,
+            WaitingFor::RespondToShortcut { .. }
+        ),
+        "reach-guard: the published schedule is ingested, got {:?}",
+        admitted.state().waiting_for
+    );
+    accept_all_opponents(&mut admitted);
+    assert_eq!(
+        admitted.state().waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) }
     );
 }
 
@@ -15325,6 +15460,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         schema,
         declaration: _,
         road,
+        counted_take: _,
         period: _,
     } = runner.state().waiting_for.clone()
     else {
@@ -15346,6 +15482,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         // publishes no declaration, at the very fixture that stages an empty schema.
         declaration: None,
         road,
+        counted_take: Default::default(),
         period: Default::default(),
     };
 }
@@ -15364,6 +15501,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         schema,
         declaration: _,
         road,
+        counted_take: _,
         period: _,
     } = runner.state().waiting_for.clone()
     else {
@@ -15394,6 +15532,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         // `Some` here would add a second axis to a pair whose whole value is being one apart.
         declaration: None,
         road,
+        counted_take: Default::default(),
         period: Default::default(),
     };
 }
@@ -16134,6 +16273,7 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
             key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
         }),
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
 

@@ -166,6 +166,66 @@ pub enum OfferRoad {
     RecordedPeriod,
 }
 
+/// CR 732.2a: whether a counted take of an offer performs, or why none does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CountedTake {
+    /// A declared or shortened count drives that many repetitions.
+    #[default]
+    Performs,
+    /// No count above zero is taken, for this cause.
+    Unperformable(UnperformableCause),
+}
+
+/// Why no counted take of an offer performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnperformableCause {
+    /// CR 732.2c: each repetition makes a target or card choice no declaration of the offer
+    /// contains.
+    UncontainedChoice,
+    /// The period recurs only where the ring drain's cycle delimiter does not fire.
+    UndelimitedCover,
+}
+
+impl CountedTake {
+    pub fn is_performs(&self) -> bool {
+        *self == Self::Performs
+    }
+
+    /// The cause that refuses `cycles` repetitions, if one does; zero repetitions drive nothing.
+    pub fn refusal(self, cycles: u32) -> Option<UnperformableCause> {
+        match self {
+            Self::Performs => None,
+            Self::Unperformable(cause) => (cycles > 0).then_some(cause),
+        }
+    }
+
+    /// This take, naming the choice when `profile` holds a target or card choice.
+    pub(crate) fn naming_the_choice(
+        self,
+        profile: &crate::types::game_state::LoopDecisionProfile,
+    ) -> Self {
+        if profile
+            .members
+            .contains(&crate::types::game_state::LoopDecision::Continuing)
+        {
+            Self::Unperformable(UnperformableCause::UncontainedChoice)
+        } else {
+            self
+        }
+    }
+}
+
+impl UnperformableCause {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::UncontainedChoice => {
+                "CR 732.2a: the proposal contains no choice its repetitions make"
+            }
+            Self::UndelimitedCover => "this engine will not take a counted repetition of this loop",
+        }
+    }
+}
+
 /// CR 732.2a: the log/display summary a `WaitingFor::RespondToShortcut` carries to each
 /// responding opponent — "the player with priority suggests repeating this loop N times".
 ///
@@ -226,6 +286,9 @@ pub struct ShortcutProposal {
     pub shortened_by: Option<PlayerId>,
     /// The producer that minted the offer this proposal was declared against, copied off it.
     pub road: OfferRoad,
+    /// The counted take of the offer this proposal was declared against, copied off it.
+    #[serde(default, skip_serializing_if = "CountedTake::is_performs")]
+    pub counted_take: CountedTake,
     /// CR 732.2a: the confirmed period of the offer this proposal was declared against, copied
     /// off it; stripped for every viewer.
     #[serde(

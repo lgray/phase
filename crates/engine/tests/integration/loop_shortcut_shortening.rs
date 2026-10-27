@@ -936,6 +936,10 @@ fn interaction_admits(state: &GameState, at_iteration: u32) -> bool {
 /// The at-or-below partition keeps its own counting reach-guard — a dead projection and a
 /// blanket refusal both fail it — and the above-budget partition is asserted non-empty, so
 /// routing the submission gate through the same predicate would empty it and fire.
+///
+/// Below the budget the layers part on a proposal with no counted take: the projection publishes
+/// its later places and the reducer refuses them, while the current place is both published and
+/// honored.
 #[test]
 fn the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it() {
     let bound = weird_offer_bound();
@@ -1007,6 +1011,28 @@ fn the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it(
         "reach-guard on the parting partition: no probed place landed above the budget, so the \
          disagreement above was asserted over nothing"
     );
+
+    let Some(mut state) = crate::mandatory_loop_draws::two_targets_without_end_window() else {
+        return;
+    };
+    bind_interaction_authority(&mut state, InteractionSessionId("shortening".to_string()))
+        .expect("the responder window binds interaction authority");
+    assert!(
+        !crate::mandatory_loop_draws::counted_take(&state).is_performs(),
+        "reach-guard: the proposal carries no counted take"
+    );
+    for place in [0, 1, 2] {
+        let mut board = state.clone();
+        assert!(
+            interaction_admits(&state, place),
+            "place {place} is inside the proposal's own range, so the projection publishes it"
+        );
+        assert_eq!(
+            shorten(&mut board, place).is_ok(),
+            place == 0,
+            "the reducer honors the current place alone, not place {place}"
+        );
+    }
 }
 
 /// One proposal, two responders queued behind it: the refusal binds to the proposal, not to

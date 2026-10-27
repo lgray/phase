@@ -3733,6 +3733,7 @@ pub fn candidate_actions_broad_with_probe(
         // (Scored by `phase_ai::policies::loop_shortcut::LoopShortcutPolicy`.)
         WaitingFor::LoopShortcut {
             proposer,
+            predicted_winner,
             schema,
             declaration,
             period,
@@ -3758,10 +3759,12 @@ pub fn candidate_actions_broad_with_probe(
                 crate::analysis::decision_template::IterationCount::WithoutEnd => {
                     Some(crate::analysis::decision_template::IterationCount::WithoutEnd)
                 }
+                // CR 732.2a: until lethal ends only where the offer's named winner wins.
                 crate::analysis::decision_template::IterationCount::Fixed(_)
-                | crate::analysis::decision_template::IterationCount::UntilLethal => (!schema
-                    .is_bounded())
-                .then_some(crate::analysis::decision_template::IterationCount::UntilLethal),
+                | crate::analysis::decision_template::IterationCount::UntilLethal => {
+                    (!schema.is_bounded() && predicted_winner.is_some())
+                        .then_some(crate::analysis::decision_template::IterationCount::UntilLethal)
+                }
             };
             if let Some(count) = unbounded {
                 v.push(candidate(
@@ -7086,6 +7089,7 @@ mod tests {
             schema: crate::analysis::decision_template::ShortcutDecisionSchema::default(),
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
 
@@ -9975,6 +9979,7 @@ mod tests {
             },
             declaration,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         state

@@ -576,37 +576,79 @@ fn board_b_is_offered_at_its_base_window_with_its_target_answers() {
     );
 }
 
-/// CR 732.2a + CR 732.2c: an until-lethal proposal on a trigger-driven offer, whose mint names no
-/// winner, ends at priority with the board untouched and the proposer's trace discarded.
+/// CR 732.2a: an until-lethal proposal names an ending point where a player loses, so on a
+/// trigger-driven offer, whose mint names no winner, it is refused with the offer, the board and
+/// the trace unchanged.
 #[test]
 fn an_until_lethal_take_of_a_trigger_driven_offer_changes_nothing() {
     let Some((mut drive, _)) = offered(Board::A) else {
         return;
     };
     let offer = board_fingerprint(drive.state());
-    drive.take(IterationCount::UntilLethal);
-    let state = drive.state();
-    let WaitingFor::Priority { player } = state.waiting_for else {
-        panic!(
-            "the fallback ends at priority; got {}",
-            state.waiting_for.variant_name()
-        );
-    };
+    let trace = format!("{:?}", engine::game::play_trace_view(drive.state()));
+    let refused = drive
+        .runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .err();
     assert!(
-        state
-            .players
-            .iter()
-            .any(|seat| seat.id == player && !seat.is_eliminated),
-        "priority goes to a player still in the game"
+        matches!(
+            refused,
+            Some(engine::game::engine::EngineError::InvalidAction(_))
+        ),
+        "{refused:?}"
+    );
+    let state = drive.state();
+    assert!(
+        matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut {
+                proposer: P0,
+                predicted_winner: None,
+                ..
+            }
+        ),
+        "the offer stays open; got {}",
+        state.waiting_for.variant_name()
     );
     assert_eq!(board_fingerprint(state), offer, "the board is the offer's");
+    assert_eq!(
+        format!("{:?}", engine::game::play_trace_view(state)),
+        trace,
+        "the trace is the offer's"
+    );
+}
+
+/// The AI's candidates at Board A's offer, which names no winner, hold no until-lethal
+/// declaration, so its one legal answer is the decline.
+#[test]
+fn the_ai_answers_a_trigger_driven_offer_naming_no_winner_with_the_decline() {
+    let Some((drive, _)) = offered(Board::A) else {
+        return;
+    };
+    let state = drive.state();
     assert!(
-        engine::game::play_trace_view(state).is_none_or(|view| view
-            .entries
-            .iter()
-            .all(|entry| entry.seat != P0
-                || matches!(entry.kind, engine::game::EntryKind::Answer { .. }))),
-        "the fallback discards the proposer's plays and resolutions"
+        matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut {
+                predicted_winner: None,
+                ..
+            }
+        ),
+        "reach: the offer names no winner"
+    );
+    assert_eq!(
+        engine::ai_support::candidate_actions(state)
+            .into_iter()
+            .map(|candidate| candidate.action)
+            .collect::<Vec<_>>(),
+        vec![GameAction::DeclineShortcut]
+    );
+    assert_eq!(
+        engine::ai_support::legal_actions(state),
+        vec![GameAction::DeclineShortcut]
     );
 }
 

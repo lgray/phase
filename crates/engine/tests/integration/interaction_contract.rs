@@ -3023,6 +3023,7 @@ fn loop_shortcut_zero_deliverable_capacity_is_rejected_not_clamped() {
             },
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         bind(&mut state, "loop-zero-bound");
@@ -3090,6 +3091,7 @@ fn loop_shortcut_narrowed_capacity_bounds_the_picker() {
         },
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     bind(&mut state, "loop-narrowed-bound");
@@ -3142,6 +3144,7 @@ fn loop_shortcut_number_schema_accepts_a_fixed_count_above_one() {
         },
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     bind(&mut state, "loop-count");
@@ -3247,6 +3250,7 @@ fn preview_offer_with_points(
         },
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     bind(&mut state, "loop-preview");
@@ -3956,6 +3960,7 @@ fn respond_window_on(
             published_declaration: None,
             leading_aims: Vec::new(),
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         },
     };
@@ -6593,6 +6598,7 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
         },
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     bind(runner.state_mut(), "loop-point-kinds");
@@ -6798,6 +6804,7 @@ fn loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_s
         },
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     bind(runner.state_mut(), "r2f-human-seat-pin");
@@ -8132,6 +8139,7 @@ fn stage_sequenced_offer(
         },
         declaration: None,
         road: engine::analysis::loop_check::OfferRoad::Ring,
+        counted_take: Default::default(),
         period: Default::default(),
     };
     bind(runner.state_mut(), label);
@@ -10782,6 +10790,7 @@ fn p10_row_7_a_restored_multi_entry_ranking_still_loads_and_still_drives_head_on
             published_declaration: None,
             leading_aims: Vec::new(),
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         },
     };

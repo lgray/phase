@@ -1765,7 +1765,8 @@ pub(crate) fn mandatory_recurrence_span(state: &GameState) -> Option<NamedSpan> 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Witnessed {
     Declared,
-    Offered,
+    /// Offered, with the counted take the replay that read it minted.
+    Offered(crate::analysis::loop_check::CountedTake),
     Refused,
 }
 
@@ -2267,8 +2268,11 @@ mod tests {
         note_witnessed(&mut state, 3, Absent, Witnessed::Refused);
         assert_eq!(witnessed(&state, 3, Absent), Some(Witnessed::Refused));
         assert_eq!(witnessed(&state, 3, Held), None);
-        note_witnessed(&mut state, 3, Held, Witnessed::Offered);
-        assert_eq!(witnessed(&state, 3, Held), Some(Witnessed::Offered));
+        let offered = Witnessed::Offered(crate::analysis::loop_check::CountedTake::Unperformable(
+            crate::analysis::loop_check::UnperformableCause::UndelimitedCover,
+        ));
+        note_witnessed(&mut state, 3, Held, offered);
+        assert_eq!(witnessed(&state, 3, Held), Some(offered));
         assert_eq!(witnessed(&state, 3, Absent), Some(Witnessed::Refused));
         assert_eq!(witnessed(&state, 4, Absent), None);
     }

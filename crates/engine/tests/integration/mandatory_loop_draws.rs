@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use engine::ai_support::{legal_actions, legal_actions_full};
 use engine::analysis::decision_template::IterationCount;
-use engine::analysis::loop_check::ShortcutResponse;
-use engine::game::engine::apply;
+use engine::analysis::loop_check::{CountedTake, ShortcutResponse, UnperformableCause};
+use engine::game::engine::{apply, EngineError};
 use engine::game::game_object::{AttachTarget, GameObject};
 use engine::game::interaction::{
     bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
@@ -28,7 +28,7 @@ use engine::types::counter::CounterType;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
     AutoMayChoice, AutoPassRequest, CastPaymentMode, GameEnd, GameState, LoopDetectionMode,
-    MayTriggerAutoChoiceScope, StackEntryKind, WaitingFor, YieldScope,
+    MayTriggerAutoChoiceScope, PersistedGameState, StackEntryKind, WaitingFor, YieldScope,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::interaction::{
@@ -2673,6 +2673,223 @@ fn a_proposal_without_end_shortened_at_a_later_place_drives_the_loop_to_it() {
     bolt_p0_then_draw(&mut runner);
 }
 
+/// The counted take the offer or the proposal at `state` carries.
+pub(crate) fn counted_take(state: &GameState) -> CountedTake {
+    match &state.waiting_for {
+        WaitingFor::LoopShortcut { counted_take, .. } => *counted_take,
+        WaitingFor::RespondToShortcut { proposal, .. } => proposal.counted_take,
+        other => panic!("no offer or proposal: {other:?}"),
+    }
+}
+
+type WindowBoard = (
+    WaitingFor,
+    Vec<ObjectId>,
+    BTreeMap<ObjectId, (Zone, std::collections::HashMap<CounterType, u32>)>,
+);
+
+/// The prompt, the stack, and every object's zone and counters.
+fn window_board(state: &GameState) -> WindowBoard {
+    (
+        state.waiting_for.clone(),
+        state.stack.iter().map(|entry| entry.id).collect(),
+        state
+            .objects
+            .iter()
+            .map(|(id, object)| (*id, (object.zone, object.counters.clone())))
+            .collect(),
+    )
+}
+
+/// Asserts `seat`'s `action` at `state` is refused as invalid for `refusal` and leaves the prompt,
+/// the stack, and every zone and counter as they were.
+fn assert_refused(state: &GameState, seat: PlayerId, action: GameAction, refusal: &str, leg: &str) {
+    let mut probe = state.clone();
+    let refused = apply(&mut probe, seat, action.clone()).err();
+    assert!(
+        matches!(&refused, Some(EngineError::InvalidAction(message)) if message.contains(refusal)),
+        "{leg}: {action:?} -> {refused:?}"
+    );
+    assert!(
+        window_board(&probe) == window_board(state),
+        "{leg}: the refused {action:?} moved the board"
+    );
+}
+
+/// `seat`'s `action` applied to a copy of `state`: the board after it, and its events.
+fn admitted(
+    state: &GameState,
+    seat: PlayerId,
+    action: GameAction,
+    leg: &str,
+) -> (GameState, Vec<GameEvent>) {
+    let mut next = state.clone();
+    let applied = apply(&mut next, seat, action.clone())
+        .unwrap_or_else(|error| panic!("{leg}: {action:?} -> {error:?}"));
+    (next, applied.events)
+}
+
+fn declare(count: IterationCount) -> GameAction {
+    GameAction::DeclareShortcut {
+        count,
+        template: None,
+    }
+}
+
+fn shorten_at(at_iteration: u32) -> GameAction {
+    GameAction::RespondToShortcut {
+        response: ShortcutResponse::Shorten { at_iteration },
+    }
+}
+
+fn priority_to(state: &GameState, player: PlayerId) -> bool {
+    matches!(state.waiting_for, WaitingFor::Priority { player: holder } if holder == player)
+}
+
+fn responds(state: &GameState, player: PlayerId) -> bool {
+    matches!(&state.waiting_for, WaitingFor::RespondToShortcut { player: responder, .. } if *responder == player)
+}
+
+fn battlefield_entries(events: &[GameEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                GameEvent::ZoneChanged {
+                    to: Zone::Battlefield,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+const NO_WINNER: &str = "naming no winner";
+
+/// Asserts each player's view of the offer at `offered` carries the engine's counted take.
+fn assert_viewers_read_the_take(offered: &GameState, leg: &str) {
+    for viewer in [P0, P1] {
+        assert_eq!(
+            counted_take(&filter_state_for_viewer(offered, viewer)),
+            counted_take(offered),
+            "{leg}: {viewer:?}"
+        );
+    }
+}
+
+/// Asserts the offer at `offered` carries `take`, so P0's counted and until-lethal declarations
+/// and P1's shortens past the current place are refused with the board as it was, while a
+/// declaration without end is admitted and a shorten at the current place gives P1 priority.
+pub(crate) fn assert_no_counted_take(offered: &GameState, take: CountedTake, leg: &str) {
+    let CountedTake::Unperformable(cause) = take else {
+        panic!("{leg}: a take that performs takes counts");
+    };
+    assert_eq!(counted_take(offered), take, "{leg}");
+    assert_viewers_read_the_take(offered, leg);
+    assert_refused(
+        offered,
+        P0,
+        declare(IterationCount::Fixed(3)),
+        cause.reason(),
+        leg,
+    );
+    assert_refused(
+        offered,
+        P0,
+        declare(IterationCount::UntilLethal),
+        NO_WINNER,
+        leg,
+    );
+    let (window, _) = admitted(offered, P0, DECLARE_WITHOUT_END, leg);
+    assert!(responds(&window, P1), "{leg}: {:?}", window.waiting_for);
+    assert_eq!(
+        counted_take(&window),
+        take,
+        "{leg}: the proposal copies the take"
+    );
+    for place in [1, 2] {
+        assert_refused(&window, P1, shorten_at(place), cause.reason(), leg);
+    }
+    let (current, _) = admitted(&window, P1, shorten_at(0), leg);
+    assert!(
+        priority_to(&current, P1),
+        "{leg}: {:?}",
+        current.waiting_for
+    );
+}
+
+/// Asserts the offer at `offered` carries a counted take that performs: a proposal without end or
+/// a declared `Fixed(3)` shortened at place 2 drives two cycles and gives P1 priority, the
+/// accepted `Fixed(3)` drives three, and `UntilLethal`, naming no winner, is refused.
+fn assert_counted_take_performs(offered: &GameState, leg: &str) {
+    assert_eq!(counted_take(offered), CountedTake::Performs, "{leg}");
+    assert_viewers_read_the_take(offered, leg);
+    assert_refused(
+        offered,
+        P0,
+        declare(IterationCount::UntilLethal),
+        NO_WINNER,
+        leg,
+    );
+    let (without_end, _) = admitted(offered, P0, DECLARE_WITHOUT_END, leg);
+    let (_, one) = admitted(&without_end, P1, shorten_at(1), leg);
+    let cycle = battlefield_entries(&one);
+    assert!(cycle > 0, "{leg}: reach: a cycle enters permanents");
+    let (fixed, _) = admitted(offered, P0, declare(IterationCount::Fixed(3)), leg);
+    for window in [&without_end, &fixed] {
+        assert!(responds(window, P1), "{leg}: {:?}", window.waiting_for);
+        let (at_two, events) = admitted(window, P1, shorten_at(2), leg);
+        assert_eq!(battlefield_entries(&events), 2 * cycle, "{leg}");
+        assert!(priority_to(&at_two, P1), "{leg}: {:?}", at_two.waiting_for);
+    }
+    let (_, accepted) = admitted(
+        &fixed,
+        P1,
+        GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        },
+        leg,
+    );
+    assert_eq!(battlefield_entries(&accepted), 3 * cycle, "{leg}");
+}
+
+/// CR 732.2b + CR 732.2c: on the Lightning Bolt board, beside P0's Soul Warden with its trigger
+/// ordered first or not, and over Wood Elves' shuffle, a counted take performs on every drive,
+/// and `UntilLethal` names no winner.
+#[test]
+fn a_without_end_offer_the_drain_delimits_takes_every_count() {
+    let warden = Board {
+        optional: true,
+        soul_warden: Some(P0),
+        ..PLAIN
+    };
+    for board in [
+        Board {
+            optional: true,
+            ..PLAIN
+        },
+        warden,
+        Board {
+            first: Some("Soul Warden"),
+            ..warden
+        },
+        WOOD_ELVES,
+    ] {
+        for drive in EVERY_DRIVE {
+            let leg = format!(
+                "warden={:?} first={:?} wood_elves={:?} {drive:?}",
+                board.soul_warden, board.first, board.wood_elves
+            );
+            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            assert_out_offer(&offered, &leg);
+            assert_counted_take_performs(offered.state(), &leg);
+        }
+    }
+}
+
 /// CR 732.2a: a declined offer hands P0 priority; P1 may then use its out, after which the loop
 /// is a draw, and a loop left alone is offered again.
 #[test]
@@ -3130,4 +3347,174 @@ fn a_shuffle_beside_counter_growth_nothing_reads_is_offered() {
         offer_accepted_is_a_draw(offered);
         run_off(board, drive, 60);
     }
+}
+
+/// CR 732.2a + CR 732.2c: Banisher Priest's target, in either trigger order (CR 603.3d + CR
+/// 601.2c), and Brain Maggot's card (CR 608.2d) are chosen each cycle among objects new to it
+/// (CR 610.3 + CR 400.7), a choice no declaration of the offer contains, so on every drive no
+/// count above zero is taken.
+#[test]
+fn a_without_end_offer_holding_a_choice_refuses_every_counted_take() {
+    for (board, prompt) in [
+        (TWO_TARGETS, "TriggerTargetSelection"),
+        (
+            Board {
+                first: Some("Animate Dead"),
+                ..TWO_TARGETS
+            },
+            "TriggerTargetSelection",
+        ),
+        (TWO_CARDS, "RevealChoice"),
+    ] {
+        for drive in EVERY_DRIVE {
+            let leg = format!("{:?} {prompt} {drive:?}", board.first);
+            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            assert_out_offer(&offered, &leg);
+            assert!(
+                offered.prompted(prompt) >= 1,
+                "{leg}: reach: the choice was made, prompts {:?}",
+                offered.prompts
+            );
+            assert_no_counted_take(
+                offered.state(),
+                CountedTake::Unperformable(UnperformableCause::UncontainedChoice),
+                &leg,
+            );
+        }
+    }
+}
+
+/// Board B with an out on either seat recurs only on its token growth, which the ring drain does
+/// not delimit, so on every drive no count above zero is taken.
+#[test]
+fn a_token_copy_offer_beside_an_out_refuses_every_counted_take() {
+    for board in [
+        Board {
+            optional: true,
+            ..RAPTOR
+        },
+        Board {
+            p0_out: true,
+            ..RAPTOR
+        },
+    ] {
+        for drive in RAPTOR_DRIVES {
+            let leg = format!("p0_out={} {drive:?}", board.p0_out);
+            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            assert_out_offer(&offered, &leg);
+            assert!(
+                offered.on_battlefield("Polyraptor").len() >= 2,
+                "{leg}: reach: a copy entered"
+            );
+            assert_no_counted_take(
+                offered.state(),
+                CountedTake::Unperformable(UnperformableCause::UndelimitedCover),
+                &leg,
+            );
+        }
+    }
+}
+
+/// CR 732.2b: a counted proposal over Banisher Priest's choice reaches a response window only by a
+/// restore, since its declaration is refused; restored, it keeps the offer's counted take, a later
+/// place is refused with the window intact, and the current place gives P1 priority.
+#[test]
+fn a_restored_counted_proposal_over_a_choice_refuses_a_later_place() {
+    let choice = UnperformableCause::UncontainedChoice;
+    for board in [
+        TWO_TARGETS,
+        Board {
+            first: Some("Animate Dead"),
+            ..TWO_TARGETS
+        },
+    ] {
+        let Some(offered) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+            return;
+        };
+        let leg = format!("{:?}", board.first);
+        assert_out_offer(&offered, &leg);
+        let (window, _) = admitted(offered.state(), P0, DECLARE_WITHOUT_END, &leg);
+        for count in [IterationCount::Fixed(3), IterationCount::UntilLethal] {
+            let leg = format!("{leg} {count:?}");
+            let mut counted = window.clone();
+            let WaitingFor::RespondToShortcut { proposal, .. } = &mut counted.waiting_for else {
+                panic!("{leg}: {:?}", counted.waiting_for);
+            };
+            proposal.count = count.clone();
+            let restored = serde_json::from_value::<PersistedGameState>(
+                serde_json::to_value(&counted).expect("the window encodes"),
+            )
+            .expect("the window decodes")
+            .into_game_state()
+            .expect("the window restores");
+            let WaitingFor::RespondToShortcut { proposal, .. } = &restored.waiting_for else {
+                panic!("{leg}: {:?}", restored.waiting_for);
+            };
+            assert_eq!(proposal.count, count, "{leg}: reach: the counted proposal");
+            assert_eq!(
+                counted_take(&restored),
+                CountedTake::Unperformable(choice),
+                "{leg}"
+            );
+            assert_refused(&restored, P1, shorten_at(2), choice.reason(), &leg);
+            let (current, _) = admitted(&restored, P1, shorten_at(0), &leg);
+            assert!(
+                priority_to(&current, P1),
+                "{leg}: {:?}",
+                current.waiting_for
+            );
+        }
+    }
+}
+
+/// CR 701.24a + CR 732.2a: beside Soul Warden on either seat, the period the play trace names
+/// holds no shuffle while its replay shuffles P0's library, so the period is offered, never
+/// declared, and every player accepting it draws the game; Off runs on. The ring drain's
+/// delimiter fires in the replay beside P1's Soul Warden, so a count is taken, and fires nowhere
+/// beside P0's, so no count above zero is taken.
+#[test]
+fn a_shuffle_only_the_replay_draws_is_offered() {
+    for (seat, refused) in [(P1, None), (P0, Some(UnperformableCause::UndelimitedCover))] {
+        let board = Board {
+            soul_warden: Some(seat),
+            ..WOOD_ELVES
+        };
+        for drive in EVERY_DRIVE {
+            let leg = format!("{seat:?} {drive:?}");
+            let before = play_trace_counters();
+            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+                return;
+            };
+            let replays = play_trace_counters().since(before).mandatory_replays;
+            assert_out_offer(&offered, &leg);
+            assert!(
+                replays >= 1,
+                "{leg}: reach: the witness replayed the period"
+            );
+            assert!(
+                offered.state().rng.get_word_pos() > 0,
+                "{leg}: reach: the shuffles drew randomness"
+            );
+            match refused {
+                None => assert_counted_take_performs(offered.state(), &leg),
+                Some(cause) => {
+                    assert_no_counted_take(offered.state(), CountedTake::Unperformable(cause), &leg)
+                }
+            }
+            offer_accepted_is_a_draw(offered);
+            run_off(board, drive, 60);
+        }
+    }
+}
+
+/// Banisher Priest against two Grizzly Bears, passed to P0's offer and declared without end: P1's
+/// response window over a proposal no count above zero is taken from.
+pub(crate) fn two_targets_without_end_window() -> Option<GameState> {
+    let offered = run(TWO_TARGETS, LoopDetectionMode::Interactive, Drive::Pass, 60)?;
+    assert_out_offer(&offered, "two targets");
+    Some(admitted(offered.state(), P0, DECLARE_WITHOUT_END, "two targets").0)
 }

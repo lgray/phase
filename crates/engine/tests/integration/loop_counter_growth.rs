@@ -56,12 +56,20 @@ fn charge_of(runner: &GameRunner, id: ObjectId) -> u32 {
 /// not the Path-B draw. Nobody loses life ⇒ Path A finds no faller. Returns runner +
 /// (kickoff sorcery id, engine creature id — the charge-counter bearer).
 fn setup_2p_optional_charge_growth(mode: LoopDetectionMode) -> (GameRunner, ObjectId, ObjectId) {
+    setup_2p_optional_engine(mode, CHARGE_LIFE_ENGINE)
+}
+
+/// [`setup_2p_optional_charge_growth`] with `oracle` as the engine creature's text.
+fn setup_2p_optional_engine(
+    mode: LoopDetectionMode,
+    oracle: &str,
+) -> (GameRunner, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_life(P0, 20);
     scenario.with_life(PlayerId(1), 20);
     let engine_creature = scenario
-        .add_creature_from_oracle(P0, "Test Charge Life Engine", 2, 2, CHARGE_LIFE_ENGINE)
+        .add_creature_from_oracle(P0, "Test Charge Life Engine", 2, 2, oracle)
         .id();
     scenario.add_basic_land(PlayerId(1), ManaColor::Red);
     scenario.add_bolt_to_hand(PlayerId(1));
@@ -809,4 +817,104 @@ fn unbounded_counter_row_dies_with_its_bearer_but_the_store_does_not() {
          projection merely declined to invent rows. Got {:?}",
         runner.state().objects[&rider].counters
     );
+}
+
+/// The charge-growth loop recurs only on its counter growth, which the ring drain does not
+/// delimit, so no count above zero is taken from its offer, and the AI is offered only the
+/// declaration without end and the decline.
+#[test]
+fn a_charge_growth_offer_beside_an_out_refuses_every_counted_take() {
+    use engine::analysis::decision_template::IterationCount;
+    use engine::analysis::loop_check::{CountedTake, UnperformableCause};
+
+    let (mut runner, kickoff, rider) =
+        setup_2p_optional_charge_growth(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    drive_until_marked_collecting(&mut runner, P0, MARK_SEARCH_BEATS);
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
+        "{:?}",
+        runner.state().waiting_for
+    );
+    assert!(charge_of(&runner, rider) >= 1, "reach: the charge grew");
+    crate::mandatory_loop_draws::assert_no_counted_take(
+        runner.state(),
+        CountedTake::Unperformable(UnperformableCause::UndelimitedCover),
+        "charge growth",
+    );
+    assert_eq!(
+        engine::ai_support::legal_actions(runner.state()),
+        vec![
+            GameAction::DeclareShortcut {
+                count: IterationCount::WithoutEnd,
+                template: None,
+            },
+            GameAction::DeclineShortcut,
+        ]
+    );
+}
+
+/// The same engine rolling a die (CR 706.1) or flipping a coin (CR 705.1) each cycle is offered on
+/// its counter growth, which the ring drain does not delimit, so no count above zero is taken.
+/// Off runs on.
+#[test]
+fn a_random_charge_growth_offer_refuses_every_counted_take() {
+    use engine::analysis::decision_template::IterationCount;
+    use engine::analysis::loop_check::{CountedTake, UnperformableCause};
+
+    for oracle in [
+        "Whenever you gain life, put a charge counter on this creature. Roll a six-sided die. \
+         You gain 1 life.",
+        "Whenever you gain life, put a charge counter on this creature. Flip a coin. You gain 1 \
+         life.",
+    ] {
+        let (mut runner, kickoff, rider) =
+            setup_2p_optional_engine(LoopDetectionMode::Interactive, oracle);
+        let _ = runner.cast(kickoff).resolve();
+        drive_until_marked_collecting(&mut runner, P0, MARK_SEARCH_BEATS);
+        assert!(
+            matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
+            "{oracle}: {:?}",
+            runner.state().waiting_for
+        );
+        assert!(
+            runner.state().rng.get_word_pos() > 0,
+            "{oracle}: reach: the trigger drew randomness"
+        );
+        assert!(
+            charge_of(&runner, rider) >= 1,
+            "{oracle}: reach: the charge grew"
+        );
+        crate::mandatory_loop_draws::assert_no_counted_take(
+            runner.state(),
+            CountedTake::Unperformable(UnperformableCause::UndelimitedCover),
+            oracle,
+        );
+        assert_eq!(
+            engine::ai_support::legal_actions(runner.state()),
+            vec![
+                GameAction::DeclareShortcut {
+                    count: IterationCount::WithoutEnd,
+                    template: None,
+                },
+                GameAction::DeclineShortcut,
+            ],
+            "{oracle}"
+        );
+
+        let (mut off, kickoff, rider) = setup_2p_optional_engine(LoopDetectionMode::Off, oracle);
+        let _ = off.cast(kickoff).resolve();
+        let (events, _) = drive_until_marked_collecting(&mut off, P0, MARK_SEARCH_BEATS);
+        assert!(
+            !matches!(off.state().waiting_for, WaitingFor::LoopShortcut { .. }),
+            "{oracle}: Off offers nothing"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, GameEvent::GameOver { .. })),
+            "{oracle}: Off declares nothing"
+        );
+        assert!(charge_of(&off, rider) >= 2, "{oracle}: Off runs on");
+    }
 }

@@ -562,7 +562,7 @@ fn replay_cycle(
     frames: Option<&mut Vec<GameState>>,
     events: &mut Vec<GameEvent>,
 ) -> Result<Vec<String>, OfferRefusal> {
-    replay_cycle_ordered(replay, items, end, choices, frames, events, None)
+    replay_cycle_ordered(replay, items, end, choices, frames, None, events, None)
 }
 
 /// An occurrence and its rank among the equal occurrences at one ordering point, in prompt order.
@@ -803,12 +803,15 @@ fn decision_paths(prompt: &GameState, limit: usize) -> Option<(PromptKey, Vec<Ke
 
 /// [`replay_cycle`]; with `stop`, priority never ends the cycle and the replay stops at a
 /// decision point, answering any other prompt no recorded answer takes with its forced answer.
+/// `settles`, when given, collects each frame a pass leaves at the active player's priority.
+#[allow(clippy::too_many_arguments)]
 fn replay_cycle_ordered(
     replay: &mut GameState,
     items: &[PeriodItem],
     end: &FrameEnd,
     choices: &mut Vec<PinnedDecision>,
     mut frames: Option<&mut Vec<GameState>>,
+    mut settles: Option<&mut Vec<GameState>>,
     events: &mut Vec<GameEvent>,
     mut stop: Option<&mut PointStop<'_>>,
 ) -> Result<Vec<String>, OfferRefusal> {
@@ -836,7 +839,13 @@ fn replay_cycle_ordered(
                 return Ok(performed);
             }
             let Some(at) = next else {
-                pass(replay, player, &mut performed, events)?;
+                pass(
+                    replay,
+                    player,
+                    &mut performed,
+                    events,
+                    settles.as_deref_mut(),
+                )?;
                 continue;
             };
             let item = &items[at];
@@ -852,7 +861,13 @@ fn replay_cycle_ordered(
                 )?;
                 done[at] = true;
             } else {
-                pass(replay, player, &mut performed, events)?;
+                pass(
+                    replay,
+                    player,
+                    &mut performed,
+                    events,
+                    settles.as_deref_mut(),
+                )?;
             }
             continue;
         }
@@ -931,12 +946,14 @@ fn cycle_complete(items: &[PeriodItem], done: &[bool]) -> bool {
         })
 }
 
-/// CR 117.4: `player` passes, noting the triggered ability the pass resolves.
+/// CR 117.4: `player` passes, noting the triggered ability the pass resolves; a frame the pass
+/// leaves at the active player's priority is pushed to `settles`.
 fn pass(
     replay: &mut GameState,
     player: PlayerId,
     performed: &mut Vec<String>,
     events: &mut Vec<GameEvent>,
+    settles: Option<&mut Vec<GameState>>,
 ) -> Result<(), OfferRefusal> {
     let top = replay.stack.back().and_then(|entry| {
         play_trace::resolution_identity(replay, entry).map(|identity| (entry.id, identity))
@@ -948,6 +965,11 @@ fn pass(
         OfferRefusal::UnanswerablePrompt,
         events,
     )?;
+    if let Some(settles) = settles.filter(|_| {
+        matches!(replay.waiting_for, WaitingFor::Priority { player } if player == replay.active_player)
+    }) {
+        settles.push(replay.clone());
+    }
     if let Some((id, identity)) = top {
         if replay.stack.iter().all(|entry| entry.id != id) {
             performed.push(identity);
@@ -1245,8 +1267,13 @@ impl ReplayedPeriod {
 }
 
 /// CR 732.2a: replays the span `span` of the current trace twice from `frame`, a priority frame;
-/// the first cycle's refusal refuses, and the second's is kept for the reader.
-fn replay_period(frame: &GameState, span: NamedSpan) -> Result<ReplayedPeriod, OfferRefusal> {
+/// the first cycle's refusal refuses, and the second's is kept for the reader. `settles`, when
+/// given, collects both cycles' settle frames.
+fn replay_period(
+    frame: &GameState,
+    span: NamedSpan,
+    mut settles: Option<&mut Vec<GameState>>,
+) -> Result<ReplayedPeriod, OfferRefusal> {
     let WaitingFor::Priority { player: holder } = frame.waiting_for else {
         return Err(OfferRefusal::UnanswerablePrompt);
     };
@@ -1272,22 +1299,26 @@ fn replay_period(frame: &GameState, span: NamedSpan) -> Result<ReplayedPeriod, O
     let mut replay = s_n.clone();
     let mut choices = Vec::new();
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
-    let performed = replay_cycle(
+    let performed = replay_cycle_ordered(
         &mut replay,
         &items,
         &end,
         &mut choices,
         None,
+        settles.as_deref_mut(),
         &mut Vec::new(),
+        None,
     )?;
     let s_n1 = replay.clone();
-    let second = replay_cycle(
+    let second = replay_cycle_ordered(
         &mut replay,
         &items,
         &end,
         &mut Vec::new(),
         None,
+        settles,
         &mut Vec::new(),
+        None,
     );
     let casts = period_casts(&items);
     Ok(ReplayedPeriod {
@@ -1324,7 +1355,7 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
         mut replay,
         second,
         _probe,
-    } = replay_period(frame, span)?;
+    } = replay_period(frame, span, None)?;
     // A period whose second cycle is refused has one pair of frames, read as any pair is.
     let (prior, current) = match second {
         Ok(_) => (&s_n1, &replay),
@@ -1460,15 +1491,26 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
     })
 }
 
+/// What a held mandatory period's replay shows besides its recurrence.
+pub(crate) struct HeldPeriod {
+    /// Performs only when a ring drain's delimiter fires at a settle frame the replay reaches.
+    pub(crate) counted_take: crate::analysis::loop_check::CountedTake,
+    /// CR 701.24a: the decision members the replayed period itself drew.
+    pub(crate) replayed: crate::types::game_state::LoopDecisionProfile,
+}
+
 /// CR 104.4b + CR 732.4: whether the mandatory span `span`, replayed twice from `frame`, recurs
 /// for every living player with net progress and nothing moving toward a state-based action:
 /// no loss axis (CR 704.5c), no driving resource falling on a carried permanent (CR 704.5g,
 /// CR 704.5i, CR 704.5q), and no -1/-1 counter growth (CR 704.5f).
-pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool {
+pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> Option<HeldPeriod> {
     #[cfg(feature = "test-support")]
     crate::game::perf_counters::record_play_trace(|counters| counters.mandatory_replays += 1);
-    let Ok(period @ ReplayedPeriod { second: Ok(_), .. }) = replay_period(frame, span) else {
-        return false;
+    let mut settles = Vec::new();
+    let Ok(period @ ReplayedPeriod { second: Ok(_), .. }) =
+        replay_period(frame, span, Some(&mut settles))
+    else {
+        return None;
     };
     let floors = period.floors();
     let ReplayedPeriod {
@@ -1494,19 +1536,45 @@ pub(crate) fn mandatory_period_holds(frame: &GameState, span: NamedSpan) -> bool
         verdict.certifies()
     });
     if !covered {
-        return false;
+        return None;
     }
     let delta = period_delta(&s_n1, &s_n2);
     // CR 104.4b + CR 405.5: entries the period buries are its unbounded axis.
     let buried_rises = buried_growth && floors[2] > floors[1];
-    period_recurs_without_end(&delta, buried_rises)
+    let holds = period_recurs_without_end(&delta, buried_rises)
         && living
             .iter()
             .all(|&seat| driving_resources_non_decreasing_carried(&s_n1, &s_n2, seat, Some(&s_n)))
         && delta
             .counters
             .get(&(CounterClass::Minus1Minus1, ObjectClass::Creature))
-            .is_none_or(|&grew| grew <= 0)
+            .is_none_or(|&grew| grew <= 0);
+    if !holds {
+        return None;
+    }
+    // The boundary is seeded from the replay's own base, so it shares the frames' view.
+    let boundary = crate::game::engine::take_boundary(&s_n);
+    let counted_take = if settles
+        .iter()
+        .any(|settled| crate::game::engine::settle_recurs(&boundary, &settled.normalize_for_loop()))
+    {
+        crate::analysis::loop_check::CountedTake::Performs
+    } else {
+        crate::analysis::loop_check::CountedTake::Unperformable(
+            crate::analysis::loop_check::UnperformableCause::UndelimitedCover,
+        )
+    };
+    let mut replayed = crate::types::game_state::LoopDecisionProfile::default();
+    // CR 701.24a: a shuffle the replay performs draws randomness the recorded span may not hold.
+    if s_n.rng.get_word_pos() != s_n1.rng.get_word_pos() {
+        replayed
+            .members
+            .insert(crate::types::game_state::LoopDecision::Random);
+    }
+    Some(HeldPeriod {
+        counted_take,
+        replayed,
+    })
 }
 
 /// The resources a period from `before` to `after` moved, counting each token it mints.
@@ -1728,6 +1796,7 @@ pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof
             &end,
             &mut Vec::new(),
             None,
+            None,
             &mut Vec::new(),
             Some(&mut stop),
         );
@@ -1858,7 +1927,7 @@ pub(crate) fn decision_points(frame: &GameState, span: NamedSpan) -> OptionProof
 #[cfg(any(test, feature = "test-support"))]
 pub fn mandatory_period_holds_for_tests(state: &GameState) -> Option<bool> {
     let span = play_trace::mandatory_recurrence_span(state)?;
-    Some(mandatory_period_holds(state, span))
+    Some(mandatory_period_holds(state, span).is_some())
 }
 
 /// CR 732.2a: the most repetitions the counting replay performs for one offer. An offer at the cap

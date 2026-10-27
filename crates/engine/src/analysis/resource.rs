@@ -20173,6 +20173,7 @@ mod tests {
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         let offer_json =
@@ -20194,6 +20195,7 @@ mod tests {
             schema: ShortcutDecisionSchema::default(),
             declaration: None,
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         let shipped_json = serde_json::to_string(&shipped).expect("serializes");
@@ -20357,6 +20359,7 @@ mod tests {
             published_declaration: None,
             leading_aims: Vec::new(),
             road: crate::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         let wait = WaitingFor::RespondToShortcut {

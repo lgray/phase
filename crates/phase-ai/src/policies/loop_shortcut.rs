@@ -50,11 +50,7 @@
 //!    `until_lethal_fallback`, which restores exactly the board a decline would have left.
 //!    Loss-or-no-op — never a gain.
 //! 2. `predicted_winner == None` + `UntilLethal` ⇒ REJECT.
-//!    Only the object-growth offer carries `None`. The crown gate requires
-//!    `Some(winner) == proposal.predicted_winner`, false for every winner when the latch is `None`
-//!    ⇒ `until_lethal_fallback` full-rolls-back the board, clears `loop_detect_ring` +
-//!    `last_recast_context`, and hands priority back. Zero progress, the CR 732.2b APNAP window
-//!    burned, the re-offer signal destroyed — weakly dominated by declining.
+//!    CR 732.2a: the engine refuses an `UntilLethal` declaration on an offer naming no winner.
 //! 3. `predicted_winner == Some(proposer)` + `UntilLethal` ⇒ positive (critical band).
 //!    The crown IS the win (CR 104.2a); the only other outcome is `until_lethal_fallback`, which
 //!    lands where declining lands. Dominant in outcome. (It is not costless: declaring opens the
@@ -166,6 +162,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
             certificate,
             declaration,
             road: _,
+            counted_take: _,
             period,
         } = &ctx.state.waiting_for
         else {
@@ -199,11 +196,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
                     .with_fact("winner", i64::from(winner.0)),
             ),
 
-            // CR 732.2a: only the object-growth offer latches `None`. The crown gate can never
-            // match it, so `UntilLethal` always ends in `until_lethal_fallback`: full board
-            // rollback, `loop_detect_ring` + `last_recast_context` cleared, priority handed back.
-            // Zero progress AND the CR 732.2b response window spent — weakly dominated by
-            // declining.
+            // CR 732.2a: the engine refuses an `UntilLethal` declaration on an offer naming no winner.
             (None, IterationCount::UntilLethal) => {
                 PolicyVerdict::reject(PolicyReason::new("loop_shortcut_untillethal_cannot_crown"))
             }
@@ -225,8 +218,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // checks_cardinality` in `crates/engine/tests/integration/loop_shortcut.rs` pins
             // exactly that — but it commits NO cycles while still spending the CR 732.2b
             // response window. That is the same weak-domination shape the over-bound arm below
-            // and the `(None, UntilLethal)` arm above reject: the outcome set is {no-op, minus a
-            // response window}, so declining weakly dominates it.
+            // rejects: the outcome set is {no-op, minus a response window}, so declining weakly
+            // dominates it.
             //
             // ⚠ ORDER IS LOAD-BEARING: this arm MUST precede the `!schema.is_bounded() => na()`
             // arm below. `Fixed(0)` matches that guard too, so with the arms the other way round
@@ -294,8 +287,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // crosses a CR 704.5a / CR 704.5c / CR 104.3c threshold inside the proposal, which
             // is a conditional action, so the engine hands it back fail-closed with ZERO
             // committed cycles while the CR 732.2b response window is spent. Weakly dominated
-            // by declining: the outcome set is {no-op minus a response window}. Same
-            // domination shape the `(None, UntilLethal)` arm above encodes.
+            // by declining: the outcome set is {no-op minus a response window}.
             (_, IterationCount::Fixed(n)) if *n > schema.deliverable_capacity => {
                 PolicyVerdict::reject(
                     PolicyReason::new("loop_shortcut_bounded_declare_over_bound")
@@ -616,6 +608,7 @@ mod tests {
             schema,
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         state
@@ -757,8 +750,7 @@ mod tests {
         assert_eq!(kind_of(&v), "loop_shortcut_declare_wins");
     }
 
-    /// Row 4 — an `UntilLethal` declare on a `None`-winner (object-growth) offer can never satisfy
-    /// the crown gate, so it always full-rolls-back: zero progress, CR 732.2b window burned.
+    /// Row 4 — an `UntilLethal` declare on an offer naming no winner is vetoed.
     #[test]
     fn declare_until_lethal_with_no_predicted_winner_is_rejected() {
         let state = offer_state(None);
@@ -843,6 +835,7 @@ mod tests {
             },
             declaration: None,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         state
@@ -886,6 +879,7 @@ mod tests {
             },
             declaration,
             road: engine::analysis::loop_check::OfferRoad::Ring,
+            counted_take: Default::default(),
             period: Default::default(),
         };
         state

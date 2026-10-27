@@ -17375,6 +17375,12 @@ pub enum WaitingFor {
         declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
         /// The producer that minted this offer; `game::engine`'s route authority reads it.
         road: crate::analysis::loop_check::OfferRoad,
+        /// Whether a counted take of this offer performs; the two admission seams read it.
+        #[serde(
+            default,
+            skip_serializing_if = "crate::analysis::loop_check::CountedTake::is_performs"
+        )]
+        counted_take: crate::analysis::loop_check::CountedTake,
         /// CR 732.2a: the period the confirmer replayed for this offer; empty for an offer no
         /// period was confirmed for. Stripped for every viewer.
         #[serde(
@@ -36701,6 +36707,7 @@ mod forced_cascade_window_tests {
                     schema: Default::default(),
                     declaration: None,
                     road: crate::analysis::loop_check::OfferRoad::Ring,
+                    counted_take: Default::default(),
                     period: Default::default(),
                 },
             ),
@@ -36722,6 +36729,7 @@ mod forced_cascade_window_tests {
                         published_declaration: None,
                         leading_aims: Vec::new(),
                         road: crate::analysis::loop_check::OfferRoad::Ring,
+                        counted_take: Default::default(),
                         period: Default::default(),
                     },
                 },
@@ -39432,6 +39440,105 @@ mod tests {
         let once = tree.clone();
         migrate_legacy_offer_road(&mut tree);
         assert_eq!(tree, once, "idempotent: every carrier already has its road");
+    }
+
+    /// A carrier saved without a counted take decodes as one that performs, one that performs is
+    /// saved without the field, and one that does not round-trips; the ring road still refuses a
+    /// confirmed period whatever take rides beside it.
+    #[test]
+    fn a_counted_take_decodes_to_performs_and_rides_its_carriers() {
+        use crate::analysis::loop_check::{
+            CountedTake, OfferRoad, ShortcutProposal, UnperformableCause,
+        };
+        use std::io::Read;
+        let unperformable = CountedTake::Unperformable(UnperformableCause::UndelimitedCover);
+
+        let mut json = String::new();
+        flate2::read::GzDecoder::new(
+            &include_bytes!("../../tests/fixtures/weird_drain_4p.json.gz")[..],
+        )
+        .read_to_string(&mut json)
+        .expect("the dump inflates");
+        let mut envelope: serde_json::Value = serde_json::from_str(&json).expect("the dump parses");
+        // Committed pre-onset capture; onset-independent test (see record_captured_onsets).
+        record_captured_onsets(&mut envelope);
+        let mut board = envelope.get("gameState").unwrap_or(&envelope).clone();
+        assert!(board["waiting_for"]["data"].get("counted_take").is_none());
+        let restored = serde_json::from_value::<PersistedGameState>(board.clone())
+            .expect("the dump deserializes")
+            .into_game_state()
+            .expect("the dump restores");
+        let offer = serde_json::to_value(&restored.waiting_for).expect("the offer encodes");
+        assert_eq!(offer["data"]["road"], "Ring", "reach: a ring-road offer");
+        assert!(
+            offer["data"].get("counted_take").is_none(),
+            "an offer saved without the field performs and is saved without it"
+        );
+
+        let mut carried = offer.clone();
+        carried["data"]["counted_take"] = serde_json::to_value(unperformable).unwrap();
+        let decoded = serde_json::from_value::<WaitingFor>(carried.clone()).unwrap();
+        assert_ne!(decoded, restored.waiting_for);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), carried);
+
+        let proposal = |counted_take| ShortcutProposal {
+            proposer: PlayerId(0),
+            predicted_winner: None,
+            count: crate::analysis::decision_template::IterationCount::WithoutEnd,
+            unbounded: Vec::new(),
+            win_kind: None,
+            win_kind_at: None,
+            template: None,
+            per_cycle: None,
+            shortened_by: None,
+            published_declaration: None,
+            leading_aims: Vec::new(),
+            road: OfferRoad::Ring,
+            counted_take,
+            period: Default::default(),
+        };
+        let proposed = serde_json::to_value(proposal(unperformable)).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ShortcutProposal>(proposed.clone()).unwrap(),
+            proposal(unperformable)
+        );
+        let mut saved_without = proposed;
+        saved_without
+            .as_object_mut()
+            .unwrap()
+            .remove("counted_take")
+            .expect("reach: the take that does not perform was saved");
+        assert_eq!(
+            serde_json::from_value::<ShortcutProposal>(saved_without).unwrap(),
+            proposal(CountedTake::Performs)
+        );
+        assert!(serde_json::to_value(proposal(CountedTake::Performs))
+            .unwrap()
+            .get("counted_take")
+            .is_none());
+
+        let mut with_period = |period: serde_json::Value| {
+            board["waiting_for"] = carried.clone();
+            board["waiting_for"]["data"]["period"] = period;
+            serde_json::from_value::<PersistedGameState>(board.clone())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        };
+        with_period(serde_json::json!({ "items": [] }))
+            .expect("reach: the offer restores with no period");
+        assert!(with_period(serde_json::json!({
+            "items": [{
+                "seat": PlayerId(0),
+                "action": crate::types::actions::GameAction::PassPriority,
+                "play": null,
+                "mandatory_answer": false,
+                "next_object_id": 0,
+                "minted_since": 0,
+                "cost_move": null,
+            }],
+        }))
+        .expect_err("a ring offer carrying a confirmed period fails the load")
+        .contains("ring road carries a confirmed period"));
     }
 
     /// The committed restore-time offers predate the stamp and decode to the road that minted them.
