@@ -827,7 +827,7 @@ mod tests {
         }
     }
 
-    /// CR 603.3b: a choice named before the every-option proof stays named, and the period
+    /// CR 732.2c: a choice named before the every-option proof stays named, and the period
     /// unforced, under each of its outcomes.
     #[test]
     fn a_profile_naming_a_choice_names_one_under_every_proof() {
