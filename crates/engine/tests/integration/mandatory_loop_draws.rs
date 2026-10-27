@@ -146,6 +146,8 @@ struct Board {
     first: Option<&'static str>,
     /// Wood Elves on P0's battlefield, and this many Swamps, no Forest, in P0's library.
     wood_elves: Option<usize>,
+    /// Impact Tremors on P0's battlefield.
+    tremors: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -280,6 +282,9 @@ fn build(board: Board, mode: LoopDetectionMode) -> Option<Built> {
     if board.fiend {
         scenario.add_real_card(P0, "Gibbering Fiend", Zone::Battlefield, db);
         scenario.add_real_card(P1, "Battletide Alchemist", Zone::Battlefield, db);
+    }
+    if board.tremors {
+        scenario.add_real_card(P0, "Impact Tremors", Zone::Battlefield, db);
     }
     if let Some(bears) = board.banisher {
         scenario.add_real_card(P0, "Banisher Priest", Zone::Battlefield, db);
@@ -659,6 +664,7 @@ const PLAIN: Board = Board {
     p0_bears: 0,
     first: None,
     wood_elves: None,
+    tremors: false,
 };
 
 const ANCHOR: Board = Board {
@@ -883,17 +889,25 @@ fn a_may_answered_every_cycle_is_not_a_draw() {
     }
 }
 
+#[test]
+fn a_remembered_may_decline_under_off_is_not_a_draw() {
+    remembered_answer_runs_on(false, LoopDetectionMode::Off);
+}
+
+#[test]
+fn a_remembered_may_accept_under_interactive_is_not_a_draw() {
+    remembered_answer_runs_on(true, LoopDetectionMode::Interactive);
+}
+
+#[test]
+fn a_remembered_may_accept_under_off_is_not_a_draw() {
+    remembered_answer_runs_on(true, LoopDetectionMode::Off);
+}
+
 /// CR 104.4b + CR 603.5: a "may" answered once and remembered is still answered every cycle,
 /// so the loop holds an optional action and is no draw.
-#[test]
-fn a_remembered_may_answer_is_not_a_draw() {
-    let decline = snarecaster(May::Remembered { accept: false });
-    let accept = snarecaster(May::Remembered { accept: true });
-    remembered_may_runs_on(&[
-        (decline, LoopDetectionMode::Off, Drive::Pass),
-        (accept, LoopDetectionMode::Interactive, Drive::Pass),
-        (accept, LoopDetectionMode::Off, Drive::Pass),
-    ]);
+fn remembered_answer_runs_on(accept: bool, mode: LoopDetectionMode) {
+    remembered_may_runs_on(&[(snarecaster(May::Remembered { accept }), mode, Drive::Pass)]);
 }
 
 /// The Interactive remembered-decline legs, one drive per test: each replays its period
@@ -933,37 +947,51 @@ fn remembered_may_runs_on(legs: &[(Board, LoopDetectionMode, Drive)]) {
     }
 }
 
+#[test]
+fn a_remembered_optional_prevention_passing_is_not_a_draw() {
+    remembered_prevention_runs_on(Drive::Pass);
+}
+
+#[test]
+fn a_remembered_optional_prevention_until_turn_boundary_is_not_a_draw() {
+    remembered_prevention_runs_on(Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn a_remembered_optional_prevention_until_stack_empty_is_not_a_draw() {
+    remembered_prevention_runs_on(Drive::UntilStackEmpty);
+}
+
 /// CR 104.4b + CR 616.1e: Battletide Alchemist's prevention of Gibbering Fiend's damage,
 /// remembered once, is chosen every cycle, so the loop is no draw.
-#[test]
-fn a_remembered_optional_prevention_is_not_a_draw() {
+fn remembered_prevention_runs_on(drive: Drive) {
     let board = Board {
         fiend: true,
         ..PLAIN
     };
     for mode in MODES {
-        for drive in EVERY_DRIVE {
-            let leg = format!("{mode:?} {drive:?}");
-            let Some(run) = run(board, mode, drive, 30) else {
-                return;
-            };
-            assert_runs_on(&run, &leg);
-            assert_eq!(
-                run.prompted("ReplacementChoice"),
-                1,
-                "{leg}: reach: the prevention was asked once and then remembered"
-            );
-        }
+        let leg = format!("{mode:?} {drive:?}");
+        let Some(run) = run(board, mode, drive, 30) else {
+            return;
+        };
+        assert_runs_on(&run, &leg);
+        assert_eq!(
+            run.prompted("ReplacementChoice"),
+            1,
+            "{leg}: reach: the prevention was asked once and then remembered"
+        );
     }
 }
 
 /// Asserts that, under each of `picks`, every drive at `board` stops at P0's offer of a draw
-/// without end after at least `choices` prompts of `prompt`, and returns the first drive's run.
+/// without end after at least `choices` prompts of `prompt`, whose counted take is `take` (CR
+/// 732.2c), and returns the first drive's run.
 fn offered_on_every_drive(
     board: Board,
     picks: &[Pick],
     prompt: &str,
     choices: usize,
+    take: CountedTake,
 ) -> Option<Run> {
     let mut first_run = None;
     for &pick in picks {
@@ -977,6 +1005,10 @@ fn offered_on_every_drive(
                 "{leg}: reach: {prompt} was answered {choices} times, prompts {:?}",
                 run.prompts
             );
+            match take {
+                CountedTake::Unperformable(_) => assert_no_counted_take(run.state(), take, &leg),
+                CountedTake::Performs => assert_eq!(counted_take(run.state()), take, "{leg}"),
+            }
             first_run.get_or_insert(run);
         }
     }
@@ -986,6 +1018,11 @@ fn offered_on_every_drive(
 const TWO_TARGETS: Board = Board {
     banisher: Some(2),
     ..PLAIN
+};
+
+const TREMORS_TWO_TARGETS: Board = Board {
+    tremors: true,
+    ..TWO_TARGETS
 };
 
 /// CR 601.2c + CR 732.2a: Banisher Priest's trigger chooses between two creatures each cycle,
@@ -998,6 +1035,7 @@ fn a_target_chosen_every_cycle_is_offered() {
         &[Pick::First, Pick::Alternate],
         "TriggerTargetSelection",
         2,
+        CountedTake::Unperformable(UnperformableCause::UncontainedChoice),
     ) else {
         return;
     };
@@ -1024,6 +1062,7 @@ fn a_target_chosen_every_cycle_after_animate_deads_trigger_is_offered() {
         &[Pick::First, Pick::Alternate],
         "TriggerTargetSelection",
         1,
+        CountedTake::Unperformable(UnperformableCause::UncontainedChoice),
     );
 }
 
@@ -1054,7 +1093,13 @@ const TWO_CARDS: Board = Board {
 /// end, and every player accepting it draws the game; Off runs on.
 #[test]
 fn a_card_chosen_every_cycle_is_offered() {
-    let Some(offered) = offered_on_every_drive(TWO_CARDS, &[Pick::First], "RevealChoice", 2) else {
+    let Some(offered) = offered_on_every_drive(
+        TWO_CARDS,
+        &[Pick::First],
+        "RevealChoice",
+        2,
+        CountedTake::Unperformable(UnperformableCause::UncontainedChoice),
+    ) else {
         return;
     };
     offer_accepted_is_a_draw(offered);
@@ -1070,7 +1115,13 @@ fn a_card_chosen_every_cycle_is_offered() {
 /// trigger each cycle is offered a draw without end, since the loop continues whichever is exiled.
 #[test]
 fn a_card_chosen_in_turn_every_cycle_is_offered() {
-    offered_on_every_drive(TWO_CARDS, &[Pick::Alternate], "RevealChoice", 2);
+    offered_on_every_drive(
+        TWO_CARDS,
+        &[Pick::Alternate],
+        "RevealChoice",
+        2,
+        CountedTake::Unperformable(UnperformableCause::UncontainedChoice),
+    );
 }
 
 /// CR 104.4b + CR 601.2c: Oblivion Ring's trigger can target P0's own Animate Dead, which ends the
@@ -1580,7 +1631,7 @@ fn a_shrinking_beat_inside_a_returning_window_keeps_the_ring() {
 
 /// CR 732.2b: Poison-Tip Archer drains P0 at each Dragon death. With nothing P0 can do, P1 wins
 /// before the drain ends; with a Bolt P0 can cast while its Mountain is back, the drain is
-/// offered.
+/// offered, and a counted take of it drives that many cycles (CR 732.2c).
 #[test]
 fn a_drain_with_an_out_outside_the_loop_is_offered_not_won() {
     let drain = Board {
@@ -1609,6 +1660,32 @@ fn a_drain_with_an_out_outside_the_loop_is_offered_not_won() {
             },
             "{drive:?}"
         );
+        let leg = format!("{drive:?}");
+        let state = offered.state();
+        assert_eq!(counted_take(state), CountedTake::Performs, "{leg}");
+        let (window, _) = admitted(state, P0, declare(IterationCount::Fixed(3)), &leg);
+        assert!(responds(&window, P1), "{leg}: {:?}", window.waiting_for);
+        let (one_state, one) = admitted(&window, P1, shorten_at(1), &leg);
+        let cycle = battlefield_entries(&one);
+        let lost = state.players[0].life - one_state.players[0].life;
+        assert!(
+            cycle > 0 && lost > 0,
+            "{leg}: reach: a cycle enters permanents and drains P0"
+        );
+        let (accepted_state, accepted) = admitted(
+            &window,
+            P1,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+            &leg,
+        );
+        assert_eq!(battlefield_entries(&accepted), 3 * cycle, "{leg}");
+        assert_eq!(
+            state.players[0].life - accepted_state.players[0].life,
+            3 * lost,
+            "{leg}"
+        );
 
         for board in [drain, with_out] {
             let Some(off) = run_off(board, drive, 60) else {
@@ -1617,6 +1694,189 @@ fn a_drain_with_an_out_outside_the_loop_is_offered_not_won() {
             assert!(off.life(P0) < 20, "Off {drive:?}: reach: P0 was drained");
         }
     }
+}
+
+/// CR 603.3d + CR 601.2c: Banisher Priest's trigger chooses between two Grizzly Bears each cycle,
+/// a choice no declaration contains, while Impact Tremors drains P1 (CR 120.3a), so P0's winning
+/// loop is played out to P1's loss (CR 704.5a), as Off plays it.
+#[test]
+fn a_winning_loop_holding_a_target_choice_passing_is_played_out() {
+    winning_choice_loop_is_played_out(TREMORS_TWO_TARGETS, Drive::Pass);
+}
+
+#[test]
+fn a_winning_loop_holding_a_target_choice_until_turn_boundary_is_played_out() {
+    winning_choice_loop_is_played_out(TREMORS_TWO_TARGETS, Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn a_winning_loop_holding_a_target_choice_until_stack_empty_is_played_out() {
+    winning_choice_loop_is_played_out(TREMORS_TWO_TARGETS, Drive::UntilStackEmpty);
+}
+
+/// CR 732.5: P0's Bolt is an out beside the target choice, and the winning loop is still played
+/// out.
+#[test]
+fn a_winning_loop_holding_a_target_choice_beside_an_out_is_played_out() {
+    winning_choice_loop_is_played_out(
+        Board {
+            p0_out: true,
+            ..TREMORS_TWO_TARGETS
+        },
+        Drive::Pass,
+    );
+}
+
+/// Asserts `drive` at `board` ends, under Off and under Interactive, in P0's win at P1's 0 life,
+/// with every target choice made in play and no action ordering no triggers running more than
+/// one confirm drive.
+fn winning_choice_loop_is_played_out(board: Board, drive: Drive) {
+    let leg = format!("p0_out={} {drive:?}", board.p0_out);
+    let Some(off) = run(board, LoopDetectionMode::Off, drive, 400) else {
+        return;
+    };
+    assert_eq!(off.terminal, Terminal::GameOver(Some(P0)), "Off {leg}");
+    assert_eq!(off.life(P1), 0, "Off {leg}");
+    let Some(played) = run(board, LoopDetectionMode::Interactive, drive, 400) else {
+        return;
+    };
+    assert_eq!(played.terminal, Terminal::GameOver(Some(P0)), "{leg}");
+    assert_eq!(played.life(P1), 0, "{leg}");
+    assert_eq!(
+        played.prompted("TriggerTargetSelection"),
+        off.prompted("TriggerTargetSelection"),
+        "{leg}: reach: every target choice was made in play"
+    );
+    assert!(
+        played
+            .replays
+            .iter()
+            .map(|&(_, _, drives)| drives)
+            .sum::<u64>()
+            > 0,
+        "{leg}: reach: the confirm drives ran"
+    );
+    assert!(
+        played
+            .replays
+            .iter()
+            .filter(|&&(_, ordered, _)| !ordered)
+            .all(|&(_, _, drives)| drives <= 1),
+        "{leg}: an action ordering no triggers ran at most one confirm drive"
+    );
+}
+
+/// CR 603.3b + CR 704.5a: against one Grizzly Bears, Banisher Priest's trigger has one target, so
+/// the period holds only the trigger order, and P0 wins outright before the drain ends; Off plays
+/// it to P1's 0 life.
+#[test]
+fn a_forced_winning_loop_passing_is_won_outright() {
+    forced_winning_loop_is_won(Drive::Pass);
+}
+
+#[test]
+fn a_forced_winning_loop_until_turn_boundary_is_won_outright() {
+    forced_winning_loop_is_won(Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn a_forced_winning_loop_until_stack_empty_is_won_outright() {
+    forced_winning_loop_is_won(Drive::UntilStackEmpty);
+}
+
+fn forced_winning_loop_is_won(drive: Drive) {
+    let board = Board {
+        tremors: true,
+        banisher: Some(1),
+        ..PLAIN
+    };
+    let leg = format!("{drive:?}");
+    let Some(won) = run(board, LoopDetectionMode::Interactive, drive, 250) else {
+        return;
+    };
+    assert!(
+        won.prompted("OrderTriggers") >= 1,
+        "{leg}: reach: the triggers were ordered"
+    );
+    assert_eq!(won.terminal, Terminal::GameOver(Some(P0)), "{leg}");
+    assert!(won.life(P1) > 0, "{leg}: won before the drain ended");
+    let Some(off) = run(board, LoopDetectionMode::Off, drive, 250) else {
+        return;
+    };
+    assert_eq!(off.terminal, Terminal::GameOver(Some(P0)), "Off {leg}");
+    assert_eq!(off.life(P1), 0, "Off {leg}");
+}
+
+/// CR 732.2c: a restored winning offer whose take refuses one repetition refuses P0's counted and
+/// until-lethal declarations with the board as it was, and the AI's only move is to decline.
+#[test]
+fn a_restored_winning_offer_over_a_choice_refuses_every_counted_declaration() {
+    let choice = UnperformableCause::UncontainedChoice;
+    let board = Board {
+        archer: true,
+        p0_out: true,
+        ..PLAIN
+    };
+    let leg = "restored";
+    let Some(offered) = run(board, LoopDetectionMode::Interactive, Drive::Pass, 60) else {
+        return;
+    };
+    assert_eq!(
+        offered.terminal,
+        Terminal::Offer {
+            predicted_winner: Some(P1),
+            mandatory: false
+        },
+        "{leg}"
+    );
+    assert_eq!(
+        legal_actions(offered.state()),
+        vec![
+            declare(IterationCount::UntilLethal),
+            GameAction::DeclineShortcut
+        ],
+        "{leg}: reach: a performing offer takes until lethal"
+    );
+    let mut carried = offered.state().clone();
+    let WaitingFor::LoopShortcut {
+        counted_take: take, ..
+    } = &mut carried.waiting_for
+    else {
+        panic!("{leg}: {:?}", carried.waiting_for);
+    };
+    *take = CountedTake::Unperformable(choice);
+    let restored = serde_json::from_value::<PersistedGameState>(
+        serde_json::to_value(&carried).expect("the offer encodes"),
+    )
+    .expect("the offer decodes")
+    .into_game_state()
+    .expect("the offer restores");
+    assert_eq!(
+        counted_take(&restored),
+        CountedTake::Unperformable(choice),
+        "{leg}: reach"
+    );
+    for count in [IterationCount::UntilLethal, IterationCount::Fixed(3)] {
+        assert_refused(
+            &restored,
+            P0,
+            declare(count.clone()),
+            choice.reason(),
+            &format!("{leg} {count:?}"),
+        );
+    }
+    let (declined, _) = admitted(&restored, P0, GameAction::DeclineShortcut, leg);
+    assert!(
+        priority_to(&declined, P0),
+        "{leg}: {:?}",
+        declined.waiting_for
+    );
+    assert_eq!(
+        legal_actions(&restored),
+        vec![GameAction::DeclineShortcut],
+        "{leg}"
+    );
+    run_off(board, Drive::Pass, 60);
 }
 
 /// CR 117.3d + CR 732.4: the mandatory period reads the same whichever player holds priority,
@@ -1848,31 +2108,49 @@ fn worldgorger_burying_brain_maggot_triggers_is_a_draw_on_every_drive() {
     );
 }
 
+#[test]
+fn banisher_priest_against_one_creature_passing_is_a_draw_in_either_order() {
+    banisher_priest_against_one_creature_is_a_draw(Drive::Pass);
+}
+
+#[test]
+fn banisher_priest_against_one_creature_until_turn_boundary_is_a_draw_in_either_order() {
+    banisher_priest_against_one_creature_is_a_draw(Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn banisher_priest_against_one_creature_until_stack_empty_is_a_draw_in_either_order() {
+    banisher_priest_against_one_creature_is_a_draw(Drive::UntilStackEmpty);
+}
+
 /// CR 603.3b + CR 732.4: Banisher Priest's trigger against P1's only creature has one legal
 /// target, and the loop continues whichever of its trigger and Animate Dead's resolves first,
-/// so it is a draw in either order.
-#[test]
-fn banisher_priest_against_one_creature_is_a_draw_in_either_order() {
+/// so it is a draw in either order; Off, passing, runs on.
+fn banisher_priest_against_one_creature_is_a_draw(drive: Drive) {
     for first in ["Banisher Priest", "Animate Dead"] {
         let board = Board {
             banisher: Some(1),
             first: Some(first),
             ..PLAIN
         };
-        for drive in EVERY_DRIVE {
-            let Some(run) = run(board, LoopDetectionMode::Interactive, drive, 150) else {
-                return;
-            };
-            assert_eq!(run.terminal, Terminal::GameOver(None), "{first} {drive:?}");
-            assert!(
-                run.prompted("OrderTriggers") >= 1,
-                "{first} {drive:?}: reach: the triggers were ordered"
-            );
-        }
-        let Some(off) = run(board, LoopDetectionMode::Off, Drive::Pass, 150) else {
+        let Some(played) = run(board, LoopDetectionMode::Interactive, drive, 150) else {
             return;
         };
-        assert_runs_on(&off, &format!("Off {first}"));
+        assert_eq!(
+            played.terminal,
+            Terminal::GameOver(None),
+            "{first} {drive:?}"
+        );
+        assert!(
+            played.prompted("OrderTriggers") >= 1,
+            "{first} {drive:?}: reach: the triggers were ordered"
+        );
+        if drive == Drive::Pass {
+            let Some(off) = run(board, LoopDetectionMode::Off, Drive::Pass, 150) else {
+                return;
+            };
+            assert_runs_on(&off, &format!("Off {first}"));
+        }
     }
 }
 
@@ -2046,30 +2324,43 @@ fn a_continuing_loop_past_the_proof_budget_is_not_a_draw() {
 /// trigger, resolving first, gives each player a poison counter. The loop continues whichever
 /// trigger resolves first, but poison is a loss axis, so it is not declared: both players reach
 /// ten poison counters and lose together.
-#[test]
-fn a_mandatory_poison_loop_whose_every_trigger_order_continues_is_not_declared() {
+fn mandatory_poison_loop_is_not_declared(drive: Drive) {
     let board = Board {
         ichor_rats: true,
         first: Some("Ichor Rats"),
         ..PLAIN
     };
     for mode in MODES {
-        for drive in EVERY_DRIVE {
-            let Some(run) = run(board, mode, drive, 250) else {
-                return;
-            };
-            assert_eq!(run.terminal, Terminal::GameOver(None), "{mode:?} {drive:?}");
-            assert_eq!(
-                (run.poison(P0), run.poison(P1)),
-                (10, 10),
-                "{mode:?} {drive:?}: the game ended at ten poison counters"
-            );
-            assert!(
-                run.prompted("OrderTriggers") >= 1,
-                "{mode:?} {drive:?}: reach: the triggers were ordered"
-            );
-        }
+        let Some(run) = run(board, mode, drive, 250) else {
+            return;
+        };
+        assert_eq!(run.terminal, Terminal::GameOver(None), "{mode:?} {drive:?}");
+        assert_eq!(
+            (run.poison(P0), run.poison(P1)),
+            (10, 10),
+            "{mode:?} {drive:?}: the game ended at ten poison counters"
+        );
+        assert!(
+            run.prompted("OrderTriggers") >= 1,
+            "{mode:?} {drive:?}: reach: the triggers were ordered"
+        );
     }
+}
+
+#[test]
+fn a_mandatory_poison_loop_whose_every_trigger_order_continues_passing_is_not_declared() {
+    mandatory_poison_loop_is_not_declared(Drive::Pass);
+}
+
+#[test]
+fn a_mandatory_poison_loop_whose_every_trigger_order_continues_until_turn_boundary_is_not_declared()
+{
+    mandatory_poison_loop_is_not_declared(Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn a_mandatory_poison_loop_whose_every_trigger_order_continues_until_stack_empty_is_not_declared() {
+    mandatory_poison_loop_is_not_declared(Drive::UntilStackEmpty);
 }
 
 /// P0's Forest beside triggered mana sources, and Grizzly Bears in P0's hand.
@@ -3030,7 +3321,13 @@ const WOOD_ELVES: Board = Board {
 /// Asserts every drive at `board` stops at P0's offer of a draw without end over its shuffled
 /// library, that every player accepting it draws the game, and that Off runs on.
 fn a_shuffle_is_offered(board: Board) {
-    let Some(offered) = offered_on_every_drive(board, &[Pick::First], "OrderTriggers", 1) else {
+    let Some(offered) = offered_on_every_drive(
+        board,
+        &[Pick::First],
+        "OrderTriggers",
+        1,
+        CountedTake::Performs,
+    ) else {
         return;
     };
     let state = offered.state();
@@ -3318,72 +3615,47 @@ fn an_offered_period_recorded_without_progress_is_not_replayed() {
 /// CR 701.24a + CR 732.2a: Wood Elves' shuffle each cycle beside Lumberknot's +1/+1 counter at
 /// each Dragon death, with no out held, is offered without end on every drive and accepting it
 /// draws; Off runs on.
-#[test]
-fn a_shuffle_beside_counter_growth_nothing_reads_is_offered() {
+fn shuffle_beside_counter_growth_is_offered(drive: Drive) {
     let board = Board {
         lumberknot: true,
         ..WOOD_ELVES
     };
-    for drive in EVERY_DRIVE {
-        let leg = format!("{drive:?}");
-        let before = play_trace_counters();
-        let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
-            return;
-        };
-        let replays = play_trace_counters().since(before).mandatory_replays;
-        assert_out_offer(&offered, &leg);
-        assert!(
-            replays >= 1,
-            "{leg}: reach: the witness replayed the period"
-        );
-        assert!(
-            offered.counters_on("Lumberknot", CounterType::Plus1Plus1) >= 1,
-            "{leg}: reach: Lumberknot grew"
-        );
-        assert!(
-            offered.state().rng.get_word_pos() > 0,
-            "{leg}: reach: the shuffles drew randomness"
-        );
-        offer_accepted_is_a_draw(offered);
-        run_off(board, drive, 60);
-    }
+    let leg = format!("{drive:?}");
+    let before = play_trace_counters();
+    let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+        return;
+    };
+    let replays = play_trace_counters().since(before).mandatory_replays;
+    assert_out_offer(&offered, &leg);
+    assert!(
+        replays >= 1,
+        "{leg}: reach: the witness replayed the period"
+    );
+    assert!(
+        offered.counters_on("Lumberknot", CounterType::Plus1Plus1) >= 1,
+        "{leg}: reach: Lumberknot grew"
+    );
+    assert!(
+        offered.state().rng.get_word_pos() > 0,
+        "{leg}: reach: the shuffles drew randomness"
+    );
+    offer_accepted_is_a_draw(offered);
+    run_off(board, drive, 60);
 }
 
-/// CR 732.2a + CR 732.2c: Banisher Priest's target, in either trigger order (CR 603.3d + CR
-/// 601.2c), and Brain Maggot's card (CR 608.2d) are chosen each cycle among objects new to it
-/// (CR 610.3 + CR 400.7), a choice no declaration of the offer contains, so on every drive no
-/// count above zero is taken.
 #[test]
-fn a_without_end_offer_holding_a_choice_refuses_every_counted_take() {
-    for (board, prompt) in [
-        (TWO_TARGETS, "TriggerTargetSelection"),
-        (
-            Board {
-                first: Some("Animate Dead"),
-                ..TWO_TARGETS
-            },
-            "TriggerTargetSelection",
-        ),
-        (TWO_CARDS, "RevealChoice"),
-    ] {
-        for drive in EVERY_DRIVE {
-            let leg = format!("{:?} {prompt} {drive:?}", board.first);
-            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
-                return;
-            };
-            assert_out_offer(&offered, &leg);
-            assert!(
-                offered.prompted(prompt) >= 1,
-                "{leg}: reach: the choice was made, prompts {:?}",
-                offered.prompts
-            );
-            assert_no_counted_take(
-                offered.state(),
-                CountedTake::Unperformable(UnperformableCause::UncontainedChoice),
-                &leg,
-            );
-        }
-    }
+fn a_shuffle_beside_counter_growth_nothing_reads_passing_is_offered() {
+    shuffle_beside_counter_growth_is_offered(Drive::Pass);
+}
+
+#[test]
+fn a_shuffle_beside_counter_growth_nothing_reads_until_turn_boundary_is_offered() {
+    shuffle_beside_counter_growth_is_offered(Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn a_shuffle_beside_counter_growth_nothing_reads_until_stack_empty_is_offered() {
+    shuffle_beside_counter_growth_is_offered(Drive::UntilStackEmpty);
 }
 
 /// Board B with an out on either seat recurs only on its token growth, which the ring drain does
@@ -3476,39 +3748,51 @@ fn a_restored_counted_proposal_over_a_choice_refuses_a_later_place() {
 /// declared, and every player accepting it draws the game; Off runs on. The ring drain's
 /// delimiter fires in the replay beside P1's Soul Warden, so a count is taken, and fires nowhere
 /// beside P0's, so no count above zero is taken.
-#[test]
-fn a_shuffle_only_the_replay_draws_is_offered() {
+fn shuffle_only_the_replay_draws_is_offered(drive: Drive) {
     for (seat, refused) in [(P1, None), (P0, Some(UnperformableCause::UndelimitedCover))] {
         let board = Board {
             soul_warden: Some(seat),
             ..WOOD_ELVES
         };
-        for drive in EVERY_DRIVE {
-            let leg = format!("{seat:?} {drive:?}");
-            let before = play_trace_counters();
-            let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
-                return;
-            };
-            let replays = play_trace_counters().since(before).mandatory_replays;
-            assert_out_offer(&offered, &leg);
-            assert!(
-                replays >= 1,
-                "{leg}: reach: the witness replayed the period"
-            );
-            assert!(
-                offered.state().rng.get_word_pos() > 0,
-                "{leg}: reach: the shuffles drew randomness"
-            );
-            match refused {
-                None => assert_counted_take_performs(offered.state(), &leg),
-                Some(cause) => {
-                    assert_no_counted_take(offered.state(), CountedTake::Unperformable(cause), &leg)
-                }
+        let leg = format!("{seat:?} {drive:?}");
+        let before = play_trace_counters();
+        let Some(offered) = run(board, LoopDetectionMode::Interactive, drive, 60) else {
+            return;
+        };
+        let replays = play_trace_counters().since(before).mandatory_replays;
+        assert_out_offer(&offered, &leg);
+        assert!(
+            replays >= 1,
+            "{leg}: reach: the witness replayed the period"
+        );
+        assert!(
+            offered.state().rng.get_word_pos() > 0,
+            "{leg}: reach: the shuffles drew randomness"
+        );
+        match refused {
+            None => assert_counted_take_performs(offered.state(), &leg),
+            Some(cause) => {
+                assert_no_counted_take(offered.state(), CountedTake::Unperformable(cause), &leg)
             }
-            offer_accepted_is_a_draw(offered);
-            run_off(board, drive, 60);
         }
+        offer_accepted_is_a_draw(offered);
+        run_off(board, drive, 60);
     }
+}
+
+#[test]
+fn a_shuffle_only_the_replay_draws_passing_is_offered() {
+    shuffle_only_the_replay_draws_is_offered(Drive::Pass);
+}
+
+#[test]
+fn a_shuffle_only_the_replay_draws_until_turn_boundary_is_offered() {
+    shuffle_only_the_replay_draws_is_offered(Drive::UntilTurnBoundary);
+}
+
+#[test]
+fn a_shuffle_only_the_replay_draws_until_stack_empty_is_offered() {
+    shuffle_only_the_replay_draws_is_offered(Drive::UntilStackEmpty);
 }
 
 /// Banisher Priest against two Grizzly Bears, passed to P0's offer and declared without end: P1's

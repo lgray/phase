@@ -2797,8 +2797,9 @@ fn reconcile_loop_shortcut(state: &mut GameState, result: &mut ActionResult) {
 /// - **Path A — determinate lethal single-winner** (constant-depth OR ω growing cascade,
 ///   via the reused, UN-widened [`crate::analysis::loop_check::live_mandatory_loop_winner`]):
 ///   if the loop is mandatory (CR 732.5: no living player can break it) and its period holds
-///   only mandatory actions, this AUTO-WINS (mandatory winning drain); otherwise it OFFERS
-///   the interactive shortcut (CR 732.2a) via `WaitingFor::LoopShortcut`.
+///   only mandatory actions, this AUTO-WINS (mandatory winning drain); a period holding a game
+///   choice no declaration contains is played out; otherwise it OFFERS the interactive shortcut
+///   (CR 732.2a) via `WaitingFor::LoopShortcut`.
 /// - **Path B — CR 732.4 all-mandatory, net-progress, no-loss draw**: a confirmed cycle
 ///   with no determinate winner that drives NO player toward a loss and that no living
 ///   player can break is a draw (CR 104.4b / 104.4f). One whose only non-mandatory member is
@@ -2862,32 +2863,47 @@ fn interactive_loop_bridge_paths(
 
     // Path A: determinate lethal single-winner drain.
     if let Some((winner, delta, prior)) = find_live_loop_winner(state) {
-        // CR 732.2b: a period holding a decision or an out is offered, so each other player may
-        // shorten it; only a period of mandatory actions alone is won outright.
-        let forced = mandatory && {
-            let start = state
+        // CR 732.2b: a period holding only outs is offered, so each other player may shorten it;
+        // only a period of mandatory actions alone is won outright.
+        let start = state
+            .loop_detect_ring
+            .iter()
+            .position(|sample| std::sync::Arc::ptr_eq(sample, &prior))
+            .unwrap_or(0);
+        // CR 732.5: the period is read under the out verdict at the current position.
+        let raw = crate::types::game_state::LoopDecisionProfile::of_window(
+            state
                 .loop_detect_ring
                 .iter()
-                .position(|sample| std::sync::Arc::ptr_eq(sample, &prior))
-                .unwrap_or(0);
-            resolve(
-                state,
-                crate::types::game_state::LoopDecisionProfile::of_window(
-                    state
-                        .loop_detect_ring
-                        .iter()
-                        .skip(start)
-                        .map(|sample| &**sample),
-                    &state.loop_decision_marks_with(crate::types::game_state::PriorityOut::Absent),
-                ),
-            )
-            .is_forced()
+                .skip(start)
+                .map(|sample| &**sample),
+            &state.loop_decision_marks_with(if mandatory {
+                crate::types::game_state::PriorityOut::Absent
+            } else {
+                crate::types::game_state::PriorityOut::Held
+            }),
+        );
+        // A choice named before the every-option proof stays named after it, so the proof is
+        // asked only when none is.
+        let profile = if crate::analysis::loop_check::CountedTake::Performs
+            .naming_the_choice(&raw)
+            .is_performs()
+        {
+            resolve(state, raw)
+        } else {
+            raw
         };
-        if forced {
+        let counted_take =
+            crate::analysis::loop_check::CountedTake::Performs.naming_the_choice(&profile);
+        if profile.is_forced() {
             // FIRM #1 — mandatory winning drain: identical to the `On` auto-win.
             // CR 732.2a: mark the loop's unbounded axes; CR 704.5a: terminal GameOver.
             state.mark_unbounded_loop(winner, &delta.unbounded_axes_for(winner));
             super::elimination::end_game(state, Some(winner), &mut result.events);
+        } else if !counted_take.is_performs() {
+            // CR 732.2a + CR 732.2c: a period whose choices no template-less declaration contains
+            // is played out, not offered.
+            return;
         } else {
             // CR 732.2a: OPTIONAL winning drain — only the player with priority may propose
             // the shortcut. Keep that proposer distinct from the already-measured winner; a
@@ -2918,7 +2934,7 @@ fn interactive_loop_bridge_paths(
                 // empty), so there is nothing for a declaration to pin.
                 declaration: None,
                 road: crate::analysis::loop_check::OfferRoad::Ring,
-                counted_take: crate::analysis::loop_check::CountedTake::Performs,
+                counted_take,
                 period: Default::default(),
             };
             result.waiting_for = state.waiting_for.clone();
@@ -9096,8 +9112,13 @@ fn handle_declare_shortcut(
                     .to_string(),
             ));
         }
-        crate::analysis::decision_template::IterationCount::UntilLethal
-        | crate::analysis::decision_template::IterationCount::WithoutEnd => {}
+        // CR 732.2c: until lethal takes counted repetitions, so a take refusing one is refused here.
+        crate::analysis::decision_template::IterationCount::UntilLethal => {
+            if let Some(cause) = offer.counted_take.refusal(1) {
+                return Err(EngineError::InvalidAction(cause.reason().to_string()));
+            }
+        }
+        crate::analysis::decision_template::IterationCount::WithoutEnd => {}
     }
     let proposal = crate::analysis::loop_check::ShortcutProposal {
         proposer: offer.proposer,

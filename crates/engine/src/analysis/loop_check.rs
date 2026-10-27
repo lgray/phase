@@ -179,8 +179,7 @@ pub enum CountedTake {
 /// Why no counted take of an offer performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnperformableCause {
-    /// CR 732.2c: each repetition makes a target or card choice no declaration of the offer
-    /// contains.
+    /// CR 732.2c: each repetition makes a game choice no declaration of the offer contains.
     UncontainedChoice,
     /// The period recurs only where the ring drain's cycle delimiter does not fire.
     UndelimitedCover,
@@ -199,15 +198,19 @@ impl CountedTake {
         }
     }
 
-    /// This take, naming the choice when `profile` holds a target or card choice.
+    /// This take, naming the choice when `profile` holds a game choice no template-less
+    /// declaration contains.
     pub(crate) fn naming_the_choice(
         self,
         profile: &crate::types::game_state::LoopDecisionProfile,
     ) -> Self {
-        if profile
-            .members
-            .contains(&crate::types::game_state::LoopDecision::Continuing)
-        {
+        use crate::types::game_state::LoopDecision;
+        let holds_choice = profile.holds_unproven_option()
+            || profile.members.iter().any(|member| match member {
+                LoopDecision::Continuing | LoopDecision::Optional | LoopDecision::Decision => true,
+                LoopDecision::Outs | LoopDecision::Random | LoopDecision::Unproven(_) => false,
+            });
+        if holds_choice {
             Self::Unperformable(UnperformableCause::UncontainedChoice)
         } else {
             self
@@ -788,6 +791,88 @@ mod tests {
 
     fn pid(n: u8) -> PlayerId {
         PlayerId(n)
+    }
+
+    /// CR 732.2c: a target, card, may or several-option choice is one no template-less
+    /// declaration contains.
+    #[test]
+    fn naming_the_choice_names_every_member_that_stands_for_a_game_choice() {
+        use crate::analysis::decision_template::ChoicePoint;
+        use crate::types::game_state::{LoopDecision as D, LoopDecisionProfile};
+        let named = CountedTake::Unperformable(UnperformableCause::UncontainedChoice);
+        for (members, expected) in [
+            (vec![D::Continuing], named),
+            (vec![D::Optional], named),
+            (vec![D::Decision], named),
+            (vec![D::Unproven(ChoicePoint::AnnouncedTarget)], named),
+            (vec![D::Unproven(ChoicePoint::ResolutionSet)], named),
+            (vec![D::Outs, D::Decision], named),
+            (vec![D::Outs], CountedTake::Performs),
+            (vec![D::Random], CountedTake::Performs),
+            (vec![D::Outs, D::Random], CountedTake::Performs),
+            (
+                vec![D::Unproven(ChoicePoint::TriggerOrder)],
+                CountedTake::Performs,
+            ),
+            (vec![], CountedTake::Performs),
+        ] {
+            let profile = LoopDecisionProfile {
+                members: members.iter().copied().collect(),
+            };
+            assert_eq!(
+                CountedTake::Performs.naming_the_choice(&profile),
+                expected,
+                "{members:?}"
+            );
+        }
+    }
+
+    /// CR 603.3b: a choice named before the every-option proof stays named, and the period
+    /// unforced, under each of its outcomes.
+    #[test]
+    fn a_profile_naming_a_choice_names_one_under_every_proof() {
+        use crate::analysis::decision_template::ChoicePoint;
+        use crate::game::period_confirm::OptionProof;
+        use crate::types::game_state::{LoopDecision as D, LoopDecisionProfile};
+        let members = [
+            D::Optional,
+            D::Outs,
+            D::Decision,
+            D::Random,
+            D::Unproven(ChoicePoint::AnnouncedTarget),
+            D::Unproven(ChoicePoint::ResolutionSet),
+            D::Unproven(ChoicePoint::TriggerOrder),
+        ];
+        let mut named = 0;
+        for mask in 0u32..(1 << members.len()) {
+            let raw = LoopDecisionProfile {
+                members: members
+                    .iter()
+                    .enumerate()
+                    .filter(|&(bit, _)| mask & (1 << bit) != 0)
+                    .map(|(_, member)| *member)
+                    .collect(),
+            };
+            if CountedTake::Performs.naming_the_choice(&raw).is_performs() {
+                continue;
+            }
+            named += 1;
+            for proof in [
+                OptionProof::Continues,
+                OptionProof::Ends,
+                OptionProof::Undecided,
+            ] {
+                let resolved = raw.clone().with_option_proof(|| proof);
+                assert!(!resolved.is_forced(), "{raw:?} {proof:?}");
+                assert!(
+                    !CountedTake::Performs
+                        .naming_the_choice(&resolved)
+                        .is_performs(),
+                    "{raw:?} {proof:?} -> {resolved:?}"
+                );
+            }
+        }
+        assert!(named > 0, "reach: some member set names a choice");
     }
 
     // The CR 704.3 partition `winner_life_never_dips` rests on — `Priority` DISJOINT from
