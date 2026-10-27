@@ -17375,7 +17375,7 @@ pub enum WaitingFor {
         declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
         /// The producer that minted this offer; `game::engine`'s route authority reads it.
         road: crate::analysis::loop_check::OfferRoad,
-        /// Whether a counted take of this offer performs; the two admission seams read it.
+        /// Whether a counted take of this offer performs.
         #[serde(
             default,
             skip_serializing_if = "crate::analysis::loop_check::CountedTake::is_performs"

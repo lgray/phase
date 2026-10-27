@@ -1495,7 +1495,8 @@ pub(crate) fn confirm(frame: &GameState, span: NamedSpan) -> Result<Confirmation
 pub(crate) struct HeldPeriod {
     /// Performs only when a ring drain's delimiter fires at a settle frame the replay reaches.
     pub(crate) counted_take: crate::analysis::loop_check::CountedTake,
-    /// CR 701.24a: the decision members the replayed period itself drew.
+    /// The decision members the replayed period itself drew, such as a shuffle's randomness
+    /// (CR 701.24a).
     pub(crate) replayed: crate::types::game_state::LoopDecisionProfile,
 }
 

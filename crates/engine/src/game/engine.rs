@@ -3073,7 +3073,8 @@ fn mandatory_recurrence_witnessed(
                         Witnessed::Refused
                     }
                 };
-            // CR 701.24a: randomness the replayed period draws is a member of the period too.
+            // Randomness the replayed period draws, such as a shuffle's (CR 701.24a), is a member
+            // of the period too.
             let joined = |mut profile: crate::types::game_state::LoopDecisionProfile,
                           held: &super::period_confirm::HeldPeriod| {
                 profile
