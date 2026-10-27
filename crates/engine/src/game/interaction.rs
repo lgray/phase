@@ -4741,7 +4741,7 @@ fn selection_projection(
                         amount: *value,
                     }
                 }
-                SearchSelectionConstraint::DistinctQualities { .. }
+                SearchSelectionConstraint::SharesQualities { .. }
                 | SearchSelectionConstraint::MatchEachFilter { .. } => {
                     SelectionConstraint::EngineValidatedCount {
                         min: bounds.0.min(u32::MAX as usize) as u32,
