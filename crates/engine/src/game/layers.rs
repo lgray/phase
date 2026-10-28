@@ -7749,11 +7749,14 @@ fn gather_ring_emblem_continuous_effects(
 /// reads the step in progress, walking the same sources and transients the gather visits.
 pub(crate) fn continuous_effect_conditions_read_current_step(state: &GameState) -> bool {
     let mut found = false;
+    // CR 613.6: a layer-6 ability removal empties the live set, but the next pass
+    // reseeds from base, so both sets are walked.
     for_each_static_effect_source(state, |_, obj| {
         found = found
             || obj
-                .static_definitions
-                .iter_all()
+                .base_static_definitions
+                .iter()
+                .chain(obj.static_definitions.iter_all())
                 .any(static_definition_reads_current_step);
     });
     found

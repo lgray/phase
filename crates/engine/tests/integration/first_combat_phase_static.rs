@@ -1,12 +1,15 @@
 //! A static gated on the first combat phase follows every step boundary.
 
 use super::rules::{GameAction, GameRunner, GameScenario, ObjectId, Phase, WaitingFor, P0, P1};
+use engine::game::layers::flush_layers;
 use engine::game::perf_counters;
 use engine::types::ability::EffectKind;
 use engine::types::events::GameEvent;
 use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 
 const GATED: &str = "As long as it's the first combat phase of the turn, Gated Bear gets +2/+0.";
+const GATED_SELF_REMOVING: &str =
+    "As long as it's the first combat phase of the turn, Gated Bear gets +2/+0 and loses all abilities.";
 const MANDATE: &str = "Cast this spell only during combat.\nYour opponents can't cast spells this turn.\nEnd the combat phase. (Remove all attackers and blockers from combat. Exile all spells and abilities from the stack, including this spell.)";
 const TIME_STOP: &str = "End the turn. (Exile all spells and abilities, including this spell. The player whose turn it is discards down to their maximum hand size. Damage heals and \"this turn\" and \"until end of turn\" effects end.)";
 const SAVAGE_BEATING: &str = "Cast this spell only during combat on your turn.\nChoose one —\n• Creatures you control gain double strike until end of turn.\n• Untap all creatures you control. After this phase, there is an additional combat phase.\nEntwine {1}{R} (Choose both if you pay the entwine cost.)";
@@ -73,6 +76,35 @@ fn first_combat_static_ends_with_an_untouched_natural_combat() {
     assert!(r.state().combat.is_none());
     assert_priority(&r);
     assert_eq!(power(&r, id), 2);
+}
+
+// CR 613.6 + CR 611.3a: a step-gated static that removes its own ability still ends with the step.
+#[test]
+fn first_combat_static_that_removes_its_own_ability_ends_with_an_untouched_natural_combat() {
+    let mut s = scenario();
+    let id = s
+        .add_creature_from_oracle(P0, "Gated Bear", 2, 2, GATED_SELF_REMOVING)
+        .id();
+    let mut r = s.build();
+    empty_first_combat(&mut r, id);
+    assert!(
+        r.state().objects[&id].static_definitions.is_empty(),
+        "the static removed itself from the live set"
+    );
+    for _ in 0..2 {
+        r.act(GameAction::PassPriority).unwrap();
+    }
+    assert_eq!(r.state().phase, Phase::PostCombatMain);
+    assert_priority(&r);
+    let cached = power(&r, id);
+    r.state_mut().layers_dirty.mark_full();
+    flush_layers(r.state_mut());
+    assert_eq!(
+        cached,
+        power(&r, id),
+        "cached power matches a full re-evaluation"
+    );
+    assert_eq!(cached, 2);
 }
 
 // CR 724.2d + CR 611.3a: Mandate of Peace ends an untouched combat.
