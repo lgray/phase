@@ -274,6 +274,95 @@ mod trigger_occurrence_tests {
         assert!(third.0 > first.0, "serialized generations are monotonic");
     }
 
+    /// A producer that already holds an active generation keeps it without
+    /// drawing from the allocator: reconciling an unchanged producer set leaves
+    /// the occurrence state equal, and a producer new to the set receives the
+    /// first generation the allocator has not yet issued. Fails on revert of
+    /// the lazy allocation in `reconcile_grant_instances_scoped`.
+    #[test]
+    fn grant_reconciler_allocates_only_for_a_producer_without_an_active_generation() {
+        let kept = TriggerGrantProducerKey::Granted {
+            origin: static_origin(),
+            output_index: 0,
+        };
+        let added = TriggerGrantProducerKey::Granted {
+            origin: static_origin(),
+            output_index: 1,
+        };
+        let mut state = TriggerOccurrenceState::default();
+        let first = state
+            .reconcile_grant_instances(vec![(kept.clone(), "first")])
+            .unwrap()[0]
+            .0;
+        let settled = state.clone();
+        state
+            .reconcile_grant_instances(vec![(kept.clone(), "second")])
+            .unwrap();
+        assert_eq!(
+            state, settled,
+            "a reused generation must not advance the allocator"
+        );
+
+        let reconciled = state
+            .reconcile_grant_instances(vec![(kept, "third"), (added, "added")])
+            .unwrap();
+        assert_eq!(
+            reconciled[0].0, first,
+            "the kept producer keeps its generation"
+        );
+        assert_eq!(
+            reconciled[1].0,
+            TriggerGrantInstanceRef(first.0 + 1),
+            "the added producer receives the next unissued generation"
+        );
+    }
+
+    /// The class-scoped reconcile the off-zone keyword path uses: an unchanged
+    /// in-class producer keeps its occurrence without allocating, and an
+    /// out-of-class active grant is retained. Fails on revert of the lazy
+    /// allocation in `reconcile_grant_instances_scoped`.
+    #[test]
+    fn scoped_reconcile_of_an_unchanged_class_leaves_occurrence_state_equal() {
+        let companion = TriggerGrantProducerKey::KeywordCompanion {
+            origin: static_origin(),
+            keyword_output_index: 0,
+            companion_index: 0,
+        };
+        let is_companion = |producer: &TriggerGrantProducerKey| {
+            matches!(producer, TriggerGrantProducerKey::KeywordCompanion { .. })
+        };
+        let candidates = || {
+            vec![(
+                companion.clone(),
+                TriggerDefinition::new(TriggerMode::Attacks),
+            )]
+        };
+        let mut state = TriggerOccurrenceState::default();
+        state
+            .grant_instance_for(TriggerGrantProducerKey::Granted {
+                origin: static_origin(),
+                output_index: 0,
+            })
+            .unwrap();
+        let first = state
+            .reconcile_trigger_entries_matching(candidates(), is_companion)
+            .unwrap();
+        assert_eq!(
+            state.active_grants().count(),
+            2,
+            "reach-guard: the out-of-class grant and the companion are both active"
+        );
+        let settled = state.clone();
+        let second = state
+            .reconcile_trigger_entries_matching(candidates(), is_companion)
+            .unwrap();
+        assert_eq!(second, first, "the companion keeps its occurrence");
+        assert_eq!(
+            state, settled,
+            "an unchanged class must not advance the allocator"
+        );
+    }
+
     #[test]
     fn identical_grants_from_distinct_producers_remain_distinct_entries() {
         let definition = TriggerDefinition::new(TriggerMode::Attacks);
@@ -37496,6 +37585,12 @@ impl TriggerOccurrenceState {
     /// The identity/retirement/generation core is payload-generic so the same
     /// allocator contract can serve activated-ability occurrences. The thin
     /// trigger adapter below maps the returned instances to trigger entries.
+    ///
+    /// A producer that already holds an active generation keeps it without
+    /// drawing from the allocator; only a producer without one receives a fresh
+    /// generation. Repeating a reconcile with the same candidates therefore
+    /// leaves the state equal (the first pass may still move retained
+    /// out-of-class grants ahead of the replaced class).
     fn reconcile_grant_instances_scoped<T, F>(
         &mut self,
         candidates: Vec<(TriggerGrantProducerKey, T)>,
@@ -37521,12 +37616,16 @@ impl TriggerOccurrenceState {
                 return Err(TriggerOccurrenceError::DuplicateProducer(producer));
             }
 
-            let instance = staged
+            // A producer with an active grant keeps its generation; only a
+            // producer without one draws a fresh generation from the allocator.
+            let instance = match staged
                 .active_grants
                 .iter()
                 .find(|active| active.producer == producer)
-                .map(|active| active.instance)
-                .unwrap_or(staged.allocate_trigger_grant_instance()?);
+            {
+                Some(active) => active.instance,
+                None => staged.allocate_trigger_grant_instance()?,
+            };
             next_active.push(ActiveTriggerGrantInstance { producer, instance });
             output.push((instance, payload));
         }
