@@ -37516,6 +37516,18 @@ pub struct TriggerDefinitionRef {
     pub occurrence: TriggerDefinitionOccurrenceRef,
 }
 
+impl TriggerDefinitionRef {
+    /// Yields every object incarnation this reference names, an expanded grant's provider
+    /// included (CR 400.7).
+    pub(crate) fn for_each_incarnation_mut(&mut self, f: &mut impl FnMut(ObjectId, &mut u64)) {
+        f(self.source.object_id, &mut self.source.incarnation);
+        if let TriggerDefinitionOccurrenceRef::ExpandedGrant { provider, .. } = &mut self.occurrence
+        {
+            provider.for_each_incarnation_mut(f);
+        }
+    }
+}
+
 /// Identity-bearing runtime trigger entry.
 ///
 /// `definition` stays explicit: code that needs only a payload must project it
@@ -42708,8 +42720,8 @@ impl ResolvedAbility {
         }
     }
 
-    /// Yields the source incarnation each `MayTriggerOrigin::Definition` in this
-    /// ability tree names, so loop normalization can rank it with the other
+    /// Yields the incarnations each `MayTriggerOrigin::Definition` in this
+    /// ability tree names, so loop normalization can rank them with the other
     /// incarnation carriers (CR 400.7).
     pub(crate) fn for_each_may_trigger_origin_incarnation_mut(
         &mut self,
@@ -42718,10 +42730,7 @@ impl ResolvedAbility {
         if let Some(MayTriggerOrigin::Definition { definition_ref }) =
             self.may_trigger_origin.as_mut()
         {
-            f(
-                definition_ref.source.object_id,
-                &mut definition_ref.source.incarnation,
-            );
+            definition_ref.for_each_incarnation_mut(f);
         }
         if let Some(sub) = self.sub_ability.as_mut() {
             sub.for_each_may_trigger_origin_incarnation_mut(f);

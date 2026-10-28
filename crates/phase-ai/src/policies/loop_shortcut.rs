@@ -201,7 +201,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
                 PolicyVerdict::reject(PolicyReason::new("loop_shortcut_untillethal_cannot_crown"))
             }
 
-            // CR 104.4i + CR 732.2b: an offer naming no winner is proposed as a draw, which every
+            // CR 732.2b: an offer naming no winner is proposed as a draw, which every
             // other player may still shorten.
             (None, IterationCount::WithoutEnd) => PolicyVerdict::preference(
                 DRAW_PROPOSAL_PREFERENCE,
@@ -772,7 +772,7 @@ mod tests {
         )
     }
 
-    /// CR 104.4i: an offer naming no winner is worth proposing as a draw; declining it is neutral.
+    /// CR 732.2a: an offer naming no winner is worth proposing as a draw; declining it is neutral.
     #[test]
     fn a_without_end_offer_naming_no_winner_prefers_the_draw() {
         let state = without_end_offer(None);

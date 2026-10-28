@@ -2843,7 +2843,7 @@ fn a_proposal_without_end_is_refused_on_an_offer_that_did_not_publish_one() {
     }
 }
 
-/// CR 104.4i + CR 732.2c: once every player accepts a proposal to repeat the loop without end,
+/// CR 732.2b + CR 732.2c: once every player accepts a proposal to repeat the loop without end,
 /// the game is a draw and nothing the loop does is performed.
 #[test]
 fn a_proposal_without_end_every_player_accepts_is_a_draw() {

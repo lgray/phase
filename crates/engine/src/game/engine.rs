@@ -3016,7 +3016,7 @@ fn interactive_loop_bridge_paths(
                 // CR 122.1 + CR 104.4b: the third disjunct is a pure preserved-`Generic`
                 // counter-growth cover (proliferate/charge Pentad Prism, burden The One
                 // Ring). It reaches only an offer, which ends the game only when every player
-                // accepts it (CR 732.2b + CR 104.4i).
+                // accepts it (CR 732.2b + CR 732.2c).
                 // It is also the one disjunct the hoist leaves deriving: its current-side
                 // comparand is `equalize_generic_counters(prior, current)`, which depends on
                 // the prior.
@@ -5966,7 +5966,8 @@ fn apply_confirmed_shortcut(
         crate::analysis::decision_template::IterationCount::Fixed(n) => {
             materialize_fixed_shortcut(state, result, proposal, n)
         }
-        // CR 104.4i: every player agreed to repeat the loop without end, so the game is a draw.
+        // CR 732.2b + CR 732.2c: the game is a draw because every player accepted the endless
+        // shortcut.
         crate::analysis::decision_template::IterationCount::WithoutEnd => {
             super::elimination::end_game(state, None, &mut result.events);
             result.waiting_for = state.waiting_for.clone();

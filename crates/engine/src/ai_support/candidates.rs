@@ -3754,7 +3754,7 @@ pub fn candidate_actions_broad_with_probe(
             // `template: None` declaration; where neither applies, `DeclineShortcut` really is
             // the only legal answer at the node, and representing that honestly is the point.
             let mut v = Vec::new();
-            // CR 732.2a + CR 104.4i: an offer to repeat without end is declared as one.
+            // CR 732.2a: an offer to repeat without end is declared as one.
             let unbounded = match schema.iteration_count {
                 crate::analysis::decision_template::IterationCount::WithoutEnd => {
                     Some(crate::analysis::decision_template::IterationCount::WithoutEnd)

@@ -118,7 +118,7 @@ fn drive_until_marked_collecting(
 
 /// CR 732.5 + CR 732.2a: P1's Bolt is an out outside the charge-growth loop, so P0 is offered a
 /// draw without end instead of being marked, and every player accepting it draws the game
-/// (CR 104.4i + CR 732.2c).
+/// (CR 732.2b + CR 732.2c).
 #[test]
 fn an_out_only_charge_growth_loop_is_offered_not_marked() {
     use engine::analysis::decision_template::IterationCount;

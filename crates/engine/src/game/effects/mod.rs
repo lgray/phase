@@ -22390,14 +22390,9 @@ fn resolve_chain_body(
              `optional_for` ability before the up-front gate"
         );
         if let Some((payer, costs)) = resolution_optional_payment_options(state, ability) {
-            if may_trigger_key.as_ref().is_some_and(|key| {
-                matches!(
-                    state.may_trigger_auto_choice_for_live_prompt(key),
-                    Some(AutoMayChoice::Decline)
-                )
-            }) {
-                // CR 603.5: the remembered decline is the controller's optional choice.
-                state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Optional);
+            if costs.is_empty() {
+                // CR 608.2d: an impossible optional payment is declined without
+                // opening a choice window.
                 progress = resolve_optional_effect_decision_step(
                     state,
                     ability.clone(),
@@ -22407,9 +22402,14 @@ fn resolve_chain_body(
                 )?;
                 return Ok(progress);
             }
-            if costs.is_empty() {
-                // CR 608.2d: an impossible optional payment is declined without
-                // opening a choice window.
+            if may_trigger_key.as_ref().is_some_and(|key| {
+                matches!(
+                    state.may_trigger_auto_choice_for_live_prompt(key),
+                    Some(AutoMayChoice::Decline)
+                )
+            }) {
+                // CR 603.5: the remembered decline is the controller's optional choice.
+                state.record_loop_decision(crate::game::play_trace::AnswerOptionality::Optional);
                 progress = resolve_optional_effect_decision_step(
                     state,
                     ability.clone(),
@@ -37081,11 +37081,11 @@ mod tests {
         assert_eq!(state.loop_decision_tally.optional, 1);
     }
 
-    /// CR 603.5: a remembered decline of an optional payment is recorded where it applies;
-    /// the unremembered prompt records nothing.
+    /// CR 603.5 + CR 608.2d: a remembered decline of an optional payment is recorded where it
+    /// applies; the unremembered prompt and an impossible payment record nothing.
     #[test]
     fn saved_decline_of_an_optional_payment_is_recorded_where_it_applies() {
-        let resolve = |stored: Option<AutoMayChoice>| {
+        let resolve = |stored: Option<AutoMayChoice>, fodder: bool| {
             let mut state = GameState::new_two_player(42);
             let source_id = create_object(
                 &mut state,
@@ -37094,13 +37094,15 @@ mod tests {
                 "Payment Source".to_string(),
                 Zone::Battlefield,
             );
-            create_object(
-                &mut state,
-                CardId(101),
-                PlayerId(0),
-                "Fodder".to_string(),
-                Zone::Hand,
-            );
+            if fodder {
+                create_object(
+                    &mut state,
+                    CardId(101),
+                    PlayerId(0),
+                    "Fodder".to_string(),
+                    Zone::Hand,
+                );
+            }
             let origin = MayTriggerOrigin::Printed { trigger_index: 0 };
             if let Some(choice) = stored {
                 state.set_may_trigger_auto_choice(
@@ -37135,14 +37137,14 @@ mod tests {
             state
         };
 
-        let declined = resolve(Some(AutoMayChoice::Decline));
+        let declined = resolve(Some(AutoMayChoice::Decline), true);
         assert!(
             matches!(declined.waiting_for, WaitingFor::Priority { .. }),
             "reach: the remembered decline opens no prompt"
         );
         assert_eq!(declined.loop_decision_tally.optional, 1);
 
-        let prompted = resolve(None);
+        let prompted = resolve(None, true);
         assert!(
             matches!(
                 prompted.waiting_for,
@@ -37151,6 +37153,13 @@ mod tests {
             "reach: without a remembered answer the payment prompt opens"
         );
         assert_eq!(prompted.loop_decision_tally.optional, 0);
+
+        let impossible = resolve(Some(AutoMayChoice::Decline), false);
+        assert!(
+            matches!(impossible.waiting_for, WaitingFor::Priority { .. }),
+            "reach: the impossible payment opens no prompt"
+        );
+        assert_eq!(impossible.loop_decision_tally.optional, 0);
     }
 
     #[test]

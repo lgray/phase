@@ -34744,10 +34744,7 @@ impl GameState {
                 if let Some(MayTriggerOrigin::Definition { definition_ref }) =
                     pending.may_trigger_origin.as_mut()
                 {
-                    f(
-                        definition_ref.source.object_id,
-                        &mut definition_ref.source.incarnation,
-                    );
+                    definition_ref.for_each_incarnation_mut(f);
                 }
                 pending
                     .ability
@@ -34759,10 +34756,7 @@ impl GameState {
                     ..
                 } = &mut record.selector
                 {
-                    f(
-                        definition_ref.source.object_id,
-                        &mut definition_ref.source.incarnation,
-                    );
+                    definition_ref.for_each_incarnation_mut(f);
                 }
             }
         }
@@ -35146,14 +35140,15 @@ impl GameState {
             if held.samples.len() == LOOP_DETECT_RING_CAP {
                 held.samples.pop_front();
             }
-            held.samples.push_back(snapshot.clone());
-            // CR 732.2a: a beat back at the held window's depth shows the window recurring.
+            held.samples.push_back(snapshot);
+            // CR 732.2a: a beat back at the held window's depth shows the window recurring;
+            // a beat below it stays in the held window only.
             if self.stack.len() >= held.start_depth {
                 if let Some(held) = self.loop_detect_held.take() {
                     self.loop_detect_ring = held.samples;
                 }
-                return;
             }
+            return;
         }
         self.loop_detect_ring.push_back(snapshot);
     }
@@ -35196,7 +35191,6 @@ impl GameState {
         // The window continues, so the visible ring is emptied without ending it.
         self.loop_detect_ring.clear();
         self.record_loop_detect_sample();
-        self.loop_detect_ring.clear();
     }
 
     /// CR 603.3b: one chosen trigger order, prompted or applied from a saved order.
@@ -46955,8 +46949,8 @@ mod tests {
     }
 
     /// CR 603.5 + CR 400.7: a stored exact-instance answer is ranked with the trigger it
-    /// answers wherever that trigger waits, so a stale stored answer stays distinct from a
-    /// current one.
+    /// answers wherever that trigger waits, an expanded grant's provider included, so a stale
+    /// stored answer stays distinct from a current one.
     #[test]
     fn normalize_for_loop_ranks_stored_answers_with_their_trigger() {
         use crate::game::triggers::{PendingTrigger, PendingTriggerContext};
@@ -46972,16 +46966,31 @@ mod tests {
             SubAbility,
             ElseAbility,
         }
-        let answered = |carrier: Carrier, live: u64, trigger: u64, stored: u64| {
+        let answered = |carrier: Carrier, expanded: bool, live: u64, trigger: u64, stored: u64| {
             let (mut state, x) = records_naming(live, &[]);
-            let origin = |incarnation| MayTriggerOrigin::Definition {
-                definition_ref: TriggerDefinitionRef {
-                    source: ObjectIncarnationRef::of(x, incarnation),
-                    occurrence: TriggerDefinitionOccurrenceRef::Printed {
-                        base_set: TriggerBaseSetInstanceRef::INITIAL,
-                        printed_index: 0,
+            let origin = |incarnation| {
+                let printed = TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                };
+                let occurrence = if expanded {
+                    TriggerDefinitionOccurrenceRef::ExpandedGrant {
+                        grant_instance: crate::types::ability::TriggerGrantInstanceRef(1),
+                        provider: Box::new(TriggerDefinitionRef {
+                            source: ObjectIncarnationRef::of(x, incarnation),
+                            occurrence: printed,
+                        }),
+                        provider_output_index: 0,
+                    }
+                } else {
+                    printed
+                };
+                MayTriggerOrigin::Definition {
+                    definition_ref: TriggerDefinitionRef {
+                        source: ObjectIncarnationRef::of(x, incarnation),
+                        occurrence,
                     },
-                },
+                }
             };
             let with_origin = || {
                 let mut ability = draw_one(x);
@@ -47061,17 +47070,22 @@ mod tests {
             Carrier::SubAbility,
             Carrier::ElseAbility,
         ] {
-            let early = answered(carrier, 6, 5, 5);
-            let late = answered(carrier, 10, 9, 9);
-            assert_ne!(
-                early, late,
-                "reach guard for {carrier:?}: raw positions differ"
-            );
-            assert!(normalized_equal(&early, &late), "{carrier:?}");
-            assert!(
-                !normalized_equal(&early, &answered(carrier, 6, 5, 3)),
-                "{carrier:?}: a stale stored answer is a different position"
-            );
+            for expanded in [false, true] {
+                let early = answered(carrier, expanded, 6, 5, 5);
+                let late = answered(carrier, expanded, 10, 9, 9);
+                assert_ne!(
+                    early, late,
+                    "reach guard for {carrier:?} expanded={expanded}: raw positions differ"
+                );
+                assert!(
+                    normalized_equal(&early, &late),
+                    "{carrier:?} expanded={expanded}"
+                );
+                assert!(
+                    !normalized_equal(&early, &answered(carrier, expanded, 6, 5, 3)),
+                    "{carrier:?} expanded={expanded}: a stale stored answer is a different position"
+                );
+            }
         }
     }
 
@@ -47562,6 +47576,41 @@ mod tests {
         state.record_loop_detect_sample();
         assert_eq!(state.loop_detect_ring.len(), 1);
         assert!(state.loop_detect_held.is_none());
+    }
+
+    /// CR 732.2a: a beat sampled below a held window's start depth stays in the held window and
+    /// never reaches the ring.
+    #[test]
+    fn a_beat_below_the_held_depth_stays_out_of_the_ring() {
+        let mut state = GameState::new_two_player(7);
+        for id in [1, 2] {
+            state.stack.push_back(triggered_entry(
+                ObjectId(1000 + id),
+                ObjectId(id),
+                PlayerId(0),
+                None,
+                None,
+            ));
+        }
+        state.record_loop_detect_sample();
+        state.stack.pop_back();
+        state.record_shrinking_beat(2);
+        let held = state
+            .loop_detect_held
+            .as_ref()
+            .expect("reach: the shrinking beat holds the window")
+            .samples
+            .len();
+        state.record_loop_detect_sample();
+        assert_eq!(
+            state
+                .loop_detect_held
+                .as_ref()
+                .map(|held| held.samples.len()),
+            Some(held + 1),
+            "reach: the below-depth beat is sampled into the held window"
+        );
+        assert!(state.loop_detect_ring.is_empty());
     }
 
     /// CR 104.4b (issue #6877): two states differing only in the
