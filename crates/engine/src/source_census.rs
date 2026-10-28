@@ -258,6 +258,11 @@ mod tests {
                 "Parses with `syn` rather than by substring, so comments are excluded by \
                  construction — the stronger instrument this module approximates.",
             ),
+            (
+                "tests/integration/layer_boundary_census.rs",
+                "Parses with `syn` rather than by substring, so comments are excluded by \
+                 construction — the stronger instrument this module approximates.",
+            ),
         ];
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
