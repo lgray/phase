@@ -19176,6 +19176,55 @@ impl AbilityCost {
             | AbilityCost::Unimplemented { .. } => false,
         }
     }
+
+    /// CR 701.21a + CR 118.3: `true` when every permanent this cost could
+    /// demand be sacrificed is the cost's own source, so paying it needs no
+    /// other permanent. A cost that sacrifices nothing is vacuously `true`.
+    ///
+    /// `Composite` requires every leg; `OneOf` requires every branch, since
+    /// any of them may be the one paid (mirroring `categories()`);
+    /// `PerCounter` delegates to its base.
+    pub fn sacrifices_only_source(&self) -> bool {
+        match self {
+            AbilityCost::Sacrifice(sacrifice) => matches!(sacrifice.target, TargetFilter::SelfRef),
+            AbilityCost::Composite { costs } | AbilityCost::OneOf { costs } => {
+                costs.iter().all(AbilityCost::sacrifices_only_source)
+            }
+            AbilityCost::PerCounter { base, .. } => base.sacrifices_only_source(),
+            // An effect paid as a cost sacrifices whatever its own filter
+            // names; only a non-sacrifice effect is known to need nothing.
+            AbilityCost::EffectCost { effect } => !matches!(**effect, Effect::Sacrifice { .. }),
+            // Every other variant pays something other than a sacrifice.
+            AbilityCost::Mana { .. }
+            | AbilityCost::ManaDynamic { .. }
+            | AbilityCost::Tap
+            | AbilityCost::Untap
+            | AbilityCost::Loyalty { .. }
+            | AbilityCost::PayLife { .. }
+            | AbilityCost::Discard { .. }
+            | AbilityCost::Exile { .. }
+            | AbilityCost::ExileMaterials { .. }
+            | AbilityCost::CollectEvidence { .. }
+            | AbilityCost::ExileWithAggregate { .. }
+            | AbilityCost::TapCreatures { .. }
+            | AbilityCost::RemoveCounter { .. }
+            | AbilityCost::PayEnergy { .. }
+            | AbilityCost::PaySpeed { .. }
+            | AbilityCost::ReturnToHand { .. }
+            | AbilityCost::Unattach
+            | AbilityCost::UnattachFrom { .. }
+            | AbilityCost::Mill { .. }
+            | AbilityCost::Exert
+            | AbilityCost::Blight { .. }
+            | AbilityCost::Reveal { .. }
+            | AbilityCost::Behold { .. }
+            | AbilityCost::Waterbend { .. }
+            | AbilityCost::NinjutsuFamily { .. }
+            | AbilityCost::KeywordCostOfCastSpell { .. }
+            | AbilityCost::GetPlayerCounters { .. }
+            | AbilityCost::Unimplemented { .. } => true,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -21031,6 +21080,53 @@ pub enum EntryAttackDestination {
     },
 }
 
+impl EntryAttackDestination {
+    /// Keeping this default omitted preserves the wire shape of every entry
+    /// that names no destination.
+    pub fn is_any_defender(&self) -> bool {
+        matches!(self, Self::AnyDefender)
+    }
+}
+
+/// CR 508.4: what a token-creating instruction names as the thing its tokens
+/// are attacking.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum TokenAttackDestination {
+    /// CR 508.4: no named destination is carried.
+    #[default]
+    ControllerChooses,
+    /// CR 508.4: the instruction names one player ("attacking that player").
+    Player {
+        player: ControllerRef,
+        scope: NamedDefenderScope,
+    },
+    /// CR 608.2c: one token for each player `filter` lists ("for each
+    /// opponent, create … attacking that player"). The instruction's token
+    /// count is the length of that list.
+    EachPlayer {
+        filter: PlayerFilter,
+        scope: NamedDefenderScope,
+    },
+}
+
+impl TokenAttackDestination {
+    /// Keeping this default omitted preserves the wire shape of every token
+    /// instruction that names no destination.
+    pub fn is_controller_chooses(&self) -> bool {
+        matches!(self, Self::ControllerChooses)
+    }
+}
+
+/// CR 508.4: what a named player offers as the destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NamedDefenderScope {
+    /// "that player"
+    Player,
+    /// "that player or a planeswalker they control"
+    PlayerOrPlaneswalker,
+}
+
 /// CR 603.7a + CR 702.170c: the "If you do, ..." consequence of the
 /// "exile [the resolving spell] instead of putting it into a graveyard as it
 /// resolves" replacement (`Effect::ExileResolvingSpellInsteadOfGraveyard`),
@@ -21454,6 +21550,12 @@ pub enum Effect {
         /// CR 508.4: Token enters the battlefield attacking (not declared as attacker).
         #[serde(default)]
         enters_attacking: bool,
+        /// CR 508.4: the destination the instruction names.
+        #[serde(
+            default,
+            skip_serializing_if = "TokenAttackDestination::is_controller_chooses"
+        )]
+        attack_destination: TokenAttackDestination,
         /// CR 205.4a: Supertypes for the token (Legendary, Snow, etc.).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         supertypes: Vec<super::card_type::Supertype>,
@@ -22226,6 +22328,12 @@ pub enum Effect {
         /// CR 508.4: Token enters the battlefield attacking (not declared as attacker).
         #[serde(default)]
         enters_attacking: bool,
+        /// CR 508.4: the destination the instruction names.
+        #[serde(
+            default,
+            skip_serializing_if = "TokenAttackDestination::is_controller_chooses"
+        )]
+        attack_destination: TokenAttackDestination,
         /// Token enters the battlefield tapped.
         #[serde(default)]
         tapped: bool,
@@ -44037,6 +44145,92 @@ mod tests {
     use crate::types::zones::Zone;
     use syn::__private::ToTokens;
 
+    fn goblin_token(attack_destination: TokenAttackDestination) -> Effect {
+        Effect::Token {
+            name: "Goblin".to_string(),
+            power: PtValue::Fixed(1),
+            toughness: PtValue::Fixed(1),
+            types: vec!["Creature".to_string(), "Goblin".to_string()],
+            colors: vec![],
+            keywords: vec![],
+            tapped: true,
+            count: QuantityExpr::Fixed { value: 1 },
+            owner: TargetFilter::Controller,
+            attach_to: None,
+            enters_attacking: true,
+            attack_destination,
+            supertypes: vec![],
+            static_abilities: vec![],
+            enter_with_counters: vec![],
+        }
+    }
+
+    fn copy_token(attack_destination: TokenAttackDestination) -> Effect {
+        Effect::CopyTokenOf {
+            target: TargetFilter::ParentTarget,
+            owner: TargetFilter::Controller,
+            source_filter: None,
+            enters_attacking: true,
+            attack_destination,
+            tapped: true,
+            count: QuantityExpr::Fixed { value: 1 },
+            extra_keywords: vec![],
+            additional_modifications: vec![],
+        }
+    }
+
+    /// A token effect that names no defender is byte-identical on the wire to
+    /// one written before the field existed, a payload without the key reads
+    /// as naming no defender, and a named defender round-trips.
+    #[test]
+    fn token_attack_destination_wire_shape_is_additive() {
+        let named = TokenAttackDestination::Player {
+            player: ControllerRef::DefendingPlayer,
+            scope: NamedDefenderScope::PlayerOrPlaneswalker,
+        };
+        for build in [goblin_token, copy_token] {
+            let plain = serde_json::to_value(build(TokenAttackDestination::ControllerChooses))
+                .expect("serializes");
+            assert!(
+                !plain.to_string().contains("attack_destination"),
+                "the default is omitted: {plain}"
+            );
+            let back: Effect = serde_json::from_value(plain).expect("reads without the key");
+            assert_eq!(back, build(TokenAttackDestination::ControllerChooses));
+
+            let with_named = serde_json::to_value(build(named.clone())).expect("serializes");
+            assert!(
+                with_named.to_string().contains("attack_destination"),
+                "a named defender is written: {with_named}"
+            );
+            let back: Effect = serde_json::from_value(with_named).expect("round-trips");
+            assert_eq!(back, build(named.clone()));
+        }
+    }
+
+    /// A destination that names each listed player round-trips on both token
+    /// instructions and is written as a typed filter with its scope.
+    #[test]
+    fn each_player_token_attack_destination_round_trips() {
+        let each_opponent = TokenAttackDestination::EachPlayer {
+            filter: PlayerFilter::Opponent,
+            scope: NamedDefenderScope::Player,
+        };
+        for build in [goblin_token, copy_token] {
+            let written = serde_json::to_value(build(each_opponent.clone())).expect("serializes");
+            assert_eq!(
+                written["attack_destination"],
+                serde_json::json!({
+                    "type": "EachPlayer",
+                    "data": {"filter": {"type": "Opponent"}, "scope": "Player"}
+                }),
+                "{written}"
+            );
+            let back: Effect = serde_json::from_value(written).expect("round-trips");
+            assert_eq!(back, build(each_opponent.clone()));
+        }
+    }
+
     /// X-1 (CR 107.3): doubling X multiplies the current value, keeps 0 at 0
     /// (Unbound Flourishing ruling: X = 0 doubles to 0), and saturates instead
     /// of wrapping.
@@ -46225,6 +46419,7 @@ mod tests {
             owner: default_target_filter_controller(),
             attach_to: None,
             enters_attacking: false,
+            attack_destination: crate::types::ability::TokenAttackDestination::ControllerChooses,
             supertypes: Vec::new(),
             static_abilities: Vec::new(),
             enter_with_counters: Vec::new(),
@@ -48107,6 +48302,7 @@ mod tests {
             owner: TargetFilter::Controller,
             attach_to: None,
             enters_attacking: false,
+            attack_destination: crate::types::ability::TokenAttackDestination::ControllerChooses,
             supertypes: vec![],
             static_abilities: vec![],
             enter_with_counters: vec![],
@@ -50278,6 +50474,7 @@ mod tests {
             owner: TargetFilter::Controller,
             source_filter,
             enters_attacking: false,
+            attack_destination: crate::types::ability::TokenAttackDestination::ControllerChooses,
             tapped: false,
             count: fixed_one(),
             extra_keywords: Vec::new(),
@@ -50295,6 +50492,7 @@ mod tests {
             owner: TargetFilter::Controller,
             attach_to,
             enters_attacking: false,
+            attack_destination: crate::types::ability::TokenAttackDestination::ControllerChooses,
             supertypes: Vec::new(),
             static_abilities: Vec::new(),
             enter_with_counters: Vec::new(),

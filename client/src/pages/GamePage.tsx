@@ -141,6 +141,7 @@ import { TargetingOverlay } from "../components/targeting/TargetingOverlay.tsx";
 import { PlayerHud } from "../components/hud/PlayerHud.tsx";
 import { OpponentHud } from "../components/hud/OpponentHud.tsx";
 import { TurnStatusLine } from "../components/hud/TurnStatusLine.tsx";
+import { DayNightBadge } from "../components/hud/HudBadges.tsx";
 import { GraveyardPile } from "../components/zone/GraveyardPile.tsx";
 import { LibraryPile } from "../components/zone/LibraryPile.tsx";
 import { ExilePile } from "../components/zone/ExilePile.tsx";
@@ -1710,6 +1711,7 @@ function GamePageContent({
             <div className="flex flex-col gap-1 max-lg:gap-1">
               <MobilePhaseChip className="w-full" />
               <HandBadge className="w-full" />
+              <DayNightBadge />
             </div>
             <div className="flex items-center gap-1.5">
               <PriorityYieldList />
@@ -1729,7 +1731,10 @@ function GamePageContent({
             <CombatPhaseIndicator />
           </div>
           {isSpectatorMode ? (
-            <TurnStatusLine />
+            <div className="flex flex-row items-center gap-1.5">
+              <TurnStatusLine />
+              <DayNightBadge />
+            </div>
           ) : (
             <>
               <div className="hidden max-lg:portrait:block max-lg:portrait:w-full">
@@ -1741,6 +1746,7 @@ function GamePageContent({
                 <MobilePhaseChip className="lg:hidden" />
                 <TurnStatusLine />
                 <HandBadge />
+                <DayNightBadge />
                 {/* CR 117.3d: standing priority-yield summary chip, beside the
                     Full Control toggle (self-hides when no yields stand). */}
                 <PriorityYieldList />

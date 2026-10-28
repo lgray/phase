@@ -10452,6 +10452,8 @@ mod tests {
                 owner: TargetFilter::Controller,
                 attach_to: None,
                 enters_attacking: false,
+                attack_destination:
+                    crate::types::ability::TokenAttackDestination::ControllerChooses,
                 supertypes: vec![],
                 static_abilities: vec![],
                 enter_with_counters: vec![],
@@ -10691,6 +10693,8 @@ mod tests {
                 owner: TargetFilter::Controller,
                 source_filter: None,
                 enters_attacking: false,
+                attack_destination:
+                    crate::types::ability::TokenAttackDestination::ControllerChooses,
                 tapped: false,
                 count: QuantityExpr::Fixed { value: 1 },
                 extra_keywords: vec![],
@@ -12226,6 +12230,7 @@ mod tests {
                 enter_with_counters: vec![],
                 tapped: false,
                 enters_attacking: false,
+                attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
                 sacrifice_at: None,
                 source_id: ObjectId(1),
                 controller: PlayerId(0),
@@ -12309,6 +12314,8 @@ mod tests {
                 owner: TargetFilter::Controller,
                 source_filter: None,
                 enters_attacking: false,
+                attack_destination:
+                    crate::types::ability::TokenAttackDestination::ControllerChooses,
                 tapped: false,
                 count: QuantityExpr::Fixed { value: 1 },
                 extra_keywords: vec![],
@@ -12574,6 +12581,8 @@ mod tests {
                 owner: TargetFilter::Controller,
                 source_filter: None,
                 enters_attacking: false,
+                attack_destination:
+                    crate::types::ability::TokenAttackDestination::ControllerChooses,
                 tapped: false,
                 count: QuantityExpr::Fixed { value: 1 },
                 extra_keywords: vec![],

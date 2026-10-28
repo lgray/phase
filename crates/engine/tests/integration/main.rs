@@ -2148,3 +2148,4 @@ mod risky_move_gain_control_trigger;
 mod squall_attack_batch_chosen_number;
 mod strago_cast_this_way_rider;
 mod tifa_additional_combat;
+mod token_attack_destination;

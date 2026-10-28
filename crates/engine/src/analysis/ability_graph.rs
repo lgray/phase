@@ -2954,6 +2954,7 @@ mod tests {
             owner: TargetFilter::Controller,
             attach_to: None,
             enters_attacking: false,
+            attack_destination: crate::types::ability::TokenAttackDestination::ControllerChooses,
             supertypes: Vec::new(),
             static_abilities: Vec::new(),
             enter_with_counters: Vec::new(),
@@ -3089,6 +3090,8 @@ mod tests {
                 owner: TargetFilter::Controller,
                 source_filter: None,
                 enters_attacking: false,
+                attack_destination:
+                    crate::types::ability::TokenAttackDestination::ControllerChooses,
                 tapped: false,
                 count: fixed(3),
                 extra_keywords: Vec::new(),

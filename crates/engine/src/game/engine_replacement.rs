@@ -2768,6 +2768,13 @@ pub(super) fn handle_copy_target_choice(
         // only the liminal entry's PRESENCE matters here: it is what says this commit will park
         // an entry that later needs realizing.
         let has_liminal_entry = state.liminal_entries.contains_key(&source_id);
+        // CR 508.4: how many tokens of the batch exist once this entry is
+        // realized; the continuation parked behind a pause counts its own
+        // tokens from zero, so its request has to start past them.
+        let entrants_through_this_entry = state
+            .liminal_entries
+            .get(&source_id)
+            .map_or(0, |entry| entry.created_ids.len() + 1);
         let copy_continuation = state.liminal_entries.get(&source_id).and_then(|entry| {
             entry.copy_resume.as_ref().and_then(|copy| {
                 (entry.remaining_count > 0).then(|| {
@@ -2865,9 +2872,12 @@ pub(super) fn handle_copy_target_choice(
                 },
             );
         }
-        if let Some((owner, copy, enter_tapped, enter_with_counters, remaining_count)) =
+        if let Some((owner, mut copy, enter_tapped, enter_with_counters, remaining_count)) =
             copy_continuation.clone()
         {
+            copy.attack_request = copy
+                .attack_request
+                .after_entrants(entrants_through_this_entry);
             counter_pause_post_actions.push(PendingCounterPostAction::ContinueCopyTokenCreation {
                 owner,
                 copy,
@@ -5879,6 +5889,7 @@ mod tests {
             enter_with_counters: Vec::new(),
             tapped: false,
             enters_attacking: false,
+            attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
             sacrifice_at: None,
             source_id: ObjectId(1),
             controller: PlayerId(0),
@@ -5965,6 +5976,8 @@ mod tests {
                     owner: crate::types::ability::TargetFilter::Controller,
                     attach_to: None,
                     enters_attacking: false,
+                    attack_destination:
+                        crate::types::ability::TokenAttackDestination::ControllerChooses,
                     supertypes: vec![],
                     static_abilities: vec![],
                     enter_with_counters: vec![],
@@ -6007,6 +6020,7 @@ mod tests {
             enter_with_counters: Vec::new(),
             tapped: false,
             enters_attacking: false,
+            attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
             sacrifice_at: None,
             source_id: replacement_source,
             controller: PlayerId(0),
@@ -6110,6 +6124,8 @@ mod tests {
                     owner: crate::types::ability::TargetFilter::Controller,
                     attach_to: None,
                     enters_attacking: false,
+                    attack_destination:
+                        crate::types::ability::TokenAttackDestination::ControllerChooses,
                     supertypes: vec![],
                     static_abilities: vec![],
                     enter_with_counters: vec![],
@@ -6169,6 +6185,7 @@ mod tests {
             enter_with_counters: Vec::new(),
             tapped: false,
             enters_attacking: false,
+            attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
             sacrifice_at: None,
             source_id: replacement_source,
             controller: PlayerId(0),
@@ -6289,6 +6306,8 @@ mod tests {
                     owner: crate::types::ability::TargetFilter::Controller,
                     attach_to: None,
                     enters_attacking: false,
+                    attack_destination:
+                        crate::types::ability::TokenAttackDestination::ControllerChooses,
                     supertypes: vec![],
                     static_abilities: vec![],
                     enter_with_counters: vec![],
@@ -6347,6 +6366,7 @@ mod tests {
             enter_with_counters: Vec::new(),
             tapped: false,
             enters_attacking: false,
+            attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
             sacrifice_at: None,
             source_id: replacement_source,
             controller: PlayerId(0),
@@ -6503,6 +6523,7 @@ mod tests {
             enter_with_counters: Vec::new(),
             tapped: false,
             enters_attacking: false,
+            attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
             sacrifice_at: None,
             source_id: jinnie_source,
             controller: PlayerId(0),
@@ -6579,6 +6600,8 @@ mod tests {
                     owner: crate::types::ability::TargetFilter::Controller,
                     attach_to: None,
                     enters_attacking: false,
+                    attack_destination:
+                        crate::types::ability::TokenAttackDestination::ControllerChooses,
                     supertypes: vec![],
                     static_abilities: vec![],
                     enter_with_counters: vec![],
@@ -6644,6 +6667,7 @@ mod tests {
             enter_with_counters: Vec::new(),
             tapped: false,
             enters_attacking: false,
+            attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
             sacrifice_at: None,
             source_id: jinnie_source,
             controller: PlayerId(0),
@@ -8696,6 +8720,7 @@ mod tests {
                 additional_modifications: Vec::new(),
                 tapped: false,
                 enters_attacking: false,
+                attack_request: crate::types::proposed_event::TokenAttackRequest::Unspecified,
                 sacrifice_at: None,
                 source_id: entering_aura,
                 controller: PlayerId(0),
@@ -9358,6 +9383,7 @@ mod tests {
                 source_id: ObjectId(999),
                 controller: PlayerId(0),
                 enters_attacking: false,
+                attack_destination: crate::types::ability::EntryAttackDestination::AnyDefender,
                 attach_to: None,
                 sacrifice_at: None,
                 remaining_count: 0,
