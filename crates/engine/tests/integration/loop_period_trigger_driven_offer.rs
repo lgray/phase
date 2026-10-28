@@ -319,13 +319,22 @@ impl Drive {
     }
 }
 
-/// Each board driven to the first window `apply()` returns at, which must be its offer.
+/// Each board driven through the recurrence windows it passes before its offer, to the window
+/// `apply()` returns next, which must be its offer.
 fn offered(board: Board) -> Option<(Drive, Vec<Apply>)> {
+    let windows = match board {
+        Board::A | Board::B => 0,
+        // Animate Dead's leaves trigger, and Felidar Guardian blinking Soul's Attendant for
+        // Preston to copy, each happen once before the period first recurs.
+        Board::BAttendant => 4,
+    };
     let mut drive = start(board)?;
     let mut applies = drive.drive_to_window();
-    while !is_offer(drive.state())
-        && !matches!(drive.state().waiting_for, WaitingFor::GameOver { .. })
-    {
+    for window in 0..windows {
+        assert!(
+            !is_offer(drive.state()),
+            "{board:?}: offered at window {window} of {windows}"
+        );
         applies.extend(drive.drive_to_window());
     }
     let state = drive.state();
@@ -335,8 +344,8 @@ fn offered(board: Board) -> Option<(Drive, Vec<Apply>)> {
             WaitingFor::LoopShortcut { proposer, road: OfferRoad::RecordedPeriod, .. }
                 if proposer == P0
         ),
-        "{board:?}: the first recurrence window is a recorded-period offer to P0; got {} with \
-         top {:?}",
+        "{board:?}: the window after {windows} recurrence windows is a recorded-period offer to \
+         P0; got {} with top {:?}",
         state.waiting_for.variant_name(),
         top_trigger_source(state)
     );

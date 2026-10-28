@@ -12677,9 +12677,7 @@ pub(crate) fn collect_parked_delayed_triggers_into_deferred(
 ) {
     let first_new_context = state.deferred_triggers.len();
     collect_delayed_triggers_into_deferred(state, events);
-    for context in &mut state.deferred_triggers[first_new_context..] {
-        context.batch_origin = origin;
-    }
+    stamp_deferred_triggers_from(state, first_new_context, origin);
 }
 
 pub(crate) fn trigger_event_occurrence(events: &[GameEvent], event_index: usize) -> usize {
