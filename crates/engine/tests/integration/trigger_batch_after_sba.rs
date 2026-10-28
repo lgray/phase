@@ -1935,3 +1935,208 @@ fn syphon_mind_orders_its_batch_after_resolution() {
         }
     }
 }
+
+/// CR 800.4a + CR 603.3b + CR 101.4: P1 concedes while P2 is the walk's chooser, so the P1-owned
+/// Grizzly Bears P0 controls leaves and Ninja Teen's trigger waits with the walk. Once the walk's
+/// sacrifice settles, that trigger and the sacrifice's are put on the stack as one batch.
+#[test]
+fn a_concession_during_a_keep_walk_joins_the_walks_batch() {
+    type Board = fn(&mut GameScenario) -> (&'static str, Vec<ManaUnit>, Vec<&'static str>);
+    let gearhulk: Board = |sc| {
+        let db = shared_card_db().expect("card db");
+        sc.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+        sc.add_real_card(P0, "Zulaport Cutthroat", Zone::Battlefield, db);
+        (
+            "Cataclysmic Gearhulk",
+            pool(5, ManaType::White),
+            vec!["Cataclysmic Gearhulk", "Zulaport Cutthroat", "Ninja Teen"],
+        )
+    };
+    let limited_resources: Board = |sc| {
+        let db = shared_card_db().expect("card db");
+        sc.add_real_card(P0, "Countryside Crusher", Zone::Battlefield, db);
+        sc.add_real_card(P0, "Titania, Voice of Gaea", Zone::Battlefield, db);
+        for player in [P0, P1, PlayerId(2)] {
+            for _ in 0..7 {
+                sc.add_real_card(player, "Forest", Zone::Battlefield, db);
+            }
+        }
+        ("Limited Resources", pool(1, ManaType::White), vec![])
+    };
+    for (board, expected) in [
+        (
+            gearhulk,
+            names(&[
+                "Ninja Teen",
+                "Ninja Teen",
+                "Ninja Teen",
+                "Zulaport Cutthroat",
+                "Zulaport Cutthroat",
+            ]),
+        ),
+        (
+            limited_resources,
+            names(&[
+                "Countryside Crusher",
+                "Countryside Crusher",
+                "Ninja Teen",
+                "Titania, Voice of Gaea",
+            ]),
+        ),
+    ] {
+        for mode in MODES {
+            let db = shared_card_db().expect("card db");
+            let mut sc = GameScenario::new_n_player(3, 9691);
+            sc.at_phase(Phase::PreCombatMain);
+            sc.add_real_card(P0, "Ninja Teen", Zone::Battlefield, db);
+            sc.add_real_card(P0, "Grizzly Bears", Zone::Battlefield, db);
+            let stolen = sc.add_real_card(P1, "Grizzly Bears", Zone::Battlefield, db);
+            for player in [P1, PlayerId(2)] {
+                sc.add_real_card(player, "Grizzly Bears", Zone::Battlefield, db);
+                sc.add_real_card(player, "Grizzly Bears", Zone::Battlefield, db);
+            }
+            let (source, mana, keep_names) = board(&mut sc);
+            let spell = sc.add_real_card(P0, source, Zone::Hand, db);
+            sc.with_mana_pool(P0, mana);
+            let mut r = start(sc, mode);
+            let bears = r.state_mut().objects.get_mut(&stolen).unwrap();
+            bears.base_controller = Some(P0);
+            bears.controller = P0;
+            let keep: Vec<ObjectId> = r
+                .state()
+                .objects
+                .values()
+                .filter(|obj| obj.controller == P0 && keep_names.contains(&obj.name.as_str()))
+                .map(|obj| obj.id)
+                .chain(std::iter::once(spell))
+                .collect();
+            drop(r.cast(spell).commit());
+
+            let mut conceded = false;
+            let settled = loop {
+                let waiting = r.state().waiting_for.clone();
+                let action = match &waiting {
+                    WaitingFor::Priority { .. } => GameAction::PassPriority,
+                    WaitingFor::CategoryChoice { player, .. }
+                    | WaitingFor::KeepExactPermanentsChoice { player, .. }
+                        if *player == PlayerId(2) && !conceded =>
+                    {
+                        r.act(GameAction::Concede { player_id: P1 })
+                            .expect("P1 concedes");
+                        conceded = true;
+                        assert_eq!(
+                            r.state().waiting_for,
+                            waiting,
+                            "{source} {mode:?}: P2 is still choosing"
+                        );
+                        assert_eq!(
+                            r.state()
+                                .deferred_triggers
+                                .iter()
+                                .map(|context| name_of(r.state(), context.pending.source_id))
+                                .collect::<Vec<_>>(),
+                            names(&["Ninja Teen"]),
+                            "{source} {mode:?}: reach: Ninja Teen's trigger waits with the walk"
+                        );
+                        continue;
+                    }
+                    WaitingFor::CategoryChoice {
+                        eligible_per_category,
+                        ..
+                    } => {
+                        let mut chosen: Vec<ObjectId> = Vec::new();
+                        let choices = eligible_per_category
+                            .iter()
+                            .map(|eligible| {
+                                let open: Vec<ObjectId> = eligible
+                                    .iter()
+                                    .copied()
+                                    .filter(|id| !chosen.contains(id))
+                                    .collect();
+                                let pick = picks(&open, 1, &keep).first().copied();
+                                chosen.extend(pick);
+                                pick
+                            })
+                            .collect();
+                        GameAction::SelectCategoryPermanents { choices }
+                    }
+                    WaitingFor::KeepExactPermanentsChoice {
+                        eligible,
+                        required_count,
+                        ..
+                    } => GameAction::ChooseKeptPermanents {
+                        kept: picks(eligible, *required_count, &keep),
+                    },
+                    _ => break waiting,
+                };
+                let answered_last = conceded && !matches!(waiting, WaitingFor::Priority { .. });
+                r.act(action).expect("action accepted");
+                if answered_last {
+                    break r.state().waiting_for.clone();
+                }
+            };
+            let WaitingFor::OrderTriggers { player, triggers } = settled else {
+                panic!("{source} {mode:?}: expected one ordering prompt, got {settled:?}");
+            };
+            assert_eq!(player, P0, "{source} {mode:?}");
+            assert_eq!(
+                sorted(triggers.iter().map(|t| t.source_name.clone()).collect()),
+                expected,
+                "{source} {mode:?}"
+            );
+        }
+    }
+}
+
+/// CR 704.5a + CR 800.4a + CR 603.3b: P2 at 5 life takes Browbeat's 5, so Exquisite Blood
+/// triggers while Browbeat resolves; P2's loss then takes the P2-owned Grizzly Bears P0 controls
+/// and Ninja Teen triggers. The two are put on the stack as one batch.
+#[test]
+fn a_loss_after_a_paused_spell_joins_its_batch() {
+    let p2 = PlayerId(2);
+    for mode in MODES {
+        let db = shared_card_db().expect("card db");
+        let mut sc = GameScenario::new_n_player(3, 9691);
+        sc.at_phase(Phase::PreCombatMain);
+        sc.add_real_card(P0, "Exquisite Blood", Zone::Battlefield, db);
+        sc.add_real_card(P0, "Ninja Teen", Zone::Battlefield, db);
+        let stolen = sc.add_real_card(p2, "Grizzly Bears", Zone::Battlefield, db);
+        sc.with_life(p2, 5);
+        let browbeat = sc.add_real_card(P0, "Browbeat", Zone::Hand, db);
+        sc.with_mana_pool(P0, pool(3, ManaType::Red));
+        let mut r = start(sc, mode);
+        let bears = r.state_mut().objects.get_mut(&stolen).unwrap();
+        bears.base_controller = Some(P0);
+        bears.controller = P0;
+        drop(r.cast(browbeat).target_player(P1).commit());
+
+        let settled = loop {
+            let waiting = r.state().waiting_for.clone();
+            let action = match &waiting {
+                WaitingFor::Priority { .. }
+                    if stack_labels(r.state()).iter().any(|x| x.ends_with(SPELL)) =>
+                {
+                    GameAction::PassPriority
+                }
+                WaitingFor::OpponentMayChoice { player, .. } => GameAction::DecideOptionalEffect {
+                    accept: *player == p2,
+                },
+                _ => break waiting,
+            };
+            r.act(action).expect("action accepted");
+        };
+        assert!(eliminated(&r, p2), "{mode:?}: reach");
+        let WaitingFor::OrderTriggers { player, triggers } = settled else {
+            panic!(
+                "{mode:?}: expected one ordering prompt, got {settled:?} over {:?}",
+                stack_labels(r.state())
+            );
+        };
+        assert_eq!(player, P0, "{mode:?}");
+        assert_eq!(
+            sorted(triggers.iter().map(|t| t.source_name.clone()).collect()),
+            names(&["Exquisite Blood", "Ninja Teen"]),
+            "{mode:?}"
+        );
+    }
+}

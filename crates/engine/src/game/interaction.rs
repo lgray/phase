@@ -2096,9 +2096,8 @@ fn shortcut_reply_projection(waiting_for: &WaitingFor) -> Option<ShortcutReplyPr
     };
     // CR 732.2b: the proposal states which places it admits; this publishes that range's two
     // ends verbatim, never a second derivation of them. The engine stays the authority inside
-    // that range: a place it will not take — above the budget, or past the current place on a
-    // proposal with no counted take — is refused at the responder's seam though the published
-    // range admits it; `the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it`
+    // that range: a place above the budget it drives is refused at the responder's seam though
+    // the published range admits it; `the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it`
     // pins both sides. An empty range therefore arrives with its floor above its ceiling, which the
     // submission guard reads as admitting no place at all.
     let places = proposal.shortening_places();

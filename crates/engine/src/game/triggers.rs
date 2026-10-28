@@ -4771,7 +4771,7 @@ impl BulkMemberTriggerCollection {
 }
 
 /// CR 603.8: the state-trigger definitions functioning on `obj`. The single
-/// authority shared by `check_state_triggers` and `has_active_state_triggers`.
+/// authority shared by `collect_state_triggers` and `has_active_state_triggers`.
 fn active_state_trigger_definitions<'a>(
     state: &'a GameState,
     obj: &'a GameObject,
@@ -4781,7 +4781,7 @@ fn active_state_trigger_definitions<'a>(
 }
 
 /// CR 603.8: whether any battlefield permanent has a functioning state trigger,
-/// i.e. whether `check_state_triggers` has anything to check.
+/// i.e. whether `collect_state_triggers` has anything to check.
 pub(crate) fn has_active_state_triggers(state: &GameState) -> bool {
     state
         .battlefield
@@ -8587,16 +8587,6 @@ pub(crate) fn stamp_deferred_triggers_from(
     }
 }
 
-/// True while a priority boundary's batch is queued for its settle to take.
-pub(crate) fn has_priority_boundary_batch(state: &GameState) -> bool {
-    state.deferred_triggers.iter().any(|context| {
-        matches!(
-            context.batch_origin,
-            DeferredTriggerBatchOrigin::PriorityBoundary
-        )
-    })
-}
-
 /// CR 117.5 + CR 603.3b: take the parked `PriorityBoundary` partition out of
 /// the queue in order. Ownership is consumed, so a context that pauses again
 /// during placement re-parks as an ordinary tail.
@@ -11338,10 +11328,10 @@ pub(super) enum DeferredTriggerDrainPolicy {
     /// is a mid-continuation owner that must not.
     Skip,
     /// An ordinary post-action seam; its pass may select the announced-cast batch.
-    ResolutionSafe,
+    AdmitsAnnouncedCasts,
     /// A seam that settles an already-announced batch; its pass never selects
     /// the announced-cast batch.
-    SettledPriority,
+    ExcludesAnnouncedCasts,
 }
 
 pub(super) fn can_drain_deferred_triggers(
@@ -11390,7 +11380,7 @@ pub(super) fn deferred_triggers_hold_announced_casts(state: &GameState) -> bool 
 }
 
 pub(crate) fn should_drain_deferred_triggers_now(state: &GameState) -> bool {
-    can_drain_deferred_triggers(state, DeferredTriggerDrainPolicy::ResolutionSafe)
+    can_drain_deferred_triggers(state, DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts)
 }
 
 /// CR 113.2c + CR 603.2 + CR 603.3b: Drain the deferred-trigger queue after
@@ -11475,7 +11465,7 @@ pub(crate) fn stack_object_announcement_drain_allowed(state: &GameState) -> bool
     // leave the queue intact while the typed marker is live.
     state.pending_cast.is_none()
         && state.pending_resolution_completion.is_none()
-        && can_drain_deferred_triggers(state, DeferredTriggerDrainPolicy::SettledPriority)
+        && can_drain_deferred_triggers(state, DeferredTriggerDrainPolicy::ExcludesAnnouncedCasts)
 }
 
 /// CR 601.2h + CR 603.3b: After a triggered ability finishes construction
@@ -12016,30 +12006,6 @@ fn trigger_cause_matches(
             }
             zone_change_qualifiers_match(record, qualifiers)
         }
-    }
-}
-
-/// CR 603.8: Check state triggers for all permanents on the battlefield.
-/// State triggers fire when a game-state condition is true, rather than in response
-/// to events. A state trigger doesn't trigger again until its ability has resolved,
-/// been countered, or otherwise left the stack.
-///
-/// CR 702.26b: Phased-out permanents are treated as though they don't exist
-/// — their state triggers don't fire.
-pub fn check_state_triggers(state: &mut GameState) {
-    let mut pending: Vec<PendingTrigger> = collect_state_triggers(state)
-        .into_iter()
-        .map(|ctx| ctx.pending)
-        .collect();
-    if pending.is_empty() {
-        return;
-    }
-    // CR 603.3b + CR 101.4 + CR 805.6/805.7: Full APNAP stack-placement order
-    // for state triggers, ranking shared-turn teams as the APNAP actors.
-    pending.sort_by_key(|t| (trigger_apnap_rank(state, t.controller), t.timestamp));
-    let mut events_out = Vec::new();
-    for trigger in pending {
-        push_pending_trigger_to_stack(state, trigger, &mut events_out);
     }
 }
 
@@ -42655,13 +42621,13 @@ pub mod tests {
             player: PlayerId(0),
         };
         assert!(
-            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
+            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts),
             "an owed final part holds the batch"
         );
 
         state.resolving_spell_final_part = None;
         assert!(
-            can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
+            can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts),
             "the finished resolution's batch drains above the spell below"
         );
 
@@ -42678,7 +42644,7 @@ pub mod tests {
             &state,
         ));
         assert!(
-            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
+            !can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts),
             "a live continuation holds the batch"
         );
     }
@@ -43685,13 +43651,13 @@ pub mod tests {
     fn deferred_trigger_drain_policy_holds_a_resolution_under_way_not_a_spell_below() {
         use crate::types::game_state::PendingContinuation;
 
-        // Positive reach guard: with no spell on the stack, the resolution-safe
-        // policy really admits this batch.
+        // Positive reach guard: with no spell on the stack, a draining policy
+        // really admits this batch.
         let state = drain_policy_fixture(false);
         assert_eq!(state.deferred_triggers.len(), 2);
         assert!(
-            can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::ResolutionSafe),
-            "positive reach guard: ResolutionSafe drains an unobstructed batch"
+            can_drain_deferred_triggers(&state, DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts),
+            "positive reach guard: AdmitsAnnouncedCasts drains an unobstructed batch"
         );
 
         // `Skip` owns no drain at all.
@@ -43703,8 +43669,8 @@ pub mod tests {
         // CR 405.5: a spell below has not begun to resolve.
         let mut state = drain_policy_fixture(true);
         for policy in [
-            DeferredTriggerDrainPolicy::ResolutionSafe,
-            DeferredTriggerDrainPolicy::SettledPriority,
+            DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts,
+            DeferredTriggerDrainPolicy::ExcludesAnnouncedCasts,
         ] {
             assert!(
                 can_drain_deferred_triggers(&state, policy),
@@ -43726,8 +43692,8 @@ pub mod tests {
             &state,
         ));
         for policy in [
-            DeferredTriggerDrainPolicy::ResolutionSafe,
-            DeferredTriggerDrainPolicy::SettledPriority,
+            DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts,
+            DeferredTriggerDrainPolicy::ExcludesAnnouncedCasts,
         ] {
             assert!(
                 !can_drain_deferred_triggers(&state, policy),
@@ -43738,8 +43704,8 @@ pub mod tests {
         // Every policy still runs behind the shared carrier census: a live
         // triggered-mana sidecar rejects both draining variants.
         for policy in [
-            DeferredTriggerDrainPolicy::ResolutionSafe,
-            DeferredTriggerDrainPolicy::SettledPriority,
+            DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts,
+            DeferredTriggerDrainPolicy::ExcludesAnnouncedCasts,
         ] {
             let mut state = drain_policy_fixture(false);
             let node = crate::types::resolved_commands::RulesExecutionNodeRef::TriggeredMana(

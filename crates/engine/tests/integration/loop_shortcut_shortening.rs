@@ -937,9 +937,7 @@ fn interaction_admits(state: &GameState, at_iteration: u32) -> bool {
 /// blanket refusal both fail it — and the above-budget partition is asserted non-empty, so
 /// routing the submission gate through the same predicate would empty it and fire.
 ///
-/// Below the budget the layers part on a proposal with no counted take: the projection publishes
-/// its later places and the reducer refuses them, while the current place is both published and
-/// honored.
+/// A proposal with no counted take publishes and honors the current place alone.
 #[test]
 fn the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it() {
     let bound = weird_offer_bound();
@@ -1021,16 +1019,15 @@ fn the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it(
         !crate::mandatory_loop_draws::counted_take(&state).is_performs(),
         "reach-guard: the proposal carries no counted take"
     );
+    assert_eq!(published_ends(&state), (0, 0));
     for place in [0, 1, 2] {
         let mut board = state.clone();
-        assert!(
-            interaction_admits(&state, place),
-            "place {place} is inside the proposal's own range, so the projection publishes it"
-        );
+        let honored = shorten(&mut board, place).is_ok();
+        assert_eq!(honored, place == 0, "the reducer honors place {place}");
         assert_eq!(
-            shorten(&mut board, place).is_ok(),
-            place == 0,
-            "the reducer honors the current place alone, not place {place}"
+            interaction_admits(&state, place),
+            honored,
+            "the two layers disagree on place {place}"
         );
     }
 }

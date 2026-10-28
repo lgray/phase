@@ -18,6 +18,7 @@ use crate::types::proposed_event::ProposedEvent;
 use crate::types::statics::{StaticMode, StaticModeKind};
 use crate::types::zones::Zone;
 
+use super::elimination::DepartureTriggers;
 use super::filter::{matches_target_filter, FilterContext};
 use super::speed::{controls_start_your_engines_in, set_speed};
 use super::zones;
@@ -97,7 +98,16 @@ fn mid_resolution_entry_pauses_sba(state: &GameState) -> bool {
 /// CR 704.3: Run state-based actions in a fixpoint loop until no more actions are performed,
 /// capped at MAX_SBA_ITERATIONS.
 pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEvent>) {
-    check_state_based_actions_with_waiting_triggers(state, events, &[]);
+    run_state_based_actions(state, events, &[], DepartureTriggers::ScannedByCaller);
+}
+
+/// CR 704.3 + CR 117.5: [`check_state_based_actions`] inside a post-action pass, which places
+/// what is waiting to be put on the stack at its own settle.
+pub(crate) fn check_state_based_actions_in_pass(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) {
+    run_state_based_actions(state, events, &[], DepartureTriggers::PlacedByPass);
 }
 
 /// CR 704.3 + CR 704.5v + CR 510.3a: run state-based actions in a fixpoint loop
@@ -110,6 +120,15 @@ pub(crate) fn check_state_based_actions_with_waiting_triggers(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
     waiting: &[crate::game::triggers::PendingTriggerContext],
+) {
+    run_state_based_actions(state, events, waiting, DepartureTriggers::ScannedByCaller);
+}
+
+fn run_state_based_actions(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    waiting: &[crate::game::triggers::PendingTriggerContext],
+    departures: DepartureTriggers,
 ) {
     // CR 604.2: Re-evaluate layers so computed P/T reflects current static abilities.
     if state.layers_dirty.is_dirty() {
@@ -170,7 +189,7 @@ pub(crate) fn check_state_based_actions_with_waiting_triggers(
             for &loser in &losers {
                 events.push(GameEvent::PlayerLost { player_id: loser });
             }
-            super::elimination::eliminate_players_simultaneously(state, &losers, events);
+            super::elimination::eliminate_players(state, &losers, departures, events);
 
             // If the game ended (a sole winner or a CR 104.4a draw), stop now.
             if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
@@ -2306,8 +2325,8 @@ fn check_battle_protector(
 }
 
 /// CR 704.5s + CR 714.4: Sacrifice Sagas that have reached their final chapter,
-/// unless a chapter ability from that Saga has triggered but not yet left the
-/// stack, or a lore counter was just added (its chapter trigger is not collected yet).
+/// unless an ability of this Saga has triggered but not yet left the stack, or a
+/// lore counter was just added (its chapter trigger is not collected yet).
 fn check_saga_sacrifice(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
@@ -2332,8 +2351,8 @@ fn check_saga_sacrifice(
                 return false;
             }
 
-            // CR 714.4: not while a chapter ability of this Saga has triggered
-            // but not yet left the stack.
+            // CR 714.4: not while an ability of this Saga has triggered but not
+            // yet left the stack.
             if is_source_of_ability_not_yet_left_stack(state, waiting, *id) {
                 return false;
             }

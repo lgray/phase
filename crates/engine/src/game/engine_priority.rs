@@ -54,7 +54,7 @@ pub(crate) fn run_post_action_pipeline_from(
         if skip_deferred_trigger_drain {
             DeferredTriggerDrainPolicy::Skip
         } else {
-            DeferredTriggerDrainPolicy::ResolutionSafe
+            DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts
         },
         None,
         SpellFinalPartBoundary::AtPassTop,
@@ -78,7 +78,7 @@ pub(crate) fn run_post_action_pipeline_for_canonical_tail(
         continuation_event_start,
         default_wf,
         false,
-        DeferredTriggerDrainPolicy::ResolutionSafe,
+        DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts,
         None,
         SpellFinalPartBoundary::AtPassTop,
         Some(continuation_event_start),
@@ -107,7 +107,7 @@ pub(super) fn run_post_action_pipeline_after_resumed_resolution(
         if skip_deferred_trigger_drain {
             DeferredTriggerDrainPolicy::Skip
         } else {
-            DeferredTriggerDrainPolicy::ResolutionSafe
+            DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts
         },
         None,
         SpellFinalPartBoundary::AtPassTop,
@@ -152,7 +152,7 @@ pub(crate) fn run_post_action_pipeline_from_settled_priority(
         event_start,
         settled_priority,
         false,
-        DeferredTriggerDrainPolicy::SettledPriority,
+        DeferredTriggerDrainPolicy::ExcludesAnnouncedCasts,
         Some(player),
         SpellFinalPartBoundary::AtPassTop,
         None,
@@ -179,7 +179,7 @@ pub(super) fn run_post_action_pipeline_after_spell_final_part(
         0,
         default_wf,
         skip_trigger_scan,
-        DeferredTriggerDrainPolicy::ResolutionSafe,
+        DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts,
         None,
         SpellFinalPartBoundary::RanBeforePass,
         None,
@@ -302,7 +302,7 @@ fn run_post_action_pipeline_core(
     // resolution are put on the stack with this action's fresh observers as
     // ONE batch, above the cast spells; the fresh observers join the queue
     // instead of being dispatched ahead of it.
-    let announced_cast_batch = drain_policy == DeferredTriggerDrainPolicy::ResolutionSafe
+    let announced_cast_batch = drain_policy == DeferredTriggerDrainPolicy::AdmitsAnnouncedCasts
         && matches!(state.waiting_for, WaitingFor::Priority { .. })
         && triggers::deferred_triggers_hold_announced_casts(state);
 
@@ -485,7 +485,7 @@ fn run_post_action_pipeline_core(
     // the loss without sending the still-entering permanent to the graveyard.
     while matches!(state.waiting_for, WaitingFor::Priority { .. }) {
         let events_before = events.len();
-        sba::check_state_based_actions(state, events);
+        sba::check_state_based_actions_in_pass(state, events);
         if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
             // CR 603.3b + CR 903.9a: an SBA batch can open a resumable
             // non-priority choice (for example, a commander-zone return choice)
@@ -623,8 +623,7 @@ fn run_post_action_pipeline_core(
         effective_default = state.waiting_for.clone();
         completion_recipient = completed_priority_recipient(state);
     }
-    // CR 608.2c + CR 118.3: a staged payment still owns this instruction, so
-    // its pass places no batch; the bottom scan parks its delayed observers.
+    // CR 608.2c: a staged payment still owns this instruction, so its pass places no batch.
     if !payment_owned && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
         let mut answer_delayed_events: Option<&[GameEvent]> = None;
         let sba_choice_answer = !completion_settled
@@ -709,6 +708,15 @@ fn run_post_action_pipeline_core(
     if let Some(player) = effective_default.acting_player() {
         if !players::is_alive(state, player) {
             state.consumed_before_priority_trigger_events.clear();
+            // CR 603.3c + CR 603.3d: a trigger this pass placed still announces its choices.
+            if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
+                state.waiting_for = waiting_for;
+                persist_carried_recipient_across_prompt(
+                    state,
+                    carried_priority_recipient,
+                    completion_recipient,
+                );
+            }
             return Ok(state.waiting_for.clone());
         }
     }

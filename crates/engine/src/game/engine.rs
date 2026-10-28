@@ -2330,7 +2330,7 @@ fn settle_deferred_triggers_after_persisted_restore(
     let player = *player;
     // `pending_triggered_mana_resume` is absent once the direct root has
     // completed, so the saved recipient alone cannot establish the live root
-    // provenance required by `SettledPriority`. Do not manufacture that
+    // provenance the settled-priority pipeline requires. Do not manufacture that
     // provenance from serialized scheduling data.
     state.pending_trigger_construction_priority_recipient = None;
     if state.deferred_triggers.is_empty() {
@@ -3746,8 +3746,7 @@ fn certified_bounded_cycle_offer<'a>(
         let delta = ResourceVector::period(prior, state);
         // The existing disjunction, written as an `if / else if` that RECORDS the matching
         // disjunct instead of discarding it. The equality arm is evaluated first and `_pinned`
-        // runs only
-        // when it fails. The two disjuncts are mutually exclusive — equality compares the
+        // runs only when it fails. The two disjuncts are mutually exclusive — equality compares the
         // stack exactly but for the published answers (constant depth) while cover's item (2)
         // forces strictly growing depth — so "which disjunct" is a total function with no
         // both-matched case. Equality leaves the published answers out because they are the
@@ -5941,14 +5940,13 @@ fn end_shortcut_at_priority(
 /// answer the dispatch admits only `DeclareShortcut`/`RespondToShortcut`, neither of which
 /// touches the board, and a ring re-scan would compare against frames that finalize/SBA/layer
 /// steps have drifted the paused state away from. A shortening reaches here on the rewritten
-/// count its responder named
-/// (CR 732.2b), carrying that seat in `shortened_by`; the count decides the materializer, and
-/// the seat decides the ending point. `UntilLethal` ⇒ mark the unbounded axes + declare the terminal win;
-/// `Fixed(N)` ⇒ Phase-4b finite materialization (`materialize_fixed_shortcut`), which drives
-/// N whole cycles atomically, commits + stops early on a cross-lethal `GameOver` mid-drive
-/// whose winner is the one `predicted_winner` named (or on any such `GameOver` when it named
-/// nobody), and falls back to manual play (priority to `living_priority_seat`) on any abort or
-/// on a verdict that name contradicts.
+/// count its responder named (CR 732.2b), carrying that seat in `shortened_by`; the count
+/// decides the materializer, and the seat decides the ending point. `UntilLethal` ⇒ mark the
+/// unbounded axes + declare the terminal win; `Fixed(N)` ⇒ Phase-4b finite materialization
+/// (`materialize_fixed_shortcut`), which drives N whole cycles atomically, commits + stops
+/// early on a cross-lethal `GameOver` mid-drive whose winner is the one `predicted_winner`
+/// named (or on any such `GameOver` when it named nobody), and falls back to manual play
+/// (priority to `living_priority_seat`) on any abort or on a verdict that name contradicts.
 ///
 /// The consumption-time proposer/winner-liveness guard below catches a `Concede` (CR 104.3a)
 /// or a `Debug` that ELIMINATES either authority inside the still-open APNAP window. A `Debug` action
@@ -6296,14 +6294,14 @@ fn until_lethal_fallback(
 /// `game::interaction::materialize_loop_shortcut_response` emits a ONE-entry `Constant` on an
 /// `UntilLethal` offer and a `Piecewise` on a `Fixed` one, and NEITHER MOVES THIS FUNCTION'S
 /// ANSWER OFF 1 — the reason is which consumer sees which. Its consumer is
-/// `apply_until_lethal_shortcut`, not a FIXED-count path, and the multi-STEP shape is minted only under a FIXED count, which reads
-/// its range off the count and never consults a schedule. A MULTI-entry `Constant` can still
-/// reach here from a decoded save — `declaration_conforms` refuses one at DECLARE, not at load —
-/// and it lands on the same `Constant(_)` arm and returns 1, since
-/// `evaluate_schedule` resolves `head()` only. The argument therefore rests on the schedule's
-/// SHAPE rather than on any producer's arity. `live_mandatory_loop_winner` crowns on PLAYER
-/// fallers, and a loop whose targets do not rotate produces no NEW player faller per cycle to
-/// aggregate.
+/// `apply_until_lethal_shortcut`, not a FIXED-count path, and the multi-STEP shape is minted
+/// only under a FIXED count, which reads its range off the count and never consults a schedule.
+/// A MULTI-entry `Constant` can still reach here from a decoded save — `declaration_conforms`
+/// refuses one at DECLARE, not at load — and it lands on the same `Constant(_)` arm and
+/// returns 1, since `evaluate_schedule` resolves `head()` only. The argument therefore rests on
+/// the schedule's SHAPE rather than on any producer's arity. `live_mandatory_loop_winner`
+/// crowns on PLAYER fallers, and a loop whose targets do not rotate produces no NEW player
+/// faller per cycle to aggregate.
 ///
 /// SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. The validated extent
 /// is clamped the same way.
@@ -6504,7 +6502,7 @@ pub(crate) fn settle_recurs(boundary: &GameState, settled: &GameState) -> bool {
         || crate::analysis::resource::loop_states_cover_modulo_growth(boundary, settled)
 }
 
-/// PR-7 Combo-UI Stage 2: drive ONE whole cycle of a confirmed loop shortcut on a fresh clone
+/// Drive ONE whole cycle of a confirmed loop shortcut on a fresh clone
 /// of `committed`, seeded to the canonical settle beat (`Priority{active_player}`, the same
 /// beat the detector ring samples). Recurrence is detected against `boundary` (normalized).
 /// A mid-cycle prompt is answered by [`inject_pinned_answer`] (CR 603.3b ordering / CR 608.2b
@@ -9230,6 +9228,10 @@ fn handle_respond_to_shortcut(
     // and this refusal precedes the event take and every state write, so the responder keeps the
     // window and can answer again.
     if let crate::analysis::loop_check::ShortcutResponse::Shorten { at_iteration } = response {
+        // The cause `shortening_places` narrows its range for is the reason the responder reads.
+        if let Some(cause) = proposal.counted_take.refusal(at_iteration) {
+            return Err(EngineError::InvalidAction(cause.reason().to_string()));
+        }
         if !proposal.shortening_places().contains(&at_iteration) {
             return Err(EngineError::InvalidAction(format!(
                 "Shortcut place {at_iteration} is outside the proposed sequence"
@@ -9246,9 +9248,6 @@ fn handle_respond_to_shortcut(
                 "Shortcut place {at_iteration} is inside the proposed sequence, but this engine \
                  will not take the sequence there"
             )));
-        }
-        if let Some(cause) = proposal.counted_take.refusal(at_iteration) {
-            return Err(EngineError::InvalidAction(cause.reason().to_string()));
         }
     }
     let mut result = ActionResult::applied(std::mem::take(events), state.waiting_for.clone());

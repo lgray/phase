@@ -4126,22 +4126,11 @@ fn effect_pay_cost_auto_tap_redirect_serializes_exact_cost_and_trailing_effect_o
     assert!(runner.state().pending_cost_move_resume.is_none());
 }
 
-/// The plan's §"Exact no-ledger split" ordering, measured at a DURABLE-LEDGER
-/// root: *"For a completed root, invoke the wrapper immediately after mana
-/// production/activation completion and **before** `resume_mana_ability_root`."*
-///
-/// The witness is an `ManaAbilityResume::EffectPayCost` root — the one root
-/// family whose resume is not inert: `pay_ability_cost_for_resolution` spends
-/// the pool and then `resolve_effect_pay_cost_rider` runs the trailing effect,
-/// all inside `resume_mana_ability_root`. Two distinguishable observers pin the
-/// boundary: OT watches the frame's own tap, OL watches the RIDER's life gain.
-///
-/// With settlement before the resume, the frame's batch is exactly its own tap
-/// events, and the rider's life-gain event is not part of the frame at all.
-/// OT and OL triggered with no priority between them, so they are placed as one
-/// CR 603.3b batch.
+/// CR 603.3b: at a durable-ledger `ManaAbilityResume::EffectPayCost` root, OT (the
+/// frame's own tap) and OL (the rider's life gain) trigger with no priority between them,
+/// so the resumed payment places them as one batch and runs the rider once.
 #[test]
-fn durable_ledger_effect_pay_cost_root_settles_before_its_resume_runs_the_rider() {
+fn durable_ledger_effect_pay_cost_root_batches_its_tap_and_rider_observers() {
     let (mut scenario, source) = mana_self_exile_cost_redirect_witness();
     let observer_t = scenario
         .add_creature(P0, "OT Source-Tap Observer", 0, 0)
@@ -4237,7 +4226,7 @@ fn durable_ledger_effect_pay_cost_root_settles_before_its_resume_runs_the_rider(
     assert_eq!(
         runner.state().players[P0.0 as usize].life,
         life_before + 1,
-        "the rider ran exactly once, after the frame settled"
+        "the rider ran exactly once"
     );
     runner
         .act(GameAction::OrderTriggers {

@@ -4719,10 +4719,7 @@ fn target_filter_has_not_attacked_this_turn(filter: &TargetFilter) -> bool {
 
 // --- CR 607.1 + CR 607.2a: ETB exile → LTB return two-trigger pair -------------
 
-/// CR 607.2a: The linked return this pairing emits is a plain mass zone move
-/// with no entry modifiers, so it can't carry a printed rider like "return the
-/// exiled cards to the battlefield TAPPED" (Realm Razer). Only an unmodified
-/// return is rewritten; a modified return stays marked unsupported.
+/// Only an unmodified return is rewritten.
 fn change_zone_return_has_no_entry_modifiers(effect: &Effect) -> bool {
     match effect {
         Effect::ChangeZone {

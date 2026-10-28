@@ -8647,15 +8647,11 @@ pub(super) fn handle_resolution_choice(
                 // CR 603.2 + CR 603.3b: Issue #423 (Correction 1) — dispatch the
                 // dies-triggers from `sacrifice_unchosen` (Undying CR 702.93a,
                 // Blood Artist-class observers). Mirrors the `EffectZoneChoice`
-                // Sacrifice arm: B1 (`Priority`) lets `run_post_action_pipeline`
-                // scan this action's events and drains any prior parked queue;
+                // Sacrifice arm: B1 (`Priority`) leaves this action's events and
+                // the parked queue to `run_post_action_pipeline`'s one batch;
                 // B2 (paused) batches this action's sacrifice events for a
                 // later drain.
-                if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                    if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
-                        return Ok(ResolutionChoiceOutcome::WaitingFor(wf));
-                    }
-                } else {
+                if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                     // CR 601.2h + CR 603.3: a live announcement takes custody of
                     // the span it owns; only the rest is parked here.
                     let owned = super::announcement_triggers::take_inline_trigger_span(
@@ -8774,15 +8770,11 @@ pub(super) fn handle_resolution_choice(
             }
             // CR 603.2 + CR 603.3b: trigger bookkeeping across the paused walk,
             // mirroring the `CategoryChoice` arm. If the walk settled back to
-            // Priority, drain any triggers deferred by earlier paused rounds;
-            // otherwise (a later player's selection or a replacement choice is
-            // now pending) batch this action's events for a later drain so the
-            // created tokens' ETB observers are not dropped.
-            if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
-                    return Ok(ResolutionChoiceOutcome::WaitingFor(wf));
-                }
-            } else {
+            // Priority, the pipeline places this action's triggers with the parked
+            // queue as one batch; otherwise (a later player's selection or a
+            // replacement choice is now pending) batch this action's events for a
+            // later drain so the created tokens' ETB observers are not dropped.
+            if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                 // CR 601.2h + CR 603.3: a live announcement takes custody of the
                 // span it owns; only the rest is parked here, less any event
                 // another collector already claimed (CR 603.2c).
@@ -8869,11 +8861,7 @@ pub(super) fn handle_resolution_choice(
                 if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                     resume_with_error_propagation(state, events)?;
                 }
-                if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                    if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
-                        return Ok(ResolutionChoiceOutcome::WaitingFor(wf));
-                    }
-                } else {
+                if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                     // CR 601.2h + CR 603.3: a live announcement takes custody of
                     // the span it owns; only the rest is parked here.
                     let owned = super::announcement_triggers::take_inline_trigger_span(
@@ -8970,11 +8958,7 @@ pub(super) fn handle_resolution_choice(
             if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                 resume_with_error_propagation(state, events)?;
             }
-            if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                if let Some(wf) = super::triggers::drain_deferred_trigger_queue(state, events) {
-                    return Ok(ResolutionChoiceOutcome::WaitingFor(wf));
-                }
-            } else {
+            if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                 // CR 601.2h + CR 603.3: a live announcement takes custody of the
                 // span it owns; only the rest is parked here.
                 let owned = super::announcement_triggers::take_inline_trigger_span(

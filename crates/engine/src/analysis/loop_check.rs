@@ -325,7 +325,7 @@ impl ShortcutProposal {
     /// return type rather than an error: the empty range's floor sits above its ceiling, and
     /// `contains` refuses every place against it, zero included.
     pub fn shortening_places(&self) -> std::ops::RangeInclusive<u32> {
-        match self.count {
+        let places = match self.count {
             IterationCount::Fixed(iterations) => iterations
                 .checked_sub(1)
                 .map_or(std::ops::RangeInclusive::new(1, 0), |last| 0..=last),
@@ -334,6 +334,11 @@ impl ShortcutProposal {
             IterationCount::UntilLethal => 0..=u32::MAX,
             // CR 732.2b: a proposal with no ending point has no place past its end.
             IterationCount::WithoutEnd => 0..=u32::MAX,
+        };
+        // CR 732.2a: a counted take that performs no repetition leaves place 0 the only place.
+        match self.counted_take.refusal(1) {
+            Some(_) => *places.start()..=0,
+            None => places,
         }
     }
 }

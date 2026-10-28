@@ -3118,7 +3118,7 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     // shape, different waiting population.
     //
     // `drain_deferred_trigger_queue` (gate
-    // `can_drain_deferred_triggers(state, ResolutionSafe)`) is the right
+    // `can_drain_deferred_triggers(state, AdmitsAnnouncedCasts)`) is the right
     // authority: cleanup is reached only after the end step's stack
     // emptied (CR 500.2), so the guard passes on every normal entry, and a
     // refusal is inert — the stack does not grow, this returns `None`, and

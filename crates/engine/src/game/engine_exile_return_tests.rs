@@ -1165,10 +1165,7 @@ fn journey_to_nowhere_two_trigger_oracle_returns_exiled_creature() {
 
 /// CR 603.2 + CR 603.3: A creature returned to the battlefield by an
 /// "until this leaves" exile-return enters the battlefield, so its OWN
-/// enters-the-battlefield trigger must fire. Regression test for issue #3673:
-/// Wall of Omens, returned when Fiend Hunter dies, was not drawing a card
-/// because `check_exile_returns` appended the enter event without scanning it
-/// for triggers.
+/// enters-the-battlefield trigger must fire (issue #3673).
 #[test]
 fn exile_return_fires_returned_creatures_etb_trigger() {
     use crate::game::scenario::{GameScenario, P0};
@@ -1177,10 +1174,10 @@ fn exile_return_fires_returned_creatures_etb_trigger() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
 
-    // Fiend Hunter on P0's battlefield (source of the exile). We register an
+    // Banisher Priest on P0's battlefield (source of the exile). We register an
     // UntilSourceLeaves link directly; the return path, not the exile path, is
     // under test here.
-    let hunter_id = scenario.add_creature(P0, "Fiend Hunter", 1, 3).id();
+    let priest_id = scenario.add_creature(P0, "Banisher Priest", 2, 2).id();
 
     // Wall of Omens, owned by P0, with its real ETB draw trigger. It is placed
     // on the battlefield so the parser installs the trigger, then relocated to
@@ -1213,12 +1210,12 @@ fn exile_return_fires_returned_creatures_etb_trigger() {
     );
 
     // Move Wall to exile and register the return link, mirroring the state after
-    // Fiend Hunter's ETB has resolved.
+    // Banisher Priest's ETB has resolved.
     let mut relocate_events: Vec<GameEvent> = Vec::new();
     crate::game::zones::move_to_zone(state, wall_id, Zone::Exile, &mut relocate_events);
     state.exile_links.push(ExileLink {
         exiled_id: wall_id,
-        source_id: hunter_id,
+        source_id: priest_id,
         kind: ExileLinkKind::UntilSourceLeaves {
             return_zone: Zone::Battlefield,
         },
@@ -1226,10 +1223,10 @@ fn exile_return_fires_returned_creatures_etb_trigger() {
 
     let hand_before = state.players[0].hand.len();
 
-    // Fiend Hunter leaves the battlefield; the post-action pipeline returns Wall
+    // Banisher Priest leaves the battlefield; the post-action pipeline returns Wall
     // of Omens and must fire its ETB.
     let mut events: Vec<GameEvent> = Vec::new();
-    crate::game::zones::move_to_zone(state, hunter_id, Zone::Graveyard, &mut events);
+    crate::game::zones::move_to_zone(state, priest_id, Zone::Graveyard, &mut events);
     let default_wf = WaitingFor::Priority {
         player: PlayerId(0),
     };
@@ -2212,7 +2209,7 @@ mod latch_window {
 
     /// CR 603.8 + CR 610.3b: a held ability that bounds an "until" zone change
     /// and has no recorded trigger event is, in production, a state trigger
-    /// (`check_state_triggers` builds it with
+    /// (`collect_state_triggers` builds it with
     /// `trigger_event: None`). The pipeline collects state triggers after
     /// `check_exile_returns`, so such an ability triggered before the buffer a
     /// later latch pass reads began, and every event in that buffer is "after
