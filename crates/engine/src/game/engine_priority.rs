@@ -668,7 +668,8 @@ fn run_post_action_pipeline_core(
                 &delayed_input,
             ));
             delayed_scan_start = events.len();
-            batch.extend(triggers::collect_state_triggers(state));
+            let state_triggers = triggers::collect_state_triggers(state, &batch);
+            batch.extend(state_triggers);
         }
         if let Some(wf) = place_priority_batch(state, batch, answer_delayed_events, events) {
             state.waiting_for = wf;

@@ -382,27 +382,14 @@ pub fn resolve(
         )
         .is_empty();
     }
-    // CR 605.1b is traded away under Off: this production event is emitted only where loop
-    // detection samples, the only modes that can recognise the self-retrigger it may start.
-    if is_triggered_mana_inline && deposited && state.loop_detection.samples() {
-        let event = GameEvent::ManaAbilityProduced {
-            player_id: recipient,
-            source_id: ability.source_id,
-            produced: mana_types,
-            trigger_state: ManaAbilityTriggerState::Pending,
-        };
-        // CR 104.4b + CR 732.4: a mandatory self-retrigger inside one mana resolution
-        // (CR 605.4a) is a loop of mandatory actions.
-        if crate::game::triggers::mana_production_retriggers_itself_mandatorily(
-            state, ability, &event,
-        ) {
-            if state.game_end.is_none() {
-                super::declare_mandatory_loop_draw(state, events);
-            }
-        } else {
-            events.push(event);
-        }
-    }
+    complete_triggered_mana_production(
+        state,
+        ability,
+        is_triggered_mana_inline && deposited,
+        recipient,
+        mana_types,
+        events,
+    );
     record_firebending_if_marked(state, ability, produced_mana, events);
     record_triggered_ability_added_mana(state, ability, recipient, deposited);
 
@@ -413,6 +400,39 @@ pub fn resolve(
     });
 
     Ok(())
+}
+
+/// CR 605.1b: a triggered mana ability that deposited mana announces its production, which a
+/// mana ability can trigger from, whether it resolved at once or after a type choice.
+fn complete_triggered_mana_production(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    deposited_triggered_mana: bool,
+    recipient: PlayerId,
+    produced: Vec<ManaType>,
+    events: &mut Vec<GameEvent>,
+) {
+    // CR 605.1b is traded away under Off: this production event is emitted only where loop
+    // detection samples, the only modes that can recognise the self-retrigger it may start.
+    if !(deposited_triggered_mana && state.loop_detection.samples()) {
+        return;
+    }
+    let event = GameEvent::ManaAbilityProduced {
+        player_id: recipient,
+        source_id: ability.source_id,
+        produced,
+        trigger_state: ManaAbilityTriggerState::Pending,
+    };
+    // CR 104.4b + CR 732.4: a mandatory self-retrigger inside one mana resolution
+    // (CR 605.4a) is a loop of mandatory actions.
+    if crate::game::triggers::mana_production_retriggers_itself_mandatorily(state, ability, &event)
+    {
+        if state.game_end.is_none() {
+            super::declare_mandatory_loop_draw(state, events);
+        }
+    } else {
+        events.push(event);
+    }
 }
 
 /// CR 106.3 + CR 608.2d: Complete a mana-choice prompt created while a spell
@@ -477,9 +497,11 @@ pub fn handle_choose_mana_effect(
         _ => mana_effect_recipient(state, ability, target.as_ref()),
     };
     let produced_mana = recipient.is_some() && !mana_types.is_empty();
+    let is_triggered_mana_inline =
+        crate::game::mana_abilities::is_resolving_triggered_mana(state, ability);
     let mut deposited = false;
     if let Some(recipient) = recipient {
-        for mana_type in mana_types {
+        for &mana_type in &mana_types {
             deposited |= !mana_payment::produce_mana_with_attributes_from_source_quality(
                 state,
                 ability.source_id,
@@ -494,6 +516,14 @@ pub fn handle_choose_mana_effect(
             )
             .is_empty();
         }
+        complete_triggered_mana_production(
+            state,
+            ability,
+            is_triggered_mana_inline && deposited,
+            recipient,
+            mana_types,
+            events,
+        );
     }
     record_firebending_if_marked(state, ability, produced_mana, events);
     if let Some(recipient) = recipient {
@@ -3714,6 +3744,74 @@ mod tests {
                 ),
                 certified,
                 "{rider}"
+            );
+        }
+    }
+
+    /// CR 605.1b: Extraplanar Lens echoing a Simic Growth Chamber pauses for the type; the
+    /// answered production is an event wherever loop detection samples, as an unpaused one is.
+    #[test]
+    fn an_echo_answered_after_its_type_choice_emits_its_production() {
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::game::scenario_db::GameScenarioDbExt;
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::{ExileLink, ExileLinkKind, LoopDetectionMode};
+
+        for mode in [LoopDetectionMode::Interactive, LoopDetectionMode::Off] {
+            let db = crate::test_support::shared_card_db();
+            let mut sc = GameScenario::new();
+            sc.at_phase(crate::types::phase::Phase::PreCombatMain);
+            let lens = sc.add_real_card(P0, "Extraplanar Lens", Zone::Battlefield, db);
+            let chamber = sc.add_real_card(P0, "Simic Growth Chamber", Zone::Battlefield, db);
+            let imprinted = sc.add_real_card(P0, "Simic Growth Chamber", Zone::Exile, db);
+            let mut runner = sc.build();
+            let state = runner.state_mut();
+            state.loop_detection = mode;
+            state.objects.get_mut(&chamber).unwrap().tapped = false;
+            state.exile_links.push(ExileLink {
+                source_id: lens,
+                exiled_id: imprinted,
+                kind: ExileLinkKind::TrackedBySource,
+            });
+            let mana_actions =
+                crate::game::mana_sources::activatable_mana_actions_for_player(runner.state(), P0);
+            let tap = mana_actions
+                .into_iter()
+                .find(|action| {
+                    matches!(action, GameAction::TapLandForMana { selection }
+                        | GameAction::ActivateManaSource { selection }
+                        if selection.source.object_id == chamber)
+                })
+                .expect("the Chamber can tap for mana");
+            let tapped = runner.act(tap).expect("the tap applies");
+            assert!(
+                matches!(
+                    tapped.waiting_for,
+                    WaitingFor::ChooseManaColor {
+                        context: ManaChoiceContext::ResolvingEffect(_),
+                        ..
+                    }
+                ),
+                "{mode:?}: reach: the echo pauses for its type, got {:?}",
+                tapped.waiting_for
+            );
+            let answered = runner
+                .act(GameAction::ChooseManaColor {
+                    choice: ManaChoice::SingleColor(ManaType::Green),
+                    count: 1,
+                })
+                .expect("the type choice applies");
+            assert_eq!(
+                runner.state().players[0]
+                    .mana_pool
+                    .count_color(ManaType::Green),
+                2,
+                "{mode:?}: reach: the echo added the chosen type"
+            );
+            assert_eq!(
+                produced_by(&answered.events, lens).len(),
+                usize::from(mode.samples()),
+                "{mode:?}"
             );
         }
     }

@@ -12466,8 +12466,12 @@ fn trigger_cause_matches(
 }
 
 /// CR 603.8: the state triggers whose condition is true now, as batch contexts
-/// for the priority boundary's single placement.
-pub(crate) fn collect_state_triggers(state: &GameState) -> Vec<PendingTriggerContext> {
+/// for the priority boundary's single placement; `waiting` is the batch already
+/// gathered for that placement.
+pub(crate) fn collect_state_triggers(
+    state: &GameState,
+    waiting: &[PendingTriggerContext],
+) -> Vec<PendingTriggerContext> {
     // CR 702.26b: phased-out gating is owned by `active_trigger_definitions`
     // below; we iterate the full battlefield and let the helper drop phased-
     // out permanents rather than re-filtering here.
@@ -12509,14 +12513,19 @@ pub(crate) fn collect_state_triggers(state: &GameState) -> Vec<PendingTriggerCon
             // holds it back too, as before.) The ref's source pins the source
             // incarnation, so a pending trigger of an object that left the
             // battlefield never suppresses the new object it became (CR 400.7).
-            let already_on_stack = state.stack.iter().any(|entry| {
+            // An instance that triggered but still waits to be put on the stack
+            // holds it back the same way.
+            let this_ability = Some(definition_ref);
+            let already_triggered = state.stack.iter().any(|entry| {
                 matches!(
                     &entry.kind,
                     StackEntryKind::TriggeredAbility { ability, .. }
-                        if ability.trigger_definition_ref.as_ref() == Some(definition_ref)
+                        if ability.trigger_definition_ref.as_ref() == this_ability
                 )
-            });
-            if already_on_stack {
+            }) || waiting.iter().chain(&state.deferred_triggers).any(
+                |context| context.pending.ability.trigger_definition_ref.as_ref() == this_ability,
+            );
+            if already_triggered {
                 continue;
             }
 
@@ -21148,6 +21157,40 @@ pub mod tests {
             None,
             "a state trigger without an intervening \"if\" stacks no recheck"
         );
+    }
+
+    /// CR 603.8: Emperor Crocodile's state trigger waiting in the boundary's batch or in the
+    /// deferred queue holds back a second instance; a waiting trigger of another ability does not.
+    #[test]
+    fn a_waiting_state_trigger_does_not_trigger_again() {
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::game::scenario_db::GameScenarioDbExt;
+
+        let mut sc = GameScenario::new();
+        sc.add_real_card(
+            P0,
+            "Emperor Crocodile",
+            Zone::Battlefield,
+            crate::test_support::shared_card_db(),
+        );
+        let mut state = sc.state;
+        crate::game::layers::flush_layers(&mut state);
+        let first = collect_state_triggers(&state, &[]);
+        assert_eq!(
+            first.len(),
+            1,
+            "reach: the Crocodile's state trigger is true"
+        );
+        let mut other = first[0].clone();
+        other.pending.ability.trigger_definition_ref = None;
+
+        assert!(collect_state_triggers(&state, &first).is_empty());
+        assert_eq!(collect_state_triggers(&state, &[other.clone()]).len(), 1);
+
+        state.deferred_triggers = first.clone();
+        assert!(collect_state_triggers(&state, &[]).is_empty());
+        state.deferred_triggers = vec![other];
+        assert_eq!(collect_state_triggers(&state, &[]).len(), 1);
     }
 
     #[test]
