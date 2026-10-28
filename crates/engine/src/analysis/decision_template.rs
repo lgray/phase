@@ -705,8 +705,8 @@ pub enum IterationCount {
     /// The terminating condition is the SBA, not a caller-supplied count. (`UntilResource`
     /// stays deferred to Phase 4/B5.)
     UntilLethal,
-    /// CR 732.1b + CR 732.2b + CR 732.2c: repeat with no ending point; the game is a draw
-    /// because every player accepted the endless shortcut.
+    /// CR 104.4b + CR 732.4: repeat a loop whose in-loop actions are all mandatory with no
+    /// ending point; once every player accepts, the game is a draw.
     WithoutEnd,
 }
 
