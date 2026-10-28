@@ -22,10 +22,10 @@
 //! nothing. Then its first ability will resolve and exile the target creature
 //! indefinitely."
 //!
-//! CR 117.5 + CR 603.3b: every ability that triggered since a player last
-//! received priority — on the action, on its state-based actions, on exile
-//! returns, delayed and state triggers — is placed as one batch after the
-//! state-based actions, before the next priority. The rows below drive one
+//! CR 117.5 + CR 603.3b: every ability a post-action pass collects — on the
+//! action, on its state-based actions, on exile returns, delayed and state
+//! triggers — is placed as one batch after the state-based actions, before the
+//! next priority. The rows below drive one
 //! member of that class each through real card data.
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
