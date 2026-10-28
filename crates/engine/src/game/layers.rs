@@ -7745,6 +7745,44 @@ fn gather_ring_emblem_continuous_effects(
     }
 }
 
+/// CR 611.3a: whether a continuous effect the layer pass can gather is gated on a condition that
+/// reads the step in progress, walking the same sources and transients the gather visits.
+pub(crate) fn continuous_effect_conditions_read_current_step(state: &GameState) -> bool {
+    let mut found = false;
+    for_each_static_effect_source(state, |_, obj| {
+        found = found
+            || obj
+                .static_definitions
+                .iter_all()
+                .any(static_definition_reads_current_step);
+    });
+    found
+        || state.transient_continuous_effects.iter().any(|tce| {
+            tce.condition
+                .as_ref()
+                .is_some_and(StaticCondition::reads_current_step)
+                || modifications_read_current_step(&tce.modifications)
+        })
+}
+
+fn static_definition_reads_current_step(def: &StaticDefinition) -> bool {
+    def.condition
+        .as_ref()
+        .is_some_and(StaticCondition::reads_current_step)
+        || modifications_read_current_step(&def.modifications)
+}
+
+/// CR 613.1f: a granted static's own condition is evaluated in the host's layer pass.
+fn modifications_read_current_step(modifications: &[ContinuousModification]) -> bool {
+    modifications.iter().any(|modification| {
+        matches!(
+            modification,
+            ContinuousModification::GrantStaticAbility { definition }
+                if static_definition_reads_current_step(definition)
+        )
+    })
+}
+
 pub(crate) fn for_each_static_effect_source(
     state: &GameState,
     mut visit: impl FnMut(&GameState, &crate::game::game_object::GameObject),
@@ -12969,6 +13007,60 @@ mod tests {
                 ),
                 expected,
                 "phase {phase:?} with {begin_combat_starts} BeginCombat start(s)"
+            );
+        }
+    }
+
+    /// CR 611.3a: the step-begin invalidation sees a step-gated condition wherever the
+    /// layer pass can evaluate one, and only a step-gated one.
+    #[test]
+    fn continuous_effect_conditions_read_current_step_by_carrier() {
+        for (oracle, transient, expected) in [
+            (None, None, false),
+            (Some("As long as it's your turn, Gated Bear gets +2/+0."), None, false),
+            (
+                Some("As long as it's the first combat phase of your turn, Gated Bear gets +2/+0."),
+                None,
+                true,
+            ),
+            (
+                Some("Creatures you control have \"As long as it's the first combat phase of the turn, this creature gets +2/+0.\""),
+                None,
+                true,
+            ),
+            (None, Some(StaticCondition::DuringYourTurn), false),
+            (
+                None,
+                Some(StaticCondition::Not {
+                    condition: Box::new(StaticCondition::FirstCombatPhaseOfTurn),
+                }),
+                true,
+            ),
+        ] {
+            let mut scenario = GameScenario::new();
+            let id = match oracle {
+                Some(text) => scenario.add_creature_from_oracle(P0, "Gated Bear", 2, 2, text),
+                None => scenario.add_creature(P0, "Gated Bear", 2, 2),
+            }
+            .id();
+            let mut runner = scenario.build();
+            if let Some(condition) = transient.clone() {
+                assert!(runner
+                    .state_mut()
+                    .add_transient_continuous_effect(
+                        id,
+                        P0,
+                        Duration::UntilEndOfTurn,
+                        TargetFilter::SpecificObject { id },
+                        vec![ContinuousModification::AddPower { value: 2 }],
+                        Some(condition),
+                    )
+                    .is_some());
+            }
+            assert_eq!(
+                continuous_effect_conditions_read_current_step(runner.state()),
+                expected,
+                "{oracle:?} / {transient:?}"
             );
         }
     }

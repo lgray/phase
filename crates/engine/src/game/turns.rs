@@ -3461,6 +3461,10 @@ fn should_skip_step_now(state: &mut GameState, step: Phase) -> bool {
 /// CR 500.1 + CR 500.8 + CR 500.9 + CR 500.11: record that `step` begins, unless
 /// it is skipped as it would begin. The only writer of `steps_started_this_turn`.
 pub(super) fn record_step_begin(state: &mut GameState, step: Phase) {
+    // CR 611.3a: a static gated on the step in progress applies to the new step at once.
+    if super::layers::continuous_effect_conditions_read_current_step(state) {
+        state.layers_dirty.mark_full();
+    }
     if step_skip(state, step).is_none() {
         state.steps_started_this_turn.record(step);
     }

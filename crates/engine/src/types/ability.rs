@@ -16753,6 +16753,79 @@ impl StaticCondition {
         })
     }
 
+    /// CR 500.1 + CR 611.3a: true when a leaf's truth can change as a step begins (it reads the
+    /// step in progress or this turn's tally of begun steps), so a live static carrying it must be
+    /// re-evaluated at every step begin.
+    pub(crate) fn reads_current_step(&self) -> bool {
+        self.any_leaf(|leaf| match leaf {
+            StaticCondition::FirstCombatPhaseOfTurn => true,
+            StaticCondition::And { .. }
+            | StaticCondition::Or { .. }
+            | StaticCondition::Not { .. }
+            | StaticCondition::DevotionGE { .. }
+            | StaticCondition::IsPresent { .. }
+            | StaticCondition::ChosenColorIs { .. }
+            | StaticCondition::ChosenLabelIs { .. }
+            | StaticCondition::QuantityComparison { .. }
+            | StaticCondition::QuantityQuality { .. }
+            | StaticCondition::HasMaxSpeed
+            | StaticCondition::SpeedGE { .. }
+            | StaticCondition::DayNightIs { .. }
+            | StaticCondition::HasCounters { .. }
+            | StaticCondition::CastVariantPaid { .. }
+            | StaticCondition::RecipientHasCounters { .. }
+            | StaticCondition::ClassLevelGE { .. }
+            | StaticCondition::DefendingPlayerControls { .. }
+            | StaticCondition::SourceAttackingAlone
+            | StaticCondition::SourceIsAttacking
+            | StaticCondition::SourceIsBlocking
+            | StaticCondition::SourceIsBlocked
+            | StaticCondition::IsMonarch { .. }
+            | StaticCondition::HasBoon { .. }
+            | StaticCondition::IsInitiative
+            | StaticCondition::NoMonarch
+            | StaticCondition::HasCityBlessing
+            | StaticCondition::HasEnduringStory
+            | StaticCondition::CompletedADungeon
+            | StaticCondition::WasStartingPlayer { .. }
+            | StaticCondition::SpellCastWithVariantThisTurn { .. }
+            | StaticCondition::AnyPlayerAttackedYouLastTurn { .. }
+            | StaticCondition::OpponentPoisonAtLeast { .. }
+            | StaticCondition::UnlessPay { .. }
+            | StaticCondition::Unrecognized { .. }
+            | StaticCondition::DuringYourTurn
+            | StaticCondition::DuringOpponentsTurn
+            | StaticCondition::SharesColorWithMostCommonColorAmongPermanents
+            | StaticCondition::SourceEnteredThisTurn
+            | StaticCondition::SourceHasDealtDamage
+            | StaticCondition::SourceExertedThisTurn
+            | StaticCondition::WasCast { .. }
+            | StaticCondition::IsRingBearer
+            | StaticCondition::RingLevelAtLeast { .. }
+            | StaticCondition::ControlsCommander { .. }
+            | StaticCondition::SourceIsTapped
+            | StaticCondition::IsTapped { .. }
+            | StaticCondition::SourceIsFaceUp
+            | StaticCondition::SourceIsSaddled
+            | StaticCondition::SourceControllerEquals { .. }
+            | StaticCondition::SourceIsEquipped
+            | StaticCondition::SourceIsEnchanted
+            | StaticCondition::SourceIsMonstrous
+            | StaticCondition::SourceIsHarnessed
+            | StaticCondition::SourceAttachedToCreature
+            | StaticCondition::SourceMatchesFilter { .. }
+            | StaticCondition::TopOfLibraryMatches { .. }
+            | StaticCondition::RecipientMatchesFilter { .. }
+            | StaticCondition::RecipientAttackingOwnerTarget { .. }
+            | StaticCondition::SourceIsPaired
+            | StaticCondition::SourceInZone { .. }
+            | StaticCondition::EnchantedIsFaceDown
+            | StaticCondition::AdditionalCostPaid
+            | StaticCondition::CastingAsVariant { .. }
+            | StaticCondition::None => false,
+        })
+    }
+
     /// CR 508.1b announces which player each chosen
     /// creature is attacking — THE PAIRING THIS WHOLE MAP IS RELATIVE TO; CR 508.1c
     /// then checks restrictions against that pairing. CR 611.3a
