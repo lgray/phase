@@ -36,6 +36,7 @@
 //! nothing. Then its first ability will resolve and exile the target creature
 //! indefinitely."
 
+use engine::game::game_object::ObjectIncarnationRefExt;
 use engine::game::merge::{merge_object_onto, MergeSide};
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;

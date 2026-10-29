@@ -8,6 +8,7 @@
 //! covering the actual bug #2014 path rather than just the primitive. The parser
 //! source-of-truth tests live in `parser::oracle_target::tests`.
 
+use crate::game::game_object::ObjectIncarnationRefExt;
 use crate::game::merge::*;
 use crate::game::scenario::{GameScenario, P0};
 use crate::types::events::GameEvent;
