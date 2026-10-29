@@ -21636,6 +21636,10 @@ impl Clone for ReplacementIndex {
     }
 }
 
+fn layers_read_current_step_unknown() -> bool {
+    true
+}
+
 /// CR 611.2 + CR 613.1: Candidate pre-filter for `for_each_static_effect_source`.
 /// Holds the ids of objects that GENERATE ≥1 continuous effect for the TWO
 /// `layers_dirty`-covered source categories: battlefield permanents with a
@@ -22931,6 +22935,10 @@ declare_game_state! {
     // serializing the (derived) entered-object set.
     #[serde(skip, default = "LayersDirty::full")]
     pub layers_dirty: LayersDirty,
+    /// CR 611.3a: whether the cached layer results evaluated a condition that reads the step in
+    /// progress. Derived and eq-excluded; `true` until a full pass answers, so unknown re-evaluates.
+    #[serde(skip, default = "layers_read_current_step_unknown")]
+    pub layers_read_current_step: bool,
     /// CR 611.3a + CR 611.3b: truth of each CONTINUOUS static's SOURCE-LEVEL
     /// (non-recipient-context) enabling condition as of the last full
     /// `evaluate_layers`. Read by the incremental-flush truth-delta
@@ -32123,6 +32131,7 @@ impl GameState {
             deferred_entry_events: Vec::new(),
             pending_token_battlefield_entry: None,
             layers_dirty: LayersDirty::full(),
+            layers_read_current_step: layers_read_current_step_unknown(),
             static_gate_truth: im::HashMap::new(),
             trigger_index: TriggerIndex::default(),
             replacement_index: ReplacementIndex::default(),
@@ -35631,6 +35640,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         deferred_entry_events: _,
         pending_token_battlefield_entry: _,
         layers_dirty: _,
+        layers_read_current_step: _,
         static_gate_truth: _,
         trigger_index: _,
         replacement_index: _,
