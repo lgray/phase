@@ -205,6 +205,10 @@ const DOCUMENTED_OVER_PROMPT: &[&str] = &[
     // commutes ONLY because the phoenix's own power (2 < 4) — runtime P/T, invisible
     // to a context-free recognizer.
     "flamewake phoenix",
+    // Choose{CreatureType, persist} → ChangeZoneAll{gy → library}: the chosen type is
+    // bound earlier in the same resolution, but the AST has no scope distinguishing it
+    // from persistent per-source storage.
+    "elvish soultiller",
     // ---- parse-blocked commutes (underneath the mis-parse, the structure
     // commutes) ----
     // RemoveCounter{TriggeringSource} mis-parse (should be SelfRef): each removes
