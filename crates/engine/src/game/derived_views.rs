@@ -1932,7 +1932,7 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             }
             // CR 119.3 + CR 732.2a: the readout is the life total of the player the accepted
             // shortcut adjusts; Life axes are unsigned, so only one under its own controller's key
-            // is growth and a drain victim keeps its finite total.
+            // is provably growth, and any other (a drain victim) keeps its finite total.
             if axis == ResourceAxis::Life(controller) {
                 views
                     .life_magnitude
