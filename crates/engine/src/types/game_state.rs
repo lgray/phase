@@ -34209,6 +34209,7 @@ impl GameState {
                 linked_exile_snapshot,
                 is_token: _,
                 combat_status: _,
+                block_pairs,
                 co_departed: _,
                 entered_incarnation: _,
                 attached_to: _,
@@ -34220,6 +34221,7 @@ impl GameState {
             } = &mut **record;
             attachment_incarnations(attachments, f);
             linked_exile_incarnations(linked_exile_snapshot, f);
+            block_pair_incarnations(block_pairs, f);
             let Some(TriggerSourceContext {
                 identity,
                 lki,
@@ -34333,6 +34335,15 @@ impl GameState {
                 if let Some(reference) = identity {
                     f(reference.object_id, &mut reference.incarnation);
                 }
+            }
+        }
+        fn block_pair_incarnations(
+            pairs: &mut [BlockHistoryPair],
+            f: &mut impl FnMut(ObjectId, &mut u64),
+        ) {
+            for BlockHistoryPair { blocker, attacker } in pairs {
+                f(blocker.object_id, &mut blocker.incarnation);
+                f(attacker.object_id, &mut attacker.incarnation);
             }
         }
         fn linked_exile_incarnations(
@@ -46965,6 +46976,10 @@ mod tests {
             };
             record.attachments = vec![attachment.clone()];
             record.linked_exile_snapshot = vec![linked.clone()];
+            record.block_pairs = vec![BlockHistoryPair {
+                blocker: reference,
+                attacker: reference,
+            }];
             let context = record.trigger_source_context.as_mut().unwrap();
             assert_eq!(context.identity.reference, reference);
             context.attachments = vec![attachment.clone()];
