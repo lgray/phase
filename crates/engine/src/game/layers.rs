@@ -1547,6 +1547,22 @@ impl ConditionContext {
     }
 }
 
+thread_local! {
+    /// CR 611.3a: set by every evaluator arm that reads the step in progress, so a layer pass
+    /// knows its result can change when a step begins.
+    static STEP_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `pass` and returns whether it evaluated a step-reading condition; an enclosing pass
+/// keeps its own reads.
+fn record_step_reads(pass: impl FnOnce()) -> bool {
+    let outer = STEP_READ.replace(false);
+    pass();
+    let read = STEP_READ.get();
+    STEP_READ.set(outer || read);
+    read
+}
+
 /// Evaluate a `StaticCondition` for the given controller and source object.
 /// Returns `true` if the condition is met (effect should apply), `false` otherwise.
 ///
@@ -2833,6 +2849,7 @@ fn evaluate_condition_inner(
         // must be the phase in progress (shared predicate; the composed
         // possessive form carries its `DuringYourTurn` scope separately).
         StaticCondition::FirstCombatPhaseOfTurn => {
+            STEP_READ.set(true);
             super::conditions::first_combat_phase_in_progress(state)
         }
         // CR 103.1: True when the scoped player took the first turn of the
@@ -3631,6 +3648,12 @@ fn evaluate_layers_with_retirement_owner(
     state: &mut GameState,
     retirement_owner: StateDurationRetirementOwner,
 ) {
+    // CR 611.3a: a full pass re-derives everything, so its reads replace the record.
+    let read = record_step_reads(|| evaluate_all_layers(state, retirement_owner));
+    state.layers_read_current_step = read;
+}
+
+fn evaluate_all_layers(state: &mut GameState, retirement_owner: StateDurationRetirementOwner) {
     #[cfg(test)]
     FULL_EVALUATE_LAYERS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // CR 302.6 + CR 613.1b + CR 702.26b: Snapshot effective controllers for
@@ -5511,28 +5534,37 @@ fn flush_layers_with_retirement_owner(
                 flush_lapsed_durations(state, retirement_owner);
                 return;
             }
-            if let Some(prepared) =
-                prepare_incremental_flush(state, &ids, StaticGateTruth::Evaluate)
-            {
-                super::perf_counters::record_layers_incremental();
-                apply_layers_incremental(state, prepared, retirement_owner);
-                // Rebuild the presence index so the incremental arm leaves a PRECISE index
-                // (not a conservative superset). The incremental path is already
-                // O(battlefield): `prepare_incremental_flush` unconditionally calls
-                // `StaticSourceIndex::rebuild_from_state`, so a full presence rebuild here is
-                // DRY, matches the sibling-cache convention, and adds no asymptotic cost.
-                refresh_static_mode_presence(state);
-                for id in &ids {
-                    super::public_state::mark_public_state_object_dirty(state, *id);
-                }
-                super::public_state::mark_battlefield_display_dirty(state);
-            } else {
-                super::perf_counters::record_layers_escalated();
-                super::perf_counters::record_layers_full_eval();
-                evaluate_layers_with_retirement_owner(state, retirement_owner);
-                super::public_state::mark_public_state_all_dirty(state);
-            }
+            // CR 611.3a: an incremental pass keeps the cached results it does not re-derive,
+            // so its reads add to the record.
+            let read = record_step_reads(|| flush_entered_objects(state, &ids, retirement_owner));
+            state.layers_read_current_step |= read;
         }
+    }
+}
+
+fn flush_entered_objects(
+    state: &mut GameState,
+    ids: &BTreeSet<ObjectId>,
+    retirement_owner: StateDurationRetirementOwner,
+) {
+    if let Some(prepared) = prepare_incremental_flush(state, ids, StaticGateTruth::Evaluate) {
+        super::perf_counters::record_layers_incremental();
+        apply_layers_incremental(state, prepared, retirement_owner);
+        // Rebuild the presence index so the incremental arm leaves a PRECISE index
+        // (not a conservative superset). The incremental path is already
+        // O(battlefield): `prepare_incremental_flush` unconditionally calls
+        // `StaticSourceIndex::rebuild_from_state`, so a full presence rebuild here is
+        // DRY, matches the sibling-cache convention, and adds no asymptotic cost.
+        refresh_static_mode_presence(state);
+        for id in ids {
+            super::public_state::mark_public_state_object_dirty(state, *id);
+        }
+        super::public_state::mark_battlefield_display_dirty(state);
+    } else {
+        super::perf_counters::record_layers_escalated();
+        super::perf_counters::record_layers_full_eval();
+        evaluate_layers_with_retirement_owner(state, retirement_owner);
+        super::public_state::mark_public_state_all_dirty(state);
     }
 }
 
@@ -7743,47 +7775,6 @@ fn gather_ring_emblem_continuous_effects(
             granter: None,
         });
     }
-}
-
-/// CR 611.3a: whether a continuous effect the layer pass can gather is gated on a condition that
-/// reads the step in progress, walking the same sources and transients the gather visits.
-pub(crate) fn continuous_effect_conditions_read_current_step(state: &GameState) -> bool {
-    let mut found = false;
-    // CR 613.6: a layer-6 ability removal empties the live set, but the next pass
-    // reseeds from base, so both sets are walked.
-    for_each_static_effect_source(state, |_, obj| {
-        found = found
-            || obj
-                .base_static_definitions
-                .iter()
-                .chain(obj.static_definitions.iter_all())
-                .any(static_definition_reads_current_step);
-    });
-    found
-        || state.transient_continuous_effects.iter().any(|tce| {
-            tce.condition
-                .as_ref()
-                .is_some_and(StaticCondition::reads_current_step)
-                || modifications_read_current_step(&tce.modifications)
-        })
-}
-
-fn static_definition_reads_current_step(def: &StaticDefinition) -> bool {
-    def.condition
-        .as_ref()
-        .is_some_and(StaticCondition::reads_current_step)
-        || modifications_read_current_step(&def.modifications)
-}
-
-/// CR 613.1f: a granted static's own condition is evaluated in the host's layer pass.
-fn modifications_read_current_step(modifications: &[ContinuousModification]) -> bool {
-    modifications.iter().any(|modification| {
-        matches!(
-            modification,
-            ContinuousModification::GrantStaticAbility { definition }
-                if static_definition_reads_current_step(definition)
-        )
-    })
 }
 
 pub(crate) fn for_each_static_effect_source(
@@ -13010,60 +13001,6 @@ mod tests {
                 ),
                 expected,
                 "phase {phase:?} with {begin_combat_starts} BeginCombat start(s)"
-            );
-        }
-    }
-
-    /// CR 611.3a: the step-begin invalidation sees a step-gated condition wherever the
-    /// layer pass can evaluate one, and only a step-gated one.
-    #[test]
-    fn continuous_effect_conditions_read_current_step_by_carrier() {
-        for (oracle, transient, expected) in [
-            (None, None, false),
-            (Some("As long as it's your turn, Gated Bear gets +2/+0."), None, false),
-            (
-                Some("As long as it's the first combat phase of your turn, Gated Bear gets +2/+0."),
-                None,
-                true,
-            ),
-            (
-                Some("Creatures you control have \"As long as it's the first combat phase of the turn, this creature gets +2/+0.\""),
-                None,
-                true,
-            ),
-            (None, Some(StaticCondition::DuringYourTurn), false),
-            (
-                None,
-                Some(StaticCondition::Not {
-                    condition: Box::new(StaticCondition::FirstCombatPhaseOfTurn),
-                }),
-                true,
-            ),
-        ] {
-            let mut scenario = GameScenario::new();
-            let id = match oracle {
-                Some(text) => scenario.add_creature_from_oracle(P0, "Gated Bear", 2, 2, text),
-                None => scenario.add_creature(P0, "Gated Bear", 2, 2),
-            }
-            .id();
-            let mut runner = scenario.build();
-            if let Some(condition) = transient.clone() {
-                assert!(runner
-                    .state_mut()
-                    .add_transient_continuous_effect(
-                        id,
-                        P0,
-                        Duration::UntilEndOfTurn,
-                        TargetFilter::SpecificObject { id },
-                        vec![ContinuousModification::AddPower { value: 2 }],
-                        Some(condition),
-                    )
-                    .is_some());
-            }
-            assert_eq!(
-                continuous_effect_conditions_read_current_step(runner.state()),
-                expected,
-                "{oracle:?} / {transient:?}"
             );
         }
     }
