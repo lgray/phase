@@ -34953,10 +34953,10 @@ impl GameState {
         }
         // The may-trigger origins on every ability that can still resolve, and the
         // stored exact-instance answers, so a stored answer keeps naming the same
-        // incarnation as the trigger it answers (CR 603.5).
-        fn may_trigger_origin_incarnations(
+        // incarnation and grant generation as the trigger it answers (CR 603.5).
+        fn may_trigger_origins(
             state: &mut GameState,
-            f: &mut impl FnMut(ObjectId, &mut u64),
+            f: &mut impl FnMut(&mut TriggerDefinitionRef),
         ) {
             for entry in state
                 .stack
@@ -34964,7 +34964,7 @@ impl GameState {
                 .chain(state.resolving_stack_entry.iter_mut())
             {
                 if let Some(ability) = entry.ability_mut() {
-                    ability.for_each_may_trigger_origin_incarnation_mut(f);
+                    ability.for_each_may_trigger_origin_mut(f);
                 }
             }
             let ordering = state
@@ -34988,11 +34988,9 @@ impl GameState {
                 if let Some(MayTriggerOrigin::Definition { definition_ref }) =
                     pending.may_trigger_origin.as_mut()
                 {
-                    definition_ref.for_each_incarnation_mut(f);
+                    f(definition_ref);
                 }
-                pending
-                    .ability
-                    .for_each_may_trigger_origin_incarnation_mut(f);
+                pending.ability.for_each_may_trigger_origin_mut(f);
             }
             for record in state.may_trigger_auto_choices.iter_mut() {
                 if let MayTriggerAutoChoiceSelector::ExactInstance {
@@ -35000,9 +34998,16 @@ impl GameState {
                     ..
                 } = &mut record.selector
                 {
-                    definition_ref.for_each_incarnation_mut(f);
+                    f(definition_ref);
                 }
             }
+        }
+        fn ranked(members: &HashMap<ObjectId, Vec<u64>>, object_id: ObjectId, value: u64) -> u64 {
+            let members = &members[&object_id];
+            let rank = members
+                .binary_search(&value)
+                .expect("every ranked value was collected first");
+            u64::MAX - (members.len() - 1 - rank) as u64
         }
         let mut present: std::collections::HashMap<ObjectId, Vec<u64>> =
             std::collections::HashMap::new();
@@ -35026,9 +35031,27 @@ impl GameState {
                 present.entry(object_id).or_default().push(*incarnation);
             });
         });
-        may_trigger_origin_incarnations(self, &mut |object_id, incarnation| {
-            present.entry(object_id).or_default().push(*incarnation);
+        let mut grants: HashMap<ObjectId, Vec<u64>> = HashMap::new();
+        may_trigger_origins(self, &mut |definition_ref| {
+            definition_ref.for_each_incarnation_mut(&mut |object_id, incarnation| {
+                present.entry(object_id).or_default().push(*incarnation);
+            });
+            definition_ref.for_each_grant_generation_mut(&mut |object_id, generation| {
+                grants.entry(object_id).or_default().push(*generation);
+            });
         });
+        for (object_id, generations) in grants.iter_mut() {
+            if let Some(object) = self.objects.get(object_id) {
+                generations.extend(
+                    object
+                        .trigger_occurrence_state
+                        .active_grants()
+                        .map(|(_, instance)| instance.0),
+                );
+            }
+            generations.sort_unstable();
+            generations.dedup();
+        }
         for (object_id, incarnations) in present.iter_mut() {
             // An object named only by last known information may no longer exist.
             if let Some(object) = self.objects.get(object_id) {
@@ -35038,13 +35061,8 @@ impl GameState {
             incarnations.dedup();
         }
         // CR 400.7 + CR 104.4b: which incarnation a record names, relative to the live object, is position; when it was minted is not.
-        let canonical = |object_id: ObjectId, incarnation: u64| {
-            let members = &present[&object_id];
-            let rank = members
-                .binary_search(&incarnation)
-                .expect("every incarnation was collected above");
-            u64::MAX - (members.len() - 1 - rank) as u64
-        };
+        let canonical =
+            |object_id: ObjectId, incarnation: u64| ranked(&present, object_id, incarnation);
         self.lki_by_incarnation = std::mem::take(&mut self.lki_by_incarnation)
             .into_iter()
             .map(|(object_id, history)| {
@@ -35080,12 +35098,25 @@ impl GameState {
                 }
             }
         });
-        may_trigger_origin_incarnations(self, &mut |object_id, incarnation| {
-            *incarnation = canonical(object_id, *incarnation);
+        // CR 613.1f + CR 104.4b: a grant generation, relative to the recipient's current grants, is position too.
+        may_trigger_origins(self, &mut |definition_ref| {
+            definition_ref.for_each_incarnation_mut(&mut |object_id, incarnation| {
+                *incarnation = canonical(object_id, *incarnation);
+            });
+            definition_ref.for_each_grant_generation_mut(&mut |object_id, generation| {
+                *generation = ranked(&grants, object_id, *generation);
+            });
         });
         for (object_id, object) in self.objects.iter_mut() {
             if present.contains_key(object_id) {
                 object.incarnation = canonical(*object_id, object.incarnation);
+            }
+            if grants.contains_key(object_id) {
+                object
+                    .trigger_occurrence_state
+                    .for_each_active_grant_generation_mut(|generation| {
+                        *generation = ranked(&grants, *object_id, *generation);
+                    });
             }
         }
     }
@@ -47731,12 +47762,15 @@ mod tests {
     }
 
     /// CR 603.5 + CR 400.7: a stored exact-instance answer is ranked with the trigger it
-    /// answers wherever that trigger waits, an expanded grant's provider included, so a stale
-    /// stored answer stays distinct from a current one.
+    /// answers wherever that trigger waits, an expanded grant's provider and generation
+    /// included, so a stale stored answer stays distinct from a current one.
     #[test]
     fn normalize_for_loop_ranks_stored_answers_with_their_trigger() {
         use crate::game::triggers::{PendingTrigger, PendingTriggerContext};
-        use crate::types::ability::TriggerDefinitionRef;
+        use crate::types::ability::{
+            TriggerDefinitionRef, TriggerGrantInstanceRef, TriggerGrantProducerKey,
+            TriggerProducerOrigin,
+        };
         #[derive(Debug, Clone, Copy)]
         enum Carrier {
             Stack,
@@ -47748,16 +47782,36 @@ mod tests {
             SubAbility,
             ElseAbility,
         }
-        let answered = |carrier: Carrier, expanded: bool, live: u64, trigger: u64, stored: u64| {
+        let answered = |carrier: Carrier,
+                        expanded: bool,
+                        live: u64,
+                        trigger: (u64, u64),
+                        stored: (u64, u64),
+                        current: u64| {
             let (mut state, x) = records_naming(live, &[]);
-            let origin = |incarnation| {
+            let grants = &mut state.objects.get_mut(&x).unwrap().trigger_occurrence_state;
+            for _ in 1..current {
+                grants.allocate_trigger_grant_instance().unwrap();
+            }
+            let current_grant = grants
+                .grant_instance_for(TriggerGrantProducerKey::Granted {
+                    origin: TriggerProducerOrigin::Static {
+                        source: ObjectIncarnationRef::of(x, live),
+                        definition_index: 0,
+                        modification_index: 0,
+                    },
+                    output_index: 0,
+                })
+                .unwrap();
+            assert_eq!(current_grant, TriggerGrantInstanceRef(current));
+            let origin = |(incarnation, grant): (u64, u64)| {
                 let printed = TriggerDefinitionOccurrenceRef::Printed {
                     base_set: TriggerBaseSetInstanceRef::INITIAL,
                     printed_index: 0,
                 };
                 let occurrence = if expanded {
                     TriggerDefinitionOccurrenceRef::ExpandedGrant {
-                        grant_instance: crate::types::ability::TriggerGrantInstanceRef(1),
+                        grant_instance: TriggerGrantInstanceRef(grant),
                         provider: Box::new(TriggerDefinitionRef {
                             source: ObjectIncarnationRef::of(x, incarnation),
                             occurrence: printed,
@@ -47853,8 +47907,8 @@ mod tests {
             Carrier::ElseAbility,
         ] {
             for expanded in [false, true] {
-                let early = answered(carrier, expanded, 6, 5, 5);
-                let late = answered(carrier, expanded, 10, 9, 9);
+                let early = answered(carrier, expanded, 6, (5, 5), (5, 5), 5);
+                let late = answered(carrier, expanded, 10, (9, 9), (9, 9), 9);
                 assert_ne!(
                     early, late,
                     "reach guard for {carrier:?} expanded={expanded}: raw positions differ"
@@ -47864,10 +47918,25 @@ mod tests {
                     "{carrier:?} expanded={expanded}"
                 );
                 assert!(
-                    !normalized_equal(&early, &answered(carrier, expanded, 6, 5, 3)),
+                    !normalized_equal(&early, &answered(carrier, expanded, 6, (5, 5), (3, 3), 5)),
                     "{carrier:?} expanded={expanded}: a stale stored answer is a different position"
                 );
             }
+            let early = answered(carrier, true, 6, (5, 5), (5, 5), 5);
+            assert!(
+                !normalized_equal(&early, &answered(carrier, true, 6, (5, 5), (5, 4), 5)),
+                "{carrier:?}: an answer stored for a stale grant is a different position"
+            );
+            let superseded = answered(carrier, true, 6, (5, 5), (5, 5), 6);
+            assert!(
+                !normalized_equal(&early, &superseded),
+                "{carrier:?}: a grant the recipient no longer holds is a different position"
+            );
+            let once = superseded.normalize_for_loop();
+            assert!(
+                loop_states_equal(&once.normalize_for_loop(), &once),
+                "{carrier:?}: normalizing ranked grant generations again changed them"
+            );
         }
     }
 

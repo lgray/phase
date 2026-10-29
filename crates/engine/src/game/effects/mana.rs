@@ -536,6 +536,11 @@ pub fn handle_choose_mana_effect(
         subject: None,
     });
 
+    // CR 104.1: a production that ended the game ends it immediately, so no priority or parked work follows.
+    if state.game_end.is_some() {
+        return Ok(state.waiting_for.clone());
+    }
+
     // Priority is restored to the ability's controller exactly as before this
     // change (the recipient computed above governs only where the mana lands, a
     // player receiving mana does not thereby gain priority). Kept as prior
@@ -3674,6 +3679,78 @@ mod tests {
         assert_eq!(game_overs(&events), 1);
         assert_eq!(state.game_end, Some(GameEnd { winner: None }));
         assert_eq!(state.waiting_for, WaitingFor::GameOver { winner: None });
+    }
+
+    /// CR 104.1 + CR 104.4b: an echo whose answered type choice retriggers itself mandatorily
+    /// ends the game, so the answer neither restores priority nor resumes the parked chain.
+    #[test]
+    fn an_answered_echo_that_retriggers_itself_ends_the_game_without_resuming() {
+        use crate::game::scenario::P0;
+        use crate::types::game_state::{GameEnd, LoopDetectionMode};
+
+        let (mut state, _, mut ability, mut event) =
+            sun_board(true, LoopDetectionMode::Interactive, |sc| {
+                sc.add_creature(P0, "Test Echo", 0, 0)
+                    .as_artifact()
+                    .from_oracle_text(
+                        "Whenever a land's ability causes you to add one or more mana of \
+                         the chosen color, add one mana of any type that land produced.",
+                    )
+                    .id()
+            });
+        let GameEvent::ManaAbilityProduced { produced, .. } = &mut event else {
+            panic!("the board's production is a ManaAbilityProduced event");
+        };
+        *produced = vec![ManaType::Green, ManaType::Blue];
+        ability.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::Mana {
+                produced: ManaProduction::Colorless {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+                target: None,
+            },
+            vec![],
+            ability.source_id,
+            P0,
+        )));
+        state.current_trigger_event = Some(event);
+        let mut events = Vec::new();
+        crate::game::effects::resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+        let (prompt, pending) = match state.waiting_for.clone() {
+            WaitingFor::ChooseManaColor {
+                choice,
+                context: ManaChoiceContext::ResolvingEffect(pending),
+                ..
+            } => (choice, pending),
+            other => panic!("reach: the echo pauses for its type, got {other:?}"),
+        };
+        assert!(state.active_ability_continuation().is_some());
+
+        let wait = handle_choose_mana_effect(
+            &mut state,
+            &pending,
+            P0,
+            &prompt,
+            ManaChoice::SingleColor(ManaType::Green),
+            &mut events,
+        )
+        .unwrap();
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Green),
+            1,
+            "reach: the echo added the chosen type"
+        );
+        assert_eq!(state.game_end, Some(GameEnd { winner: None }));
+        assert_eq!(wait, WaitingFor::GameOver { winner: None });
+        assert_eq!(state.waiting_for, WaitingFor::GameOver { winner: None });
+        assert!(state.active_ability_continuation().is_some());
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Colorless),
+            0
+        );
     }
 
     /// CR 605.1b: a Caged Sun that is not a land does not trigger on its own production, so the

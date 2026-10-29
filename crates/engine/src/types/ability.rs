@@ -37822,6 +37822,30 @@ impl TriggerDefinitionRef {
             provider.for_each_incarnation_mut(f);
         }
     }
+
+    /// Yields every layer-6 grant generation this reference names, an expanded grant's provider
+    /// included, keyed by the object whose allocator minted it.
+    pub(crate) fn for_each_grant_generation_mut(&mut self, f: &mut impl FnMut(ObjectId, &mut u64)) {
+        let minted_by = self.source.object_id;
+        match &mut self.occurrence {
+            TriggerDefinitionOccurrenceRef::KeywordCompanion { grant_instance, .. }
+            | TriggerDefinitionOccurrenceRef::CopyRetained { grant_instance, .. }
+            | TriggerDefinitionOccurrenceRef::Granted { grant_instance } => {
+                f(minted_by, &mut grant_instance.0);
+            }
+            TriggerDefinitionOccurrenceRef::ExpandedGrant {
+                grant_instance,
+                provider,
+                provider_output_index: _,
+            } => {
+                f(minted_by, &mut grant_instance.0);
+                provider.for_each_grant_generation_mut(f);
+            }
+            TriggerDefinitionOccurrenceRef::Printed { .. }
+            | TriggerDefinitionOccurrenceRef::CopiedValue { .. }
+            | TriggerDefinitionOccurrenceRef::Unmaterialized => {}
+        }
+    }
 }
 
 /// Identity-bearing runtime trigger entry.
@@ -38155,6 +38179,12 @@ impl TriggerOccurrenceState {
         self.active_grants
             .iter()
             .map(|active| (&active.producer, active.instance))
+    }
+
+    pub(crate) fn for_each_active_grant_generation_mut(&mut self, mut f: impl FnMut(&mut u64)) {
+        for active in &mut self.active_grants {
+            f(&mut active.instance.0);
+        }
     }
 }
 
@@ -43029,23 +43059,22 @@ impl ResolvedAbility {
         }
     }
 
-    /// Yields the incarnations each `MayTriggerOrigin::Definition` in this
-    /// ability tree names, so loop normalization can rank them with the other
-    /// incarnation carriers (CR 400.7).
-    pub(crate) fn for_each_may_trigger_origin_incarnation_mut(
+    /// Yields each `MayTriggerOrigin::Definition` in this ability tree, so loop
+    /// normalization can rank its identities with the other carriers (CR 400.7).
+    pub(crate) fn for_each_may_trigger_origin_mut(
         &mut self,
-        f: &mut impl FnMut(ObjectId, &mut u64),
+        f: &mut impl FnMut(&mut TriggerDefinitionRef),
     ) {
         if let Some(MayTriggerOrigin::Definition { definition_ref }) =
             self.may_trigger_origin.as_mut()
         {
-            definition_ref.for_each_incarnation_mut(f);
+            f(definition_ref);
         }
         if let Some(sub) = self.sub_ability.as_mut() {
-            sub.for_each_may_trigger_origin_incarnation_mut(f);
+            sub.for_each_may_trigger_origin_mut(f);
         }
         if let Some(else_branch) = self.else_ability.as_mut() {
-            else_branch.for_each_may_trigger_origin_incarnation_mut(f);
+            else_branch.for_each_may_trigger_origin_mut(f);
         }
     }
 
