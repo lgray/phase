@@ -11543,8 +11543,8 @@ fn claim_resumed_triggered_mana_events(
 /// accepted children ahead of the prior simultaneous tail, run that tail, and
 /// resume the suspended mana frame exactly once.
 ///
-/// [`TriggeredManaReadiness::Pending`] means "no carrier, or the carrier is
-/// still live": the handler returns its own unmodified result.
+/// [`TriggeredManaReadiness::Pending`] means "no carrier, the carrier is still
+/// live, or the game has ended": the handler returns its own unmodified result.
 /// [`TriggeredManaReadiness::Resumed`] carries the resumed mana frame's
 /// authoritative wait, which the handler must install and return.
 pub(crate) fn finish_accepted_triggered_mana_action(
@@ -11552,6 +11552,11 @@ pub(crate) fn finish_accepted_triggered_mana_action(
     events: &mut Vec<GameEvent>,
     event_start: usize,
 ) -> Result<TriggeredManaReadiness, super::engine::EngineError> {
+    // CR 104.1: a game that ended during this action ends immediately, so the suspended frame never resumes.
+    if state.game_end.is_some() {
+        state.pending_triggered_mana_resume = None;
+        return Ok(TriggeredManaReadiness::Pending);
+    }
     if state.pending_triggered_mana_resume.is_none() {
         return Ok(TriggeredManaReadiness::Pending);
     }
@@ -11673,8 +11678,8 @@ pub(crate) fn finish_accepted_triggered_mana_action(
 
 /// What one sidecar-aware handler's readiness hook concluded.
 pub(crate) enum TriggeredManaReadiness {
-    /// No carrier, or the carrier is still live after this action. The handler
-    /// returns its own unmodified result.
+    /// No carrier, the carrier is still live after this action, or the game has
+    /// ended. The handler returns its own unmodified result.
     Pending,
     /// The fixed point terminated and the suspended mana frame resumed exactly
     /// once to `wait`.

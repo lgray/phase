@@ -3753,6 +3753,85 @@ mod tests {
         );
     }
 
+    /// CR 104.1 + CR 104.4b: an echo answered through the reducer whose production retriggers
+    /// itself ends the game, and the suspended land activation does not resume.
+    #[test]
+    fn an_echo_that_draws_on_its_answered_type_does_not_resume_the_tapped_land() {
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::game::scenario_db::GameScenarioDbExt;
+        use crate::types::ability::ChosenAttribute;
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::{GameEnd, LoopDetectionMode};
+
+        let db = crate::test_support::shared_card_db();
+        let mut sc = GameScenario::new();
+        sc.at_phase(crate::types::phase::Phase::PreCombatMain);
+        sc.add_real_card(P0, "Toph, the First Metalbender", Zone::Battlefield, db);
+        let echo = sc
+            .add_creature(P0, "Test Echo", 0, 0)
+            .as_artifact()
+            .from_oracle_text(
+                "Whenever a land's ability causes you to add one or more mana of \
+                 the chosen color, add one mana of any type that land produced.",
+            )
+            .id();
+        let chamber = sc.add_real_card(P0, "Simic Growth Chamber", Zone::Battlefield, db);
+        let mut runner = sc.build();
+        let state = runner.state_mut();
+        state.loop_detection = LoopDetectionMode::Interactive;
+        state.objects.get_mut(&chamber).unwrap().tapped = false;
+        state
+            .objects
+            .get_mut(&echo)
+            .unwrap()
+            .chosen_attributes
+            .push(ChosenAttribute::Color(ManaColor::Green));
+        crate::game::layers::flush_layers(state);
+        crate::game::trigger_index::ensure_ready(state);
+        let tap =
+            crate::game::mana_sources::activatable_mana_actions_for_player(runner.state(), P0)
+                .into_iter()
+                .find(|action| {
+                    matches!(action, GameAction::TapLandForMana { selection }
+                    | GameAction::ActivateManaSource { selection }
+                    if selection.source.object_id == chamber)
+                })
+                .expect("the Chamber can tap for mana");
+        let tapped = runner.act(tap).expect("the tap applies");
+        assert!(
+            matches!(
+                tapped.waiting_for,
+                WaitingFor::ChooseManaColor {
+                    context: ManaChoiceContext::ResolvingEffect(_),
+                    ..
+                }
+            ),
+            "reach: the echo pauses for its type, got {:?}",
+            tapped.waiting_for
+        );
+        assert!(runner.state().pending_triggered_mana_resume.is_some());
+
+        let answered = runner
+            .act(GameAction::ChooseManaColor {
+                choice: ManaChoice::SingleColor(ManaType::Green),
+                count: 1,
+            })
+            .expect("the type choice applies");
+        assert_eq!(runner.state().game_end, Some(GameEnd { winner: None }));
+        assert_eq!(answered.waiting_for, WaitingFor::GameOver { winner: None });
+        assert_eq!(
+            runner.state().waiting_for,
+            WaitingFor::GameOver { winner: None }
+        );
+        assert!(runner.state().pending_triggered_mana_resume.is_none());
+        assert_eq!(
+            runner
+                .state()
+                .pending_trigger_construction_priority_recipient,
+            None
+        );
+    }
+
     /// CR 605.1b: a Caged Sun that is not a land does not trigger on its own production, so the
     /// event is emitted and the game goes on.
     #[test]
