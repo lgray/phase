@@ -25,6 +25,22 @@
 //!   `parser` as the target: AST library code names no parser module. The one exemption is
 //!   `types/game_state.rs`'s legacy attack-exert save migration, matched by exact shape.
 //!
+//! * **Clause 4a.** `types/ability.rs`'s `enum Effect`: no variant field's flattened type
+//!   names `ResolvedAbility`, so a resolved (state-layer) ability is never embedded in the
+//!   AST-layer effect definition. Phase 4's AST clause subsumes it.
+//! * **Clause 4b.** Every `struct` field, enum-variant field and `type` alias under
+//!   `crates/engine/src`, test items and inline `mod` blocks included: `EpicEffectId` is a
+//!   field type only of `Effect::EpicCopy`. The decode check that refuses a dangling Epic
+//!   handle recognizes that one serialized shape, so a second carrier type would escape it.
+//!   Item macros (such as `declare_game_state!`, which declares `GameState`'s fields) are
+//!   scanned by token: one whose tokens name `EpicEffectId` is a hit.
+//! * **Clause 4c.** `types/ability.rs`'s `struct ReplacementDefinition`: no field's flattened
+//!   type names `ResolvedAbility`; a shield's runtime continuation lives in
+//!   `GameState::replacement_continuations` and the definition names it by handle.
+//! * **Clause 4d.** As 4b, for `ReplacementContinuationId`: it is a field type only of
+//!   `ReplacementDefinition::runtime_execute`, the one serialized shape the decode check
+//!   recognizes.
+//!
 //! Fail-closed limits: a `#[cfg(test)]` on a statement inside a library function is not
 //! honoured (the statement is scanned as library code), and a `#[path]` inside an inline
 //! module panics instead of being guessed at.
@@ -977,4 +993,278 @@ fn the_walker_flags_parser_crossings_from_the_ast_layer() {
         "cfg(test) module",
         &format!("#[cfg(test)] mod t {{ {fn_body} }}"),
     );
+}
+
+/// One declared field whose type names a marker: `(file, item, variant, field)`. A tuple
+/// field is named by its index, a `type` alias by `type`, and an item macro by `macro` (its
+/// item is the macro path).
+type FieldHit = (String, String, Option<String>, String);
+
+/// Clauses 4b and 4d: every struct field, enum-variant field (named and tuple) and `type` alias in
+/// `src`, inline `mod` blocks included, whose flattened type names `marker`, and every item
+/// macro whose tokens name it. Function bodies are not declarations, so a local of that type
+/// is not a hit.
+fn fields_naming(file: &str, src: &str, marker: &str) -> Vec<FieldHit> {
+    let parsed = syn::parse_file(src).unwrap_or_else(|e| panic!("parse {file}: {e}"));
+    items_fields_naming(file, &parsed.items, marker)
+}
+
+/// [`fields_naming`] over already-parsed items.
+fn items_fields_naming(file: &str, items: &[syn::Item], marker: &str) -> Vec<FieldHit> {
+    fn names(ty: &syn::Type, marker: &str) -> bool {
+        flatten(ty).iter().any(|token| token == marker)
+    }
+    fn field_hits<'a>(
+        fields: impl IntoIterator<Item = &'a syn::Field>,
+        marker: &str,
+    ) -> Vec<String> {
+        fields
+            .into_iter()
+            .enumerate()
+            .filter(|(_, field)| names(&field.ty, marker))
+            .map(|(index, field)| {
+                field
+                    .ident
+                    .as_ref()
+                    .map_or_else(|| index.to_string(), ToString::to_string)
+            })
+            .collect()
+    }
+    fn collect(file: &str, items: &[syn::Item], marker: &str, out: &mut Vec<FieldHit>) {
+        for item in items {
+            match item {
+                syn::Item::Struct(s) => out.extend(
+                    field_hits(&s.fields, marker)
+                        .into_iter()
+                        .map(|field| (file.to_string(), s.ident.to_string(), None, field)),
+                ),
+                syn::Item::Enum(e) => {
+                    for variant in &e.variants {
+                        out.extend(
+                            field_hits(&variant.fields, marker)
+                                .into_iter()
+                                .map(|field| {
+                                    (
+                                        file.to_string(),
+                                        e.ident.to_string(),
+                                        Some(variant.ident.to_string()),
+                                        field,
+                                    )
+                                }),
+                        );
+                    }
+                }
+                syn::Item::Type(t) if names(&t.ty, marker) => out.push((
+                    file.to_string(),
+                    t.ident.to_string(),
+                    None,
+                    "type".to_string(),
+                )),
+                syn::Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content {
+                        collect(file, inner, marker, out);
+                    }
+                }
+                syn::Item::Macro(m)
+                    if flatten(&m.mac.tokens).iter().any(|token| token == marker) =>
+                {
+                    out.push((
+                        file.to_string(),
+                        flatten(&m.mac.path).concat(),
+                        None,
+                        "macro".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(file, items, marker, &mut out);
+    out
+}
+
+/// Clauses 4a and 4c: the members of `src`'s top-level `enum` or `struct` named `item` (its
+/// variant names, or its field names), and every `(variant, field)` of it whose flattened type
+/// names `marker` (a struct field has no variant).
+fn item_fields_naming(
+    src: &str,
+    item: &str,
+    marker: &str,
+) -> (Vec<String>, Vec<(Option<String>, String)>) {
+    let parsed = syn::parse_file(src).expect("the item source parses");
+    let (found, members) = parsed
+        .items
+        .iter()
+        .find_map(|candidate| match candidate {
+            syn::Item::Enum(e) if e.ident == item => Some((
+                candidate,
+                e.variants.iter().map(|v| v.ident.to_string()).collect(),
+            )),
+            syn::Item::Struct(s) if s.ident == item => Some((
+                candidate,
+                s.fields
+                    .iter()
+                    .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("reach-guard: the source declares `{item}`"));
+    let hits = items_fields_naming("<item>", std::slice::from_ref(found), marker)
+        .into_iter()
+        .map(|(_, _, variant, field)| (variant, field))
+        .collect();
+    (members, hits)
+}
+
+#[test]
+fn effect_definition_names_no_resolved_ability() {
+    let path = engine_src().join("types/ability.rs");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let (variants, hits) = item_fields_naming(&text, "Effect", "ResolvedAbility");
+    assert!(
+        variants.len() > 200 && variants.iter().any(|v| v == "EpicCopy"),
+        "reach-guard: `enum Effect` was found whole ({} variants)",
+        variants.len()
+    );
+    assert!(
+        hits.is_empty(),
+        "the `Effect` definition embeds a `ResolvedAbility`; name state-side data by a \
+         state-owned handle instead (as `Effect::EpicCopy` names its `EpicEffect`): {hits:#?}"
+    );
+}
+
+#[test]
+fn replacement_definition_names_no_resolved_ability() {
+    let path = engine_src().join("types/ability.rs");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let (fields, hits) = item_fields_naming(&text, "ReplacementDefinition", "ResolvedAbility");
+    assert!(
+        fields.len() > 30 && fields.iter().any(|f| f == "runtime_execute"),
+        "reach-guard: `struct ReplacementDefinition` was found whole ({} fields)",
+        fields.len()
+    );
+    assert!(
+        hits.is_empty(),
+        "the `ReplacementDefinition` definition embeds a `ResolvedAbility`; install the \
+         runtime continuation in `GameState::replacement_continuations` and name it by \
+         `ReplacementContinuationId` instead: {hits:#?}"
+    );
+}
+
+/// Clauses 4b and 4d: every field under `crates/engine/src` whose type names `marker` is
+/// exactly `expected`, `(file, item, variant, field)`.
+fn assert_handle_held_only_by(
+    marker: &str,
+    expected: &[(&str, &str, Option<&str>, &str)],
+    reason: &str,
+) {
+    let src = engine_src();
+    let mut hits = Vec::new();
+    for path in rs_files(&src) {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+        // A sound prefilter: a declaration can name the type only if its file text does.
+        if !text.contains(marker) {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        hits.extend(fields_naming(&rel, &text, marker));
+    }
+    hits.sort();
+    let expected: Vec<FieldHit> = expected
+        .iter()
+        .map(|(file, item, variant, field)| {
+            (
+                file.to_string(),
+                item.to_string(),
+                variant.map(str::to_string),
+                field.to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(hits, expected, "{reason}");
+}
+
+#[test]
+fn epic_effect_handle_is_a_field_only_of_effect_epic_copy() {
+    assert_handle_held_only_by(
+        "EpicEffectId",
+        &[("types/ability.rs", "Effect", Some("EpicCopy"), "epic")],
+        "`EpicEffectId` must be a field type only of `Effect::EpicCopy`: the decode check \
+         (`collect_serialized_state_handles`) recognizes only that serialized shape, so \
+         a handle held anywhere else would escape the dangling-handle refusal",
+    );
+}
+
+#[test]
+fn replacement_continuation_handle_is_a_field_only_of_replacement_definition() {
+    assert_handle_held_only_by(
+        "ReplacementContinuationId",
+        &[(
+            "types/ability.rs",
+            "ReplacementDefinition",
+            None,
+            "runtime_execute",
+        )],
+        "`ReplacementContinuationId` must be a field type only of \
+         `ReplacementDefinition::runtime_execute`: the decode check \
+         (`collect_serialized_state_handles`) recognizes only the `runtime_execute` key, so a \
+         handle held anywhere else would escape the dangling-handle refusal",
+    );
+}
+
+#[test]
+fn the_field_census_flags_planted_state_handles() {
+    for marker in ["EpicEffectId", "ReplacementContinuationId"] {
+        let one_hit = |label: &str, src: &str| {
+            let src = src.replace("MARKER", marker);
+            let hits = fields_naming("<planted>", &src, marker);
+            assert_eq!(
+                hits.len(),
+                1,
+                "{marker} {label}: expected exactly one hit, got {hits:#?}"
+            );
+        };
+        one_hit("named struct field", "struct S { a: Option<MARKER> }");
+        one_hit("tuple variant field", "enum E { V(Vec<MARKER>) }");
+        one_hit("type alias", "type A = MARKER;");
+        one_hit(
+            "inline module",
+            "mod m { pub struct S { a: crate::types::identifiers::MARKER } }",
+        );
+        one_hit(
+            "item macro",
+            "declare_game_state! { pub x: Option<MARKER>, }",
+        );
+        let local = fields_naming(
+            "<planted>",
+            &"fn f() { let x: MARKER = MARKER(0); }".replace("MARKER", marker),
+            marker,
+        );
+        assert!(
+            local.is_empty(),
+            "{marker}: a local is not a field: {local:#?}"
+        );
+    }
+
+    let (variants, hits) = item_fields_naming(
+        "enum Effect { X { a: Box<ResolvedAbility> }, Y { b: u8 } }",
+        "Effect",
+        "ResolvedAbility",
+    );
+    assert_eq!(variants, vec!["X".to_string(), "Y".to_string()]);
+    assert_eq!(hits, vec![(Some("X".to_string()), "a".to_string())]);
+
+    let (fields, hits) = item_fields_naming(
+        "struct ReplacementDefinition { a: Option<Box<ResolvedAbility>>, b: u8 }",
+        "ReplacementDefinition",
+        "ResolvedAbility",
+    );
+    assert_eq!(fields, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(hits, vec![(None, "a".to_string())]);
 }

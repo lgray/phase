@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::num::NonZeroU32;
@@ -24,11 +25,12 @@ use super::ability::{
     CopyTargetPurpose, CostPaidObjectSnapshot, CounterCostSelection, DelayedTriggerCondition,
     DelayedTriggerKind, DigRestOrder, DigRestSplitScope, Duration, EffectKind,
     EntryAttackDestination, FaceDownProfile, GameRestriction, KeywordAction, KickerVariant,
-    LibraryPosition, ModalChoice, PermanentEntryMode, PileSource, QuantityExpr, ResolvedAbility,
-    ReturnResultId, SearchDestinationSplit, SearchOrderingHint, SearchSelectionConstraint,
-    StackAbilityKind, StaticCondition, TapCreaturesSelectionMode, TargetFilter, TargetRef,
-    ThisWayCause, TriggerBaseSetInstanceRef, TriggerCondition, TriggerDefinition,
-    TriggerDefinitionOccurrenceRef, TriggerDefinitionRef, TriggerEntry,
+    LibraryPosition, ModalChoice, PermanentEntryMode, PileSource, QuantityExpr,
+    ReplacementDefinition, ResolvedAbility, ReturnResultId, SearchDestinationSplit,
+    SearchOrderingHint, SearchSelectionConstraint, StackAbilityKind, StaticCondition,
+    TapCreaturesSelectionMode, TargetFilter, TargetRef, ThisWayCause, TriggerBaseSetInstanceRef,
+    TriggerCondition, TriggerDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+    TriggerEntry,
 };
 use super::actions::{DebugCardCreationKind, GameAction, ResolveAllScope};
 use super::attribution::ObjectAttribution;
@@ -41,9 +43,9 @@ use super::events::{
 };
 use super::format::{FormatConfig, ZoneScope};
 use super::identifiers::{
-    CardId, DelayedInstallIdentity, DelayedTriggerOrigin, ExtraPhaseId, LogicalZoneChangeGroupId,
-    ObjectId, ObjectIdentityBinding, ObjectIncarnationRef, ResolutionCastOfferId, TrackedSetId,
-    TriggerFiring,
+    CardId, DelayedInstallIdentity, DelayedTriggerOrigin, EpicEffectId, ExtraPhaseId,
+    LogicalZoneChangeGroupId, ObjectId, ObjectIdentityBinding, ObjectIncarnationRef,
+    ReplacementContinuationId, ResolutionCastOfferId, TrackedSetId, TriggerFiring,
 };
 use super::interaction::{ActiveInteractionSlot, InteractionSessionId};
 use super::keywords::{Keyword, KeywordKind};
@@ -8116,9 +8118,114 @@ pub struct EpicEffect {
     /// upkeep copy clones. `None`-equivalent handling lives in the resolver:
     /// if the object has left the game the copy is a no-op (last-known-info).
     pub prototype_id: ObjectId,
-    /// Snapshot of the Epic spell's resolved ability, replayed as the body of
-    /// each upkeep copy.
+    /// Snapshot of the Epic spell's resolved ability, the one home of the
+    /// spell each upkeep copy resolves; the copy's `Effect::EpicCopy` trigger
+    /// names it by handle (`EpicEffectId`).
     pub spell: Box<ResolvedAbility>,
+}
+
+/// CR 702.50a + CR 707.10: the first position before `index` whose snapshot
+/// resolves identically to `named` (the snapshot at `index`), or `index`
+/// itself. `epic_effects` only grows and its entries never change, so the
+/// answer for an entry is fixed for the rest of the game.
+fn first_equal_epic_position<'a>(
+    snapshots: impl IntoIterator<Item = &'a ResolvedAbility>,
+    named: &ResolvedAbility,
+    index: usize,
+) -> usize {
+    snapshots
+        .into_iter()
+        .take(index)
+        .position(|earlier| earlier.resolves_identically_to(named))
+        .unwrap_or(index)
+}
+
+impl GameState {
+    /// CR 702.50a: the Epic effect an `Effect::EpicCopy` handle names.
+    pub fn epic_effect(&self, id: EpicEffectId) -> Option<&EpicEffect> {
+        let effect = usize::try_from(id.0)
+            .ok()
+            .and_then(|index| self.epic_effects.get(index));
+        debug_assert!(effect.is_some(), "EpicCopy names no Epic effect: {id:?}");
+        effect
+    }
+
+    /// CR 702.50a: the handle the upkeep synthesis gives the Epic effect at
+    /// `index`: the first position whose snapshot resolves identically to its
+    /// own, so equal snapshots share one handle and their upkeep copies compare,
+    /// order and serialize as one.
+    pub fn canonical_epic_effect_id(&self, index: usize) -> EpicEffectId {
+        let named = &self.epic_effects[index].spell;
+        let first = first_equal_epic_position(
+            self.epic_effects.iter().map(|effect| &*effect.spell),
+            named,
+            index,
+        );
+        EpicEffectId(first as u64)
+    }
+
+    /// CR 615.5 + CR 614.6: the single install authority for a shield's runtime
+    /// continuation. The arena only grows, so the returned position names this
+    /// entry for the rest of the game.
+    pub fn install_replacement_continuation(
+        &mut self,
+        rider: ResolvedAbility,
+    ) -> ReplacementContinuationId {
+        let id = ReplacementContinuationId(self.replacement_continuations.len() as u64);
+        self.replacement_continuations.push_back(rider);
+        id
+    }
+
+    /// CR 615.5 + CR 614.6: the single read authority for a runtime continuation.
+    /// A miss is an invariant violation: the arena is append-only and decode refuses
+    /// a handle that names no entry.
+    pub fn replacement_continuation(
+        &self,
+        id: ReplacementContinuationId,
+    ) -> Option<&ResolvedAbility> {
+        let entry = usize::try_from(id.0)
+            .ok()
+            .and_then(|index| self.replacement_continuations.get(index));
+        debug_assert!(
+            entry.is_some(),
+            "replacement continuation {id:?} names no arena entry"
+        );
+        entry
+    }
+
+    /// CR 615.5 + CR 614.6: the runtime continuation `def` names, if any.
+    pub fn replacement_rider(&self, def: &ReplacementDefinition) -> Option<&ResolvedAbility> {
+        def.runtime_execute
+            .and_then(|id| self.replacement_continuation(id))
+    }
+
+    /// CR 616.1 + CR 615.5: a by-value view of `def` equal to its inline form — the
+    /// definition with its handle cleared, plus the rider it names. Comparisons that
+    /// must not see allocation history compare this view.
+    pub(crate) fn split_replacement_rider(
+        &self,
+        def: &ReplacementDefinition,
+    ) -> (ReplacementDefinition, Option<Box<ResolvedAbility>>) {
+        let rider = self.replacement_rider(def).cloned().map(Box::new);
+        (
+            ReplacementDefinition {
+                runtime_execute: None,
+                ..def.clone()
+            },
+            rider,
+        )
+    }
+
+    /// CR 615.5 + CR 614.6: the `replacement_continuations` positions some
+    /// `ReplacementDefinition::runtime_execute` in this state names. It reads the
+    /// serialized state with the walk the decode check runs, so every holder of a
+    /// definition is covered, a holder added later included.
+    pub(crate) fn referenced_replacement_continuations(
+        &self,
+    ) -> Result<BTreeSet<u64>, serde_json::Error> {
+        serde_json::to_value(self)
+            .map(|value| collect_serialized_state_handles(&value).replacement_continuations)
+    }
 }
 
 fn default_copy_retarget_effect_kind() -> EffectKind {
@@ -11524,6 +11631,10 @@ pub enum ReplacementAutoChoiceIdentity {
         source: ObjectIncarnationRef,
         index: usize,
         definition: Box<crate::types::ability::ReplacementDefinition>,
+        /// CR 615.5: the shield's runtime continuation, held by value so identity is the
+        /// inline definition and never a handle (allocation history).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rider: Option<Box<crate::types::ability::ResolvedAbility>>,
     },
     Mana {
         source: ObjectIncarnationRef,
@@ -14693,6 +14804,77 @@ fn legacy_mana_target_role(card_name: &str) -> Option<(&'static str, &'static st
             Some(("CountSource", "count_source"))
         }
         _ => None,
+    }
+}
+
+/// Every state-arena handle in a serialized state, recognized by serialized shape
+/// wherever it appears, so a carrier added later is covered with no edit.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SerializedStateHandles {
+    /// CR 702.50a: `Effect::EpicCopy`'s `"epic"` (its `"type"` tag and field). The
+    /// legacy inline shape (`"spell"`, no `"epic"`) contributes nothing and is refused
+    /// by the typed decode.
+    epic_effects: BTreeSet<u64>,
+    /// CR 615.5 + CR 614.6: `ReplacementDefinition`'s `"runtime_execute"` when it is a
+    /// number. The legacy inline map contributes nothing and the typed decode refuses it.
+    replacement_continuations: BTreeSet<u64>,
+}
+
+/// Collects every [`SerializedStateHandles`] handle in one walk of `value`.
+fn collect_serialized_state_handles(value: &serde_json::Value) -> SerializedStateHandles {
+    fn walk(value: &serde_json::Value, handles: &mut SerializedStateHandles) {
+        match value {
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    walk(value, handles);
+                }
+            }
+            serde_json::Value::Object(object) => {
+                if object.get("type").and_then(serde_json::Value::as_str) == Some("EpicCopy") {
+                    if let Some(handle) = object.get("epic").and_then(serde_json::Value::as_u64) {
+                        handles.epic_effects.insert(handle);
+                    }
+                }
+                if let Some(handle) = object
+                    .get("runtime_execute")
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    handles.replacement_continuations.insert(handle);
+                }
+                for value in object.values() {
+                    walk(value, handles);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut handles = SerializedStateHandles::default();
+    walk(value, &mut handles);
+    handles
+}
+
+/// CR 702.50a + CR 615.5 + CR 614.6: refuse a decoded state in which a serialized
+/// handle names no entry of its arena. Positions are dense, so checking the largest
+/// handle of each arena checks them all.
+fn reject_dangling_state_handles(
+    state: &GameState,
+    handles: &SerializedStateHandles,
+) -> Result<(), String> {
+    let recorded = state.epic_effects.len();
+    if let Some(&max) = handles.epic_effects.last() {
+        if max >= recorded as u64 {
+            return Err(format!(
+                "serialized EpicCopy names Epic effect {max}, but the state records {recorded}"
+            ));
+        }
+    }
+    let recorded = state.replacement_continuations.len();
+    match handles.replacement_continuations.last() {
+        Some(&max) if max >= recorded as u64 => Err(format!(
+            "serialized runtime_execute names replacement continuation {max}, but the state \
+             records {recorded}"
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -20889,7 +21071,8 @@ pub enum AutoPassMode {
 ///   client-only preference is invisible to it. Inside a rechecking
 ///   (`RecheckNoMeaningfulPriorityAction`) stack-resolution session that loop
 ///   also executes the ladder's standing rungs (Full Control, yields, own
-///   object on top) through `priority::standing_priority_pass`, the same
+///   object on top unless held for a removable mana source) through
+///   `priority::standing_priority_pass`, the same
 ///   authority the recommendation uses; a Committed session consults only its
 ///   Full Control rung.
 ///
@@ -23136,16 +23319,18 @@ declare_game_state! {
     /// inside that synchronous window; it is never serialized.
     #[serde(skip)]
     pub active_spend_only_on_x_count: Option<(ObjectId, u32)>,
-    /// Open while an action-ingress life change settles synchronously (a `try_*`
-    /// entry's whole call, or the replacement-choice handler resuming a `Reject`
-    /// record). Any life settlement inside it that is unrepresentable is recorded
-    /// here and the ingress caller rejects. Transient — never serialized.
+    /// Open while an action-ingress player-resource change (life, player
+    /// counter, energy) settles synchronously (a `try_*` entry's whole call, or
+    /// the replacement-choice handler resuming a `Reject` record). Any such
+    /// settlement inside it that is unrepresentable is recorded here and the
+    /// ingress caller rejects. Transient — never serialized.
     #[serde(skip)]
     pub(crate) ingress_life_window: Option<IngressLifeWindow>,
-    /// A replacement's computed life quantity overflowed while the current life
-    /// event was being replaced (see `ReplacementQuantityOverflow`). Recorded by
-    /// the life appliers, taken by the life settle step of the same event inside
-    /// one synchronous action. Transient — never serialized.
+    /// A replacement's computed life, player-counter or energy quantity
+    /// overflowed while the current event was being replaced (see
+    /// `ReplacementQuantityOverflow`). Recorded by the life and player/energy
+    /// counter appliers, taken by that event's settle step inside one
+    /// synchronous action. Transient — never serialized.
     #[serde(skip)]
     pub(crate) replacement_quantity_overflow: Option<ReplacementQuantityOverflow>,
     /// CR 601.2g + CR 605.3b: the row policy of the automatic mana payment that
@@ -25311,9 +25496,21 @@ declare_game_state! {
     /// normal delayed-trigger path in `check_delayed_triggers`). Persistent —
     /// never cleared, never purged at cleanup — so the effect lasts the whole
     /// game. Mirrors the rest-of-game collections `city_blessing` /
-    /// `paradigm_primed`.
+    /// `paradigm_primed`. Append-only: entries are never removed or reordered,
+    /// because `Effect::EpicCopy` names an entry by its position (`EpicEffectId`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub epic_effects: Vec<EpicEffect>,
+
+    /// CR 615.5 + CR 614.6: runtime continuations of resolution-installed shields,
+    /// named by `ReplacementDefinition::runtime_execute`. Append-only for the whole
+    /// game: an entry outlives every shield that names it, and its position is never
+    /// reused. Not compared by `impl PartialEq for GameState`: no rider is compared
+    /// through `pending_damage_replacements` or object definitions, and the CR 616.1
+    /// auto-choice identities hold their rider by value. Boxed: populated only once a
+    /// rider is installed, and the inline `im::Vector` (64 B) would push `GameState`
+    /// past its stack budget (`game_state_size.rs`).
+    #[serde(default, skip_serializing_if = "im::Vector::is_empty")]
+    pub replacement_continuations: Box<im::Vector<ResolvedAbility>>,
 
     /// Active game-level restrictions (e.g., damage prevention disabled).
     /// Checked by relevant game systems; expired entries cleaned up at phase transitions.
@@ -27246,6 +27443,10 @@ impl GameStateDecode {
         if !value.is_object() {
             return Err("persisted game state must be a JSON object".to_string());
         }
+        // Collected before any part of the value is split off or consumed:
+        // `ResolutionStateWire` removes `resolution_frames` before the state
+        // materializes, and a frame can carry a state-arena handle.
+        let state_handles = collect_serialized_state_handles(&value);
         crate::types::resolution::reject_wire_projection_marker(&value)?;
         match mode {
             // An UNVERSIONED raw payload carries no resolution-wire
@@ -27301,6 +27502,7 @@ impl GameStateDecode {
         validate_owed_spell_final_part_coherence(&state)?;
         validate_return_result_occurrence_coherence(&state)?;
         reject_zero_bound_shortcut_offer(&state)?;
+        reject_dangling_state_handles(&state, &state_handles)?;
         #[cfg(debug_assertions)]
         debug_assert_runtime_resolution_invariants(&state);
         Ok(state)
@@ -27310,6 +27512,8 @@ impl GameStateDecode {
         mut value: serde_json::Value,
         mode: GameStateDecodeMode,
     ) -> Result<GameState, String> {
+        // Like the CR 732.2a bound check below, hosted on both entry points.
+        let state_handles = collect_serialized_state_handles(&value);
         reject_legacy_exploit_event_evidence(&value)?;
         reject_legacy_raw_prompt_authority(&value)?;
         reject_legacy_deferred_spell_delivery(&value)?;
@@ -27354,6 +27558,7 @@ impl GameStateDecode {
         // is about a value no wire should ever carry; it does NOT extend to the
         // projection marker, which the transport wire carries on purpose.
         reject_zero_bound_shortcut_offer(&state)?;
+        reject_dangling_state_handles(&state, &state_handles)?;
         #[cfg(debug_assertions)]
         debug_assert_runtime_resolution_invariants(&state);
         Ok(state)
@@ -28635,7 +28840,8 @@ pub struct PendingReplacement {
     /// boundary methods below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_boundary: Option<Box<ProposedEvent>>,
-    /// Whether an engine-unrepresentable final life edit on resume rejects the
+    /// Whether an engine-unrepresentable final player-resource edit (life,
+    /// player counter, energy) on resume rejects the
     /// public action and restores its entry state (`Reject`), or uses the
     /// compatibility skip when no ingress window owns it (`IgnoreImpossible`).
     /// Older payloads omit this field and retain that compatibility policy.
@@ -28646,9 +28852,10 @@ pub struct PendingReplacement {
     pub unrepresentable_life_change: UnrepresentablePolicy,
 }
 
-/// Who owns a life change whose final result the engine cannot represent
-/// (final amount beyond an `i32` delta, life total overflow, or per-turn
-/// gained/lost counter overflow).
+/// Who owns a player-resource change (life, player counter, energy) whose final
+/// result the engine cannot represent (final amount beyond an `i32` delta, life
+/// total overflow, per-turn gained/lost counter overflow, or counter/energy
+/// total overflow).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnrepresentablePolicy {
     /// Action ingress: return the typed error so the caller rejects the
@@ -28671,31 +28878,32 @@ impl UnrepresentablePolicy {
     }
 }
 
-/// State of the transient action-ingress life window (see
-/// `GameState::ingress_life_window`): the first player whose life settlement
-/// inside the window proved unrepresentable, if any.
+/// State of the transient action-ingress window (see
+/// `GameState::ingress_life_window`): the first player whose player-resource
+/// (life, player counter, energy) settlement inside the window proved
+/// unrepresentable, if any.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IngressLifeWindow {
     pub(crate) failed_player: Option<PlayerId>,
 }
 
-/// A replacement's computed life quantity overflowed the engine's numeric
-/// range, so the modified event cannot be represented. This is an engine
-/// capacity limit, NOT a CR 101.3 impossibility: the applier records the
-/// overflowing replacement's source (diagnostic) and the life settle step takes
-/// the record and routes it through the existing unrepresentable-life-change
-/// authority. A public action boundary rejects and restores; the ordinary
-/// fallback outside one skips the change for compatibility (never clamping,
-/// and never inventing a CR 119.3 amount).
+/// A replacement's computed life, player-counter or energy quantity overflowed
+/// the engine's numeric range, so the modified event cannot be represented. This
+/// is an engine capacity limit, NOT a CR 101.3 impossibility: the applier
+/// records the overflowing replacement's source (diagnostic) and that event's
+/// settle step takes the record and routes it through the existing
+/// unrepresentable-player-resource-change authority. A public action boundary
+/// rejects and restores; the ordinary fallback outside one skips the change for
+/// compatibility (never clamping, and never inventing a CR 119.3 amount).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReplacementQuantityOverflow {
     pub(crate) source: ObjectId,
 }
 
 impl GameState {
-    /// Record that a replacement's computed life quantity overflowed. The first
-    /// writer wins: the loop stops at the first overflow, so a later record can
-    /// only be the same event.
+    /// Record that a replacement's computed life, player-counter or energy
+    /// quantity overflowed. The first writer wins: the loop stops at the first
+    /// overflow, so a later record can only be the same event.
     pub(crate) fn record_replacement_quantity_overflow(&mut self, source: ObjectId) {
         if self.replacement_quantity_overflow.is_none() {
             self.replacement_quantity_overflow = Some(ReplacementQuantityOverflow { source });
@@ -32774,6 +32982,7 @@ impl GameState {
             city_blessing: HashSet::new(),
             enduring_story: Box::default(),
             epic_effects: Vec::new(),
+            replacement_continuations: Box::default(),
             restrictions: Vec::new(),
             pending_damage_replacements: Vec::new(),
             pending_step_end_mana_handlers: Vec::new(),
@@ -34132,16 +34341,47 @@ impl GameState {
         // `Priority` at the post-pipeline loop-sample point and `priority_yields`
         // latches its `YieldTarget::ThisObject { incarnation }` once at
         // registration — both are loop-stable and carry no growing epoch.)
+        //
+        // CR 104.4b + CR 702.50a: an in-flight Epic upkeep copy names its
+        // snapshot by handle. Stack carriers compare their payloads with the
+        // cast coordinates' journal index zeroed, so each handle is renamed to
+        // the first position whose journal-free snapshot resolves identically
+        // to the one it names. Trigger carriers compare their payloads raw,
+        // which the handle interned at synthesis already gives them. Built
+        // from the un-normalized `self`, and only when a stack handle asks.
+        let journal_free_epic_snapshots = OnceCell::new();
+        let rename_stack_epic_handle = |id: EpicEffectId| {
+            let table: &Vec<ResolvedAbility> = journal_free_epic_snapshots.get_or_init(|| {
+                self.epic_effects
+                    .iter()
+                    .map(|effect| {
+                        let mut spell = (*effect.spell).clone();
+                        spell.normalize_cast_occurrence_for_loop_recursive();
+                        spell
+                    })
+                    .collect()
+            });
+            usize::try_from(id.0)
+                .ok()
+                .and_then(|index| {
+                    table
+                        .get(index)
+                        .map(|named| first_equal_epic_position(table, named, index))
+                })
+                .map_or(id, |first| EpicEffectId(first as u64))
+        };
         for entry in clone.stack.iter_mut() {
             if let Some(ability) = entry.ability_mut() {
                 ability.clear_trigger_identity_recursive();
                 ability.normalize_cast_occurrence_for_loop_recursive();
+                ability.rename_epic_effect_handles_recursive(&rename_stack_epic_handle);
             }
         }
         if let Some(entry) = clone.resolving_stack_entry.as_mut() {
             if let Some(ability) = entry.ability_mut() {
                 ability.clear_trigger_identity_recursive();
                 ability.normalize_cast_occurrence_for_loop_recursive();
+                ability.rename_epic_effect_handles_recursive(&rename_stack_epic_handle);
             }
         }
         // `PendingTrigger::timestamp` is a live CR 603.3b ordering key. It is
@@ -34191,9 +34431,12 @@ impl GameState {
                     crate::types::resolved_commands::SettlementNodeOrdinal(0),
                 );
         }
-        for epic in clone.epic_effects.iter_mut() {
-            epic.spell.clear_trigger_identity_recursive();
-        }
+        // CR 104.4b: stored Epic snapshots compare raw. Clearing their trigger
+        // identity would let a twice-normalized state (a ring prior the
+        // resource projection normalizes again) build the stack rename's table
+        // from cleared snapshots and merge handles a once-normalized state
+        // keeps apart; entries are append-only and immutable, so two samples
+        // of one game hold equal entries at every common position anyway.
 
         clone.retain_carrier_referenced_lki();
         // CR 104.4b + CR 608.2h: last-known copiable values no ability can still
@@ -34225,7 +34468,8 @@ impl GameState {
         self.replacement_quantity_overflow = None;
     }
 
-    /// The policy a life event parked right now must be stamped with: `Reject`
+    /// The policy a player-resource event (life, player counter, energy) parked
+    /// right now must be stamped with: `Reject`
     /// while an action-ingress window is open (the event belongs to that public
     /// action), otherwise legacy/outside-boundary compatibility behavior.
     pub(crate) fn ingress_life_policy(&self) -> UnrepresentablePolicy {
@@ -36226,6 +36470,9 @@ fn _gamestate_partition_is_total(s: &GameState) {
         city_blessing: _,
         enduring_story: _,
         epic_effects: _,
+        // EXCLUDED from `impl PartialEq for GameState`: allocation history; base compared no
+        // rider through `pending_damage_replacements` or object definitions.
+        replacement_continuations: _,
         restrictions: _,
         pending_damage_replacements: _,
         pending_step_end_mana_handlers: _,
@@ -38175,6 +38422,7 @@ mod tests {
     use crate::types::phase::PhaseGroup;
     use crate::types::resolved_commands::ResolvedDelayedTriggerCommand;
     use crate::types::triggers::TriggerMode;
+    use EpicIngress::{BareGameState, PersistedRaw, TrustedEnvelope};
 
     fn exact_destination() -> EntryAttackDestination {
         EntryAttackDestination::Exact {
@@ -43255,6 +43503,560 @@ mod tests {
         state
     }
 
+    /// An Epic effect armed for P0 whose prototype is a graveyard card, so a
+    /// handle naming position 0 is in range.
+    fn armed_epic_state() -> GameState {
+        let mut state = GameState::new_two_player(42);
+        let prototype = create_object(
+            &mut state,
+            CardId(9_401),
+            PlayerId(0),
+            "Epic Prototype".to_string(),
+            Zone::Graveyard,
+        );
+        crate::game::effects::epic::arm_epic(
+            &mut state,
+            prototype,
+            PlayerId(0),
+            ResolvedAbility::new(Effect::NoOp, Vec::new(), prototype, PlayerId(0)),
+        );
+        state
+    }
+
+    /// Carrier A: the armed effect's upkeep trigger fired onto the stack.
+    fn epic_copy_on_stack_state() -> GameState {
+        let mut state = armed_epic_state();
+        state.active_player = PlayerId(0);
+        state.phase = Phase::Upkeep;
+        crate::game::triggers::check_delayed_triggers(
+            &mut state,
+            &[GameEvent::PhaseChanged {
+                phase: Phase::Upkeep,
+            }],
+        );
+        state
+    }
+
+    /// Carrier B: a planted `delayed_triggers` entry carrying the handle.
+    fn epic_copy_delayed_trigger_state() -> GameState {
+        let mut state = armed_epic_state();
+        let trigger = crate::game::effects::epic::epic_upkeep_trigger(
+            EpicEffectId(0),
+            &state.epic_effects[0],
+        );
+        state.delayed_triggers.push(trigger);
+        state
+    }
+
+    /// Carrier C: `parked_continuation_fixture(None)` with a second parked
+    /// continuation frame whose chain carries an `EpicCopy` sub-ability.
+    fn epic_copy_continuation_state() -> GameState {
+        let mut state = parked_continuation_fixture(None);
+        let prototype = create_object(
+            &mut state,
+            CardId(9_402),
+            PlayerId(0),
+            "Epic Prototype".to_string(),
+            Zone::Graveyard,
+        );
+        let epic = crate::game::effects::epic::arm_epic(
+            &mut state,
+            prototype,
+            PlayerId(0),
+            ResolvedAbility::new(Effect::NoOp, Vec::new(), prototype, PlayerId(0)),
+        );
+        let mut chain = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            prototype,
+            PlayerId(0),
+        );
+        chain.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::EpicCopy { epic },
+            Vec::new(),
+            prototype,
+            PlayerId(0),
+        )));
+        let pending = PendingContinuation::new(Box::new(chain), &state);
+        state
+            .resolution_stack
+            .push_ability_continuation(AbilityContinuationFrame {
+                pending,
+                choose_zone_trigger_context: None,
+            });
+        state
+    }
+
+    /// Every `Effect::EpicCopy` handle anywhere in `state`'s serialization.
+    fn epic_handles_of(state: &GameState) -> BTreeSet<u64> {
+        collect_serialized_state_handles(&serde_json::to_value(state).unwrap()).epic_effects
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum EpicIngress {
+        BareGameState,
+        PersistedRaw,
+        TrustedEnvelope,
+    }
+
+    impl EpicIngress {
+        fn encode(self, state: &GameState) -> serde_json::Value {
+            match self {
+                EpicIngress::BareGameState => serde_json::to_value(state),
+                EpicIngress::PersistedRaw => {
+                    serde_json::to_value(PersistedGameState::Raw(Box::new(state.clone())))
+                }
+                EpicIngress::TrustedEnvelope => {
+                    serde_json::to_value(PersistedGameState::capture(state.clone()))
+                }
+            }
+            .expect("the fixture serializes")
+        }
+
+        /// The value's game-state object (a trusted envelope nests it under `state`).
+        fn state_value(self, value: &mut serde_json::Value) -> &mut serde_json::Value {
+            match self {
+                EpicIngress::TrustedEnvelope => value
+                    .get_mut("state")
+                    .expect("trusted envelope contains state"),
+                EpicIngress::BareGameState | EpicIngress::PersistedRaw => value,
+            }
+        }
+
+        fn decode(self, value: serde_json::Value) -> Result<GameState, String> {
+            match self {
+                EpicIngress::BareGameState => {
+                    serde_json::from_value::<GameState>(value).map_err(|error| error.to_string())
+                }
+                EpicIngress::PersistedRaw | EpicIngress::TrustedEnvelope => {
+                    serde_json::from_value::<PersistedGameState>(value)
+                        .map_err(|error| error.to_string())?
+                        .into_game_state()
+                        .map_err(|error| format!("{error:?}"))
+                }
+            }
+        }
+    }
+
+    /// V11 (CR 702.50a): the handle collector reads the real serialization of
+    /// `Effect::EpicCopy`, so a renamed field or tag fails here instead of
+    /// silently disabling the decode check.
+    #[test]
+    fn epic_handle_collector_matches_the_serialized_variant() {
+        let effect = serde_json::to_value(Effect::EpicCopy {
+            epic: EpicEffectId(3),
+        })
+        .unwrap();
+        assert_eq!(
+            collect_serialized_state_handles(&effect).epic_effects,
+            BTreeSet::from([3])
+        );
+
+        let state = epic_copy_on_stack_state();
+        assert!(
+            matches!(
+                state
+                    .stack
+                    .back()
+                    .and_then(StackEntry::ability)
+                    .map(|a| &a.effect),
+                Some(Effect::EpicCopy { .. })
+            ),
+            "reach-guard: the upkeep trigger is on the stack"
+        );
+        assert_eq!(
+            collect_serialized_state_handles(&serde_json::to_value(&state).unwrap()).epic_effects,
+            BTreeSet::from([0])
+        );
+
+        let legacy = serde_json::json!({
+            "type": "EpicCopy",
+            "spell": serde_json::to_value(&*state.epic_effects[0].spell).unwrap(),
+        });
+        assert!(collect_serialized_state_handles(&legacy)
+            .epic_effects
+            .is_empty());
+    }
+
+    /// V12 (CR 702.50a): a handle naming no `epic_effects` entry is refused at
+    /// both `GameStateDecode` entry points, whichever carrier holds it, including
+    /// a parked frame under `resolution_frames`, which the persisted path splits
+    /// off before the state materializes. The unmutated values decode and keep
+    /// their entries and handles.
+    #[test]
+    fn dangling_epic_handle_is_refused_at_every_decode_ingress() {
+        use EpicIngress::{BareGameState, PersistedRaw, TrustedEnvelope};
+        let cells: [(&str, GameState, &[EpicIngress]); 3] = [
+            (
+                "stack trigger",
+                epic_copy_on_stack_state(),
+                &[BareGameState, PersistedRaw, TrustedEnvelope],
+            ),
+            (
+                "delayed trigger",
+                epic_copy_delayed_trigger_state(),
+                &[BareGameState, PersistedRaw, TrustedEnvelope],
+            ),
+            (
+                "continuation frame",
+                epic_copy_continuation_state(),
+                &[PersistedRaw, TrustedEnvelope],
+            ),
+        ];
+        for (carrier, state, ingresses) in cells {
+            assert_eq!(
+                epic_handles_of(&state),
+                BTreeSet::from([0]),
+                "reach-guard: the {carrier} carries handle 0"
+            );
+            for &ingress in ingresses {
+                let mut value = ingress.encode(&state);
+                if carrier == "continuation frame" {
+                    assert_eq!(
+                        collect_serialized_state_handles(
+                            &ingress.state_value(&mut value)["resolution_frames"]
+                        )
+                        .epic_effects,
+                        BTreeSet::from([0]),
+                        "reach-guard: {ingress:?} holds the handle under resolution_frames"
+                    );
+                }
+                let decoded = ingress
+                    .decode(value.clone())
+                    .unwrap_or_else(|error| panic!("{carrier} via {ingress:?} decodes: {error}"));
+                assert_eq!(
+                    decoded.epic_effects, state.epic_effects,
+                    "{carrier} {ingress:?}"
+                );
+                assert_eq!(
+                    epic_handles_of(&decoded),
+                    epic_handles_of(&state),
+                    "{carrier} {ingress:?}: the carrier keeps its handle"
+                );
+
+                ingress
+                    .state_value(&mut value)
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("epic_effects")
+                    .expect("reach-guard: the value records epic_effects");
+                let error = ingress
+                    .decode(value)
+                    .expect_err("a dangling EpicCopy handle must not decode");
+                assert!(
+                    error.contains("names Epic effect"),
+                    "{carrier} via {ingress:?}: expected the dangling-handle refusal, got {error}"
+                );
+            }
+        }
+
+        // Control: with no handle-bearing carrier, removing the entries decodes,
+        // so the refusal above is the handle check.
+        let state = armed_epic_state();
+        for ingress in [BareGameState, PersistedRaw, TrustedEnvelope] {
+            let mut value = ingress.encode(&state);
+            ingress
+                .state_value(&mut value)
+                .as_object_mut()
+                .unwrap()
+                .remove("epic_effects")
+                .expect("reach-guard: the value records epic_effects");
+            let decoded = ingress
+                .decode(value)
+                .unwrap_or_else(|error| panic!("control via {ingress:?} decodes: {error}"));
+            assert!(decoded.epic_effects.is_empty());
+        }
+    }
+
+    /// V13 (CR 702.50a): a save holding the pre-handle inline shape
+    /// (`{"type":"EpicCopy","spell":…}`) fails to decode at every ingress; it is
+    /// not migrated.
+    #[test]
+    fn legacy_inline_epic_copy_fails_to_decode() {
+        fn inline_snapshots(value: &mut serde_json::Value, spell: &serde_json::Value) -> usize {
+            match value {
+                serde_json::Value::Array(values) => values
+                    .iter_mut()
+                    .map(|value| inline_snapshots(value, spell))
+                    .sum(),
+                serde_json::Value::Object(object) => {
+                    if object.get("type").and_then(serde_json::Value::as_str) == Some("EpicCopy") {
+                        object.remove("epic");
+                        object.insert("spell".to_string(), spell.clone());
+                        return 1;
+                    }
+                    object
+                        .values_mut()
+                        .map(|value| inline_snapshots(value, spell))
+                        .sum()
+                }
+                _ => 0,
+            }
+        }
+        let state = epic_copy_on_stack_state();
+        let spell = serde_json::to_value(&*state.epic_effects[0].spell).unwrap();
+        for ingress in [
+            EpicIngress::BareGameState,
+            EpicIngress::PersistedRaw,
+            EpicIngress::TrustedEnvelope,
+        ] {
+            let mut value = ingress.encode(&state);
+            assert!(
+                inline_snapshots(&mut value, &spell) > 0,
+                "reach-guard: {ingress:?} carries an EpicCopy to rewrite"
+            );
+            let error = ingress
+                .decode(value)
+                .expect_err("the legacy inline shape must not decode");
+            assert!(
+                error.contains("missing field `epic`"),
+                "{ingress:?}: expected the missing-handle refusal, got {error}"
+            );
+        }
+    }
+
+    /// V14 (CR 702.50a): pins that a projected `EpicCopy` handle (here a planted
+    /// delayed-trigger carrier) still names an entry: a viewer projection keeps
+    /// `epic_effects` whole, so the handle decodes through the transport path. The
+    /// carrier is a delayed trigger: a projection clears `stack_trigger_firings`,
+    /// so a projected triggered stack entry of any kind fails the bare decode's
+    /// firing-coherence check before the handle check runs.
+    #[test]
+    fn projected_epic_copy_decodes_through_the_transport_path() {
+        let state = epic_copy_delayed_trigger_state();
+        let projection = crate::game::visibility::filter_state_for_viewer(&state, PlayerId(1));
+        let value = serde_json::to_value(&projection).unwrap();
+        assert_eq!(
+            collect_serialized_state_handles(&value).epic_effects,
+            BTreeSet::from([0]),
+            "reach-guard: the projection carries the handle"
+        );
+        let decoded = serde_json::from_value::<GameState>(value)
+            .expect("the projection decodes through the bare GameState path");
+        assert_eq!(decoded.epic_effects, state.epic_effects);
+        assert_eq!(
+            decoded
+                .delayed_triggers
+                .iter()
+                .map(|trigger| &trigger.ability.effect)
+                .collect::<Vec<_>>(),
+            vec![&Effect::EpicCopy {
+                epic: EpicEffectId(0)
+            }]
+        );
+    }
+
+    /// CR 615.5: the rider every replacement-continuation fixture installs.
+    fn continuation_rider(amount: i32) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: amount },
+                player: TargetFilter::Controller,
+            },
+            Vec::new(),
+            ObjectId(1),
+            PlayerId(0),
+        )
+    }
+
+    /// The shield carriers a replacement-continuation handle can sit in.
+    #[derive(Clone, Copy, Debug)]
+    enum RiderCarrier {
+        /// An object-hosted shield (CR 611.2a resolution install).
+        Object,
+        /// A floating shield in `pending_damage_replacements` (CR 615.3).
+        Pending,
+    }
+
+    /// One installed rider, named by a shield in `carrier`.
+    fn rider_state(carrier: RiderCarrier) -> GameState {
+        let mut state = GameState::new_two_player(42);
+        let host = create_object(
+            &mut state,
+            CardId(9_501),
+            PlayerId(0),
+            "Shielded Bear".to_string(),
+            Zone::Battlefield,
+        );
+        let id = state.install_replacement_continuation(continuation_rider(5));
+        let shield = ReplacementDefinition::new(ReplacementEvent::DamageDone).runtime_execute(id);
+        match carrier {
+            RiderCarrier::Object => state
+                .objects
+                .get_mut(&host)
+                .unwrap()
+                .replacement_definitions
+                .push(shield),
+            RiderCarrier::Pending => state.pending_damage_replacements.push(shield),
+        }
+        state
+    }
+
+    /// Rewrites every serialized `runtime_execute` handle to `handle`; returns how many.
+    fn rewrite_runtime_execute(value: &mut serde_json::Value, handle: serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Array(values) => values
+                .iter_mut()
+                .map(|value| rewrite_runtime_execute(value, handle.clone()))
+                .sum(),
+            serde_json::Value::Object(object) => {
+                let here = match object.get_mut("runtime_execute") {
+                    Some(slot) if slot.is_u64() => {
+                        *slot = handle.clone();
+                        1
+                    }
+                    _ => 0,
+                };
+                here + object
+                    .iter_mut()
+                    .filter(|(key, _)| *key != "runtime_execute")
+                    .map(|(_, value)| rewrite_runtime_execute(value, handle.clone()))
+                    .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    /// CR 615.5 + CR 614.6: the decode walk recognizes the real serialization of a
+    /// shield's continuation handle, so a renamed key fails here instead of silently
+    /// disabling the dangling-handle refusal.
+    #[test]
+    fn state_handle_collector_matches_the_serialized_runtime_execute() {
+        for carrier in [RiderCarrier::Object, RiderCarrier::Pending] {
+            let state = rider_state(carrier);
+            assert_eq!(
+                collect_serialized_state_handles(&serde_json::to_value(&state).unwrap()),
+                SerializedStateHandles {
+                    epic_effects: BTreeSet::new(),
+                    replacement_continuations: BTreeSet::from([0]),
+                },
+                "{carrier:?}"
+            );
+        }
+    }
+
+    /// CR 615.5 + CR 614.6: a handle naming no `replacement_continuations` entry is
+    /// refused at both `GameStateDecode` entry points, from either carrier. The
+    /// unmutated value decodes, keeping the arena and a handle that resolves.
+    #[test]
+    fn dangling_replacement_continuation_handle_is_refused_at_every_decode_ingress() {
+        for carrier in [RiderCarrier::Object, RiderCarrier::Pending] {
+            let state = rider_state(carrier);
+            for ingress in [BareGameState, PersistedRaw, TrustedEnvelope] {
+                let value = ingress.encode(&state);
+                let decoded = ingress
+                    .decode(value.clone())
+                    .unwrap_or_else(|error| panic!("{carrier:?} via {ingress:?} decodes: {error}"));
+                assert_eq!(
+                    decoded.replacement_continuations, state.replacement_continuations,
+                    "{carrier:?} {ingress:?}"
+                );
+                let rider = |state: &GameState| {
+                    state
+                        .pending_damage_replacements
+                        .iter()
+                        .chain(
+                            state
+                                .objects
+                                .values()
+                                .flat_map(|object| object.replacement_definitions.iter_all()),
+                        )
+                        .find_map(|def| state.replacement_rider(def).cloned())
+                };
+                assert_eq!(
+                    rider(&decoded),
+                    Some(continuation_rider(5)),
+                    "{carrier:?} {ingress:?}: the handle resolves"
+                );
+
+                let mut planted = value;
+                assert_eq!(
+                    rewrite_runtime_execute(&mut planted, serde_json::json!(1)),
+                    1,
+                    "reach-guard: {carrier:?} via {ingress:?} carries one handle"
+                );
+                let error = ingress
+                    .decode(planted)
+                    .expect_err("a dangling replacement continuation handle must not decode");
+                assert!(
+                    error.contains("names replacement continuation 1"),
+                    "{carrier:?} via {ingress:?}: expected the dangling-handle refusal, got {error}"
+                );
+            }
+        }
+    }
+
+    /// CR 615.5: a save holding the pre-handle inline rider (`"runtime_execute": {…}`)
+    /// fails to decode at every ingress; it is not migrated.
+    #[test]
+    fn legacy_inline_runtime_execute_fails_to_decode() {
+        let inline = serde_json::to_value(continuation_rider(5)).unwrap();
+        for carrier in [RiderCarrier::Object, RiderCarrier::Pending] {
+            let state = rider_state(carrier);
+            for ingress in [
+                EpicIngress::BareGameState,
+                EpicIngress::PersistedRaw,
+                EpicIngress::TrustedEnvelope,
+            ] {
+                let mut value = ingress.encode(&state);
+                assert_eq!(
+                    rewrite_runtime_execute(&mut value, inline.clone()),
+                    1,
+                    "reach-guard: {carrier:?} via {ingress:?} carries a handle to rewrite"
+                );
+                let error = ingress
+                    .decode(value)
+                    .expect_err("the legacy inline shape must not decode");
+                assert!(
+                    error.contains("invalid type: map"),
+                    "{carrier:?} via {ingress:?}: expected the type-mismatch refusal, got {error}"
+                );
+            }
+        }
+    }
+
+    /// CR 615.5: a state that never installed a rider serializes no
+    /// `replacement_continuations` key, so its shape is unchanged.
+    #[test]
+    fn rider_free_state_serializes_no_continuation_arena() {
+        let value = serde_json::to_value(GameState::new_two_player(42)).unwrap();
+        assert!(
+            value.get("turn_number").is_some(),
+            "reach-guard: the value is the serialized state"
+        );
+        assert!(value.get("replacement_continuations").is_none());
+    }
+
+    /// CR 615.5: a state holding a rider round-trips: the arena decodes equal and the
+    /// shield's handle resolves to an equal payload.
+    #[test]
+    fn rider_state_round_trips_its_continuation_arena() {
+        let state = rider_state(RiderCarrier::Object);
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            value["replacement_continuations"].as_array().map(Vec::len),
+            Some(1),
+            "reach-guard: the arena serializes its one entry"
+        );
+        let decoded = serde_json::from_value::<GameState>(value).unwrap();
+        assert_eq!(
+            decoded.replacement_continuations,
+            state.replacement_continuations
+        );
+        let host = decoded
+            .objects
+            .values()
+            .find(|object| !object.replacement_definitions.is_empty())
+            .expect("reach-guard: the host keeps its shield");
+        assert_eq!(
+            decoded.replacement_rider(&host.replacement_definitions[0]),
+            Some(&continuation_rider(5))
+        );
+    }
+
     /// V14. Pins the legacy compatibility fingerprint: the four fields whose
     /// absence `declare_raw_resolution_wire` reads as an unmarked client-wire
     /// redaction are removed by `client_state_wire_value` and by nothing else.
@@ -45991,28 +46793,8 @@ mod tests {
     #[test]
     fn normalize_for_loop_canonicalizes_cast_coordinates_but_preserves_identity_shape() {
         fn ability_graph(occurrence: CastOccurrence) -> ResolvedAbility {
-            let mut epic =
+            let mut root =
                 ResolvedAbility::new(Effect::NoOp, Vec::new(), ObjectId(500), occurrence.caster);
-            epic.sub_ability = Some(Box::new(ResolvedAbility::new(
-                Effect::NoOp,
-                Vec::new(),
-                ObjectId(500),
-                occurrence.caster,
-            )));
-            epic.else_ability = Some(Box::new(ResolvedAbility::new(
-                Effect::NoOp,
-                Vec::new(),
-                ObjectId(500),
-                occurrence.caster,
-            )));
-            let mut root = ResolvedAbility::new(
-                Effect::EpicCopy {
-                    spell: Box::new(epic),
-                },
-                Vec::new(),
-                ObjectId(500),
-                occurrence.caster,
-            );
             root.sub_ability = Some(Box::new(ResolvedAbility::new(
                 Effect::NoOp,
                 Vec::new(),
