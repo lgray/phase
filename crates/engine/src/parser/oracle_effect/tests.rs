@@ -50495,6 +50495,41 @@ fn parse_cast_spells_this_turn_as_though_flash() {
     }
 }
 
+/// The duration form folds its type list through the same authority: with each leg repeating
+/// "spells", the artifact leg does not inherit "legendary" (CR 205.4a).
+#[test]
+fn parse_cast_spells_this_turn_as_though_flash_repeated_noun_legs() {
+    let def = parse_effect_chain(
+        "You may cast legendary spells and artifact spells this turn as though they had flash.",
+        AbilityKind::Activated,
+    );
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = *def.effect
+    else {
+        panic!("expected GenericEffect flash grant, got {:?}", def.effect);
+    };
+    let Some(ContinuousModification::GrantStaticAbility { definition }) =
+        static_abilities[0].modifications.first()
+    else {
+        panic!("expected a granted static, got {:?}", static_abilities[0]);
+    };
+    let Some(TargetFilter::Or { filters }) = &definition.affected else {
+        panic!("expected Or affected filter, got {:?}", definition.affected);
+    };
+    let legendary = FilterProp::HasSupertype {
+        value: crate::types::card_type::Supertype::Legendary,
+    };
+    assert!(
+        filters.iter().any(|leg| matches!(
+            leg,
+            TargetFilter::Typed(tf) if tf.type_filters == vec![TypeFilter::Artifact]
+                && !tf.properties.contains(&legendary)
+        )),
+        "the artifact leg must not be legendary-only, got {filters:?}"
+    );
+}
+
 #[test]
 fn parse_next_spell_has_cascade() {
     // Dark Apostle pattern

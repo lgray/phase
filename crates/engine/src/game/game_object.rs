@@ -2894,6 +2894,9 @@ impl GameObject {
             // "whenever a creature token dies").
             is_token: self.is_token,
             combat_status: Default::default(),
+            // CR 509.1g: filled in by the zone-change authority from live combat
+            // (`combat::live_block_pairs_of`); the object alone cannot answer it.
+            block_pairs: Vec::new(),
             co_departed: Vec::new(),
             attached_to: self.attached_to,
             // CR 400.7: filled in by `move_to_zone` from the live object AFTER the
