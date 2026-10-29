@@ -115,6 +115,7 @@ mod blessed_orator_other_anthem;
 mod blitz_em_dash_graveyard_cast;
 mod blizzard_brawl_snow_indestructible;
 mod block_capacities_blocker_prompt;
+mod block_pairing_relations;
 mod block_trigger_cardinality;
 mod blocked_history_primitive;
 mod blocked_status_filter;

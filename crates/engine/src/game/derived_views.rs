@@ -5561,6 +5561,7 @@ mod tests {
                 linked_exile_snapshot: Vec::new(),
                 is_token: false,
                 combat_status: Default::default(),
+                block_pairs: Vec::new(),
                 co_departed: Vec::new(),
                 attached_to: None,
                 entered_incarnation: None,

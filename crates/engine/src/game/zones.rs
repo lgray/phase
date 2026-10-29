@@ -1740,6 +1740,10 @@ pub(crate) fn move_to_zone_with_entry_flags(
             ..ZoneChangeCombatStatus::default()
         }
     } else {
+        // CR 509.1g + CR 506.4 + CR 608.2h: snapshot the object's current block
+        // pairings before exit cleanup removes it from combat. A liminal entry
+        // projection is not in combat, so it records none.
+        zone_change_record.block_pairs = super::combat::live_block_pairs_of(state, object_id);
         capture_combat_status(state, object_id)
     };
     zone_change_record.sync_trigger_source_context();
@@ -2731,6 +2735,9 @@ pub fn move_to_library_at_index(
     // sever (CR 701.3d) clears it.
     zone_change_record.attachments = capture_attachment_snapshot(state, obj);
     zone_change_record.combat_status = capture_combat_status(state, object_id);
+    // CR 509.1g + CR 506.4 + CR 608.2h: as in `move_to_zone_with_entry_flags`,
+    // snapshot the current block pairings before exit cleanup prunes them.
+    zone_change_record.block_pairs = super::combat::live_block_pairs_of(state, object_id);
     // CR 603.10a + CR 607.2a: as in `move_to_zone_with_entry_flags`, snapshot
     // the linked "exiled with" cards before CR 400.7 cleanup prunes them.
     zone_change_record.linked_exile_snapshot =

@@ -7174,18 +7174,30 @@ pub enum AttackerBlockStatus {
 /// Combat relationship required by `FilterProp::CombatRelation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CombatRelation {
-    /// CR 509.1g/509.1h: Candidate is blocking the subject or is blocked by it.
+    /// CR 509.1g/509.1h: Candidate is blocking the subject or is blocked by it —
+    /// the current block pairing, in either orientation. A subject that has left
+    /// the battlefield answers from the pairings it had immediately before it
+    /// left (CR 608.2h last known information), and only for a candidate still
+    /// in that combat role (CR 506.4).
     BlockingOrBlockedBy,
-    /// CR 509.1g + CR 400.7: Candidate is an attacking creature the subject was
-    /// recorded as blocking, within `scope`. Unlike `BlockingOrBlockedBy`, which
-    /// reads live `combat.blocker_to_attacker` and empties when CR 506.4 removes
-    /// either creature from combat, this reads the block-history ledgers
-    /// (`CombatState::creature_blocked_attackers_this_combat` /
-    /// `GameState::creature_blocked_attackers_this_turn`), which CR 506.4 does
-    /// not prune. Each record pins both creatures' exact incarnations, so a
-    /// creature that left and returned matches none of its predecessor's
-    /// records.
-    BlockedBySubject { scope: CombatHistoryScope },
+    /// CR 509.1g + CR 400.7: Candidate is an attacking creature blocked by the
+    /// subject.
+    ///
+    /// * `scope: None` — the current block pairing ("creatures blocked by this
+    ///   creature"): the same pairing authority as `BlockingOrBlockedBy`, in the
+    ///   one orientation where the subject is the blocker.
+    /// * `scope: Some(window)` — the subject was recorded as blocking the
+    ///   candidate within `window` ("creatures it blocked this turn"). This
+    ///   reads the block-history ledgers
+    ///   (`CombatState::creature_blocked_attackers_this_combat` /
+    ///   `GameState::creature_blocked_attackers_this_turn`), which CR 506.4 does
+    ///   not prune. Each record pins both creatures' exact incarnations, so a
+    ///   creature that left and returned matches none of its predecessor's
+    ///   records.
+    BlockedBySubject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<CombatHistoryScope>,
+    },
 }
 
 /// CR 702.122b + CR 702.122c: which side of a crew payment the candidate of a
@@ -48787,6 +48799,16 @@ mod tests {
             FilterProp::CombatRelation {
                 relation: CombatRelation::BlockingOrBlockedBy,
                 subject: CombatRelationSubject::ParentTarget,
+            },
+            FilterProp::CombatRelation {
+                relation: CombatRelation::BlockedBySubject { scope: None },
+                subject: CombatRelationSubject::Source,
+            },
+            FilterProp::CombatRelation {
+                relation: CombatRelation::BlockedBySubject {
+                    scope: Some(CombatHistoryScope::ThisTurn),
+                },
+                subject: CombatRelationSubject::Source,
             },
             FilterProp::BlockStatus {
                 status: AttackerBlockStatus::Unblocked,
