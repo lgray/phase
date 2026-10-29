@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { useCallback, useMemo, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Trans, useTranslation } from "react-i18next";
@@ -76,7 +77,7 @@ export function AttackTargetPicker({
   onConfirm,
   onCancel,
 }: AttackTargetPickerProps) {
-  const { t } = useTranslation("game");
+  const { t } = useTranslation(["game", "common"]);
   const [mode, setMode] = useState<"all" | "distribute">("all");
   const [peeked, setPeeked] = useState(false);
   // Every attacker starts in the Unassigned bucket (null). Keyed by attacker
@@ -817,7 +818,7 @@ function StepperCell({ count, color, canInc, canDec, onDec, onInc, onAll, decTit
 
 interface StackLabelProps {
   stack: AttackerStack;
-  t: ReturnType<typeof useTranslation>["t"];
+  t: TFunction<"game">;
   hoverProps: ReturnType<typeof useInspectHoverProps>;
 }
 

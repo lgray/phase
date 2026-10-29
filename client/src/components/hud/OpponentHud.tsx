@@ -707,7 +707,7 @@ function OpponentTab({
             ? "border-amber-400/40 bg-amber-950/38 ring-1 ring-amber-300/30"
             : "border-white/10 bg-slate-950/70 hover:border-white/20 hover:bg-slate-900/72";
   const waitingReasonText = isWaitingOnThem
-    ? t(reason?.key ?? "status.reason.thinking", reason?.params)
+    ? t(`status.reason.${reason?.id ?? "thinking"}`, reason?.params)
     : null;
 
   const ariaLabel = commitReady

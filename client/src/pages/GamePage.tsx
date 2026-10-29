@@ -11,7 +11,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { AnimatePresence, motion } from "framer-motion";
 import { Trans, useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
+import type { ParseKeys, TFunction } from "i18next";
 
 import type {
   CompanionRevealChoice,
@@ -252,15 +252,12 @@ function directSetupFormatConfig(format: GameFormat | null) {
  * a compile error — the idiomatic TS replacement for a `switch`-with-`never`-default
  * when the union has a single arm today but will grow.
  */
-const HOSTING_FAILURE_MESSAGE_KEYS: Record<
-  Extract<P2PAdapterEvent, { type: "hostingFailed" }>["reason"],
-  string
-> = {
+const HOSTING_FAILURE_MESSAGE_KEYS = {
   room_still_claimed: "gamePage.toasts.roomStillClaimed",
-};
+} as const satisfies Record<Extract<P2PAdapterEvent, { type: "hostingFailed" }>["reason"], ParseKeys<"game">>;
 
 export function GamePage() {
-  const { t } = useTranslation("game");
+  const { t } = useTranslation(["game", "multiplayer"]);
   const navigate = useNavigate();
   const { id: gameId } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
