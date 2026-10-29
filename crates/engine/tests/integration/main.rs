@@ -1851,6 +1851,7 @@ mod last_night_together_restricted_combat;
 mod lathiel_distribute_among_concede_panic;
 mod lead_the_stampede_reveal_visibility_2005;
 mod level_up_keywords;
+mod life_magnitude_display;
 mod living_conundrum_skip_empty_draw;
 mod living_death_ordering_2932;
 mod locus_once_per_turn_cap;

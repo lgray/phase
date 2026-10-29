@@ -39,6 +39,7 @@ import type { DraftMatchResult } from "../services/quickDraftPersistence";
 import { useResolvedGridRows, useResolvedSplitGridRows } from "../hooks/useResolvedGridRows.ts";
 import { useDebugHandReveal } from "../hooks/useDebugHandReveal";
 import { useIsMobile } from "../hooks/useIsMobile.ts";
+import { formatLifeReadout, lifeReadout } from "../hooks/useDisplayedLife.ts";
 import { useLocalizedCardContent } from "../hooks/useLocalizedCardContent.ts";
 import { CardTextReference } from "../components/card/CardTextReference.tsx";
 import { useGameViewportLock } from "../hooks/useGameViewportLock.ts";
@@ -2973,10 +2974,10 @@ function GameOverScreen({
 
   const activePlayerId = useMultiplayerStore((s) => s.activePlayerId) ?? 0;
 
-  const playerLife = players?.[activePlayerId]?.life ?? 0;
-  const opponentLife = players
-    ? (players.find((p) => p.id !== activePlayerId)?.life ?? 0)
-    : 0;
+  const playerLife = formatLifeReadout(lifeReadout(gameState, activePlayerId));
+  const opponentId = players?.find((p) => p.id !== activePlayerId)?.id;
+  const opponentLife =
+    opponentId === undefined ? "0" : formatLifeReadout(lifeReadout(gameState, opponentId));
 
   const isVictory = winner === activePlayerId;
   const isDraw = winner == null;

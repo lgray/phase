@@ -165,8 +165,9 @@ REASON_ICON_PATHS.respondingToStack = REASON_ICON_PATHS.orderingTriggers;
 REASON_ICON_PATHS.priorityMain = REASON_ICON_PATHS.priority;
 REASON_ICON_PATHS.thinking = REASON_ICON_PATHS.priority;
 
-/** Reason glyph for the overlap badge. Looks up the shared path set by reason id; unmapped or absent reasons fall back to the
- *  generic hourglass. Purely decorative — the words live in the tooltip. */
+/** Reason glyph for the overlap badge. Looks up the shared path set by reason
+ *  id; unmapped or absent reasons fall back to the generic hourglass. Purely
+ *  decorative — the words live in the tooltip. */
 function ReasonIcon({ reasonId }: { reasonId?: WaitingReasonId }) {
   const name = reasonId ?? "";
   const glyph = REASON_ICON_PATHS[name] ?? REASON_ICON_PATHS.priority;
