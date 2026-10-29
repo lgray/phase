@@ -34010,12 +34010,13 @@ impl GameState {
     /// `lki_by_incarnation` and `lki_copiable_values_by_incarnation` keys, the
     /// incarnations trigger events name (`ZoneChanged` entries and every
     /// incarnation inside their records, stamped `PermanentTapped` taps), the
-    /// may-trigger origins and stored answers, and the object's live
-    /// incarnation. Ranks count down from the highest member, so the live
-    /// incarnation anchors them: two positions minted at different times
-    /// compare equal, while which incarnation each carrier names, relative to
-    /// the live one, is preserved. The live incarnation is rewritten through the
-    /// same map, so normalizing a normalized state is a fixed point.
+    /// may-trigger origins and stored answers, the turn and combat block-history
+    /// pairs (CR 509.1g), and the object's live incarnation. Ranks count down
+    /// from the highest member, so the live incarnation anchors them: two
+    /// positions minted at different times compare equal, while which
+    /// incarnation each carrier names, relative to the live one, is preserved.
+    /// The live incarnation is rewritten through the same map, so normalizing a
+    /// normalized state is a fixed point.
     fn canonicalize_lki_incarnations_for_loop(&mut self) {
         fn named_incarnation(event: &mut GameEvent) -> Option<(ObjectId, &mut u64)> {
             match event {
@@ -34449,6 +34450,19 @@ impl GameState {
                 grants.entry(object_id).or_default().push(*generation);
             });
         });
+        let block_history = self.creature_blocked_attackers_this_turn.iter().chain(
+            self.combat
+                .iter()
+                .flat_map(|combat| combat.creature_blocked_attackers_this_combat.iter()),
+        );
+        for mut pair in block_history.copied() {
+            block_pair_incarnations(
+                std::slice::from_mut(&mut pair),
+                &mut |object_id, incarnation| {
+                    present.entry(object_id).or_default().push(*incarnation);
+                },
+            );
+        }
         for (object_id, generations) in grants.iter_mut() {
             if let Some(object) = self.objects.get(object_id) {
                 generations.extend(
@@ -34507,6 +34521,28 @@ impl GameState {
                 }
             }
         });
+        let rank_block_history = |pairs: HashSet<BlockHistoryPair>| -> HashSet<BlockHistoryPair> {
+            pairs
+                .into_iter()
+                .map(|mut pair| {
+                    block_pair_incarnations(
+                        std::slice::from_mut(&mut pair),
+                        &mut |object_id, incarnation| {
+                            *incarnation = canonical(object_id, *incarnation);
+                        },
+                    );
+                    pair
+                })
+                .collect()
+        };
+        self.creature_blocked_attackers_this_turn = rank_block_history(std::mem::take(
+            &mut self.creature_blocked_attackers_this_turn,
+        ));
+        if let Some(combat) = self.combat.as_mut() {
+            combat.creature_blocked_attackers_this_combat = rank_block_history(std::mem::take(
+                &mut combat.creature_blocked_attackers_this_combat,
+            ));
+        }
         // CR 613.1f + CR 104.4b: a grant generation, relative to the recipient's current grants, is position too.
         may_trigger_origins(self, &mut |definition_ref| {
             definition_ref.for_each_incarnation_mut(&mut |object_id, incarnation| {
@@ -47136,6 +47172,43 @@ mod tests {
     fn normalize_for_loop_anchors_record_incarnations_on_the_live_object() {
         let (stale, _) = records_naming(3, &[2]);
         let (live, _) = records_naming(2, &[2]);
+        assert!(!normalized_equal(&stale, &live));
+        assert!(
+            normalized_equal(&stale, &stale.clone()),
+            "control: identical twins"
+        );
+    }
+
+    /// An object live at `live` that both block-history sets record blocking itself at `named`.
+    fn block_history_naming(live: u64, named: u64) -> GameState {
+        let (mut state, x) = records_naming(live, &[]);
+        let reference = ObjectIncarnationRef::of(x, named);
+        let pair = BlockHistoryPair {
+            blocker: reference,
+            attacker: reference,
+        };
+        state.creature_blocked_attackers_this_turn.insert(pair);
+        state.combat = Some(CombatState {
+            creature_blocked_attackers_this_combat: HashSet::from([pair]),
+            ..CombatState::default()
+        });
+        state
+    }
+
+    /// CR 509.1g + CR 400.7: block-history pairs are ranked, so a later mint compares equal.
+    #[test]
+    fn normalize_for_loop_ranks_block_history_incarnations() {
+        let early = block_history_naming(3, 2);
+        let late = block_history_naming(8, 7);
+        assert_ne!(early, late, "reach guard: the raw positions differ");
+        assert!(normalized_equal(&early, &late));
+    }
+
+    /// CR 509.1g + CR 400.7: a pair naming a stale incarnation is not the pair naming the live one.
+    #[test]
+    fn normalize_for_loop_anchors_block_history_on_the_live_object() {
+        let stale = block_history_naming(3, 2);
+        let live = block_history_naming(2, 2);
         assert!(!normalized_equal(&stale, &live));
         assert!(
             normalized_equal(&stale, &stale.clone()),
