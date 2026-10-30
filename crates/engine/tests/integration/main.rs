@@ -42,6 +42,7 @@ mod ancient_brass_dragon_roll_d20;
 mod ancient_bronze_dragon_roll_d20;
 mod ancient_cellarspawn_cost_matrix;
 mod ancient_copper_dragon_roll_d20;
+mod and_joined_additional_cost;
 mod angels_grace;
 mod angels_grace_2hg;
 mod announce_locked_x_runtime;
