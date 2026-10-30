@@ -26475,6 +26475,49 @@ fn kicker_leading_instead_destroy_drops_base_mana_value_cap() {
     );
 }
 
+/// CR 608.2c + CR 614.6: a kicked override's own "if its mana value is N or
+/// less" guard survives beneath the selector carrier (Prohibit, Overload).
+#[test]
+fn kicker_instead_body_keeps_its_own_mana_value_guard() {
+    for (text, limit) in [
+        (
+            "Counter target spell if its mana value is 2 or less. If this spell was kicked, counter that spell if its mana value is 4 or less instead.",
+            4,
+        ),
+        (
+            "Destroy target artifact if its mana value is 2 or less. If this spell was kicked, destroy that artifact if its mana value is 5 or less instead.",
+            5,
+        ),
+    ] {
+        let ability = parse_effect_chain(text, AbilityKind::Spell);
+        let carrier = ability.sub_ability.as_ref().expect("kicked override");
+        assert_eq!(
+            carrier.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead),
+            "{text}"
+        );
+        assert!(matches!(&*carrier.effect, Effect::NoOp), "{text}");
+        let body = carrier.sub_ability.as_ref().expect("guarded override body");
+        assert_eq!(
+            body.condition,
+            Some(AbilityCondition::QuantityCheck {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectManaValue {
+                        scope: ObjectScope::Recipient,
+                    },
+                },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: limit },
+            }),
+            "{text}"
+        );
+        assert!(
+            matches!(&*body.effect, Effect::Counter { .. } | Effect::Destroy { .. }),
+            "{text}"
+        );
+    }
+}
+
 #[test]
 fn rite_of_replication_kicker_creates_five_copies() {
     // CR 702.33d + CR 707.10: Rite of Replication's kicked mode creates

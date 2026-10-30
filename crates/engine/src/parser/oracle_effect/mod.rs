@@ -46145,6 +46145,34 @@ fn parse_effect_chain_ir_body(
             }
             None => strip_additional_cost_conditional(normalized_text),
         };
+        // CR 608.2c + CR 614.6: a cost-paid "instead" body with its own guard
+        // cannot share the single condition slot with the selector, so it goes
+        // beneath the override carrier rather than losing the guard.
+        if let Some(selector) = condition
+            .as_ref()
+            .filter(|c| c.is_instead_override() && !builder.is_empty())
+        {
+            let body = parse_child_ability_with_parent_target(
+                &text,
+                kind,
+                instead_parent_target_available,
+            );
+            if body.condition.is_some() {
+                builder
+                    .clause(
+                        normalized_text,
+                        placeholder_parsed_clause("instead_clause_placeholder"),
+                        chunk.boundary_after,
+                        ClauseDisposition::ReplaceMeaning {
+                            kind: ReplaceMeaningKind::Instead(Box::new(
+                                instead_override_definition(body, selector.clone()),
+                            )),
+                        },
+                    )
+                    .push();
+                continue;
+            }
+        }
         // CR 205.3m + CR 607.2d + CR 608.2h: target-declaring leading-if that
         // gates the ability's target on the source's chosen creature type
         // ("If target attacking creature token is the chosen type, <body>",
