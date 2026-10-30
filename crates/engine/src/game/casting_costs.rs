@@ -20,11 +20,12 @@ use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActivationResidual, ActivationTargetSelection, AssistState, CastOccurrence, CastPaymentMode,
     CastingPermissionIndex, CastingVariant, ConvokeMode, CostResume, CounterCostChoice,
-    CounterRemoveChoice, DeferredSpellSacrifice, DistributionUnit, FinalizePrePaymentChecks,
-    GameState, ManaAbilityCostParent, ManaAbilityResume, PausedCounterCostRemoval, PayCostKind,
-    PendingCast, PendingCostMoveCompletion, PendingCostMoveResume, PendingCounterRemoval,
-    PendingDiscardForCostResume, PendingSacrificeCostCompletion, SpellCostSource, StackEntry,
-    StackEntryKind, StackPaidSnapshot, WaitingFor,
+    CounterRemoveChoice, DeferredHandDiscardCost, DeferredSpellSacrifice, DistributionUnit,
+    FinalizePrePaymentChecks, GameState, ManaAbilityCostParent, ManaAbilityResume,
+    PausedCounterCostRemoval, PayCostKind, PendingCast, PendingCostMoveCompletion,
+    PendingCostMoveResume, PendingCounterRemoval, PendingDiscardForCostResume,
+    PendingSacrificeCostCompletion, SpellCostSource, StackEntry, StackEntryKind, StackPaidSnapshot,
+    WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId, ObjectIncarnationRef};
 use crate::types::keywords::{GiftKind, Keyword};
@@ -560,7 +561,7 @@ fn continue_after_declared_mana_split(
     }
 
     if pending.activation_ability_index.is_some()
-        && pending.deferred_random_discard_cost.is_some()
+        && pending.deferred_hand_discard_cost.is_some()
         && matches!(pending.cost, ManaCost::NoCost)
     {
         state.pending_cast = Some(Box::new(pending));
@@ -1913,7 +1914,7 @@ pub(crate) fn finish_pending_cost_or_cast(
         state.pending_cast = Some(Box::new(pending));
         return enter_payment_step(state, player, None, events);
     }
-    if pending.deferred_random_discard_cost.is_some() {
+    if pending.deferred_hand_discard_cost.is_some() {
         state.pending_cast = Some(Box::new(pending));
         return enter_payment_step(state, player, None, events);
     }
@@ -2735,18 +2736,15 @@ fn commit_random_discard_cost_picks(
         .settle_cost_paid_provenance_recursive(state, &moved, CostMoveOutcome::Discard);
 }
 
-fn pay_deferred_random_discard_cost(
+fn pay_deferred_hand_discard_cost(
     state: &mut GameState,
     player: PlayerId,
     pending: &mut PendingCast,
     events: &mut Vec<GameEvent>,
 ) -> Result<Option<WaitingFor>, EngineError> {
-    let Some(deferred) = pending.deferred_random_discard_cost.take() else {
+    let Some(deferred) = pending.deferred_hand_discard_cost.take() else {
         return Ok(None);
     };
-    if deferred.count == 0 {
-        return Ok(None);
-    }
     let eligible = super::casting::find_eligible_discard_targets(
         state,
         player,
@@ -2754,10 +2752,20 @@ fn pay_deferred_random_discard_cost(
         pending.ability.context.granting_object,
         None,
     );
-    if eligible.len() < deferred.count {
-        return Err(EngineError::ActionNotAllowed(
-            "Reserved random discard cost is no longer payable".to_string(),
-        ));
+    let count = match deferred {
+        DeferredHandDiscardCost::Random { count } => {
+            if eligible.len() < count {
+                return Err(EngineError::ActionNotAllowed(
+                    "Reserved random discard cost is no longer payable".to_string(),
+                ));
+            }
+            count
+        }
+        // ponytail: WholeHand draws only the move order, but as an Outcome draw; a deterministic order needs a commit-continuing Chosen resume.
+        DeferredHandDiscardCost::WholeHand => eligible.len(),
+    };
+    if count == 0 {
+        return Ok(None);
     }
     if pending.activation_ability_index.is_some() {
         pending.mark_activation_cost_committed();
@@ -2768,7 +2776,7 @@ fn pay_deferred_random_discard_cost(
         super::effects::discard::RandomDiscardRequest {
             player,
             source_id: pending.object_id,
-            count: deferred.count,
+            count,
             eligible,
             cause: super::effects::discard::DiscardCause::Cost,
             discard_frame: None,
@@ -3866,7 +3874,7 @@ fn pay_spell_mana_before_deferred_sacrifice(
     events: &mut Vec<GameEvent>,
 ) -> Result<Option<u32>, EngineError> {
     if pending.deferred_sacrificed_permanents.is_empty()
-        && pending.deferred_random_discard_cost.is_none()
+        && pending.deferred_hand_discard_cost.is_none()
     {
         return Ok(None);
     }
@@ -4474,7 +4482,7 @@ fn finish_sacrifice_for_cost(
                 CostMoveOutcome::Relocation,
             );
             if let Some(waiting_for) =
-                pay_deferred_random_discard_cost(state, player, &mut pending, events)?
+                pay_deferred_hand_discard_cost(state, player, &mut pending, events)?
             {
                 waiting_for
             } else {
@@ -6551,7 +6559,7 @@ pub(crate) fn finish_activated_ability_at_payment_boundary(
         .expect("payable activation mana leg enters its finalization flow"));
     }
 
-    if pending.deferred_random_discard_cost.is_some() {
+    if pending.deferred_hand_discard_cost.is_some() {
         // CR 601.2g + CR 601.2h: a manually paid activation whose mana is
         // already paid has had its mana-ability opportunity; its random discard
         // is paid now, after every nonrandom cost, without a second window.
@@ -6764,7 +6772,7 @@ fn surface_next_interactive_activation_cost_leg(
     match super::casting::single_random_hand_discard_cost(&initial_cost) {
         Err(message) => return Err(EngineError::ActionNotAllowed(message.to_string())),
         Ok(Some(count)) => {
-            if pending.deferred_random_discard_cost.is_some() {
+            if pending.deferred_hand_discard_cost.is_some() {
                 return Err(EngineError::ActionNotAllowed(
                     "Multiple random discard costs are unsupported".to_string(),
                 ));
@@ -6784,8 +6792,7 @@ fn surface_next_interactive_activation_cost_leg(
                     "Not enough cards in hand to discard at random".to_string(),
                 ));
             }
-            pending.deferred_random_discard_cost =
-                Some(crate::types::game_state::DeferredRandomDiscardCost { count });
+            pending.deferred_hand_discard_cost = Some(DeferredHandDiscardCost::Random { count });
             pending.activation_cost = super::casting::remove_random_hand_discard_cost(
                 pending
                     .activation_cost
@@ -7851,7 +7858,7 @@ pub(super) fn push_activated_ability_to_stack(
         )? {
             return Ok(waiting_for);
         }
-        if pending_interactive.deferred_random_discard_cost.is_some() {
+        if pending_interactive.deferred_hand_discard_cost.is_some() {
             return finish_pending_cost_or_cast(state, player, pending_interactive, events);
         }
 
@@ -10508,6 +10515,28 @@ fn pay_additional_cost(
     pay_additional_cost_with_source(state, player, cost, SpellCostSource::Other, pending, events)
 }
 
+/// The "discard your hand" shape: an unfiltered FromHand discard of the controller's hand size.
+fn is_whole_hand_discard(
+    count: &QuantityExpr,
+    filter: &Option<TargetFilter>,
+    selection: crate::types::ability::CardSelectionMode,
+    self_scope: crate::types::ability::DiscardSelfScope,
+) -> bool {
+    matches!(
+        (count, filter, selection, self_scope),
+        (
+            QuantityExpr::Ref {
+                qty: QuantityRef::HandSize {
+                    player: crate::types::ability::PlayerScope::Controller,
+                },
+            },
+            None,
+            crate::types::ability::CardSelectionMode::Chosen,
+            crate::types::ability::DiscardSelfScope::FromHand,
+        )
+    )
+}
+
 fn pay_additional_cost_with_source(
     state: &mut GameState,
     player: PlayerId,
@@ -10569,7 +10598,7 @@ fn pay_additional_cost_with_source(
     match super::casting::single_random_hand_discard_cost(&cost) {
         Err(message) => return Err(EngineError::ActionNotAllowed(message.to_string())),
         Ok(Some(count)) => {
-            if pending.deferred_random_discard_cost.is_some() {
+            if pending.deferred_hand_discard_cost.is_some() {
                 return Err(EngineError::ActionNotAllowed(
                     "Multiple random discard costs are unsupported".to_string(),
                 ));
@@ -10590,8 +10619,7 @@ fn pay_additional_cost_with_source(
                 ));
             }
             let mut pending = pending;
-            pending.deferred_random_discard_cost =
-                Some(crate::types::game_state::DeferredRandomDiscardCost { count });
+            pending.deferred_hand_discard_cost = Some(DeferredHandDiscardCost::Random { count });
             return match super::casting::remove_random_hand_discard_cost(cost) {
                 Some(residual) => pay_additional_cost_with_source(
                     state,
@@ -10755,7 +10783,25 @@ fn pay_additional_cost_with_source(
                 },
             });
         }
-        AbilityCost::Discard { count, filter, .. } => {
+        AbilityCost::Discard {
+            count,
+            filter,
+            selection,
+            self_scope,
+        } => {
+            // CR 601.2g + CR 601.2h: "discard your hand" reads the hand when the cost is paid, after mana abilities.
+            if pending.activation_ability_index.is_none()
+                && is_whole_hand_discard(&count, &filter, selection, self_scope)
+            {
+                if pending.deferred_hand_discard_cost.is_some() {
+                    return Err(EngineError::ActionNotAllowed(
+                        "Multiple deferred hand discard costs are unsupported".to_string(),
+                    ));
+                }
+                let mut pending = pending;
+                pending.deferred_hand_discard_cost = Some(DeferredHandDiscardCost::WholeHand);
+                return finish_pending_cost_or_cast(state, player, pending, events);
+            }
             // CR 107.3a: the pending ability carries the announced X that a
             // "discard X cards" count reads.
             let count =
@@ -17446,7 +17492,7 @@ fn finalize_mana_payment_with_resume(
             pending.cost = ManaCost::NoCost;
             pending.prepaid_actual_mana_spent = Some(0);
             if let Some(waiting_for) =
-                pay_deferred_random_discard_cost(state, player, &mut pending, events)?
+                pay_deferred_hand_discard_cost(state, player, &mut pending, events)?
             {
                 return Ok(waiting_for);
             }
@@ -17511,12 +17557,12 @@ fn finalize_mana_payment_with_resume(
         }
         validate_deferred_spell_sacrifices_at_commit(state, player, &pending)?;
         if pending.deferred_sacrificed_permanents.is_empty()
-            && pending.deferred_random_discard_cost.is_some()
+            && pending.deferred_hand_discard_cost.is_some()
         {
             pending.cost = ManaCost::NoCost;
             pending.prepaid_actual_mana_spent = prepaid_actual_mana_spent;
             if let Some(waiting_for) =
-                pay_deferred_random_discard_cost(state, player, &mut pending, events)?
+                pay_deferred_hand_discard_cost(state, player, &mut pending, events)?
             {
                 return Ok(waiting_for);
             }
@@ -17871,7 +17917,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
             pending.cost = ManaCost::NoCost;
             pending.prepaid_actual_mana_spent = Some(0);
             if let Some(waiting_for) =
-                pay_deferred_random_discard_cost(state, player, &mut pending, events)?
+                pay_deferred_hand_discard_cost(state, player, &mut pending, events)?
             {
                 return Ok(waiting_for);
             }
@@ -17959,12 +18005,12 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
         }
         validate_deferred_spell_sacrifices_at_commit(state, player, &pending)?;
         if pending.deferred_sacrificed_permanents.is_empty()
-            && pending.deferred_random_discard_cost.is_some()
+            && pending.deferred_hand_discard_cost.is_some()
         {
             pending.cost = ManaCost::NoCost;
             pending.prepaid_actual_mana_spent = prepaid_actual_mana_spent;
             if let Some(waiting_for) =
-                pay_deferred_random_discard_cost(state, player, &mut pending, events)?
+                pay_deferred_hand_discard_cost(state, player, &mut pending, events)?
             {
                 return Ok(waiting_for);
             }
@@ -20043,7 +20089,7 @@ mod tests {
             cost_reduction_election: None,
             activation_cost_snapshot: None,
             activation_cost: None,
-            deferred_random_discard_cost: None,
+            deferred_hand_discard_cost: None,
             activation_ability_index: Some(0),
             pending_loyalty_activation_player: None,
             target_constraints: Vec::new(),
@@ -26555,7 +26601,7 @@ mod tests {
             cost_reduction_election: None,
             activation_cost_snapshot: None,
             activation_cost: None,
-            deferred_random_discard_cost: None,
+            deferred_hand_discard_cost: None,
             activation_ability_index: None,
             pending_loyalty_activation_player: None,
             target_constraints: Vec::new(),
@@ -26702,7 +26748,7 @@ mod tests {
             cost_reduction_election: None,
             activation_cost_snapshot: None,
             activation_cost: None,
-            deferred_random_discard_cost: None,
+            deferred_hand_discard_cost: None,
             activation_ability_index: None,
             pending_loyalty_activation_player: None,
             target_constraints: Vec::new(),
@@ -26818,7 +26864,7 @@ mod tests {
             cost_reduction_election: None,
             activation_cost_snapshot: None,
             activation_cost: None,
-            deferred_random_discard_cost: None,
+            deferred_hand_discard_cost: None,
             activation_ability_index: None,
             pending_loyalty_activation_player: None,
             target_constraints: Vec::new(),
@@ -26923,7 +26969,7 @@ mod tests {
             cost_reduction_election: None,
             activation_cost_snapshot: None,
             activation_cost: None,
-            deferred_random_discard_cost: None,
+            deferred_hand_discard_cost: None,
             activation_ability_index: None,
             pending_loyalty_activation_player: None,
             target_constraints: Vec::new(),
@@ -27061,7 +27107,7 @@ mod tests {
             cost_reduction_election: None,
             activation_cost_snapshot: None,
             activation_cost: None,
-            deferred_random_discard_cost: None,
+            deferred_hand_discard_cost: None,
             activation_ability_index: None,
             pending_loyalty_activation_player: None,
             target_constraints: Vec::new(),
@@ -32414,14 +32460,14 @@ its replicate cost was paid.)\nDraw a card.";
     /// the inverted ordering is already WIRED, in `finalize_mana_payment_with_
     /// resume`. A deferred spell sacrifice settles `Relocation` at the
     /// `!deferred_ids.is_empty()` call, and eleven lines later
-    /// `pay_deferred_random_discard_cost` settles the same ability's random
+    /// `pay_deferred_hand_discard_cost` settles the same ability's random
     /// discard leg as `Discard` — at which point the sacrifice record is still
     /// `Captured` and, without the scoping guard, would be demoted by a rule
     /// (CR 701.9c) that never reached it. `finalize_mana_payment_with_
     /// phyrexian_choices` carries the same pair. Only the absence of a printed
     /// card pairing a deferred sacrifice with a random discard cost keeps that
     /// path cold; the seam itself is live. Grep
-    /// `pay_deferred_random_discard_cost` to find it. Promote this to a
+    /// `pay_deferred_hand_discard_cost` to find it. Promote this to a
     /// cast-pipeline test the day such a card exists.
     #[test]
     fn settlement_skips_records_another_cost_component_already_settled() {

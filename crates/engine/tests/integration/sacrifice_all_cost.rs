@@ -2,10 +2,11 @@
 //! set — every matching permanent the payer controls — paid whole, with no
 //! selection prompt, on both the spell additional-cost and activation channels.
 
+use engine::game::engine::EngineError;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::{CostPaidObjectRecord, ResolvedAbility};
 use engine::types::actions::GameAction;
-use engine::types::game_state::{CastPaymentMode, WaitingFor};
+use engine::types::game_state::{ActionResult, CastPaymentMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType};
 use engine::types::phase::Phase;
@@ -223,39 +224,57 @@ fn soulblast_is_payable_with_no_creatures() {
         .all(|land| runner.state().objects[land].tapped));
 }
 
-#[test]
-fn soulblast_over_a_member_that_cannot_be_sacrificed_is_unpayable() {
+/// Soulblast with P0's 2/2 and six Mountains, plus Angel of Jubilation when
+/// `with_angel`; returns the result of casting it.
+fn cast_soulblast_beside(
+    with_angel: bool,
+) -> (
+    GameRunner,
+    ObjectId,
+    ObjectId,
+    Result<ActionResult, EngineError>,
+) {
     let mut sc = GameScenario::new();
     sc.at_phase(Phase::PreCombatMain);
-    let angel = sc
-        .add_creature_from_oracle(P0, "Angel of Jubilation", 3, 3, ANGEL_OF_JUBILATION)
-        .id();
+    if with_angel {
+        sc.add_creature_from_oracle(P0, "Angel of Jubilation", 3, 3, ANGEL_OF_JUBILATION);
+    }
     let vanilla = sc.add_vanilla(P0, 2, 2);
     for _ in 0..6 {
         sc.add_basic_land(P0, ManaColor::Red);
     }
     let spell = add_soulblast(&mut sc);
     let mut runner = sc.build();
-
     let card_id = runner.state().objects[&spell].card_id;
-    let _ = runner.act(GameAction::CastSpell {
+    let result = runner.act(GameAction::CastSpell {
         object_id: spell,
         card_id,
         targets: vec![],
         payment_mode: CastPaymentMode::Auto,
     });
-    if matches!(
-        runner.state().waiting_for,
-        WaitingFor::TargetSelection { .. }
-    ) {
-        let _ = runner.act(GameAction::ChooseTarget {
-            target: Some(TargetRef::Player(P1)),
-        });
-    }
+    (runner, spell, vanilla, result)
+}
 
-    assert!(runner.state().stack.iter().all(|entry| entry.id != spell));
-    assert_eq!(zone(&runner, angel), Zone::Battlefield);
+#[test]
+fn soulblast_over_a_member_that_cannot_be_sacrificed_is_unpayable() {
+    let (runner, spell, vanilla, result) = cast_soulblast_beside(true);
+
+    let Err(EngineError::ActionNotAllowed(message)) = result else {
+        panic!("the cast must be refused, got {result:?}");
+    };
+    assert_eq!(message, "Cannot pay required additional cost");
+    assert_eq!(zone(&runner, spell), Zone::Hand);
     assert_eq!(zone(&runner, vanilla), Zone::Battlefield);
+}
+
+#[test]
+fn soulblast_without_the_angel_sacrifices_its_casters_creatures() {
+    let (mut runner, spell, vanilla, result) = cast_soulblast_beside(false);
+
+    result.expect("the cast is offered");
+    settle_targets(&mut runner);
+    assert_spell_on_stack(&runner, spell);
+    assert_eq!(zone(&runner, vanilla), Zone::Graveyard);
 }
 
 #[test]

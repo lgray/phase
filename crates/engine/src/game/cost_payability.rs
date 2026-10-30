@@ -1182,9 +1182,12 @@ impl AbilityCostPayability for AbilityCost {
                     .filter(|pending| pending.ability.controller == player)
                     .and_then(|pending| {
                         pending
-                            .deferred_random_discard_cost
+                            .deferred_hand_discard_cost
                             .as_ref()
-                            .map(|cost| (pending.object_id, cost.count))
+                            .and_then(|cost| {
+                                cost.reserved_count()
+                                    .map(|count| (pending.object_id, count))
+                            })
                     });
                 if reserved.is_none() {
                     return self.is_payable_in(
