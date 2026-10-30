@@ -841,7 +841,7 @@
     "targetingLabel": "Obiera za cel {{label}}",
     "titleTargets": "Cele: {{targets}}",
     "titlePaid": "Zapłacono: {{paid}}",
-    "titleContext": "Kontekst: {{context}}",
+    "titleContext": "Kontekst: {{items}}",
     "revealedCards": "Odkryta: {{cards}}",
     "paidXValue": "X={{value}}",
     "paidManaSpent": "{{amount}} many",
@@ -2502,6 +2502,7 @@
     "triggerFallback": "Wyzwalacz {{number}}"
   },
   "costReductionOrder": {
+    "announcedHybrids": "Zapowiedziane płatności hybrydowe",
     "eyebrow": "Kolejność obniżek kosztu",
     "title": "Ustal kolejność swoich obniżek kosztu",
     "subtitle": "Te obniżki ustalają inny koszt całkowity w zależności od kolejności, w jakiej je zastosujesz (CR 601.2f). Wierzch tej listy stosowany jest jako pierwszy.",

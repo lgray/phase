@@ -109,7 +109,7 @@ fn is_eliminated(runner: &GameRunner, p: PlayerId) -> bool {
 
 /// 2-player self-refilling mutual drain controlled by P0 (constant-depth). P1 starts low so
 /// the OFF natural-death stream is short. Returns runner + kick-off sorcery id.
-fn setup_2p_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
+pub(crate) fn setup_2p_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_life(P0, 20);
@@ -150,7 +150,9 @@ fn setup_2p_vito(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 /// 2-player drain (as above) but P1 also holds a castable Lightning Bolt off an untapped
 /// Mountain — a meaningful priority action that makes the loop OPTIONAL (CR 732.5 probe
 /// FALSE). Returns runner + (kickoff, bolt, drain-cleric enabler id).
-fn setup_2p_optional_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
+pub(crate) fn setup_2p_optional_drain(
+    mode: LoopDetectionMode,
+) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_life(P0, 20);
@@ -304,7 +306,7 @@ fn setup_2p_symmetric_plague(mode: LoopDetectionMode) -> (GameRunner, ObjectId) 
 /// Drive PassPriority/OrderTriggers beats, accumulating events, until a state OTHER than
 /// `Priority`/`OrderTriggers` (a `LoopShortcut`/`RespondToShortcut`/`GameOver`/…) or the
 /// cap. Returns accumulated events + the terminal `waiting_for`.
-fn drive_collect(runner: &mut GameRunner, cap: usize) -> (Vec<GameEvent>, WaitingFor) {
+pub(crate) fn drive_collect(runner: &mut GameRunner, cap: usize) -> (Vec<GameEvent>, WaitingFor) {
     let mut all: Vec<GameEvent> = Vec::new();
     for _ in 0..cap {
         match runner.state().waiting_for.clone() {
@@ -1105,6 +1107,7 @@ fn declare_and_respond_authorization() {
 fn loop_shortcut_acting_player_reads_proposer() {
     let cert = LoopCertificate {
         unbounded: vec![],
+        rising: vec![],
         win_kind: Some(WinKind::LethalDamage),
         win_kind_at: None,
         mandatory: false,
@@ -1140,6 +1143,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         predicted_winner: Some(P0),
         count: IterationCount::UntilLethal,
         unbounded: vec![],
+        rising: vec![],
         win_kind: Some(WinKind::LethalDamage),
         win_kind_at: None,
         template: None,
@@ -1652,6 +1656,7 @@ fn setup_3p_both_fall(
 fn synthetic_lethal_cert() -> LoopCertificate {
     LoopCertificate {
         unbounded: vec![],
+        rising: vec![],
         win_kind: Some(WinKind::LethalDamage),
         win_kind_at: None,
         mandatory: false,
@@ -4273,6 +4278,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
     };
     let cert = LoopCertificate {
         unbounded: vec![],
+        rising: vec![],
         win_kind: Some(WinKind::LethalDamage),
         win_kind_at: None,
         mandatory: false,
@@ -4395,6 +4401,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                 predicted_winner: Some(P0),
                 count: IterationCount::Fixed(3),
                 unbounded: vec![],
+                rising: vec![],
                 win_kind: Some(WinKind::LethalDamage),
                 win_kind_at: None,
                 template: Some(DecisionTemplate {
@@ -6062,6 +6069,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                 predicted_winner: None,
                 count: engine::analysis::decision_template::IterationCount::Fixed(3),
                 unbounded: vec![],
+                rising: vec![],
                 win_kind: Some(engine::analysis::loop_check::WinKind::Advantage),
                 win_kind_at: None,
                 template: None,
@@ -12355,6 +12363,7 @@ fn restored_proposal(
         predicted_winner: None,
         count: IterationCount::Fixed(n),
         unbounded: certificate.unbounded.clone(),
+        rising: certificate.rising.clone(),
         win_kind: certificate.win_kind,
         win_kind_at: None,
         template: None,
@@ -16583,6 +16592,7 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
     );
     let LoopCertificate {
         unbounded,
+        rising,
         win_kind,
         win_kind_at,
         mandatory,
@@ -16603,6 +16613,11 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         ],
         "CR 119.3: the Dina/Conqueror drain moves EVERY seat's life each period — the three \
          opponents down and the controller up — so all four axes are unbounded"
+    );
+    assert_eq!(
+        *rising,
+        vec![ResourceAxis::Life(P0)],
+        "CR 119.3: only the controller's life rises; the three opponents are drained"
     );
     assert_eq!(
         *win_kind,
@@ -17579,7 +17594,7 @@ fn ended(match_type: MatchType, winner: Option<PlayerId>) -> MatchReading {
 }
 
 /// Declares `count` on the standing offer and has every opponent accept; the events emitted.
-fn declare_and_accept(runner: &mut GameRunner, count: IterationCount) -> Vec<GameEvent> {
+pub(crate) fn declare_and_accept(runner: &mut GameRunner, count: IterationCount) -> Vec<GameEvent> {
     let mut events = runner
         .act(GameAction::DeclareShortcut {
             count,

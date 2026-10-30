@@ -14,7 +14,7 @@
 //! shape: a self-refilling trigger cascade whose per-cycle charge-put resolves with no
 //! prompt.
 
-use engine::game::derived_views::{CounterMagnitude, CounterRowView, ObjectCounterDisplay};
+use engine::game::derived_views::{CounterRowView, DisplayMagnitude, ObjectCounterDisplay};
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::AbilityKind;
 use engine::types::actions::GameAction;
@@ -437,7 +437,7 @@ fn plus_one_counter_growth_registers_its_infinity_display_target() {
             pills: vec![CounterRowView {
                 counter: CounterType::Plus1Plus1,
                 count: live,
-                magnitude: CounterMagnitude::Unbounded,
+                magnitude: DisplayMagnitude::Unbounded,
             }],
             loyalty: None,
         }),
@@ -554,7 +554,7 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
             pills: vec![CounterRowView {
                 counter: CounterType::Plus1Plus1,
                 count: 0,
-                magnitude: CounterMagnitude::Unbounded,
+                magnitude: DisplayMagnitude::Unbounded,
             }],
             loyalty: None,
         }),
@@ -702,12 +702,12 @@ fn two_seats_collapse_the_shared_pair_and_keep_the_distinct_one() {
                 CounterRowView {
                     counter: CounterType::Plus1Plus1,
                     count: 3,
-                    magnitude: CounterMagnitude::Unbounded,
+                    magnitude: DisplayMagnitude::Unbounded,
                 },
                 CounterRowView {
                     counter: charge.clone(),
                     count: 7,
-                    magnitude: CounterMagnitude::Unbounded,
+                    magnitude: DisplayMagnitude::Unbounded,
                 },
             ],
             loyalty: None,
@@ -774,7 +774,7 @@ fn unbounded_counter_row_dies_with_its_bearer_but_the_store_does_not() {
             pills: vec![CounterRowView {
                 counter: CounterType::Plus1Plus1,
                 count: live,
-                magnitude: CounterMagnitude::Unbounded,
+                magnitude: DisplayMagnitude::Unbounded,
             }],
             loyalty: None,
         }),
