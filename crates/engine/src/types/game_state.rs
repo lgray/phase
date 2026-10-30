@@ -8325,10 +8325,26 @@ impl ActivationResidual {
     }
 }
 
+/// CR 601.2g + CR 601.2h: a spell sacrifice cost whose zone move waits for the
+/// payment commit, after mana abilities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeferredSacrificeSelection {
-    pub object_id: ObjectId,
-    pub filter: TargetFilter,
+#[serde(tag = "type")]
+pub enum DeferredSpellSacrifice {
+    Selected {
+        object_id: ObjectId,
+        filter: TargetFilter,
+    },
+    /// CR 701.21a: "sacrifice all <filter>"; membership is read at the commit.
+    All { filter: TargetFilter },
+}
+
+impl DeferredSpellSacrifice {
+    pub fn selected_object(&self) -> Option<ObjectId> {
+        match self {
+            Self::Selected { object_id, .. } => Some(*object_id),
+            Self::All { .. } => None,
+        }
+    }
 }
 
 /// Stable identity of a permission in a spell object's `casting_permissions`
@@ -8639,7 +8655,7 @@ pub struct PendingCast {
     /// for sacrifice, but whose actual zone move is deferred until the final
     /// payment commit so mana abilities can be activated first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deferred_sacrificed_permanents: Vec<DeferredSacrificeSelection>,
+    pub deferred_sacrificed_permanents: Vec<DeferredSpellSacrifice>,
     /// CR 118.3a: Player-directed pin hints recorded during
     /// `WaitingFor::ManaPayment`. Each id names a pool `ManaUnit` the caster
     /// prefers to spend first; pins are priority hints, not removals — the unit

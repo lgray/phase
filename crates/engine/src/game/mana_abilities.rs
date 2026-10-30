@@ -1736,7 +1736,7 @@ fn deferred_spell_sacrifice_reserved(state: &GameState, object_id: ObjectId) -> 
         pending
             .deferred_sacrificed_permanents
             .iter()
-            .any(|selection| selection.object_id == object_id)
+            .any(|selection| selection.selected_object() == Some(object_id))
     })
 }
 
@@ -5845,7 +5845,11 @@ fn sacrifice_cost_choice(
     source_id: ObjectId,
     ability: &AbilityDefinition,
 ) -> Option<(usize, Vec<ObjectId>)> {
-    let (count, filter) = super::casting::find_non_self_sacrifice_cost(ability.cost.as_ref()?)?;
+    let sacrifice = super::casting::find_non_self_sacrifice_cost(ability.cost.as_ref()?)?;
+    let crate::types::ability::SacrificeRequirement::Count { count } = sacrifice.requirement else {
+        return None;
+    };
+    let filter = &sacrifice.target;
     let granter = ability.granting_object;
     // CR 118.10: a permanent committed to a pending spell sacrifice can't also
     // pay this cost.
@@ -10180,7 +10184,7 @@ mod tests {
     /// reserved source flips to `true` with 0 clones.
     #[test]
     fn self_sacrifice_reserved_for_pending_cast_still_simulates() {
-        use crate::types::game_state::{DeferredSacrificeSelection, PendingCast};
+        use crate::types::game_state::{DeferredSpellSacrifice, PendingCast};
 
         let mut state = GameState::new_two_player(42);
         let reserved =
@@ -10210,7 +10214,7 @@ mod tests {
         // must be pushed explicitly or the test passes vacuously.
         pending
             .deferred_sacrificed_permanents
-            .push(DeferredSacrificeSelection {
+            .push(DeferredSpellSacrifice::Selected {
                 object_id: reserved,
                 filter: TargetFilter::Typed(TypedFilter::permanent()),
             });

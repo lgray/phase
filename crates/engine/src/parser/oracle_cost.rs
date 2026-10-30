@@ -30,8 +30,9 @@ use super::oracle_util::TextPair;
 use crate::types::ability::{
     AbilityCost, AggregateFunction, AttachmentReferent, BeholdCostAction, ChoiceType, Comparator,
     ControllerRef, CostReduction, CounterCostSelection, FilterProp, ObjectProperty, PlayerScope,
-    QuantityExpr, QuantityRef, SacrificeCost, TapCreaturesRequirement, TargetFilter, TypedFilter,
-    EXILE_COST_X, REMOVE_COUNTER_COST_ALL, REMOVE_COUNTER_COST_ANY_NUMBER, REMOVE_COUNTER_COST_X,
+    QuantityExpr, QuantityRef, SacrificeCost, SacrificeRequirement, TapCreaturesRequirement,
+    TargetFilter, TypedFilter, EXILE_COST_X, REMOVE_COUNTER_COST_ALL,
+    REMOVE_COUNTER_COST_ANY_NUMBER, REMOVE_COUNTER_COST_X,
 };
 use crate::types::counter::parse_counter_match;
 use crate::types::zones::Zone;
@@ -868,6 +869,17 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
             if remainder.trim().is_empty() {
                 return AbilityCost::Sacrifice(SacrificeCost::count(filter, u32::MAX));
             }
+        }
+        // CR 701.21a: only permanents the payer controls can be sacrificed, so "all <filter>" names every such permanent; no count is chosen.
+        if nom_on_lower(rest, &rest_lower, |i| value((), tag("all ")).parse(i)).is_some() {
+            return match parse_sacrifice_cost_filter(rest) {
+                Some(filter) => {
+                    AbilityCost::Sacrifice(SacrificeCost::new(filter, SacrificeRequirement::All))
+                }
+                None => AbilityCost::Unimplemented {
+                    description: text.to_string(),
+                },
+            };
         }
         // Try to extract a numeric count: "sacrifice two creatures", "sacrifice three lands"
         // CR 107.3a: `X` in an activation or additional cost is chosen as part
@@ -3903,6 +3915,51 @@ mod tests {
             }
             other => panic!("Expected Sacrifice any number nonland, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn cost_sacrifice_all_is_a_determined_set() {
+        assert_eq!(
+            parse_single_cost("Sacrifice all creatures you control"),
+            AbilityCost::Sacrifice(SacrificeCost::new(
+                TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+                SacrificeRequirement::All,
+            ))
+        );
+        assert_eq!(
+            parse_oracle_cost("{2}{B}{B}, {T}, Sacrifice all lands you control"),
+            AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Mana {
+                        cost: ManaCost::Cost {
+                            generic: 2,
+                            shards: vec![ManaCostShard::Black, ManaCostShard::Black],
+                        },
+                    },
+                    AbilityCost::Tap,
+                    AbilityCost::Sacrifice(SacrificeCost::new(
+                        TargetFilter::Typed(TypedFilter::land().controller(ControllerRef::You)),
+                        SacrificeRequirement::All,
+                    )),
+                ],
+            }
+        );
+        let requirement = |text| match parse_single_cost(text) {
+            AbilityCost::Sacrifice(cost) => cost.requirement,
+            other => panic!("Expected Sacrifice for {text:?}, got {other:?}"),
+        };
+        assert_eq!(
+            requirement("Sacrifice a creature"),
+            SacrificeRequirement::Count { count: 1 }
+        );
+        assert_eq!(
+            requirement("Sacrifice any number of creatures"),
+            SacrificeRequirement::Count { count: u32::MAX }
+        );
+        assert!(matches!(
+            parse_single_cost("Sacrifice all creatures you control that are quantically entangled"),
+            AbilityCost::Unimplemented { .. }
+        ));
     }
 
     #[test]

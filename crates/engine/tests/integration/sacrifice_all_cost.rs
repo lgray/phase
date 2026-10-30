@@ -1,0 +1,369 @@
+//! CR 701.21a + CR 601.2h + CR 118.3: "sacrifice all <filter>" is a determined
+//! set — every matching permanent the payer controls — paid whole, with no
+//! selection prompt, on both the spell additional-cost and activation channels.
+
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::types::ability::{CostPaidObjectRecord, ResolvedAbility};
+use engine::types::actions::GameAction;
+use engine::types::game_state::{CastPaymentMode, WaitingFor};
+use engine::types::identifiers::ObjectId;
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType};
+use engine::types::phase::Phase;
+use engine::types::zones::Zone;
+use engine::types::TargetRef;
+
+const SOULBLAST: &str = "As an additional cost to cast this spell, sacrifice all creatures you control.\nSoulblast deals damage to any target equal to the total power of the sacrificed creatures.";
+const TOMB_OF_URAMI: &str = "{T}: Add {B}. Tomb of Urami deals 1 damage to you if you don't control an Ogre.\n{2}{B}{B}, {T}, Sacrifice all lands you control: Create Urami, a legendary 5/5 black Demon Spirit creature token with flying.";
+const RATHS_EDGE: &str =
+    "{T}: Add {C}.\n{4}, {T}, Sacrifice a land: Rath's Edge deals 1 damage to any target.";
+const BLOOD_PET: &str = "Sacrifice this creature: Add {B}.";
+const ANGEL_OF_JUBILATION: &str = "Flying\nOther nonblack creatures you control get +1/+1.\nPlayers can't pay life or sacrifice creatures to cast spells or activate abilities.";
+
+fn add_soulblast(sc: &mut GameScenario) -> ObjectId {
+    sc.add_spell_to_hand_from_oracle(P0, "Soulblast", true, SOULBLAST)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Red; 3],
+            generic: 3,
+        })
+        .id()
+}
+
+fn cast(runner: &mut GameRunner, spell: ObjectId, mode: CastPaymentMode) {
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: mode,
+        })
+        .unwrap();
+}
+
+/// Answers target prompts with P1 until the cast waits on anything else; a
+/// sacrifice selection prompt is never acceptable for a determined set.
+fn settle_targets(runner: &mut GameRunner) {
+    loop {
+        match &runner.state().waiting_for {
+            WaitingFor::TargetSelection { .. } => {
+                runner
+                    .act(GameAction::ChooseTarget {
+                        target: Some(TargetRef::Player(P1)),
+                    })
+                    .unwrap();
+            }
+            WaitingFor::PayCost { .. } => {
+                panic!(
+                    "determined set must not prompt: {:?}",
+                    runner.state().waiting_for
+                )
+            }
+            _ => return,
+        }
+    }
+}
+
+fn activate_mana(runner: &mut GameRunner, source: ObjectId) {
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: source,
+            ability_index: 0,
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .unwrap();
+}
+
+fn zone(runner: &GameRunner, id: ObjectId) -> Zone {
+    runner.state().objects[&id].zone
+}
+
+fn top_ability(runner: &GameRunner) -> &ResolvedAbility {
+    runner
+        .state()
+        .stack
+        .back()
+        .and_then(|entry| entry.ability())
+        .expect("a stack entry with a resolved ability")
+}
+
+fn paid_ids(ability: &ResolvedAbility) -> Vec<ObjectId> {
+    ability
+        .cost_paid_objects
+        .iter()
+        .map(CostPaidObjectRecord::object_id)
+        .collect()
+}
+
+fn paid_snapshot_tapped(ability: &ResolvedAbility, id: ObjectId) -> bool {
+    ability
+        .cost_paid_objects
+        .iter()
+        .filter(|record| record.object_id() == id)
+        .find_map(CostPaidObjectRecord::snapshot)
+        .expect("captured snapshot")
+        .lki
+        .tapped
+}
+
+fn assert_spell_on_stack(runner: &GameRunner, spell: ObjectId) {
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "{:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(runner.state().stack.back().map(|e| e.id), Some(spell));
+}
+
+#[test]
+fn soulblast_sacrifices_every_creature_its_caster_controls_at_payment() {
+    for mode in [CastPaymentMode::Manual, CastPaymentMode::Auto] {
+        let mut sc = GameScenario::new();
+        sc.at_phase(Phase::PreCombatMain);
+        let dork = sc
+            .add_creature_from_oracle(P0, "Red Dork", 1, 1, "{T}: Add {R}.")
+            .id();
+        let vanilla = sc.add_vanilla(P0, 2, 2);
+        let mountains: Vec<_> = (0..5)
+            .map(|_| sc.add_basic_land(P0, ManaColor::Red))
+            .collect();
+        let theirs = sc.add_vanilla(P1, 3, 3);
+        let spell = add_soulblast(&mut sc);
+        let mut runner = sc.build();
+
+        cast(&mut runner, spell, mode);
+        settle_targets(&mut runner);
+        if mode == CastPaymentMode::Manual {
+            assert!(
+                matches!(runner.state().waiting_for, WaitingFor::ManaPayment { .. }),
+                "{:?}",
+                runner.state().waiting_for
+            );
+            activate_mana(&mut runner, dork);
+            for &land in &mountains {
+                activate_mana(&mut runner, land);
+            }
+            runner.act(GameAction::PassPriority).unwrap();
+        }
+
+        assert_spell_on_stack(&runner, spell);
+        assert_eq!(zone(&runner, vanilla), Zone::Graveyard, "{mode:?}");
+        assert_eq!(zone(&runner, dork), Zone::Graveyard, "{mode:?}");
+        assert_eq!(zone(&runner, theirs), Zone::Battlefield, "{mode:?}");
+
+        // The placeholder spell carries no stack ability, so the spell object's
+        // singular referent (the first member, the dork) is the observable record.
+        let referent = runner.state().objects[&spell]
+            .cast_cost_paid_object
+            .as_ref()
+            .expect("the determined set publishes the spell's cost-paid referent");
+        assert_eq!(referent.object_id, dork, "{mode:?}");
+        if mode == CastPaymentMode::Manual {
+            // CR 601.2g before CR 601.2h: the dork tapped for mana, then was paid.
+            assert!(referent.lki.tapped);
+        }
+    }
+}
+
+#[test]
+fn soulblast_member_sacrificed_for_mana_in_the_window_is_not_reserved() {
+    let mut sc = GameScenario::new();
+    sc.at_phase(Phase::PreCombatMain);
+    let pet = sc
+        .add_creature_from_oracle(P0, "Blood Pet", 1, 1, BLOOD_PET)
+        .id();
+    let vanilla = sc.add_vanilla(P0, 2, 2);
+    let mountains: Vec<_> = (0..5)
+        .map(|_| sc.add_basic_land(P0, ManaColor::Red))
+        .collect();
+    let spell = add_soulblast(&mut sc);
+    let mut runner = sc.build();
+
+    cast(&mut runner, spell, CastPaymentMode::Manual);
+    settle_targets(&mut runner);
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::ManaPayment { .. }),
+        "{:?}",
+        runner.state().waiting_for
+    );
+    activate_mana(&mut runner, pet);
+    assert_eq!(zone(&runner, pet), Zone::Graveyard);
+    assert_eq!(
+        runner.state().players[0]
+            .mana_pool
+            .count_color(ManaType::Black),
+        1
+    );
+    for &land in &mountains {
+        activate_mana(&mut runner, land);
+    }
+    runner.act(GameAction::PassPriority).unwrap();
+
+    assert_spell_on_stack(&runner, spell);
+    assert_eq!(zone(&runner, vanilla), Zone::Graveyard);
+    let p0_graveyard = &runner.state().players[0].graveyard;
+    assert_eq!(p0_graveyard.iter().filter(|&&id| id == pet).count(), 1);
+}
+
+#[test]
+fn soulblast_is_payable_with_no_creatures() {
+    let mut sc = GameScenario::new();
+    sc.at_phase(Phase::PreCombatMain);
+    let mountains: Vec<_> = (0..6)
+        .map(|_| sc.add_basic_land(P0, ManaColor::Red))
+        .collect();
+    let spell = add_soulblast(&mut sc);
+    let mut runner = sc.build();
+
+    cast(&mut runner, spell, CastPaymentMode::Auto);
+    settle_targets(&mut runner);
+
+    assert_spell_on_stack(&runner, spell);
+    assert!(mountains
+        .iter()
+        .all(|land| runner.state().objects[land].tapped));
+}
+
+#[test]
+fn soulblast_over_a_member_that_cannot_be_sacrificed_is_unpayable() {
+    let mut sc = GameScenario::new();
+    sc.at_phase(Phase::PreCombatMain);
+    let angel = sc
+        .add_creature_from_oracle(P0, "Angel of Jubilation", 3, 3, ANGEL_OF_JUBILATION)
+        .id();
+    let vanilla = sc.add_vanilla(P0, 2, 2);
+    for _ in 0..6 {
+        sc.add_basic_land(P0, ManaColor::Red);
+    }
+    let spell = add_soulblast(&mut sc);
+    let mut runner = sc.build();
+
+    let card_id = runner.state().objects[&spell].card_id;
+    let _ = runner.act(GameAction::CastSpell {
+        object_id: spell,
+        card_id,
+        targets: vec![],
+        payment_mode: CastPaymentMode::Auto,
+    });
+    if matches!(
+        runner.state().waiting_for,
+        WaitingFor::TargetSelection { .. }
+    ) {
+        let _ = runner.act(GameAction::ChooseTarget {
+            target: Some(TargetRef::Player(P1)),
+        });
+    }
+
+    assert!(runner.state().stack.iter().all(|entry| entry.id != spell));
+    assert_eq!(zone(&runner, angel), Zone::Battlefield);
+    assert_eq!(zone(&runner, vanilla), Zone::Battlefield);
+}
+
+#[test]
+fn tomb_of_urami_sacrifices_all_its_controllers_lands_itself_included() {
+    let mut sc = GameScenario::new();
+    sc.at_phase(Phase::PreCombatMain);
+    let tomb = sc
+        .add_land_from_oracle(P0, "Tomb of Urami", TOMB_OF_URAMI)
+        .id();
+    let mut lands: Vec<_> = (0..4)
+        .map(|_| sc.add_basic_land(P0, ManaColor::Black))
+        .collect();
+    lands.push(sc.add_basic_land(P0, ManaColor::Green));
+    let theirs = sc.add_basic_land(P1, ManaColor::Black);
+    let mut runner = sc.build();
+
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: tomb,
+            ability_index: 1,
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .unwrap();
+    settle_targets(&mut runner);
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "{:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(zone(&runner, tomb), Zone::Graveyard);
+    assert!(lands
+        .iter()
+        .all(|&land| zone(&runner, land) == Zone::Graveyard));
+    assert_eq!(zone(&runner, theirs), Zone::Battlefield);
+    let ids = paid_ids(top_ability(&runner));
+    assert!(ids.contains(&tomb) && lands.iter().all(|land| ids.contains(land)));
+    assert!(!ids.contains(&theirs));
+    // CR 602.2b: Tomb's own {T} was paid before it was sacrificed.
+    assert!(paid_snapshot_tapped(top_ability(&runner), tomb));
+
+    runner.advance_until_stack_empty();
+    assert!(runner.state().stack.is_empty());
+    assert!(runner
+        .battlefield_names()
+        .iter()
+        .any(|name| name.starts_with("Urami")));
+}
+
+/// Rath's Edge plus four other lands; activates its damage ability at P1 and
+/// selects itself or another land for the "Sacrifice a land" cost.
+fn activate_raths_edge(pick_self: bool) -> (GameRunner, ObjectId, ObjectId) {
+    let mut sc = GameScenario::new();
+    sc.at_phase(Phase::PreCombatMain);
+    let edge = sc.add_land_from_oracle(P0, "Rath's Edge", RATHS_EDGE).id();
+    let other = sc.add_basic_land(P0, ManaColor::Red);
+    for _ in 0..3 {
+        sc.add_basic_land(P0, ManaColor::Red);
+    }
+    let mut runner = sc.build();
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: edge,
+            ability_index: 1,
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .unwrap();
+    loop {
+        match &runner.state().waiting_for {
+            WaitingFor::TargetSelection { .. } => {
+                runner
+                    .act(GameAction::ChooseTarget {
+                        target: Some(TargetRef::Player(P1)),
+                    })
+                    .unwrap();
+            }
+            WaitingFor::PayCost { choices, .. } => {
+                assert!(choices.contains(&edge) && choices.contains(&other));
+                assert!(
+                    !runner.state().objects[&edge].tapped,
+                    "hoist left Rath's Edge untapped"
+                );
+                let pick = if pick_self { edge } else { other };
+                runner
+                    .act(GameAction::SelectCards { cards: vec![pick] })
+                    .unwrap();
+            }
+            _ => break,
+        }
+    }
+    (runner, edge, other)
+}
+
+#[test]
+fn raths_edge_may_sacrifice_itself_after_paying_its_own_tap() {
+    let (mut runner, edge, _) = activate_raths_edge(true);
+    let life_before = runner.state().players[1].life;
+    assert_eq!(zone(&runner, edge), Zone::Graveyard);
+    runner.advance_until_stack_empty();
+    assert_eq!(runner.state().players[1].life, life_before - 1);
+}
+
+#[test]
+fn raths_edge_sacrificing_another_land_stays_tapped_on_the_battlefield() {
+    let (mut runner, edge, other) = activate_raths_edge(false);
+    let life_before = runner.state().players[1].life;
+    assert_eq!(zone(&runner, other), Zone::Graveyard);
+    assert_eq!(zone(&runner, edge), Zone::Battlefield);
+    assert!(runner.state().objects[&edge].tapped);
+    runner.advance_until_stack_empty();
+    assert_eq!(runner.state().players[1].life, life_before - 1);
+}

@@ -20,7 +20,7 @@ use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActivationResidual, ActivationTargetSelection, AssistState, CastOccurrence, CastPaymentMode,
     CastingPermissionIndex, CastingVariant, ConvokeMode, CostResume, CounterCostChoice,
-    CounterRemoveChoice, DeferredSacrificeSelection, DistributionUnit, FinalizePrePaymentChecks,
+    CounterRemoveChoice, DeferredSpellSacrifice, DistributionUnit, FinalizePrePaymentChecks,
     GameState, ManaAbilityCostParent, ManaAbilityResume, PausedCounterCostRemoval, PayCostKind,
     PendingCast, PendingCostMoveCompletion, PendingCostMoveResume, PendingCounterRemoval,
     PendingDiscardForCostResume, PendingSacrificeCostCompletion, SpellCostSource, StackEntry,
@@ -3807,7 +3807,26 @@ fn validate_deferred_spell_sacrifices_at_commit(
     // CR 601.2h: Costs are paid only if they remain payable; a deferred
     // sacrifice selection must still satisfy the original cost at commit.
     for selection in &pending.deferred_sacrificed_permanents {
-        let id = selection.object_id;
+        let (id, filter) = match selection {
+            DeferredSpellSacrifice::Selected { object_id, filter } => (*object_id, filter),
+            DeferredSpellSacrifice::All { filter } => {
+                if super::casting::find_determined_sacrifice_set(
+                    state,
+                    player,
+                    pending.object_id,
+                    pending.ability.context.granting_object,
+                    filter,
+                )
+                .is_none()
+                {
+                    return Err(EngineError::ActionNotAllowed(
+                        "A permanent in the determined sacrifice set can't be sacrificed"
+                            .to_string(),
+                    ));
+                }
+                continue;
+            }
+        };
         let obj = state.objects.get(&id).ok_or_else(|| {
             EngineError::InvalidAction("Deferred sacrifice permanent not found".to_string())
         })?;
@@ -3825,7 +3844,7 @@ fn validate_deferred_spell_sacrifices_at_commit(
         if !super::filter::matches_target_filter(
             state,
             id,
-            &selection.filter,
+            filter,
             // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
             // activated ability).
             &super::filter::FilterContext::from_source_with_controller(pending.object_id, player),
@@ -3894,11 +3913,38 @@ fn pay_deferred_spell_sacrifices_at_commit(
     completion: PendingSacrificeCostCompletion,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    let chosen: Vec<_> = pending
-        .deferred_sacrificed_permanents
-        .drain(..)
-        .map(|selection| selection.object_id)
-        .collect();
+    let mut chosen: Vec<ObjectId> = Vec::new();
+    let mut determined: Vec<ObjectId> = Vec::new();
+    for entry in std::mem::take(&mut pending.deferred_sacrificed_permanents) {
+        match entry {
+            DeferredSpellSacrifice::Selected { object_id, .. } => chosen.push(object_id),
+            DeferredSpellSacrifice::All { filter } => {
+                let set = super::casting::find_determined_sacrifice_set(
+                    state,
+                    player,
+                    pending.object_id,
+                    pending.ability.context.granting_object,
+                    &filter,
+                )
+                .ok_or_else(|| {
+                    EngineError::ActionNotAllowed(
+                        "A permanent in the determined sacrifice set can't be sacrificed"
+                            .to_string(),
+                    )
+                })?;
+                for id in set {
+                    if !determined.contains(&id) {
+                        determined.push(id);
+                    }
+                }
+            }
+        }
+    }
+    determined.retain(|id| !chosen.contains(id));
+    // CR 601.2h + CR 118.3: the determined set is paid whole or not at all.
+    // Selected entries published their records when they were chosen.
+    publish_sacrifice_cost_paid_objects(state, &mut pending, &determined);
+    chosen.extend(determined);
     let cost_event_start = events.len();
     for (index, &id) in chosen.iter().enumerate() {
         match super::sacrifice::sacrifice_permanent(state, id, player, events)
@@ -4552,6 +4598,37 @@ pub(crate) fn resume_sacrifice_for_cost(
     )
 }
 
+fn publish_sacrifice_cost_paid_objects(
+    state: &mut GameState,
+    pending: &mut PendingCast,
+    chosen: &[ObjectId],
+) {
+    let cost_paid_snapshots = capture_cost_paid_snapshots(
+        state,
+        chosen,
+        "sacrifice cost selection must be live before cost move",
+    );
+    if let Some(snapshot) = cost_paid_snapshots.first().cloned() {
+        pending
+            .ability
+            .set_cost_paid_object_recursive(snapshot.clone());
+        // CR 400.7d: also stamp the spell object on the stack directly
+        // (spell casts only), so a permanent spell whose only cost-paid-object
+        // reference lives in an ETB *trigger* (Adipose Offspring's "where X is
+        // the sacrificed creature's toughness") still carries it.
+        stamp_spell_cast_cost_paid_object(state, pending, snapshot);
+    }
+    // CR 601.2h + CR 602.2b (issue #4948): Record EVERY sacrificed object,
+    // not just `chosen.first()` above, so this SAME ability's own target
+    // selection excludes all of them (`exclude_cost_paid_object_that_left_battlefield`)
+    // — a sacrifice cost paid before targets are chosen (this engine's
+    // documented ordering shortcut, see issue #1301) can otherwise let a
+    // just-sacrificed object leak into the ability's own candidate pool.
+    pending
+        .ability
+        .add_cost_paid_objects_recursive(&cost_paid_snapshots);
+}
+
 pub(crate) fn handle_sacrifice_for_cost(
     state: &mut GameState,
     player: PlayerId,
@@ -4601,11 +4678,12 @@ pub(crate) fn handle_sacrifice_for_cost(
         Some(payment) => Some(payment.cost),
         None => pending.activation_cost.as_ref(),
     };
-    let (_, filter) = selected_cost
+    let filter = &selected_cost
         .and_then(super::casting::find_non_self_sacrifice_cost)
         .ok_or_else(|| {
             EngineError::InvalidAction("sacrifice payment has no selected non-self cost".into())
-        })?;
+        })?
+        .target;
     let live = super::casting::find_eligible_sacrifice_targets(
         state,
         player,
@@ -4617,6 +4695,44 @@ pub(crate) fn handle_sacrifice_for_cost(
         return Err(EngineError::ActionNotAllowed(
             "Selected permanent no longer eligible for sacrifice".into(),
         ));
+    }
+
+    // CR 601.2h + CR 602.2b: costs are paid in any order; the source's own {T}/{Q} is paid before the sacrifice that removes it.
+    if pending.activation_ability_index.is_some() && chosen.contains(&pending.object_id) {
+        let mut source_legs = Vec::new();
+        if let Some(cost) = pending.activation_cost.as_ref() {
+            cost.for_each_cost_node(&mut |leaf| {
+                if matches!(leaf, AbilityCost::Tap | AbilityCost::Untap) {
+                    source_legs.push(leaf.clone());
+                }
+            });
+        }
+        for leg in source_legs {
+            match super::casting::pay_ability_cost_for_activation(
+                state,
+                player,
+                pending.object_id,
+                &leg,
+                pending.activation_ability_index,
+                &mut pending.ability.context.cost_removed_counter_amount,
+                events,
+            )? {
+                super::casting::PaymentOutcome::Paid => {}
+                super::casting::PaymentOutcome::Paused { .. } => {
+                    return Err(EngineError::InvalidAction(
+                        "source tap/untap cost paused before its sacrifice".into(),
+                    ));
+                }
+                super::casting::PaymentOutcome::Failed { reason } => {
+                    return Err(EngineError::ActionNotAllowed(reason.reason));
+                }
+            }
+            pending.activation_cost = pending
+                .activation_cost
+                .take()
+                .and_then(|cost| remove_first_activation_cost_matching(cost, |c| *c == leg));
+            pending.mark_activation_cost_committed();
+        }
     }
 
     // CR 702.48b-c / CR 702.119a-c: If this sacrifice is paying an Offering or
@@ -4639,30 +4755,7 @@ pub(crate) fn handle_sacrifice_for_cost(
     // CR 117.1 + CR 400.7j + CR 608.2k: Capture every sacrificed object's public
     // characteristics BEFORE it leaves the battlefield, stamping them onto the
     // resolving ability for later cost-paid-object references.
-    let cost_paid_snapshots = capture_cost_paid_snapshots(
-        state,
-        chosen,
-        "sacrifice cost selection must be live before cost move",
-    );
-    if let Some(snapshot) = cost_paid_snapshots.first().cloned() {
-        pending
-            .ability
-            .set_cost_paid_object_recursive(snapshot.clone());
-        // CR 400.7d: also stamp the spell object on the stack directly
-        // (spell casts only), so a permanent spell whose only cost-paid-object
-        // reference lives in an ETB *trigger* (Adipose Offspring's "where X is
-        // the sacrificed creature's toughness") still carries it.
-        stamp_spell_cast_cost_paid_object(state, &pending, snapshot);
-    }
-    // CR 601.2h + CR 602.2b (issue #4948): Record EVERY sacrificed object,
-    // not just `chosen.first()` above, so this SAME ability's own target
-    // selection excludes all of them (`exclude_cost_paid_object_that_left_battlefield`)
-    // — a sacrifice cost paid before targets are chosen (this engine's
-    // documented ordering shortcut, see issue #1301) can otherwise let a
-    // just-sacrificed object leak into the ability's own candidate pool.
-    pending
-        .ability
-        .add_cost_paid_objects_recursive(&cost_paid_snapshots);
+    publish_sacrifice_cost_paid_objects(state, &mut pending, chosen);
 
     // CR 702.48c / CR 702.119a: Offering and Emerge use different reduction
     // rules, but both must read the sacrificed permanent before it leaves.
@@ -4725,7 +4818,7 @@ pub(crate) fn handle_sacrifice_for_cost(
     }
 
     let deferred_sacrifice_filter = paid_cost.and_then(|payment| {
-        super::casting::find_non_self_sacrifice_cost(payment.cost).map(|(_, filter)| filter.clone())
+        super::casting::find_non_self_sacrifice_cost(payment.cost).map(|c| c.target.clone())
     });
     if let Some(filter) = deferred_sacrifice_filter {
         if can_defer_spell_sacrifice_until_mana_payment(&pending, chosen) {
@@ -4735,7 +4828,7 @@ pub(crate) fn handle_sacrifice_for_cost(
                     chosen
                         .iter()
                         .copied()
-                        .map(|object_id| DeferredSacrificeSelection {
+                        .map(|object_id| DeferredSpellSacrifice::Selected {
                             object_id,
                             filter: filter.clone(),
                         }),
@@ -6751,13 +6844,51 @@ fn surface_next_interactive_activation_cost_leg(
         .map(Some);
     }
 
-    if let Some((count, sacrifice_filter)) = super::casting::find_non_self_sacrifice_cost(cost) {
+    if let Some(sacrifice) = super::casting::find_non_self_sacrifice_cost(cost) {
+        let count = match &sacrifice.requirement {
+            SacrificeRequirement::Count { count } => *count,
+            SacrificeRequirement::All => {
+                let set = super::casting::find_determined_sacrifice_set(
+                    state,
+                    player,
+                    source_id,
+                    granting_object,
+                    &sacrifice.target,
+                )
+                .ok_or_else(|| {
+                    EngineError::ActionNotAllowed(
+                        "A permanent in the determined sacrifice set can't be sacrificed".into(),
+                    )
+                })?;
+                let n = set.len();
+                // CR 601.2h + CR 118.3: the determined set is paid whole or not at all.
+                return handle_sacrifice_for_cost(
+                    state,
+                    player,
+                    pending.clone(),
+                    None,
+                    CostSelection {
+                        min_count: n,
+                        count: n,
+                        legal_permanents: &set,
+                        chosen: &set,
+                    },
+                    events,
+                )
+                .map(Some);
+            }
+            SacrificeRequirement::Aggregate { .. } => {
+                return Err(EngineError::InvalidAction(
+                    "aggregate sacrifice cost reached the non-self sacrifice dispatch".into(),
+                ));
+            }
+        };
         let eligible = super::casting::find_eligible_sacrifice_targets(
             state,
             player,
             source_id,
             granting_object,
-            sacrifice_filter,
+            &sacrifice.target,
         );
         let (min_count, max_count) = super::casting::sacrifice_cost_bounds(count, eligible.len());
         if eligible.len() < min_count {
@@ -8748,7 +8879,7 @@ fn pending_cast_keeping(
     ability: ResolvedAbility,
     cost: ManaCost,
     lock: &CostLockInput,
-    kept_sacrifices: &[DeferredSacrificeSelection],
+    kept_sacrifices: &[DeferredSpellSacrifice],
 ) -> PendingCast {
     let mut pending = PendingCast::new(object_id, card_id, ability, cost);
     lock.apply_to(&mut pending);
@@ -8824,7 +8955,7 @@ fn check_additional_cost_or_pay_with_kept_cost(
     origin_zone: Zone,
     payment_mode: CastPaymentMode,
     mut lock: CostLockInput,
-    kept_sacrifices: Vec<DeferredSacrificeSelection>,
+    kept_sacrifices: Vec<DeferredSpellSacrifice>,
     keyword_queue_decided: bool,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
@@ -10685,10 +10816,42 @@ fn pay_additional_cost_with_source(
         }
         AbilityCost::Sacrifice(cost) => {
             let target = &cost.target;
-            let SacrificeRequirement::Count { count } = cost.requirement else {
-                return Err(EngineError::ActionNotAllowed(
-                    "Unsupported sacrifice cost requirement for spell payment".into(),
-                ));
+            let count = match &cost.requirement {
+                SacrificeRequirement::Count { count } => *count,
+                SacrificeRequirement::Aggregate { .. } => {
+                    return Err(EngineError::ActionNotAllowed(
+                        "Unsupported sacrifice cost requirement for spell payment".into(),
+                    ));
+                }
+                SacrificeRequirement::All => {
+                    if pending.activation_ability_index.is_some() {
+                        return Err(EngineError::ActionNotAllowed(
+                            "Unsupported sacrifice cost requirement for spell payment".into(),
+                        ));
+                    }
+                    if super::casting::find_determined_sacrifice_set(
+                        state,
+                        player,
+                        pending.object_id,
+                        pending.ability.context.granting_object,
+                        target,
+                    )
+                    .is_none()
+                    {
+                        return Err(EngineError::SpellCastReversed {
+                            player,
+                            pending: Box::new(pending),
+                        });
+                    }
+                    // CR 601.2g + CR 601.2h: membership is read when the cost is paid, after mana abilities; partial payment is not allowed (CR 118.3).
+                    let mut pending = pending;
+                    pending
+                        .deferred_sacrificed_permanents
+                        .push(DeferredSpellSacrifice::All {
+                            filter: target.clone(),
+                        });
+                    return finish_pending_cost_or_cast(state, player, pending, events);
+                }
             };
             if matches!(target, crate::types::ability::TargetFilter::SelfRef) {
                 if super::static_abilities::player_cant_sacrifice_as_cost(
@@ -10743,7 +10906,7 @@ fn pay_additional_cost_with_source(
                     !pending
                         .deferred_sacrificed_permanents
                         .iter()
-                        .any(|kept| kept.object_id == *id)
+                        .any(|kept| kept.selected_object() == Some(*id))
                 });
                 let (min_count, max_count) = super::casting::sacrifice_cost_bounds_with_chosen_x(
                     count,
@@ -13089,7 +13252,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
         let ids: Vec<_> = pending
             .deferred_sacrificed_permanents
             .iter()
-            .map(|selection| selection.object_id)
+            .filter_map(DeferredSpellSacrifice::selected_object)
             .collect();
         pending
             .ability
@@ -22977,8 +23140,9 @@ mod tests {
                     });
                     let chosen = if eligible { current } else { later };
                     let mut runner = scenario.build();
-                    let (_, filter) =
-                        super::super::casting::find_non_self_sacrifice_cost(&selected).unwrap();
+                    let filter = &super::super::casting::find_non_self_sacrifice_cost(&selected)
+                        .unwrap()
+                        .target;
                     assert_eq!(
                         super::super::casting::find_eligible_sacrifice_targets(
                             runner.state(),

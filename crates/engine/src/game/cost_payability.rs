@@ -1406,6 +1406,17 @@ impl AbilityCostLegPayability for AbilityCost {
                     };
                     comparator.evaluate(total_positive_power, *value)
                 }
+                // CR 601.2h + CR 118.3: payable when every member can be sacrificed, including the empty set.
+                crate::types::ability::SacrificeRequirement::All => {
+                    super::casting::find_determined_sacrifice_set(
+                        state,
+                        player,
+                        source,
+                        granting_object,
+                        &cost.target,
+                    )
+                    .is_some()
+                }
             },
             // CR 119.4 + CR 119.8 + CR 903.4: Life cost is payable iff life >= amount
             // and "can't lose life" locks do not apply. `amount` is a QuantityExpr
