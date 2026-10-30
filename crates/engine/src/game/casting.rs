@@ -32748,10 +32748,13 @@ pub enum ActivationCostGuardSite {
     /// `finish_counter_cost_payment`, the counter-cost tail shared by the
     /// selected handlers and the deferred-removal resume.
     CounterCostTail = 8,
+    /// `handle_sacrifice_for_cost`'s source tap/untap leg, paid before a
+    /// sacrifice that includes the source.
+    SacrificeSource = 9,
 }
 
 impl ActivationCostGuardSite {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 10;
 }
 
 /// CR 601.2f + CR 601.2h: an activation's cost is paid only after its total is

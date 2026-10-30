@@ -4699,13 +4699,13 @@ pub(crate) fn handle_sacrifice_for_cost(
 
     // CR 601.2h + CR 602.2b: costs are paid in any order; the source's own {T}/{Q} is paid before the sacrifice that removes it.
     if pending.activation_ability_index.is_some() && chosen.contains(&pending.object_id) {
+        super::casting::require_locked_activation_cost(
+            pending.activation_cost_snapshot.as_deref(),
+            super::casting::ActivationCostGuardSite::SacrificeSource,
+        )?;
         let mut source_legs = Vec::new();
         if let Some(cost) = pending.activation_cost.as_ref() {
-            cost.for_each_cost_node(&mut |leaf| {
-                if matches!(leaf, AbilityCost::Tap | AbilityCost::Untap) {
-                    source_legs.push(leaf.clone());
-                }
-            });
+            collect_source_tap_legs(cost, &mut source_legs);
         }
         for leg in source_legs {
             match super::casting::pay_ability_cost_for_activation(
@@ -7520,6 +7520,20 @@ pub(crate) fn resume_activation_mill_cost_payment(
         return Ok(waiting_for);
     }
     finish_pending_cost_or_cast(state, player, *pending, events)
+}
+
+/// The source's own {T}/{Q} legs, walking only what
+/// `remove_first_activation_cost_matching` can remove so no paid leg stays owed.
+fn collect_source_tap_legs(cost: &AbilityCost, legs: &mut Vec<AbilityCost>) {
+    match cost {
+        AbilityCost::Tap | AbilityCost::Untap => legs.push(cost.clone()),
+        AbilityCost::Composite { costs } => {
+            for cost in costs {
+                collect_source_tap_legs(cost, legs);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn remove_first_activation_cost_matching(
