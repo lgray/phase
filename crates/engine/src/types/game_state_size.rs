@@ -81,6 +81,13 @@
 //! ChooseOneOfBranch more than 200 B apart, so `WaitingFor` carries an intentional
 //! `#[allow(clippy::large_enum_variant)]`; the GameState ceiling above is the bound.
 //!
+//! `GameState` re-measured on x86_64-unknown-linux-gnu (`nightly-2026-04-19`) at
+//! 14,864 B once the tracked-set member origins (`tracked_set_member_origins`,
+//! 24 B) landed together with the loop-detection held window and decision tally
+//! (`loop_detect_held`, 8 B, and `loop_decision_tally`, 40 B, replacing the 24 B
+//! `unbounded_loop_enablers`); none of those fields is a large rarely-populated
+//! one, so the ceiling moved to 14,864.next_multiple_of(256) + 256 = 15,360.
+//!
 //! When one of these fires, re-run the measurement above and change the number
 //! deliberately — do not widen a ceiling to make a build pass.
 //!
@@ -90,7 +97,7 @@
 const _: () = {
     use core::mem::size_of;
     assert!(
-        size_of::<crate::types::game_state::GameState>() <= 14_848,
+        size_of::<crate::types::game_state::GameState>() <= 15_360,
         "GameState grew past its stack budget. It is moved by value through the \
          phase-server action + AI path, so an overrun is an uncatchable \
          guard-page abort, not a panic. Re-run the -Zprint-type-sizes command in \

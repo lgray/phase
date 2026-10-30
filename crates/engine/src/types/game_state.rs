@@ -22537,6 +22537,17 @@ pub fn record_captured_onsets_json(json: &str) -> String {
     serde_json::to_string(&document).expect("a committed capture re-serializes")
 }
 
+/// CR 608.2h + CR 400.7: the producing transition a tracked-set member is
+/// bound to — the zone it departed and the pre-move incarnation that
+/// departure recorded under in `lki_by_incarnation`. Reads key on the
+/// incarnation; the zone documents the expected origin and selects the
+/// no-record fallback (live is authoritative for zones that record no LKI).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedMemberOrigin {
+    pub departed_from: Zone,
+    pub departure_incarnation: u64,
+}
+
 /// Declares the runtime state and its private serde-only raw mirror from one
 /// field list. Keeping the field declaration single-sourced makes persistence
 /// ingress exhaustive whenever `GameState` evolves.
@@ -23384,6 +23395,23 @@ declare_game_state! {
     #[serde(default, skip_serializing_if = "im::HashMap::is_empty")]
     #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map_of_im_hash_map")]
     pub tracked_set_member_causes: im::HashMap<TrackedSetId, im::HashMap<ObjectId, ThisWayCause>>,
+
+    /// CR 608.2h + CR 400.7: the producing transition each tracked-set member
+    /// was stamped with at publication — the zone it departed and the
+    /// pre-move incarnation that departure recorded under. Characteristic
+    /// and member-filter reads bind to THIS record (via
+    /// `lki_by_incarnation`), never to "the latest older departure by ID":
+    /// a storage id reused by a genuinely new hand/graveyard-origin object
+    /// must not inherit an earlier departure's characteristics (an old pump
+    /// on a discarded card). Origins whose zone records no LKI departure
+    /// (hand/library/graveyard) read live, which is authoritative there.
+    /// Stamped only for zone-transition producer actions, alongside the
+    /// cause stamp; selection sets and legacy saves carry no entry and keep
+    /// the live-or-cache read. Pruned with membership at the same sites.
+    #[serde(default, skip_serializing_if = "im::HashMap::is_empty")]
+    #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map_of_im_hash_map")]
+    pub tracked_set_member_origins:
+        im::HashMap<TrackedSetId, im::HashMap<ObjectId, TrackedMemberOrigin>>,
 
     /// CR 701.24c-e + CR 608.2c: players explicitly designated by a tracked-set
     /// producer even when their subject population is empty. The object ledger
@@ -32204,6 +32232,7 @@ impl GameState {
             next_return_result_occurrence_id: default_next_return_result_occurrence_id(),
             resolving_modal_instruction: None,
             tracked_set_member_causes: im::HashMap::new(),
+            tracked_set_member_origins: im::HashMap::new(),
             tracked_set_participants: HashMap::new(),
             commander_cast_count: HashMap::new(),
             commander_cast_owners: HashMap::new(),
@@ -33914,6 +33943,36 @@ impl GameState {
         // CR 104.4b: the same traversal identity canonicalization uses.
         self.for_each_trigger_event_carrier_mut(&mut |event| record_event(event));
 
+        // CR 608.2c: the departure snapshots the frame's live tracked-set
+        // anaphor reads — the resolved set's origins (`chain_tracked_set_id`,
+        // else the latest non-empty set, mirroring
+        // `targeting::resolve_tracked_set_id`; inlined because types cannot
+        // depend on game) — are retained alongside carrier references, or
+        // normalization would degrade origin reads the unnormalized states
+        // agree on. Every other set is an append-only record whose superseded
+        // stamps are history, not position: each blink cycle appends a fresh
+        // set re-stamping the same member, so retaining every stamp would
+        // accumulate incarnations across periods and refuse artefactually.
+        // (Fresh sets' origins stay compared through the origins field,
+        // converged below the window by the cover arms.)
+        let resolved_set = self.chain_tracked_set_id.or_else(|| {
+            self.tracked_object_sets
+                .iter()
+                .filter(|(_, members)| !members.is_empty())
+                .max_by_key(|(id, _)| id.0)
+                .map(|(id, _)| *id)
+        });
+        if let Some(set) = resolved_set {
+            if let Some(members) = self.tracked_set_member_origins.get(&set) {
+                for (member, origin) in members.iter() {
+                    referenced_lki.insert(ObjectIncarnationRef::of(
+                        *member,
+                        origin.departure_incarnation,
+                    ));
+                }
+            }
+        }
+
         self.lki_by_incarnation = std::mem::take(&mut self.lki_by_incarnation)
             .into_iter()
             .filter_map(|(object_id, mut history)| {
@@ -34012,12 +34071,15 @@ impl GameState {
     /// incarnations trigger events name (`ZoneChanged` entries and every
     /// incarnation inside their records, stamped `PermanentTapped` taps), the
     /// may-trigger origins and stored answers, the turn and combat block-history
-    /// pairs (CR 509.1g), and the object's live incarnation. Ranks count down
-    /// from the highest member, so the live incarnation anchors them: two
-    /// positions minted at different times compare equal, while which
-    /// incarnation each carrier names, relative to the live one, is preserved.
-    /// The live incarnation is rewritten through the same map, so normalizing a
-    /// normalized state is a fixed point.
+    /// pairs (CR 509.1g), the resolved tracked set's member origins (CR 608.2c),
+    /// and the object's live incarnation. Ranks count down from the highest
+    /// member, so the live incarnation anchors them: two positions minted at
+    /// different times compare equal, while which incarnation each carrier
+    /// names, relative to the live one, and whether a snapshot sits behind it,
+    /// is preserved. Other sets' origins name append-only history and take the
+    /// rank of the nearest pooled incarnation above them. The live incarnation
+    /// is rewritten through the same map, so normalizing a normalized state is
+    /// a fixed point.
     fn canonicalize_lki_incarnations_for_loop(&mut self) {
         fn named_incarnation(event: &mut GameEvent) -> Option<(ObjectId, &mut u64)> {
             match event {
@@ -34464,6 +34526,35 @@ impl GameState {
                 },
             );
         }
+        // CR 608.2c + CR 608.2h: only the RESOLVED set's origins join the
+        // identity pool (mirrors `retain_carrier_referenced_lki`:
+        // `chain_tracked_set_id`, else the latest non-empty set — inlined
+        // because types cannot depend on game). Reads through normalized
+        // origins go through the resolved set alone, so only its stamps need
+        // exact ranks: a missing departure there takes its own rank instead
+        // of aliasing a retained snapshot's rank, which would change what the
+        // normalized state reads. Every other set is append-only history
+        // whose superseded stamps converge structurally below the window via
+        // `remap_origin`'s miss path — pooling them would let a missing
+        // older-set stamp consume a dense rank, artefactually refusing cover
+        // across blink periods.
+        let resolved_set = self.chain_tracked_set_id.or_else(|| {
+            self.tracked_object_sets
+                .iter()
+                .filter(|(_, members)| !members.is_empty())
+                .max_by_key(|(id, _)| id.0)
+                .map(|(id, _)| *id)
+        });
+        if let Some(set) = resolved_set {
+            if let Some(members) = self.tracked_set_member_origins.get(&set) {
+                for (member, origin) in members.iter() {
+                    present
+                        .entry(*member)
+                        .or_default()
+                        .push(origin.departure_incarnation);
+                }
+            }
+        }
         for (object_id, generations) in grants.iter_mut() {
             if let Some(object) = self.objects.get(object_id) {
                 generations.extend(
@@ -34565,6 +34656,35 @@ impl GameState {
                     });
             }
         }
+        // CR 608.2c: an origin naming a pooled incarnation takes its exact rank. A
+        // non-resolved origin names append-only history and takes the rank of the
+        // nearest pooled incarnation above it, so it remaps like the resolved stamp
+        // that named the same departure one period earlier and the origins field
+        // converges below the window. With nothing pooled above it (no live object, or a
+        // member nothing else names) it takes the top rank.
+        let remap_origin = |member: ObjectId, incarnation: u64| {
+            let pooled = present.get(&member).map_or(&[][..], Vec::as_slice);
+            match pooled.binary_search(&incarnation) {
+                Ok(_) => canonical(member, incarnation),
+                Err(above) => pooled
+                    .get(above)
+                    .map_or(u64::MAX, |&next| canonical(member, next)),
+            }
+        };
+        self.tracked_set_member_origins = std::mem::take(&mut self.tracked_set_member_origins)
+            .into_iter()
+            .map(|(set_id, members)| {
+                let members = members
+                    .into_iter()
+                    .map(|(member, mut origin)| {
+                        origin.departure_incarnation =
+                            remap_origin(member, origin.departure_incarnation);
+                        (member, origin)
+                    })
+                    .collect();
+                (set_id, members)
+            })
+            .collect();
     }
 
     /// The spell announcements named by `BecomesTarget` targeters on every
@@ -35771,6 +35891,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         // resolution — the same reason that field is projected out here.
         resolving_modal_instruction: _,
         tracked_set_member_causes: _,
+        tracked_set_member_origins: _,
         tracked_set_participants: _,
         commander_cast_count: _,
         commander_cast_owners: _,
@@ -36155,6 +36276,7 @@ impl PartialEq for GameState {
             && self.next_return_result_occurrence_id == other.next_return_result_occurrence_id
             && self.resolving_modal_instruction == other.resolving_modal_instruction
             && self.tracked_set_member_causes == other.tracked_set_member_causes
+            && self.tracked_set_member_origins == other.tracked_set_member_origins
             && self.tracked_set_participants == other.tracked_set_participants
             && self.commander_cast_count == other.commander_cast_count
             && self.commander_cast_owners == other.commander_cast_owners
@@ -41364,6 +41486,8 @@ mod tests {
                     source_id: ObjectId(9_801),
                     controller: PlayerId(0),
                     roller: PlayerId(0),
+                    quantity_controller: None,
+                    scoped_player: None,
                     targets: vec![],
                     results_table: vec![],
                     modifier: None,
@@ -41376,6 +41500,12 @@ mod tests {
                     }),
                     continuation: crate::types::resolution::DieRollContinuation::Resolution,
                     chain_root_targets: vec![],
+                    illegal_target_slots: vec![],
+                    chain_root_target_pins: vec![],
+                    declared_capture: None,
+                    local_target_pins: vec![],
+                    keyed_target_incarnations: vec![],
+                    declared_player: None,
                 }));
                 let wire = serde_json::to_value(if trusted {
                     PersistedGameState::capture(state)
@@ -47527,6 +47657,8 @@ mod tests {
                     source_id: ObjectId(5),
                     controller: PlayerId(0),
                     roller: PlayerId(0),
+                    quantity_controller: None,
+                    scoped_player: None,
                     targets: vec![],
                     results_table: vec![],
                     modifier: None,
@@ -47534,6 +47666,12 @@ mod tests {
                     trigger_context: Some(context),
                     continuation: crate::types::resolution::DieRollContinuation::Resolution,
                     chain_root_targets: vec![],
+                    illegal_target_slots: vec![],
+                    chain_root_target_pins: vec![],
+                    declared_capture: None,
+                    local_target_pins: vec![],
+                    keyed_target_incarnations: vec![],
+                    declared_player: None,
                 }));
             } else {
                 state.resolution_stack.push_inner(match kind {
@@ -47555,6 +47693,8 @@ mod tests {
                         source_id: ObjectId(5),
                         controller: PlayerId(0),
                         roller: PlayerId(0),
+                        quantity_controller: None,
+                        scoped_player: None,
                         targets: vec![],
                         sides: 6,
                         results: vec![1, 2],
@@ -47568,6 +47708,12 @@ mod tests {
                         forced_ignored: vec![],
                         chain_root_targets: vec![],
                         trigger_context: Some(context),
+                        illegal_target_slots: vec![],
+                        chain_root_target_pins: vec![],
+                        declared_capture: None,
+                        local_target_pins: vec![],
+                        keyed_target_incarnations: vec![],
+                        declared_player: None,
                     })),
                     _ => unreachable!(),
                 });
