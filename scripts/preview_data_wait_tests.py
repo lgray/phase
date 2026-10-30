@@ -85,19 +85,21 @@ elif me == "curl":  # a just-published object, read back for verification
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
-    # Objects uploaded right after their first 404, so an upload lands during
-    # the wait by the script's own probe rather than by wall-clock time.
+    # Objects uploaded on their first 404, so an upload lands during the wait
+    # by the script's own probe rather than by wall-clock time. The upload is
+    # written before that 404 is sent: under ThreadingHTTPServer the next probe
+    # can otherwise reach another worker first and miss again.
     upload_after_miss: set[str] = set()
 
     def log_message(self, *args: object) -> None:
         pass
 
     def send_error(self, code: int, *args, **kwargs) -> None:
-        super().send_error(code, *args, **kwargs)
         name = self.path.lstrip("/")
         if code == 404 and name in self.upload_after_miss:
             self.upload_after_miss.discard(name)
             Path(self.directory, name).write_text("{}", encoding="utf-8")
+        super().send_error(code, *args, **kwargs)
 
 
 class DataWaitScriptTests(unittest.TestCase):
