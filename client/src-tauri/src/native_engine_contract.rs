@@ -125,6 +125,16 @@ pub enum BridgeEvent {
     Error { detail: String },
 }
 
+/// A text-delivery mode the connecting client declares it can reassemble; a
+/// client that declares none receives every text as one `Message`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+// See `NativeEngineProgressPhase`: these variants are a shared wire contract.
+#[cfg_attr(mobile, allow(dead_code))]
+pub enum BridgeTextDelivery {
+    Fragments,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 // See `NativeEngineProgressPhase`: these variants are a shared wire contract.
@@ -354,6 +364,14 @@ mod tests {
                 format!(r#"{{"kind":"{kind}","detail":"d"}}"#)
             );
         }
+    }
+
+    #[test]
+    fn bridge_text_delivery_reads_the_client_wire_value() {
+        assert_eq!(
+            serde_json::from_str::<BridgeTextDelivery>(r#""fragments""#).unwrap(),
+            BridgeTextDelivery::Fragments
+        );
     }
 
     #[test]

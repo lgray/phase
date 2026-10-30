@@ -9,6 +9,10 @@ type BridgeEvent =
   | { type: "closed"; code: number; reason: string }
   | { type: "error"; detail: string };
 
+// Declares that this client reassembles `fragment` events; a shell splits texts only when told.
+type BridgeTextDelivery = "fragments";
+const TEXT_DELIVERY: BridgeTextDelivery = "fragments";
+
 type CloseListener = (event: CloseEvent) => void;
 type MessageListener = (event: MessageEvent<string>) => void;
 
@@ -119,8 +123,8 @@ export class NativeEngineSocket {
       const bridgeId = await this.invokeDesktop<number>(
         this.destination ? "connect_lan_server" : "connect_native_engine",
         this.destination
-          ? { url: lanUrl, origin: this.destination.origin, onEvent: channel }
-          : { onEvent: channel },
+          ? { url: lanUrl, origin: this.destination.origin, onEvent: channel, textDelivery: TEXT_DELIVERY }
+          : { onEvent: channel, textDelivery: TEXT_DELIVERY },
       );
       this.bridgeId = bridgeId;
       if (this.readyState === NativeEngineSocket.CLOSING) {

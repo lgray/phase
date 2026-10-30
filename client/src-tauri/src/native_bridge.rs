@@ -25,7 +25,7 @@ use tokio_tungstenite::{
 };
 
 use crate::native_engine;
-use crate::native_engine_contract::{BridgeEvent, NativeEngineBridgeError};
+use crate::native_engine_contract::{BridgeEvent, BridgeTextDelivery, NativeEngineBridgeError};
 
 /// phase-server's WebSocket route. Kept as a named constant so the one place
 /// that dials it reads as a contract rather than an incidental URL suffix.
@@ -35,8 +35,8 @@ const SERVER_WEBSOCKET_PATH: &str = "/ws";
 /// frame before the forwarder is aborted.
 const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Largest text one `BridgeEvent` carries; longer frames are split into
-/// `Fragment` events so no single IPC message depends on a webview's size limit.
+/// Largest text one `BridgeEvent` carries for a client that accepts fragments;
+/// longer frames are split so no single IPC message depends on a webview's size limit.
 const BRIDGE_FRAGMENT_BYTES: usize = 1 << 20;
 
 impl NativeEngineBridgeError {
@@ -81,6 +81,7 @@ impl BridgeHandle {
 #[tauri::command]
 pub async fn connect_native_engine(
     on_event: Channel<BridgeEvent>,
+    text_delivery: Option<BridgeTextDelivery>,
 ) -> Result<u64, NativeEngineBridgeError> {
     let (outbound, receiver) = mpsc::unbounded_channel();
     let (abort, registration) = AbortHandle::new_pair();
@@ -126,6 +127,7 @@ pub async fn connect_native_engine(
             receiver,
             registration,
             on_event,
+            text_delivery,
             native_engine::remove_native_engine_bridge,
         )
         .await;
@@ -178,16 +180,25 @@ async fn dial<R: IntoClientRequest + Unpin>(
     connect_async_with_config(request, Some(config), false).await
 }
 
-/// Sends one server text frame, as `Fragment` events plus a final `Message`
-/// when it exceeds `BRIDGE_FRAGMENT_BYTES`.
-fn send_text(on_event: &Channel<BridgeEvent>, text: &str) -> tauri::Result<()> {
+/// Sends one server text frame; under `Fragments` a text over
+/// `BRIDGE_FRAGMENT_BYTES` goes as `Fragment` events plus a final `Message`.
+fn send_text(
+    on_event: &Channel<BridgeEvent>,
+    text: &str,
+    delivery: Option<BridgeTextDelivery>,
+) -> tauri::Result<()> {
     let mut rest = text;
-    while rest.len() > BRIDGE_FRAGMENT_BYTES {
-        let (head, tail) = rest.split_at(rest.floor_char_boundary(BRIDGE_FRAGMENT_BYTES));
-        on_event.send(BridgeEvent::Fragment {
-            text: head.to_owned(),
-        })?;
-        rest = tail;
+    match delivery {
+        Some(BridgeTextDelivery::Fragments) => {
+            while rest.len() > BRIDGE_FRAGMENT_BYTES {
+                let (head, tail) = rest.split_at(rest.floor_char_boundary(BRIDGE_FRAGMENT_BYTES));
+                on_event.send(BridgeEvent::Fragment {
+                    text: head.to_owned(),
+                })?;
+                rest = tail;
+            }
+        }
+        None => {}
     }
     on_event.send(BridgeEvent::Message {
         text: rest.to_owned(),
@@ -218,9 +229,14 @@ async fn forward_bridge(
     outbound: UnboundedReceiver<Message>,
     registration: AbortRegistration,
     on_event: Channel<BridgeEvent>,
+    text_delivery: Option<BridgeTextDelivery>,
     remove: fn(u64),
 ) {
-    let result = Abortable::new(run_bridge(socket, outbound, on_event.clone()), registration).await;
+    let result = Abortable::new(
+        run_bridge(socket, outbound, on_event.clone(), text_delivery),
+        registration,
+    )
+    .await;
     let (error, close) = match result {
         Ok((error, close)) => (error, close),
         Err(_) => (None, None),
@@ -238,6 +254,7 @@ async fn run_bridge(
     socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     mut outbound: UnboundedReceiver<Message>,
     on_event: Channel<BridgeEvent>,
+    text_delivery: Option<BridgeTextDelivery>,
 ) -> (Option<String>, Option<(u16, String)>) {
     let (mut write, mut read) = socket.split();
     let mut error = None;
@@ -265,7 +282,7 @@ async fn run_bridge(
             },
             incoming = read.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    if send_text(&on_event, &text).is_err() {
+                    if send_text(&on_event, &text, text_delivery).is_err() {
                         break;
                     }
                 }
@@ -561,6 +578,7 @@ pub async fn connect_lan_server(
     window: WebviewWindow,
     url: String,
     on_event: Channel<BridgeEvent>,
+    text_delivery: Option<BridgeTextDelivery>,
 ) -> Result<u64, NativeEngineBridgeError> {
     let endpoint = lan_endpoint(&url)?;
     let client = invoking_lan_client(&window)?;
@@ -613,6 +631,7 @@ pub async fn connect_lan_server(
             receiver,
             registration,
             on_event,
+            text_delivery,
             remove_lan_bridge,
         )
         .await;
@@ -918,6 +937,7 @@ mod tests {
             receiver,
             registration,
             on_event,
+            None,
             |_| {},
         ));
         (forwarder, events)
@@ -1056,7 +1076,15 @@ mod tests {
             let (_abort, registration) = AbortHandle::new_pair();
             tokio::time::timeout(
                 Duration::from_secs(30),
-                forward_bridge(1, socket, receiver, registration, on_event, |_| {}),
+                forward_bridge(
+                    1,
+                    socket,
+                    receiver,
+                    registration,
+                    on_event,
+                    Some(BridgeTextDelivery::Fragments),
+                    |_| {},
+                ),
             )
             .await
             .unwrap();
@@ -1089,7 +1117,7 @@ mod tests {
         let text = format!("ab{}", "€".repeat(1_048_577));
         assert_eq!(text.len(), 3 * BRIDGE_FRAGMENT_BYTES + 5);
         let (on_event, mut events) = capture_events();
-        send_text(&on_event, &text).unwrap();
+        send_text(&on_event, &text, Some(BridgeTextDelivery::Fragments)).unwrap();
         let mut received = Vec::new();
         while let Ok(event) = events.try_recv() {
             received.push(event);
@@ -1106,11 +1134,50 @@ mod tests {
         assert!(pieces.concat() == text);
 
         let exact = "x".repeat(BRIDGE_FRAGMENT_BYTES);
-        send_text(&on_event, &exact).unwrap();
+        send_text(&on_event, &exact, Some(BridgeTextDelivery::Fragments)).unwrap();
         let single = events.try_recv().unwrap();
         assert_eq!(single["type"], "message");
         assert!(single["text"] == exact.as_str());
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_client_without_fragment_delivery_receives_an_oversized_text_whole() {
+        tauri::async_runtime::block_on(async {
+            let (listener, port) = bound_listener().await;
+            let large = "x".repeat(3 * BRIDGE_FRAGMENT_BYTES);
+            let sent = large.clone();
+            let peer = tauri::async_runtime::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                socket.send(Message::Text(sent.into())).await.unwrap();
+                let normal = CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "".into(),
+                };
+                socket.send(Message::Close(Some(normal))).await.unwrap();
+                while let Some(Ok(_)) = socket.next().await {}
+            });
+            let (socket, _) = dial(format!("ws://127.0.0.1:{port}/")).await.unwrap();
+            let (on_event, mut events) = capture_events();
+            let (_outbound, receiver) = mpsc::unbounded_channel();
+            let (_abort, registration) = AbortHandle::new_pair();
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                forward_bridge(1, socket, receiver, registration, on_event, None, |_| {}),
+            )
+            .await
+            .unwrap();
+            let whole = events.try_recv().unwrap();
+            assert_eq!(whole["type"], "message");
+            assert!(whole["text"] == large.as_str());
+            assert_eq!(
+                events.try_recv().unwrap(),
+                serde_json::json!({ "type": "closed", "code": 1000, "reason": "" })
+            );
+            assert!(events.try_recv().is_err());
+            peer.await.unwrap();
+        });
     }
 
     #[test]
@@ -1237,7 +1304,7 @@ mod tests {
     #[test]
     fn connect_without_a_running_engine_returns_not_running() {
         let channel = Channel::new(|_| Ok(()));
-        let result = tauri::async_runtime::block_on(connect_native_engine(channel));
+        let result = tauri::async_runtime::block_on(connect_native_engine(channel, None));
 
         assert!(matches!(
             result,
