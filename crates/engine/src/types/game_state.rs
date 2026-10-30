@@ -23836,6 +23836,8 @@ declare_game_state! {
     pub sideboard_submitted: Vec<PlayerId>,
 
     // Trigger constraint tracking keyed by exact source incarnation + occurrence.
+    /// CR 603.2: once-each-turn limits spent by triggering
+    /// (`OncePerTurn { spent_by: Triggering }`).
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
     pub triggers_fired_this_turn: HashSet<TriggerDefinitionRef>,
@@ -23852,6 +23854,16 @@ declare_game_state! {
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
     pub triggers_fired_this_turn_per_opponent: HashSet<(TriggerDefinitionRef, PlayerId)>,
+    /// CR 603.2h: (trigger definition, player) pairs — that player, controlling that
+    /// ability, has taken its "Do this only once each turn" indicated action this turn.
+    /// Sole writer: `triggers::record_indicated_action`, on acceptance of a non-cast
+    /// instruction or when a CR 603.2h resolution cast becomes cast. Read at fire time and at resolution (incl. the
+    /// `upfront_optional_gate` authority). Cleared at turn start. Boxed: populated only
+    /// once a CR 603.2h ability's action is taken, so it keeps `GameState`'s inline size
+    /// inside the `game_state_size` stack budget.
+    #[serde(default)]
+    #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
+    pub trigger_indicated_actions_this_turn: Box<HashSet<(TriggerDefinitionRef, PlayerId)>>,
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
     pub triggers_fired_this_game: HashSet<TriggerDefinitionRef>,
@@ -32283,6 +32295,7 @@ impl GameState {
             triggers_fired_this_turn: HashSet::new(),
             trigger_fire_counts_this_turn: HashMap::new(),
             triggers_fired_this_turn_per_opponent: HashSet::new(),
+            trigger_indicated_actions_this_turn: Box::default(),
             triggers_fired_this_game: HashSet::new(),
             triggered_abilities_added_mana_this_turn: HashSet::new(),
             activated_abilities_this_turn: im::HashMap::new(),
@@ -35953,6 +35966,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         triggers_fired_this_turn: _,
         trigger_fire_counts_this_turn: _,
         triggers_fired_this_turn_per_opponent: _,
+        trigger_indicated_actions_this_turn: _,
         triggers_fired_this_game: _,
         triggered_abilities_added_mana_this_turn: _,
         activated_abilities_this_turn: _,
@@ -36329,6 +36343,8 @@ impl PartialEq for GameState {
             && self.triggers_fired_this_turn == other.triggers_fired_this_turn
             && self.trigger_fire_counts_this_turn == other.trigger_fire_counts_this_turn
             && self.triggers_fired_this_turn_per_opponent == other.triggers_fired_this_turn_per_opponent
+            && self.trigger_indicated_actions_this_turn
+                == other.trigger_indicated_actions_this_turn
             && self.triggers_fired_this_game == other.triggers_fired_this_game
             && self.triggered_abilities_added_mana_this_turn
                 == other.triggered_abilities_added_mana_this_turn
@@ -38915,6 +38931,7 @@ mod tests {
                     success_action:
                         crate::types::ability::ResolutionCastSuccessAction::BottomMisses,
                     delayed_trigger_receipts: vec![receipt.clone()],
+                    indicated_action: None,
                 },
             },
         };
@@ -39090,6 +39107,7 @@ mod tests {
             reject_action: ResolutionMvRejectAction::RemainExiled,
             success_action: ResolutionCastSuccessAction::BottomMisses,
             delayed_trigger_receipts: Vec::new(),
+            indicated_action: None,
         };
 
         // GraveyardPaidCast — an empty rider is skipped and a carried rider

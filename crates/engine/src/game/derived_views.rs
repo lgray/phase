@@ -5912,6 +5912,7 @@ mod tests {
                         instance: DelayedTriggerInstanceId(41),
                         source_id: source,
                     }],
+                    indicated_action: None,
                 },
             },
         };
@@ -6057,6 +6058,7 @@ mod tests {
                     instance: DelayedTriggerInstanceId(42),
                     source_id: source,
                 }],
+                indicated_action: None,
             }),
             duration: None,
             source_id: None,
