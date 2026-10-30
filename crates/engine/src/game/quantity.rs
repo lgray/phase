@@ -21535,16 +21535,29 @@ mod tests {
         );
     }
 
-    /// CR 608.2c + CR 400.7: a superseded tracked-set origin keeps the rank it held while its set
-    /// was resolved, whether the newer set re-stamps its member after a move, in place, or not at
-    /// all, and renormalizing reads the same ranks back.
+    /// CR 608.2c + CR 400.7: a superseded tracked-set origin normalizes to what a read through it
+    /// selected while its set was resolved, whether the newer set re-stamps its member after a
+    /// move, in place, or not at all, and renormalizing changes nothing.
     #[test]
-    fn loop_normalization_ranks_superseded_origins_as_while_resolved() {
+    fn loop_normalization_reads_superseded_origins_as_while_resolved() {
         use crate::game::combat::BlockHistoryPair;
-        use crate::types::game_state::TrackedMemberOrigin;
+        use crate::types::game_state::{loop_states_equal, TrackedMemberOrigin};
         use crate::types::identifiers::{CardId, ObjectIncarnationRef};
 
-        fn stamp(state: &mut GameState, set: u64, member: ObjectId, incarnation: u64) {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Record {
+            Nothing,
+            SameStep,
+            AcrossStep,
+        }
+        fn stamp(
+            state: &mut GameState,
+            set: u64,
+            member: ObjectId,
+            incarnation: u64,
+            zone: Zone,
+            record: Record,
+        ) {
             let set = TrackedSetId(set);
             state.tracked_object_sets.insert(set, vec![member]);
             state
@@ -21554,21 +21567,30 @@ mod tests {
                 .insert(
                     member,
                     TrackedMemberOrigin {
-                        departed_from: Zone::Hand,
+                        departed_from: zone,
                         departure_incarnation: incarnation,
                     },
                 );
+            if record != Record::Nothing {
+                let mut departed = state.objects[&member].clone();
+                departed.power = Some(5);
+                state
+                    .lki_by_incarnation
+                    .entry(member)
+                    .or_default()
+                    .insert(incarnation, departed.snapshot_public_characteristics());
+            }
         }
-        fn normalized(state: &GameState) -> GameState {
-            let mut state = state.clone();
-            state.canonicalize_loop_identities();
-            state
-        }
-        // Prior frame: set 2 = {M@`stale`} is the latest set; `live` is M's incarnation (None:
-        // M no longer exists) and `carrier` a block-history incarnation of M.
+        // Prior frame: set 2 = {M@`stale`} departing `zone` is the latest set; `live` is M's
+        // incarnation (None: M no longer exists) and `carrier` a block-history incarnation of M.
         // Current frame: the prior plus set 4, re-stamping M's departure from its prior live
         // incarnation and leaving M at `after`, or naming N instead (`after` None).
-        let frames = |stale: u64, live: Option<u64>, carrier: Option<u64>, after: Option<u64>| {
+        let frames = |stale: u64,
+                      live: Option<u64>,
+                      carrier: Option<u64>,
+                      after: Option<u64>,
+                      zone: Zone,
+                      record: Record| {
             let mut prior = GameState::new_two_player(42);
             let mut create = |name: &str| {
                 crate::game::zones::create_object(
@@ -21595,74 +21617,178 @@ mod tests {
                         attacker: ObjectIncarnationRef::of(ObjectId(99), 0),
                     });
             }
-            stamp(&mut prior, 2, m, stale);
+            stamp(&mut prior, 2, m, stale, zone, record);
             let mut current = prior.clone();
             if let Some(after) = after {
-                stamp(&mut current, 4, m, live.unwrap_or(3));
+                if record == Record::AcrossStep {
+                    current.lki_by_incarnation.clear();
+                }
+                stamp(&mut current, 4, m, live.unwrap_or(3), zone, record);
                 if let Some(object) = current.objects.get_mut(&m) {
                     object.incarnation = after;
                 }
             } else {
-                stamp(&mut current, 4, n, 5);
+                stamp(&mut current, 4, n, 5, Zone::Hand, Record::Nothing);
             }
-            let rank = move |state: &GameState| {
+            let origin = move |state: &GameState| {
                 state.tracked_set_member_origins[&TrackedSetId(2)][&m].departure_incarnation
             };
-            (prior, current, rank)
+            (prior, current, origin, m, n)
+        };
+        let power_sum = QuantityExpr::Ref {
+            qty: QuantityRef::PropertyAggregate(
+                crate::types::ability::PropertyAggregate::new(
+                    AggregateFunction::Sum,
+                    ObjectProperty::Power,
+                    CardTypeSetSource::TrackedSet {
+                        set: TrackedAnaphorSource::ChainSet,
+                        caused_by: None,
+                        filter: None,
+                    },
+                )
+                .unwrap(),
+            ),
         };
 
         let mut failures = Vec::new();
-        for (case, live, carrier, after, expected) in [
-            ("live, re-stamped", Some(3), None, Some(4), u64::MAX - 2),
+        for (case, live, carrier, after, zone, record) in [
+            (
+                "live, re-stamped",
+                Some(3),
+                None,
+                Some(4),
+                Zone::Hand,
+                Record::Nothing,
+            ),
             (
                 "live, re-stamped in place",
                 Some(3),
                 None,
                 Some(3),
-                u64::MAX - 2,
+                Zone::Hand,
+                Record::Nothing,
             ),
-            ("live, not re-stamped", Some(3), None, None, u64::MAX - 2),
-            ("not live, re-stamped", None, None, Some(4), u64::MAX),
-            ("not live, not re-stamped", None, None, None, u64::MAX),
-            ("live, newer carrier", Some(4), Some(3), None, u64::MAX - 4),
+            (
+                "live, not re-stamped",
+                Some(3),
+                None,
+                None,
+                Zone::Hand,
+                Record::Nothing,
+            ),
+            (
+                "not live, re-stamped",
+                None,
+                None,
+                Some(4),
+                Zone::Hand,
+                Record::Nothing,
+            ),
+            (
+                "not live, not re-stamped",
+                None,
+                None,
+                None,
+                Zone::Hand,
+                Record::Nothing,
+            ),
+            (
+                "live, newer carrier",
+                Some(4),
+                Some(3),
+                None,
+                Zone::Hand,
+                Record::Nothing,
+            ),
             (
                 "live, newer carrier, re-stamped",
                 Some(4),
                 Some(3),
                 Some(5),
-                u64::MAX - 4,
+                Zone::Hand,
+                Record::Nothing,
             ),
             (
                 "live, carrier at the stamp, re-stamped",
                 Some(3),
                 Some(2),
                 Some(4),
-                u64::MAX - 3,
+                Zone::Hand,
+                Record::Nothing,
+            ),
+            (
+                "snapshot, re-stamped in the same step",
+                Some(3),
+                None,
+                Some(4),
+                Zone::Battlefield,
+                Record::SameStep,
+            ),
+            (
+                "snapshot, re-stamped across a step",
+                Some(3),
+                None,
+                Some(4),
+                Zone::Battlefield,
+                Record::AcrossStep,
             ),
         ] {
-            let (prior, current, rank) = frames(2, live, carrier, after);
-            for (frame, state) in [("prior", &prior), ("current", &current)] {
-                let once = normalized(state);
-                let twice = normalized(&once);
-                if rank(&once) != expected {
-                    failures.push(format!("{case} / {frame}: rank {}", u64::MAX - rank(&once)));
+            let (prior, current, origin, m, n) = frames(2, live, carrier, after, zone, record);
+            let normalized = [prior.normalize_for_loop(), current.normalize_for_loop()];
+            if origin(&normalized[0]) != origin(&normalized[1]) {
+                failures.push(format!("{case}: prior and current origins differ"));
+            }
+            for (frame, once) in ["prior", "current"].into_iter().zip(&normalized) {
+                let twice = once.normalize_for_loop();
+                if twice.tracked_set_member_origins != once.tracked_set_member_origins
+                    || twice.lki_by_incarnation != once.lki_by_incarnation
+                {
+                    failures.push(format!("{case} / {frame}: renormalizing changed it"));
                 }
-                if twice.tracked_set_member_origins != once.tracked_set_member_origins {
-                    failures.push(format!(
-                        "{case} / {frame}: renormalized rank {}",
-                        u64::MAX - rank(&twice)
-                    ));
+                let names_snapshot = once
+                    .lki_by_incarnation
+                    .get(&m)
+                    .is_some_and(|history| history.contains_key(&origin(once)));
+                match record {
+                    Record::Nothing if origin(once) != 0 => {
+                        failures.push(format!("{case} / {frame}: origin is not unanchored"));
+                    }
+                    Record::SameStep | Record::AcrossStep if !names_snapshot => {
+                        failures.push(format!("{case} / {frame}: origin names no snapshot"));
+                    }
+                    Record::Nothing | Record::SameStep | Record::AcrossStep => {}
                 }
             }
+            if record != Record::Nothing
+                && resolve_quantity(&normalized[0], &power_sum, PlayerId(0), n) != 5
+            {
+                failures.push(format!(
+                    "{case}: the normalized prior's read lost the snapshot"
+                ));
+            }
         }
-        assert!(failures.is_empty(), "MAX minus: {failures:#?}");
+        assert!(failures.is_empty(), "{failures:#?}");
 
-        let (_, stale_origin, rank) = frames(2, Some(3), None, None);
-        let (_, live_origin, _) = frames(3, Some(3), None, None);
-        assert_ne!(
-            rank(&normalized(&stale_origin)),
-            rank(&normalized(&live_origin)),
-            "a stale origin must stay distinct from one naming the live incarnation"
+        // CR 400.7: a later exile departure records under the live incarnation, so an in-place
+        // exile origin stays distinct from a stale one; a hand origin records nothing either way.
+        let stale_vs_live = |zone: Zone| {
+            let (_, stale, origin, ..) = frames(2, Some(3), None, None, zone, Record::Nothing);
+            let (_, live, ..) = frames(3, Some(3), None, None, zone, Record::Nothing);
+            let (stale, live) = (stale.normalize_for_loop(), live.normalize_for_loop());
+            (
+                origin(&stale) == origin(&live),
+                loop_states_equal(&stale, &live),
+            )
+        };
+        assert_eq!(
+            stale_vs_live(Zone::Exile),
+            (false, false),
+            "an exile origin naming the live incarnation must stay distinct from a stale one"
+        );
+        assert_eq!(
+            stale_vs_live(Zone::Hand),
+            (true, true),
+            "a hand origin naming the live incarnation must read like a stale one"
         );
     }
 

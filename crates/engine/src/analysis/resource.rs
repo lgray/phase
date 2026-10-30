@@ -26766,19 +26766,43 @@ mod tests {
         id
     }
 
-    // A hand departure records no snapshot, so only the live object sits above the stamp.
+    // A hand departure records no snapshot.
     fn stamp_hand_departure(state: &mut GameState, set: u64, member: ObjectId, incarnation: u64) {
+        stamp_departure(
+            state,
+            set,
+            member,
+            incarnation,
+            crate::types::zones::Zone::Hand,
+            None,
+        );
+    }
+
+    /// Adds `member` to set `set` with an origin at `incarnation` departing `zone`, recording a
+    /// departure snapshot of power `power` when given.
+    fn stamp_departure(
+        state: &mut GameState,
+        set: u64,
+        member: ObjectId,
+        incarnation: u64,
+        zone: crate::types::zones::Zone,
+        power: Option<i32>,
+    ) {
         use crate::types::ability::ThisWayCause;
         use crate::types::game_state::TrackedMemberOrigin;
         use crate::types::identifiers::TrackedSetId;
-        use crate::types::zones::Zone;
 
         let set = TrackedSetId(set);
-        state.tracked_object_sets.insert(set, vec![member]);
-        state.tracked_set_member_causes.insert(
-            set,
-            [(member, ThisWayCause::Discarded)].into_iter().collect(),
-        );
+        state
+            .tracked_object_sets
+            .entry(set)
+            .or_default()
+            .push(member);
+        state
+            .tracked_set_member_causes
+            .entry(set)
+            .or_default()
+            .insert(member, ThisWayCause::Discarded);
         state
             .tracked_set_member_origins
             .entry(set)
@@ -26786,11 +26810,130 @@ mod tests {
             .insert(
                 member,
                 TrackedMemberOrigin {
-                    departed_from: Zone::Hand,
+                    departed_from: zone,
                     departure_incarnation: incarnation,
                 },
             );
         state.next_tracked_set_id = state.next_tracked_set_id.max(set.0 + 1);
+        if let Some(power) = power {
+            let mut departed = state.objects[&member].clone();
+            departed.power = Some(power);
+            departed.toughness = Some(2);
+            state
+                .lki_by_incarnation
+                .entry(member)
+                .or_default()
+                .insert(incarnation, departed.snapshot_public_characteristics());
+        }
+    }
+
+    /// `eq_except_growable` on the raw frames and on their `normalize_for_loop` images.
+    fn growth_covers(prior: &GameState, current: &GameState) -> (bool, bool) {
+        let none = HashSet::new();
+        (
+            eq_except_growable(prior, current, &none),
+            eq_except_growable(
+                &prior.normalize_for_loop(),
+                &current.normalize_for_loop(),
+                &none,
+            ),
+        )
+    }
+
+    fn block_history_naming(state: &mut GameState, member: ObjectId, incarnation: u64) {
+        use crate::game::combat::BlockHistoryPair;
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        state.creature_blocked_attackers_this_turn.clear();
+        state
+            .creature_blocked_attackers_this_turn
+            .insert(BlockHistoryPair {
+                blocker: ObjectIncarnationRef::of(member, incarnation),
+                attacker: ObjectIncarnationRef::of(ObjectId(99), 0),
+            });
+    }
+
+    /// A deferred trigger whose event is the tap of `member@incarnation`.
+    fn deferred_tap_naming(state: &mut GameState, member: ObjectId, incarnation: u64) {
+        use crate::game::triggers::{PendingTrigger, PendingTriggerContext};
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility, TargetFilter};
+
+        let mut pending = PendingTrigger::ordinary(
+            ObjectId(77),
+            PlayerId(0),
+            None,
+            Box::new(ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                Vec::new(),
+                ObjectId(77),
+                PlayerId(0),
+            )),
+            0,
+        );
+        pending.trigger_event = Some(crate::types::events::GameEvent::PermanentTapped {
+            object_id: member,
+            caused_by: None,
+            incarnation: Some(incarnation),
+        });
+        state.deferred_triggers.clear();
+        state
+            .deferred_triggers
+            .push(PendingTriggerContext::single(pending));
+    }
+
+    /// The copiable values of `member@incarnation`, and optionally the own-copy ability on the
+    /// stack (`CopyTokenOf SelfRef`) that keeps them.
+    fn copy_source(state: &mut GameState, member: ObjectId, incarnation: u64, on_stack: bool) {
+        use crate::types::ability::{
+            Effect, QuantityExpr, ResolvedAbility, TargetFilter, TokenAttackDestination,
+        };
+
+        let values = crate::game::printed_cards::intrinsic_copiable_values(&state.objects[&member]);
+        state.lki_copiable_values_by_incarnation.remove(&member);
+        state
+            .lki_copiable_values_by_incarnation
+            .entry(member)
+            .or_default()
+            .insert(incarnation, values);
+        state.stack.clear();
+        if on_stack {
+            let mut ability = ResolvedAbility::new(
+                Effect::CopyTokenOf {
+                    target: TargetFilter::SelfRef,
+                    owner: TargetFilter::Controller,
+                    source_filter: None,
+                    enters_attacking: false,
+                    attack_destination: TokenAttackDestination::ControllerChooses,
+                    tapped: false,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    extra_keywords: vec![],
+                    additional_modifications: vec![],
+                },
+                vec![],
+                member,
+                PlayerId(0),
+            );
+            ability.source_incarnation = Some(incarnation);
+            state.stack.push_back(StackEntry {
+                id: ObjectId(20),
+                source_id: member,
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: member,
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: None,
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+        }
     }
 
     /// CR 608.2c: a fresh set naming a different member leaves the prior set's live member
@@ -26810,34 +26953,191 @@ mod tests {
     }
 
     /// CR 608.2c + CR 400.7: a fresh set re-stamping the live member, in place or after a move
-    /// past a block-history carrier naming its old stamp, leaves the superseded origin covered.
+    /// past a block-history carrier naming its old stamp, leaves the superseded origin covered,
+    /// whether or not the departures record snapshots.
     #[test]
     fn growth_remainder_covers_fresh_set_restamping_the_live_member() {
-        use crate::game::combat::BlockHistoryPair;
-        use crate::types::identifiers::ObjectIncarnationRef;
+        use crate::types::zones::Zone;
 
-        let covers = |after: u64, carrier: bool| {
+        let covers = |after: u64, carrier: bool, zone: Zone, power: Option<i32>| {
             let mut prior = GameState::new_two_player(42);
             let m = live_graveyard_object(&mut prior, "M", 3);
             if carrier {
-                prior
-                    .creature_blocked_attackers_this_turn
-                    .insert(BlockHistoryPair {
-                        blocker: ObjectIncarnationRef::of(m, 2),
-                        attacker: ObjectIncarnationRef::of(ObjectId(99), 0),
-                    });
+                block_history_naming(&mut prior, m, 2);
             }
+            stamp_departure(&mut prior, 2, m, 2, zone, power);
+            let mut current = prior.clone();
+            stamp_departure(&mut current, 4, m, 3, zone, power);
+            current.objects.get_mut(&m).unwrap().incarnation = after;
+            growth_covers(&prior, &current)
+        };
+        assert_eq!(
+            [
+                covers(3, false, Zone::Hand, None),
+                covers(4, true, Zone::Hand, None),
+                covers(4, true, Zone::Battlefield, Some(5)),
+            ],
+            [(true, true); 3],
+            "(in place, moved past a carrier at the old stamp, the same with snapshots) must stay \
+             covered on raw and normalized frames"
+        );
+    }
+
+    /// CR 608.2c: a fresh set re-stamping a member whose copiable values are kept leaves the
+    /// superseded origin covered, with or without the own-copy ability on the stack.
+    #[test]
+    fn growth_remainder_covers_fresh_set_restamping_a_copy_source_member() {
+        use crate::types::zones::Zone;
+
+        let covers = |zone: Zone, power: Option<i32>, on_stack: bool| {
+            let mut prior = GameState::new_two_player(42);
+            let m = live_graveyard_object(&mut prior, "M", 3);
+            stamp_departure(&mut prior, 2, m, 2, zone, power);
+            copy_source(&mut prior, m, 2, on_stack);
+            let mut current = prior.clone();
+            stamp_departure(&mut current, 4, m, 3, zone, power);
+            current.objects.get_mut(&m).unwrap().incarnation = 4;
+            copy_source(&mut current, m, 3, on_stack);
+            growth_covers(&prior, &current)
+        };
+        let results: Vec<_> = [(Zone::Hand, None), (Zone::Battlefield, Some(5))]
+            .into_iter()
+            .flat_map(|(zone, power)| [false, true].map(|on_stack| covers(zone, power, on_stack)))
+            .collect();
+        assert_eq!(
+            results,
+            vec![(true, true); 4],
+            "(hand, battlefield) x (copy key, plus the own-copy ability) must stay covered"
+        );
+    }
+
+    /// CR 608.2c + CR 400.7: a carrier naming the member's latest departure (a deferred trigger's
+    /// tap event, a block-history pair) moves with the re-stamp a turn later, and the superseded
+    /// origin stays covered.
+    #[test]
+    fn growth_remainder_covers_a_carrier_naming_the_latest_departure_a_turn_later() {
+        let covers = |carrier: fn(&mut GameState, ObjectId, u64)| {
+            let mut prior = GameState::new_two_player(42);
+            let m = live_graveyard_object(&mut prior, "M", 3);
+            carrier(&mut prior, m, 2);
             stamp_hand_departure(&mut prior, 2, m, 2);
             let mut current = prior.clone();
             stamp_hand_departure(&mut current, 4, m, 3);
-            current.objects.get_mut(&m).unwrap().incarnation = after;
-            eq_except_growable(&prior, &current, &HashSet::new())
+            current.objects.get_mut(&m).unwrap().incarnation = 4;
+            carrier(&mut current, m, 3);
+            growth_covers(&prior, &current)
         };
         assert_eq!(
-            (covers(3, false), covers(4, true)),
-            (true, true),
-            "(in place, moved past a carrier at the old stamp) must both stay covered"
+            [covers(deferred_tap_naming), covers(block_history_naming)],
+            [(true, true); 2],
+            "(tap event, block-history pair) carriers must stay covered"
         );
+    }
+
+    /// CR 608.2c: a blink re-stamping the live member across a step, where only the newest
+    /// departure's snapshot survives, leaves the superseded origin covered.
+    #[test]
+    fn growth_remainder_covers_fresh_set_restamps_across_a_step() {
+        use crate::types::zones::Zone;
+
+        let mut prior = GameState::new_two_player(42);
+        let m = live_graveyard_object(&mut prior, "M", 3);
+        stamp_departure(&mut prior, 2, m, 2, Zone::Battlefield, Some(5));
+        let mut current = prior.clone();
+        current.lki_by_incarnation.clear();
+        stamp_departure(&mut current, 4, m, 4, Zone::Battlefield, Some(5));
+        current.objects.get_mut(&m).unwrap().incarnation = 5;
+        assert_eq!(growth_covers(&prior, &current), (true, true));
+    }
+
+    /// CR 608.2c + CR 400.7: a trigger's tap event tracking the member's latest snapshot within a
+    /// step leaves the superseded origin covered.
+    #[test]
+    fn growth_remainder_covers_a_trigger_carrier_tracking_the_latest_snapshot() {
+        use crate::types::zones::Zone;
+
+        let mut prior = GameState::new_two_player(42);
+        let m = live_graveyard_object(&mut prior, "M", 3);
+        deferred_tap_naming(&mut prior, m, 2);
+        stamp_departure(&mut prior, 2, m, 2, Zone::Battlefield, Some(5));
+        let mut current = prior.clone();
+        stamp_departure(&mut current, 4, m, 4, Zone::Battlefield, Some(5));
+        current.objects.get_mut(&m).unwrap().incarnation = 5;
+        deferred_tap_naming(&mut current, m, 4);
+        assert_eq!(growth_covers(&prior, &current), (true, true));
+    }
+
+    /// CR 608.2c + CR 608.2h: a fresh set whose resolved read differs from the prior's refuses: a
+    /// changed snapshot (alone, with a tap carrier moving, or on a second member), or a snapshot
+    /// where the prior's recording origin had none.
+    #[test]
+    fn growth_remainder_refuses_a_fresh_set_reading_a_changed_snapshot() {
+        use crate::types::zones::Zone;
+
+        let restamp = |prior_power: Option<i32>, power: i32, tap: bool| {
+            let mut prior = GameState::new_two_player(42);
+            let m = live_graveyard_object(&mut prior, "M", 3);
+            if tap {
+                deferred_tap_naming(&mut prior, m, 2);
+            }
+            stamp_departure(&mut prior, 2, m, 2, Zone::Battlefield, prior_power);
+            let mut current = prior.clone();
+            stamp_departure(&mut current, 4, m, 4, Zone::Battlefield, Some(power));
+            current.objects.get_mut(&m).unwrap().incarnation = 5;
+            if tap {
+                deferred_tap_naming(&mut current, m, 4);
+            }
+            growth_covers(&prior, &current)
+        };
+        let two_members = |second_power: i32| {
+            let mut prior = GameState::new_two_player(42);
+            let m = live_graveyard_object(&mut prior, "M", 3);
+            let n = live_graveyard_object(&mut prior, "N", 6);
+            stamp_departure(&mut prior, 2, m, 2, Zone::Battlefield, Some(5));
+            stamp_departure(&mut prior, 2, n, 5, Zone::Battlefield, Some(5));
+            let mut current = prior.clone();
+            stamp_departure(&mut current, 4, m, 3, Zone::Battlefield, Some(5));
+            stamp_departure(&mut current, 4, n, 6, Zone::Battlefield, Some(second_power));
+            current.objects.get_mut(&m).unwrap().incarnation = 4;
+            current.objects.get_mut(&n).unwrap().incarnation = 7;
+            growth_covers(&prior, &current)
+        };
+        assert_eq!(
+            [
+                restamp(Some(5), 5, false),
+                restamp(Some(5), 5, true),
+                two_members(5)
+            ],
+            [(true, true); 3],
+            "reach guard: (plain, tap carrier, two members) reading alike stay covered"
+        );
+        assert_eq!(
+            [
+                restamp(Some(5), 2, false),
+                restamp(Some(5), 2, true),
+                two_members(2),
+                restamp(None, 5, false),
+            ],
+            [(false, false); 4],
+            "(plain, tap carrier, second member) changed snapshots and a snapshot after a \
+             recording-origin gap must refuse"
+        );
+    }
+
+    /// CR 608.2c + CR 400.7: a graveyard departure records no snapshot, so a resolved origin
+    /// naming the member's live incarnation in place stays covered after the member moves and a
+    /// fresh set stamps that move.
+    #[test]
+    fn growth_remainder_covers_an_in_place_graveyard_stamp_after_the_member_moves() {
+        use crate::types::zones::Zone;
+
+        let mut prior = GameState::new_two_player(42);
+        let m = live_graveyard_object(&mut prior, "M", 3);
+        stamp_departure(&mut prior, 2, m, 3, Zone::Graveyard, None);
+        let mut current = prior.clone();
+        stamp_departure(&mut current, 4, m, 3, Zone::Graveyard, None);
+        current.objects.get_mut(&m).unwrap().incarnation = 4;
+        assert_eq!(growth_covers(&prior, &current), (true, true));
     }
 
     /// CR 500.8: a run of identical self-resuming inserted units unwinds to the same step at any

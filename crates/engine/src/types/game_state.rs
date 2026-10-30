@@ -33997,10 +33997,8 @@ impl GameState {
         self.for_each_trigger_event_carrier_mut(&mut |event| record_event(event));
 
         // CR 608.2c: the departure snapshots the frame's live tracked-set
-        // anaphor reads — the resolved set's origins (`chain_tracked_set_id`,
-        // else the latest non-empty set, mirroring
-        // `targeting::resolve_tracked_set_id`; inlined because types cannot
-        // depend on game) — are retained alongside carrier references, or
+        // anaphor reads — the resolved set's origins
+        // (`targeting::resolve_tracked_set_id`) — are retained alongside carrier references, or
         // normalization would degrade origin reads the unnormalized states
         // agree on. Every other set is an append-only record whose superseded
         // stamps are history, not position: each blink cycle appends a fresh
@@ -34008,14 +34006,7 @@ impl GameState {
         // accumulate incarnations across periods and refuse artefactually.
         // (Fresh sets' origins stay compared through the origins field,
         // converged below the window by the cover arms.)
-        let resolved_set = self.chain_tracked_set_id.or_else(|| {
-            self.tracked_object_sets
-                .iter()
-                .filter(|(_, members)| !members.is_empty())
-                .max_by_key(|(id, _)| id.0)
-                .map(|(id, _)| *id)
-        });
-        if let Some(set) = resolved_set {
+        if let Some(set) = crate::game::targeting::resolve_tracked_set_id(self) {
             if let Some(members) = self.tracked_set_member_origins.get(&set) {
                 for (member, origin) in members.iter() {
                     referenced_lki.insert(ObjectIncarnationRef::of(
@@ -34124,13 +34115,15 @@ impl GameState {
     /// events name (`ZoneChanged` entries and every incarnation inside their
     /// records, stamped `PermanentTapped` taps), the may-trigger origins and
     /// stored answers, the turn and combat block-history pairs (CR 509.1g), and
-    /// the live incarnation of every object those, an `lki_by_incarnation` key
-    /// or a tracked-set origin (CR 608.2c) name. Ranks count down from the
+    /// the live incarnation of every object those or a tracked-set origin
+    /// (CR 608.2c) name. Ranks count down from the
     /// highest member, so the live incarnation anchors them: two positions
     /// minted at different times compare equal, while which incarnation each
     /// carrier names, relative to the live one, and whether a snapshot sits
     /// behind it, is preserved. The live incarnation is rewritten through the
-    /// same map, so normalizing a normalized state is a fixed point.
+    /// same map, so normalizing a normalized state is a fixed point. Kept
+    /// snapshots no carrier reads rank among themselves, and tracked-set
+    /// origins are renamed by their read class rather than ranked.
     fn canonicalize_lki_incarnations_for_loop(&mut self) {
         fn named_incarnation(event: &mut GameEvent) -> Option<(ObjectId, &mut u64)> {
             match event {
@@ -34541,9 +34534,11 @@ impl GameState {
                 .or_default()
                 .extend(history.keys().copied());
         }
+        let mut carrier_read: HashSet<ObjectIncarnationRef> = HashSet::new();
         self.for_each_trigger_event_carrier_mut(&mut |event| {
             if let Some((object_id, incarnation)) = named_incarnation(event) {
                 present.entry(object_id).or_default().push(*incarnation);
+                carrier_read.insert(ObjectIncarnationRef::of(object_id, *incarnation));
             }
             record_incarnations(event, &mut |object_id, incarnation| {
                 present.entry(object_id).or_default().push(*incarnation);
@@ -34583,13 +34578,12 @@ impl GameState {
             generations.sort_unstable();
             generations.dedup();
         }
-        // The live incarnation of every object an unpooled key or origin names is ranked, so
-        // that value's rank counts it and renormalizing reads the same rank back.
-        for member in self.lki_by_incarnation.keys().chain(
-            self.tracked_set_member_origins
-                .values()
-                .flat_map(|members| members.keys()),
-        ) {
+        // An origin can name its member's live incarnation, so that incarnation is ranked.
+        for member in self
+            .tracked_set_member_origins
+            .values()
+            .flat_map(|members| members.keys())
+        {
             if self.objects.contains_key(member) {
                 present.entry(*member).or_default();
             }
@@ -34606,22 +34600,86 @@ impl GameState {
         let canonical = |object_id: ObjectId, incarnation: u64| {
             u64::MAX - 1 - 2 * above(&present, object_id, incarnation)
         };
-        // Ranks count pooled values above, so departure stamps and `lki_by_incarnation` keys,
-        // which come and go between loop samples, are never pooled: an unpooled value takes the
-        // half-step below its nearest pooled neighbour above.
-        let remap = |object_id: ObjectId, incarnation: u64| {
-            let pooled = present.get(&object_id).map_or(&[][..], Vec::as_slice);
-            match pooled.binary_search(&incarnation) {
-                Ok(_) => canonical(object_id, incarnation),
-                Err(at) => u64::MAX - 2 * (pooled.len() - at) as u64,
+        let read_by_carrier = |object_id: ObjectId, incarnation: u64| {
+            carrier_read.contains(&ObjectIncarnationRef::of(object_id, incarnation))
+        };
+        let mut unpooled: HashMap<ObjectId, Vec<u64>> = HashMap::new();
+        for (object_id, history) in self.lki_by_incarnation.iter() {
+            let keys = unpooled.entry(*object_id).or_default();
+            keys.extend(
+                history
+                    .keys()
+                    .copied()
+                    .filter(|key| !read_by_carrier(*object_id, *key)),
+            );
+            keys.sort_unstable();
+        }
+        // Kept keys no carrier reads rank among themselves, so pooled values cannot move them.
+        let key_name = |object_id: ObjectId, incarnation: u64| {
+            if read_by_carrier(object_id, incarnation) {
+                canonical(object_id, incarnation)
+            } else {
+                u64::MAX - 2 * above(&unpooled, object_id, incarnation)
             }
         };
+        const UNANCHORED_ORIGIN: u64 = 0;
+        let resolved = crate::game::targeting::resolve_tracked_set_id(self);
+        let resolved_origins = resolved.and_then(|set| self.tracked_set_member_origins.get(&set));
+        let snapshot = |member: ObjectId, incarnation: u64| {
+            self.lki_by_incarnation
+                .get(&member)
+                .is_some_and(|history| history.contains_key(&incarnation))
+                .then(|| key_name(member, incarnation))
+        };
+        // CR 608.2c + CR 608.2h + CR 400.7: an origin is renamed by its read class: the kept
+        // snapshot it selects, the live incarnation a recording departure would key next, or
+        // `UNANCHORED_ORIGIN`, read by `departed_from` alone; a superseded origin whose snapshot
+        // is not kept takes the snapshot the resolved set's origin selects for its member.
+        let read_class = |set: TrackedSetId, member: ObjectId, origin: &TrackedMemberOrigin| {
+            let incarnation = origin.departure_incarnation;
+            snapshot(member, incarnation)
+                .or_else(|| {
+                    (crate::game::quantity::zone_departure_records_lki(origin.departed_from)
+                        && self
+                            .objects
+                            .get(&member)
+                            .is_some_and(|object| object.incarnation == incarnation))
+                    .then(|| canonical(member, incarnation))
+                })
+                .or_else(|| {
+                    (Some(set) != resolved)
+                        .then(|| resolved_origins.and_then(|origins| origins.get(&member)))
+                        .flatten()
+                        .and_then(|resolved| snapshot(member, resolved.departure_incarnation))
+                })
+                .unwrap_or(UNANCHORED_ORIGIN)
+        };
+        let origins: im::HashMap<TrackedSetId, im::HashMap<ObjectId, TrackedMemberOrigin>> = self
+            .tracked_set_member_origins
+            .iter()
+            .map(|(set, members)| {
+                let members = members
+                    .iter()
+                    .map(|(member, origin)| {
+                        let departure_incarnation = read_class(*set, *member, origin);
+                        (
+                            *member,
+                            TrackedMemberOrigin {
+                                departure_incarnation,
+                                ..*origin
+                            },
+                        )
+                    })
+                    .collect();
+                (*set, members)
+            })
+            .collect();
         self.lki_by_incarnation = std::mem::take(&mut self.lki_by_incarnation)
             .into_iter()
             .map(|(object_id, history)| {
                 let history = history
                     .into_iter()
-                    .map(|(incarnation, snapshot)| (remap(object_id, incarnation), snapshot))
+                    .map(|(incarnation, snapshot)| (key_name(object_id, incarnation), snapshot))
                     .collect();
                 (object_id, history)
             })
@@ -34632,7 +34690,7 @@ impl GameState {
                 .map(|(object_id, history)| {
                     let history = history
                         .into_iter()
-                        .map(|(incarnation, values)| (remap(object_id, incarnation), values))
+                        .map(|(incarnation, values)| (canonical(object_id, incarnation), values))
                         .collect();
                     (object_id, history)
                 })
@@ -34694,19 +34752,7 @@ impl GameState {
                     });
             }
         }
-        self.tracked_set_member_origins = std::mem::take(&mut self.tracked_set_member_origins)
-            .into_iter()
-            .map(|(set_id, members)| {
-                let members = members
-                    .into_iter()
-                    .map(|(member, mut origin)| {
-                        origin.departure_incarnation = remap(member, origin.departure_incarnation);
-                        (member, origin)
-                    })
-                    .collect();
-                (set_id, members)
-            })
-            .collect();
+        self.tracked_set_member_origins = origins;
     }
 
     /// The spell announcements named by `BecomesTarget` targeters on every
