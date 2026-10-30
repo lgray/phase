@@ -64,6 +64,19 @@ impl NativeTable {
     }
 
     async fn with_executor(game_executor: GameExecutor) -> Self {
+        Self::seated(game_executor, 4, FormatConfig::free_for_all()).await
+    }
+
+    async fn duel() -> Self {
+        Self::seated(
+            GameExecutor::new(NonZeroUsize::MIN),
+            2,
+            FormatConfig::standard(),
+        )
+        .await
+    }
+
+    async fn seated(game_executor: GameExecutor, seats: u8, format: FormatConfig) -> Self {
         let context = crate::ServerContext {
             game_executor,
             ..Default::default()
@@ -88,16 +101,19 @@ impl NativeTable {
                     Some(DeckChoice::DeckList(Box::new(names.clone()))),
                     "host".to_string(),
                     None,
-                    4,
+                    seats,
                     Default::default(),
-                    Some(FormatConfig::free_for_all()),
+                    Some(format),
                     None,
                 )
                 .unwrap();
             let session = manager.session_exclusive(&code).unwrap();
-            let mut tokens = Vec::with_capacity(4);
+            let mut tokens = Vec::with_capacity(usize::from(seats));
             tokens.push(token);
-            for name in ["guest-one", "guest-two", "guest-three"] {
+            for name in ["guest-one", "guest-two", "guest-three"]
+                .into_iter()
+                .take(usize::from(seats) - 1)
+            {
                 let (token, _) = session
                     .join_with_reservation(
                         deck.clone(),
@@ -1951,4 +1967,424 @@ fn socket_hosted_json_pings_keep_the_listing_alive() {
             });
         }
     });
+}
+
+mod oversized_publication {
+    use super::*;
+    use engine::ai_support::legal_actions;
+    use engine::analysis::decision_template::IterationCount;
+    use engine::analysis::loop_check::ShortcutResponse;
+    use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+    use engine::game::scenario_db::GameScenarioDbExt;
+    use engine::types::ability::AbilityKind;
+    use engine::types::game_state::{CastPaymentMode, GameState, LoopDetectionMode, WaitingFor};
+    use engine::types::identifiers::ObjectId;
+    use engine::types::mana::{ManaCost, ManaCostShard};
+    use engine::types::phase::Phase;
+    use engine::types::zones::Zone;
+    use server_core::game_state_snapshot_wire_guard::{
+        MAX_SNAPSHOT_EVENTS, MAX_SNAPSHOT_SPELL_COSTS,
+    };
+
+    const SMAUG: &str = "Smaug the Impenetrable";
+    const TAKE: u32 = 120;
+
+    fn act(runner: &mut GameRunner, action: GameAction) {
+        let shown = format!("{action:?}");
+        runner
+            .act(action)
+            .unwrap_or_else(|error| panic!("{shown}: {error:?}"));
+    }
+
+    /// Resolves pending choices, preferring actions that name the combo pieces.
+    fn settle(runner: &mut GameRunner, score: &dyn Fn(&GameAction) -> i32) {
+        for _ in 0..400 {
+            match &runner.state().waiting_for {
+                WaitingFor::LoopShortcut { .. } | WaitingFor::GameOver { .. } => return,
+                WaitingFor::Priority { .. } if runner.state().stack.is_empty() => return,
+                WaitingFor::Priority { .. } => act(runner, GameAction::PassPriority),
+                _ => {
+                    let best = legal_actions(runner.state())
+                        .into_iter()
+                        .filter(|action| {
+                            !matches!(
+                                action,
+                                GameAction::PassPriority
+                                    | GameAction::CancelCast
+                                    | GameAction::DeclineShortcut
+                                    | GameAction::DeclareShortcut { .. }
+                                    | GameAction::UntapLandForMana { .. }
+                                    | GameAction::UnspendPoolMana { .. }
+                                    | GameAction::BackToManaPayment
+                                    | GameAction::Concede { .. }
+                            )
+                        })
+                        .enumerate()
+                        .max_by_key(|(at, action)| (score(action), std::cmp::Reverse(*at)))
+                        .map(|(_, action)| action)
+                        .unwrap_or(GameAction::PassPriority);
+                    act(runner, best);
+                }
+            }
+        }
+        panic!("the Smaug board did not settle");
+    }
+
+    /// Smaug + Mayhem Devil with Treasure mana: each Treasure sacrificed for
+    /// mana deals Smaug 1 damage, which creates a Treasure, until the engine
+    /// offers a loop shortcut.
+    fn smaug_offer() -> GameState {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../engine/tests/fixtures/integration_cards.json.gz"
+        );
+        let db = engine::database::card_db::CardDatabase::from_export_reader(
+            flate2::read::GzDecoder::new(std::io::BufReader::new(
+                std::fs::File::open(path).unwrap(),
+            )),
+        )
+        .unwrap();
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let smaug = scenario.add_real_card(P0, SMAUG, Zone::Battlefield, &db);
+        let devil = scenario.add_real_card(P0, "Mayhem Devil", Zone::Battlefield, &db);
+        let breaker =
+            scenario.add_real_card(P0, "Professional Face-Breaker", Zone::Battlefield, &db);
+        scenario.add_real_card(P0, "Mountain", Zone::Battlefield, &db);
+        let shock = scenario.add_real_card(P0, "Shock", Zone::Hand, &db);
+        for _ in 0..60 {
+            scenario.add_real_card(P0, "Swamp", Zone::Library, &db);
+            scenario.add_real_card(P1, "Swamp", Zone::Library, &db);
+        }
+        let mut runner = scenario.build();
+        runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+        let score = move |action: &GameAction| {
+            let related = action.related_object_ids();
+            2 * i32::from(related.contains(&smaug))
+                + i32::from(related.contains(&devil))
+                + i32::from(related.contains(&breaker))
+        };
+        let card_id = runner.state().objects[&shock].card_id;
+        act(
+            &mut runner,
+            GameAction::CastSpell {
+                object_id: shock,
+                card_id,
+                targets: vec![smaug],
+                payment_mode: CastPaymentMode::Auto,
+            },
+        );
+        settle(&mut runner, &score);
+        for _ in 0..8 {
+            let state = runner.state();
+            let treasure = state
+                .battlefield
+                .iter()
+                .copied()
+                .find(|id| state.objects[id].name == "Treasure" && !state.objects[id].tapped)
+                .expect("an untapped Treasure");
+            let ability_index = mana_ability(state, treasure);
+            act(
+                &mut runner,
+                GameAction::ActivateAbility {
+                    source_id: treasure,
+                    ability_index,
+                    payment_mode: CastPaymentMode::Auto,
+                },
+            );
+            settle(&mut runner, &score);
+            if matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }) {
+                return runner.state().clone();
+            }
+        }
+        panic!("no loop shortcut offer: {:?}", runner.state().waiting_for);
+    }
+
+    fn mana_ability(state: &GameState, id: ObjectId) -> usize {
+        state.objects[&id]
+            .abilities
+            .iter()
+            .position(|ability| {
+                ability.kind == AbilityKind::Activated
+                    && engine::game::mana_abilities::is_mana_ability(ability)
+            })
+            .expect("a Treasure mana ability")
+    }
+
+    fn smaug_damage_in(state: &GameState) -> u64 {
+        state
+            .objects
+            .values()
+            .find(|object| object.name == SMAUG)
+            .map(|object| u64::from(object.damage_marked))
+            .unwrap()
+    }
+
+    fn smaug_damage(update: &serde_json::Value) -> u64 {
+        let objects = &update["data"]["state"]["objects"];
+        let mut all = objects
+            .as_object()
+            .map(|map| map.values().collect::<Vec<_>>())
+            .or_else(|| objects.as_array().map(|list| list.iter().collect()))
+            .unwrap();
+        all.retain(|object| object["name"] == SMAUG);
+        all[0]["damage_marked"].as_u64().unwrap()
+    }
+
+    async fn install(table: &NativeTable, state: GameState, ai: &[PlayerId]) {
+        let ai = ai.to_vec();
+        let session = crate::lock_session(&table.app.sessions, &table.key.game_code)
+            .await
+            .unwrap();
+        let (lease, ()) = table
+            .app
+            .context
+            .game_executor
+            .with_session(session, move |session| {
+                session.state = state;
+                enable_ai(session, ai);
+                session.advance_state_revision();
+            })
+            .await;
+        drop(lease);
+    }
+
+    async fn completion(socket: &mut ClientSocket, command_id: u64) -> serde_json::Value {
+        loop {
+            let frame = receive_command_frame(socket).await;
+            if owns_command_completion(&frame, command_id) {
+                return frame;
+            }
+        }
+    }
+
+    async fn next_decision(socket: &mut ClientSocket) -> serde_json::Value {
+        loop {
+            let frame = receive_command_frame(socket).await;
+            if frame["type"] == "StateUpdate"
+                && frame["data"]["legal_actions"]
+                    .as_array()
+                    .is_some_and(|actions| !actions.is_empty())
+            {
+                return frame;
+            }
+        }
+    }
+
+    fn assert_trimmed_take(update: &serde_json::Value, before: u64) {
+        assert_eq!(update["type"], "StateUpdate", "{update}");
+        assert!(update["data"]["events"].as_array().unwrap().len() <= MAX_SNAPSHOT_EVENTS);
+        assert_eq!(smaug_damage(update), before + u64::from(TAKE));
+    }
+
+    async fn declare(declarer: &mut ClientSocket) {
+        send_command_frame(
+            declarer,
+            &GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(TAKE),
+                template: None,
+            },
+            1,
+        )
+        .await;
+        assert_eq!(completion(declarer, 1).await["type"], "StateUpdate");
+    }
+
+    const ACCEPT: GameAction = GameAction::RespondToShortcut {
+        response: ShortcutResponse::Accept,
+    };
+
+    #[test]
+    fn oversized_human_accept_reaches_both_humans_trimmed() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let table = NativeTable::duel().await;
+            install(&table, offer, &[]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut declarer = table.connect(P0).await;
+                let mut accepter = table.connect(P1).await;
+                declare(&mut declarer).await;
+                send_command_frame(&mut accepter, &ACCEPT, 7).await;
+                assert_trimmed_take(&completion(&mut accepter, 7).await, before);
+                let decision = next_decision(&mut declarer).await;
+                assert_eq!(smaug_damage(&decision), before + u64::from(TAKE));
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized human take was not published");
+        });
+    }
+
+    #[test]
+    fn oversized_ai_accept_reaches_the_declarer_trimmed() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let table = NativeTable::duel().await;
+            install(&table, offer, &[P1]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut declarer = table.connect(P0).await;
+                declare(&mut declarer).await;
+                let decision = next_decision(&mut declarer).await;
+                assert!(
+                    decision["data"]["events"].as_array().unwrap().len() <= MAX_SNAPSHOT_EVENTS
+                );
+                assert_eq!(smaug_damage(&decision), before + u64::from(TAKE));
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized AI take was not published");
+        });
+    }
+
+    #[test]
+    fn oversized_human_accept_with_an_ai_followup_is_published_trimmed() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let table = NativeTable::duel().await;
+            install(&table, offer, &[]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut declarer = table.connect(P0).await;
+                let mut accepter = table.connect(P1).await;
+                declare(&mut declarer).await;
+                let session = crate::lock_session(&table.app.sessions, &table.key.game_code)
+                    .await
+                    .unwrap();
+                let (lease, ()) = table
+                    .app
+                    .context
+                    .game_executor
+                    .with_session(session, |session| enable_ai(session, [P0]))
+                    .await;
+                drop(lease);
+                send_command_frame(&mut accepter, &ACCEPT, 7).await;
+                let accepted = completion(&mut accepter, 7).await;
+                assert_trimmed_take(&accepted, before);
+                assert_eq!(accepted["data"]["legal_actions"], serde_json::json!([]));
+                let revision = accepted["data"]["state_revision"].as_u64().unwrap();
+                loop {
+                    let frame = receive_command_frame(&mut accepter).await;
+                    if frame["type"] == "StateUpdate" {
+                        assert!(frame["data"]["state_revision"].as_u64().unwrap() > revision);
+                        break;
+                    }
+                }
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized take with an AI follow-up was not published");
+        });
+    }
+
+    #[test]
+    fn post_ai_gate_ignores_the_decision_the_followup_replaces() {
+        run_async_test(|| async {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let bolts: Vec<_> = (0..=MAX_SNAPSHOT_SPELL_COSTS)
+                .map(|_| scenario.add_bolt_to_hand(P0))
+                .collect();
+            let mut runner = scenario.build();
+            let state = runner.state_mut();
+            for bolt in bolts {
+                state.objects.get_mut(&bolt).unwrap().mana_cost = ManaCost::Cost {
+                    shards: vec![ManaCostShard::Red],
+                    generic: 0,
+                };
+            }
+            state.active_player = P1;
+            state.priority_player = P1;
+            state.waiting_for = WaitingFor::Priority { player: P1 };
+            let state = runner.state().clone();
+            let table = NativeTable::duel().await;
+            install(&table, state, &[P0]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+                let mut human = table.connect(P1).await;
+                send_command_frame(&mut human, &GameAction::PassPriority, 3).await;
+                let passed = completion(&mut human, 3).await;
+                assert_eq!(passed["type"], "StateUpdate", "{passed}");
+                let revision = passed["data"]["state_revision"].as_u64().unwrap();
+                loop {
+                    let frame = receive_command_frame(&mut human).await;
+                    if frame["type"] == "StateUpdate" {
+                        assert!(frame["data"]["state_revision"].as_u64().unwrap() > revision);
+                        break;
+                    }
+                }
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the human pass was not published");
+        });
+    }
+
+    #[test]
+    fn a_blocked_game_call_refuses_overflow_without_closing_the_socket() {
+        run_async_test(|| async {
+            use futures_util::SinkExt;
+            use tokio_tungstenite::tungstenite::Message;
+
+            let (entered_tx, entered) = tokio::sync::oneshot::channel();
+            let entered_tx = parking_lot::Mutex::new(Some(entered_tx));
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let released = parking_lot::Mutex::new(released);
+            let executor = GameExecutor::new(NonZeroUsize::MIN).with_ai_step_hook(move |_| {
+                if let Some(entered) = entered_tx.lock().take() {
+                    let _ = entered.send(());
+                    released
+                        .lock()
+                        .recv_timeout(Duration::from_secs(60))
+                        .expect("the test opens the gate");
+                }
+            });
+            let table = NativeTable::with_executor(executor).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+                // Connect first: a reconnect may itself run pending AI decisions.
+                let mut host = table.connect(PlayerId(0)).await;
+                let session = crate::lock_session(&table.app.sessions, &table.key.game_code)
+                    .await
+                    .unwrap();
+                let (lease, ()) = table
+                    .app
+                    .context
+                    .game_executor
+                    .with_session(session, |session| {
+                        enable_ai(session, [PlayerId(1), PlayerId(2), PlayerId(3)])
+                    })
+                    .await;
+                drop(lease);
+                let keep = GameAction::MulliganDecision {
+                    choice: MulliganChoice::Keep,
+                };
+                send_command_frame(&mut host, &keep, 5).await;
+                entered.await.unwrap();
+                let emote = serde_json::to_string(&ClientMessage::Emote {
+                    emote: "Hello".to_string(),
+                })
+                .unwrap();
+                for _ in 0..70 {
+                    host.send(Message::Text(emote.clone().into()))
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                send_command_frame(&mut host, &GameAction::PassPriority, 6).await;
+                let refused = completion(&mut host, 6).await;
+                assert_eq!(refused["type"], "ActionFailed", "{refused}");
+                assert_eq!(
+                    refused["data"]["message"],
+                    crate::socket_mailbox::RefusalReason::GameBusy.message()
+                );
+                send_test_message(&mut host, &ClientMessage::Ping { timestamp: 9 }, false).await;
+                while receive_command_frame(&mut host).await["type"] != "Pong" {}
+                release.send(()).unwrap();
+                assert_eq!(completion(&mut host, 5).await["type"], "StateUpdate");
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("a blocked game call closed or stalled its socket");
+        });
+    }
 }
