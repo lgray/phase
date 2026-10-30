@@ -62,7 +62,7 @@ The engine's job is to execute real cards. This rule binds every role in this pi
 
 - Every explanation or justification of engine behavior names the real printed card(s), quotes their verbatim Oracle text from Scryfall or MTGJSON, and cites the CR rule grep-verified in `docs/MagicCompRules.txt`.
 - A test name, a synthetic card or an abstract shape is never the justification. A test is evidence for a claim about a real card, not the authority for it.
-- Tests use real printed cards with verbatim Oracle text ([card-test](../card-test/SKILL.md)). A synthetic card is acceptable only where no printed card exhibits the shape; the test then says so and names the nearest printed card. When no printed card exhibits the shape, first ask whether the behavior is needed at all.
+- Every card whose text a test exercises is a real printed card with verbatim Oracle text ([card-test](../card-test/SKILL.md)); a textless filler body is not justification and is exempt. A synthetic card is acceptable only where no printed card exhibits the shape; the test then says so and names the nearest printed card. When no printed card exhibits the shape, first ask whether the behavior is needed at all.
 - Reviewers report a violation as a finding that changes the artifact, never as a note.
 
 ## Run limits
