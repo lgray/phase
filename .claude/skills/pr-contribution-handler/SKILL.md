@@ -360,7 +360,7 @@ Apply the relevant lenses from `review-engine-impl.md`, especially:
 - sibling coverage
 - building-block reuse
 - **test discrimination** — would each assertion FAIL if the fix were reverted? (this replaces vague "test adequacy" — a green test that pins nothing is coverage theater). Check negative assertions specifically: an upstream short-circuit (e.g. `check_swallowed_clauses` early-returning on `Effect::Unimplemented`) makes `!detector(...)` assertions pass vacuously — require a paired positive reach-guard in the same test. This is the single most frequent finding across contributor PRs.
-- **real cards** — tests and justifications rest on printed cards with verbatim Oracle text and the CR, never a test name, synthetic card or abstract shape ([real cards](../engine-implementer/SKILL.md#real-cards))
+- **real cards** — justifications rest on a printed card's verbatim Oracle text and the CR, never a test name, synthetic card or abstract shape; tests use printed cards, a synthetic one only where the rule allows it ([real cards](../engine-implementer/SKILL.md#real-cards))
 - **behavioral trace** — hand-trace the logic for target + 2–3 sibling cases + edge cases (multiplayer, zero/empty, interaction); confirm rules-correct *output*, not just CLAUDE.md conformance
 - **new machinery earns its keep** — card-class size vs complexity; reuse vs duplication; sibling-cluster smell
 - **regression blast-radius** — every caller of any shared/hot path the change touches

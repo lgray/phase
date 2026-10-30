@@ -101,7 +101,7 @@ This applies in every mode. Findings are defects in the change under review: wha
 7a. **Real cards**
    - Apply [real cards](../engine-implementer/SKILL.md#real-cards) to every justification in the plan (Pattern Coverage, Reference Readings, Verification Matrix rows, any design rationale) and to every planned test.
    - Reject a justification whose authority is a test name, a synthetic card or an abstract shape instead of a printed card's verbatim Oracle text and the CR.
-   - Reject a planned synthetic test card unless the plan states that no printed card exhibits the shape and names the nearest printed card. If no printed card reaches the path the synthetic card drives, reject the behavior as unneeded.
+   - Reject a planned synthetic test card unless the plan states that no printed card exhibits the shape and names the nearest printed card. If no printed card reaches the path the synthetic card drives, require the plan's assessment of whether the behavior is needed, and reject the behavior when it is not.
    - Tag the finding `behavior`, or `text` when it supplies the named card's verbatim Oracle text and CR as the replacement.
 
 8. **Skill checklist adherence**
