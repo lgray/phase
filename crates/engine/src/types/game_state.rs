@@ -34067,19 +34067,17 @@ impl GameState {
     }
 
     /// See `normalize_for_loop`. Per object, rank-based over the retained
-    /// `lki_by_incarnation` and `lki_copiable_values_by_incarnation` keys, the
-    /// incarnations trigger events name (`ZoneChanged` entries and every
-    /// incarnation inside their records, stamped `PermanentTapped` taps), the
-    /// may-trigger origins and stored answers, the turn and combat block-history
-    /// pairs (CR 509.1g), the resolved tracked set's member origins (CR 608.2c),
-    /// and the object's live incarnation. Ranks count down from the highest
-    /// member, so the live incarnation anchors them: two positions minted at
-    /// different times compare equal, while which incarnation each carrier
-    /// names, relative to the live one, and whether a snapshot sits behind it,
-    /// is preserved. A superseded set's origin naming nothing pooled keeps the
-    /// rank it held while its set was resolved. The live incarnation
-    /// is rewritten through the same map, so normalizing a normalized state is
-    /// a fixed point.
+    /// `lki_copiable_values_by_incarnation` keys, the incarnations trigger
+    /// events name (`ZoneChanged` entries and every incarnation inside their
+    /// records, stamped `PermanentTapped` taps), the may-trigger origins and
+    /// stored answers, the turn and combat block-history pairs (CR 509.1g), and
+    /// the live incarnation of every object those, an `lki_by_incarnation` key
+    /// or a tracked-set origin (CR 608.2c) name. Ranks count down from the
+    /// highest member, so the live incarnation anchors them: two positions
+    /// minted at different times compare equal, while which incarnation each
+    /// carrier names, relative to the live one, and whether a snapshot sits
+    /// behind it, is preserved. The live incarnation is rewritten through the
+    /// same map, so normalizing a normalized state is a fixed point.
     fn canonicalize_lki_incarnations_for_loop(&mut self) {
         fn named_incarnation(event: &mut GameEvent) -> Option<(ObjectId, &mut u64)> {
             match event {
@@ -34475,21 +34473,15 @@ impl GameState {
                 }
             }
         }
-        fn ranked(members: &HashMap<ObjectId, Vec<u64>>, object_id: ObjectId, value: u64) -> u64 {
+        fn above(members: &HashMap<ObjectId, Vec<u64>>, object_id: ObjectId, value: u64) -> u64 {
             let members = &members[&object_id];
             let rank = members
                 .binary_search(&value)
                 .expect("every ranked value was collected first");
-            u64::MAX - (members.len() - 1 - rank) as u64
+            (members.len() - 1 - rank) as u64
         }
         let mut present: std::collections::HashMap<ObjectId, Vec<u64>> =
             std::collections::HashMap::new();
-        for (object_id, history) in self.lki_by_incarnation.iter() {
-            present
-                .entry(*object_id)
-                .or_default()
-                .extend(history.keys().copied());
-        }
         for (object_id, history) in self.lki_copiable_values_by_incarnation.iter() {
             present
                 .entry(*object_id)
@@ -34526,35 +34518,6 @@ impl GameState {
                 },
             );
         }
-        // CR 608.2c + CR 608.2h: only the RESOLVED set's origins join the
-        // identity pool (mirrors `retain_carrier_referenced_lki`:
-        // `chain_tracked_set_id`, else the latest non-empty set — inlined
-        // because types cannot depend on game). Reads through normalized
-        // origins go through the resolved set alone, so only its stamps need
-        // exact ranks: a missing departure there takes its own rank instead
-        // of aliasing a retained snapshot's rank, which would change what the
-        // normalized state reads. Every other set is append-only history
-        // whose superseded stamps converge structurally below the window via
-        // `remap_origin`'s miss path — pooling them would let a missing
-        // older-set stamp consume a dense rank, artefactually refusing cover
-        // across blink periods.
-        let resolved_set = self.chain_tracked_set_id.or_else(|| {
-            self.tracked_object_sets
-                .iter()
-                .filter(|(_, members)| !members.is_empty())
-                .max_by_key(|(id, _)| id.0)
-                .map(|(id, _)| *id)
-        });
-        if let Some(set) = resolved_set {
-            if let Some(members) = self.tracked_set_member_origins.get(&set) {
-                for (member, origin) in members.iter() {
-                    present
-                        .entry(*member)
-                        .or_default()
-                        .push(origin.departure_incarnation);
-                }
-            }
-        }
         for (object_id, generations) in grants.iter_mut() {
             if let Some(object) = self.objects.get(object_id) {
                 generations.extend(
@@ -34567,13 +34530,13 @@ impl GameState {
             generations.sort_unstable();
             generations.dedup();
         }
-        // Every live tracked member's incarnation is ranked, so a superseded origin's rank
-        // counts it and renormalizing reads the same rank back.
-        for member in self
-            .tracked_set_member_origins
-            .values()
-            .flat_map(|members| members.keys())
-        {
+        // The live incarnation of every object an unpooled key or origin names is ranked, so
+        // that value's rank counts it and renormalizing reads the same rank back.
+        for member in self.lki_by_incarnation.keys().chain(
+            self.tracked_set_member_origins
+                .values()
+                .flat_map(|members| members.keys()),
+        ) {
             if self.objects.contains_key(member) {
                 present.entry(*member).or_default();
             }
@@ -34587,14 +34550,25 @@ impl GameState {
             incarnations.dedup();
         }
         // CR 400.7 + CR 104.4b: which incarnation a record names, relative to the live object, is position; when it was minted is not.
-        let canonical =
-            |object_id: ObjectId, incarnation: u64| ranked(&present, object_id, incarnation);
+        let canonical = |object_id: ObjectId, incarnation: u64| {
+            u64::MAX - 1 - 2 * above(&present, object_id, incarnation)
+        };
+        // Ranks count pooled values above, so departure stamps and `lki_by_incarnation` keys,
+        // which come and go between loop samples, are never pooled: an unpooled value takes the
+        // half-step below its nearest pooled neighbour above.
+        let remap = |object_id: ObjectId, incarnation: u64| {
+            let pooled = present.get(&object_id).map_or(&[][..], Vec::as_slice);
+            match pooled.binary_search(&incarnation) {
+                Ok(_) => canonical(object_id, incarnation),
+                Err(at) => u64::MAX - 2 * (pooled.len() - at) as u64,
+            }
+        };
         self.lki_by_incarnation = std::mem::take(&mut self.lki_by_incarnation)
             .into_iter()
             .map(|(object_id, history)| {
                 let history = history
                     .into_iter()
-                    .map(|(incarnation, snapshot)| (canonical(object_id, incarnation), snapshot))
+                    .map(|(incarnation, snapshot)| (remap(object_id, incarnation), snapshot))
                     .collect();
                 (object_id, history)
             })
@@ -34605,7 +34579,7 @@ impl GameState {
                 .map(|(object_id, history)| {
                     let history = history
                         .into_iter()
-                        .map(|(incarnation, values)| (canonical(object_id, incarnation), values))
+                        .map(|(incarnation, values)| (remap(object_id, incarnation), values))
                         .collect();
                     (object_id, history)
                 })
@@ -34652,7 +34626,7 @@ impl GameState {
                 *incarnation = canonical(object_id, *incarnation);
             });
             definition_ref.for_each_grant_generation_mut(&mut |object_id, generation| {
-                *generation = ranked(&grants, object_id, *generation);
+                *generation = u64::MAX - above(&grants, object_id, *generation);
             });
         });
         for (object_id, object) in self.objects.iter_mut() {
@@ -34663,42 +34637,17 @@ impl GameState {
                 object
                     .trigger_occurrence_state
                     .for_each_active_grant_generation_mut(|generation| {
-                        *generation = ranked(&grants, *object_id, *generation);
+                        *generation = u64::MAX - above(&grants, *object_id, *generation);
                     });
             }
         }
-        // CR 608.2c: an origin naming a pooled incarnation takes its exact rank. A superseded
-        // origin naming nothing pooled keeps the rank it held while its set was resolved: it
-        // counts the member's pooled incarnations above it except the resolved set's re-stamp,
-        // which took the slot the live incarnation held then.
-        let restamps: HashMap<ObjectId, u64> = resolved_set
-            .and_then(|set| self.tracked_set_member_origins.get(&set))
-            .map(|members| {
-                members
-                    .iter()
-                    .map(|(member, origin)| (*member, origin.departure_incarnation))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let remap_origin = |member: ObjectId, incarnation: u64| {
-            let pooled = present.get(&member).map_or(&[][..], Vec::as_slice);
-            match pooled.binary_search(&incarnation) {
-                Ok(_) => canonical(member, incarnation),
-                Err(above) => {
-                    let restamp = restamps.get(&member);
-                    let ranked_above = pooled[above..].iter().filter(|&p| Some(p) != restamp);
-                    u64::MAX - ranked_above.count() as u64
-                }
-            }
-        };
         self.tracked_set_member_origins = std::mem::take(&mut self.tracked_set_member_origins)
             .into_iter()
             .map(|(set_id, members)| {
                 let members = members
                     .into_iter()
                     .map(|(member, mut origin)| {
-                        origin.departure_incarnation =
-                            remap_origin(member, origin.departure_incarnation);
+                        origin.departure_incarnation = remap(member, origin.departure_incarnation);
                         (member, origin)
                     })
                     .collect();

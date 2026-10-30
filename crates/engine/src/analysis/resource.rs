@@ -26749,57 +26749,89 @@ mod tests {
         );
     }
 
+    fn live_graveyard_object(state: &mut GameState, name: &str, incarnation: u64) -> ObjectId {
+        let id = crate::game::zones::create_object(
+            state,
+            crate::types::identifiers::CardId(1),
+            PlayerId(0),
+            name.to_string(),
+            crate::types::zones::Zone::Graveyard,
+        );
+        state.objects.get_mut(&id).unwrap().incarnation = incarnation;
+        id
+    }
+
+    // A hand departure records no snapshot, so only the live object sits above the stamp.
+    fn stamp_hand_departure(state: &mut GameState, set: u64, member: ObjectId, incarnation: u64) {
+        use crate::types::ability::ThisWayCause;
+        use crate::types::game_state::TrackedMemberOrigin;
+        use crate::types::identifiers::TrackedSetId;
+        use crate::types::zones::Zone;
+
+        let set = TrackedSetId(set);
+        state.tracked_object_sets.insert(set, vec![member]);
+        state.tracked_set_member_causes.insert(
+            set,
+            [(member, ThisWayCause::Discarded)].into_iter().collect(),
+        );
+        state
+            .tracked_set_member_origins
+            .entry(set)
+            .or_default()
+            .insert(
+                member,
+                TrackedMemberOrigin {
+                    departed_from: Zone::Hand,
+                    departure_incarnation: incarnation,
+                },
+            );
+        state.next_tracked_set_id = state.next_tracked_set_id.max(set.0 + 1);
+    }
+
     /// CR 608.2c: a fresh set naming a different member leaves the prior set's live member
     /// unstamped; its superseded origin keeps the rank it held while resolved.
     #[test]
     fn growth_remainder_covers_fresh_set_naming_a_different_live_member() {
-        use crate::types::ability::ThisWayCause;
-        use crate::types::game_state::TrackedMemberOrigin;
-        use crate::types::identifiers::{CardId, TrackedSetId};
-        use crate::types::zones::Zone;
-
-        fn live(state: &mut GameState, name: &str, incarnation: u64) -> ObjectId {
-            let id = crate::game::zones::create_object(
-                state,
-                CardId(1),
-                PlayerId(0),
-                name.to_string(),
-                Zone::Graveyard,
-            );
-            state.objects.get_mut(&id).unwrap().incarnation = incarnation;
-            id
-        }
-        // A hand departure records no snapshot, so only the live object sits above the stamp.
-        fn stamp(state: &mut GameState, set: u64, member: ObjectId, incarnation: u64) {
-            let set = TrackedSetId(set);
-            state.tracked_object_sets.insert(set, vec![member]);
-            state.tracked_set_member_causes.insert(
-                set,
-                [(member, ThisWayCause::Discarded)].into_iter().collect(),
-            );
-            state
-                .tracked_set_member_origins
-                .entry(set)
-                .or_default()
-                .insert(
-                    member,
-                    TrackedMemberOrigin {
-                        departed_from: Zone::Hand,
-                        departure_incarnation: incarnation,
-                    },
-                );
-            state.next_tracked_set_id = state.next_tracked_set_id.max(set.0 + 1);
-        }
-
         let mut prior = GameState::new_two_player(42);
-        let m = live(&mut prior, "M", 3);
-        let n = live(&mut prior, "N", 6);
-        stamp(&mut prior, 2, m, 2);
+        let m = live_graveyard_object(&mut prior, "M", 3);
+        let n = live_graveyard_object(&mut prior, "N", 6);
+        stamp_hand_departure(&mut prior, 2, m, 2);
         let mut current = prior.clone();
-        stamp(&mut current, 4, n, 5);
+        stamp_hand_departure(&mut current, 4, n, 5);
         assert!(
             eq_except_growable(&prior, &current, &HashSet::new()),
             "a fresh set naming another member must leave the live member's stamp covered"
+        );
+    }
+
+    /// CR 608.2c + CR 400.7: a fresh set re-stamping the live member, in place or after a move
+    /// past a block-history carrier naming its old stamp, leaves the superseded origin covered.
+    #[test]
+    fn growth_remainder_covers_fresh_set_restamping_the_live_member() {
+        use crate::game::combat::BlockHistoryPair;
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        let covers = |after: u64, carrier: bool| {
+            let mut prior = GameState::new_two_player(42);
+            let m = live_graveyard_object(&mut prior, "M", 3);
+            if carrier {
+                prior
+                    .creature_blocked_attackers_this_turn
+                    .insert(BlockHistoryPair {
+                        blocker: ObjectIncarnationRef::of(m, 2),
+                        attacker: ObjectIncarnationRef::of(ObjectId(99), 0),
+                    });
+            }
+            stamp_hand_departure(&mut prior, 2, m, 2);
+            let mut current = prior.clone();
+            stamp_hand_departure(&mut current, 4, m, 3);
+            current.objects.get_mut(&m).unwrap().incarnation = after;
+            eq_except_growable(&prior, &current, &HashSet::new())
+        };
+        assert_eq!(
+            (covers(3, false), covers(4, true)),
+            (true, true),
+            "(in place, moved past a carrier at the old stamp) must both stay covered"
         );
     }
 

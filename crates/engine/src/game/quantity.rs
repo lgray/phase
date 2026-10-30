@@ -22046,9 +22046,9 @@ mod tests {
         );
     }
 
-    /// CR 608.2c + CR 400.7: a superseded tracked-set origin naming nothing pooled keeps the rank
-    /// it held while its set was resolved, whether or not the newer set re-stamps its member, and
-    /// renormalizing reads the same ranks back.
+    /// CR 608.2c + CR 400.7: a superseded tracked-set origin keeps the rank it held while its set
+    /// was resolved, whether the newer set re-stamps its member after a move, in place, or not at
+    /// all, and renormalizing reads the same ranks back.
     #[test]
     fn loop_normalization_ranks_superseded_origins_as_while_resolved() {
         use crate::game::combat::BlockHistoryPair;
@@ -22076,10 +22076,10 @@ mod tests {
             state
         }
         // Prior frame: set 2 = {M@`stale`} is the latest set; `live` is M's incarnation (None:
-        // M no longer exists) and `carrier` a block-history incarnation of M above the stamp.
+        // M no longer exists) and `carrier` a block-history incarnation of M.
         // Current frame: the prior plus set 4, re-stamping M's departure from its prior live
-        // incarnation, or naming N instead.
-        let frames = |stale: u64, live: Option<u64>, carrier: Option<u64>, restamped: bool| {
+        // incarnation and leaving M at `after`, or naming N instead (`after` None).
+        let frames = |stale: u64, live: Option<u64>, carrier: Option<u64>, after: Option<u64>| {
             let mut prior = GameState::new_two_player(42);
             let mut create = |name: &str| {
                 crate::game::zones::create_object(
@@ -22108,11 +22108,10 @@ mod tests {
             }
             stamp(&mut prior, 2, m, stale);
             let mut current = prior.clone();
-            if restamped {
-                let departed = live.unwrap_or(3);
-                stamp(&mut current, 4, m, departed);
+            if let Some(after) = after {
+                stamp(&mut current, 4, m, live.unwrap_or(3));
                 if let Some(object) = current.objects.get_mut(&m) {
-                    object.incarnation = departed + 1;
+                    object.incarnation = after;
                 }
             } else {
                 stamp(&mut current, 4, n, 5);
@@ -22124,21 +22123,35 @@ mod tests {
         };
 
         let mut failures = Vec::new();
-        for (case, live, carrier, restamped, expected) in [
-            ("live, re-stamped", Some(3), None, true, u64::MAX - 1),
-            ("live, not re-stamped", Some(3), None, false, u64::MAX - 1),
-            ("not live, re-stamped", None, None, true, u64::MAX),
-            ("not live, not re-stamped", None, None, false, u64::MAX),
-            ("live, newer carrier", Some(4), Some(3), false, u64::MAX - 2),
+        for (case, live, carrier, after, expected) in [
+            ("live, re-stamped", Some(3), None, Some(4), u64::MAX - 2),
+            (
+                "live, re-stamped in place",
+                Some(3),
+                None,
+                Some(3),
+                u64::MAX - 2,
+            ),
+            ("live, not re-stamped", Some(3), None, None, u64::MAX - 2),
+            ("not live, re-stamped", None, None, Some(4), u64::MAX),
+            ("not live, not re-stamped", None, None, None, u64::MAX),
+            ("live, newer carrier", Some(4), Some(3), None, u64::MAX - 4),
             (
                 "live, newer carrier, re-stamped",
                 Some(4),
                 Some(3),
-                true,
-                u64::MAX - 2,
+                Some(5),
+                u64::MAX - 4,
+            ),
+            (
+                "live, carrier at the stamp, re-stamped",
+                Some(3),
+                Some(2),
+                Some(4),
+                u64::MAX - 3,
             ),
         ] {
-            let (prior, current, rank) = frames(2, live, carrier, restamped);
+            let (prior, current, rank) = frames(2, live, carrier, after);
             for (frame, state) in [("prior", &prior), ("current", &current)] {
                 let once = normalized(state);
                 let twice = normalized(&once);
@@ -22155,8 +22168,8 @@ mod tests {
         }
         assert!(failures.is_empty(), "MAX minus: {failures:#?}");
 
-        let (_, stale_origin, rank) = frames(2, Some(3), None, false);
-        let (_, live_origin, _) = frames(3, Some(3), None, false);
+        let (_, stale_origin, rank) = frames(2, Some(3), None, None);
+        let (_, live_origin, _) = frames(3, Some(3), None, None);
         assert_ne!(
             rank(&normalized(&stale_origin)),
             rank(&normalized(&live_origin)),
@@ -22166,9 +22179,8 @@ mod tests {
 
     /// B2 — STALE-ORIGIN totality: an origin naming an incarnation with no
     /// snapshot anywhere (legacy save, pruned history) must not panic
-    /// canonicalization — origin references join the identity pool, so the
-    /// stamp takes its own exact rank — and reads fall back to legacy
-    /// behavior (live 2 here), since no snapshot sits at that rank.
+    /// canonicalization, and reads fall back to legacy behavior (live 2
+    /// here), since no snapshot sits at that rank.
     #[test]
     fn loop_normalization_tolerates_stale_departure_origins() {
         use crate::types::game_state::{loop_states_equal, TrackedMemberOrigin};
@@ -22179,8 +22191,7 @@ mod tests {
             let set = TrackedSetId(state.next_tracked_set_id - 1);
             let oak = state.tracked_object_sets.get(&set).expect("staged set")[0];
             // A decoy snapshot under incarnation 7 plus an origin naming the
-            // record-less incarnation 99: without origin pooling, the exact
-            // rank lookup panics on the unpooled 99.
+            // record-less incarnation 99.
             state.lki_by_incarnation.clear();
             let pumped = state.lki_cache.get(&oak).expect("staged pump").clone();
             state
@@ -22231,6 +22242,75 @@ mod tests {
         );
     }
 
+    fn stage_carrier_kept_snapshot_with_origin(origin_incarnation: u64) -> (GameState, ObjectId) {
+        use crate::types::game_state::TrackedMemberOrigin;
+
+        let mut state = GameState::new_two_player(42);
+        let (source, _) = stage_pumped_bounced_discarded_member(&mut state);
+        let set = TrackedSetId(state.next_tracked_set_id - 1);
+        let oak = state.tracked_object_sets.get(&set).expect("staged set")[0];
+        state.lki_by_incarnation.clear();
+        let pumped = state.lki_cache.get(&oak).expect("staged pump").clone();
+        assert_eq!(pumped.power, Some(5), "staged pump shape");
+        state
+            .lki_by_incarnation
+            .entry(oak)
+            .or_default()
+            .insert(7, pumped);
+        // A ZoneChanged carrier still names incarnation 7, so the
+        // snapshot survives pruning in BOTH states even when no origin
+        // names it — the retained record the missing origin must not
+        // alias. Fixed ids keep the two states symmetric.
+        let mut record = crate::types::game_state::ZoneChangeRecord::test_minimal(
+            oak,
+            Some(Zone::Exile),
+            Zone::Battlefield,
+        );
+        record.entered_incarnation = Some(7);
+        let ability = crate::types::ability::ResolvedAbility::new(
+            crate::types::ability::Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(5),
+            PlayerId(0),
+        );
+        state.stack.push_back(crate::types::game_state::StackEntry {
+            id: ObjectId(20),
+            source_id: ObjectId(5),
+            controller: PlayerId(0),
+            kind: crate::types::game_state::StackEntryKind::TriggeredAbility {
+                source_id: ObjectId(5),
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: Some(crate::types::events::GameEvent::ZoneChanged {
+                    object_id: oak,
+                    from: Some(Zone::Exile),
+                    to: Zone::Battlefield,
+                    record: Box::new(record),
+                }),
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+                provenance: None,
+            },
+        });
+        state
+            .tracked_set_member_origins
+            .entry(set)
+            .or_default()
+            .insert(
+                oak,
+                TrackedMemberOrigin {
+                    departed_from: Zone::Battlefield,
+                    departure_incarnation: origin_incarnation,
+                },
+            );
+        (state, source)
+    }
+
     /// B2 — MISSING-BEFORE-RETAINED aliasing: two otherwise identical states
     /// each hold a retained power-5 snapshot at incarnation 7 — kept through
     /// pruning by a `ZoneChanged` carrier on the stack that still names 7 —
@@ -22242,74 +22322,7 @@ mod tests {
     /// 1, so A reads 5 and the normalized states coincide.
     #[test]
     fn loop_normalization_keeps_missing_before_retained_distinct() {
-        use crate::types::game_state::{loop_states_equal, TrackedMemberOrigin};
-
-        fn staged_with_origin(origin_incarnation: u64) -> (GameState, ObjectId) {
-            let mut state = GameState::new_two_player(42);
-            let (source, _) = stage_pumped_bounced_discarded_member(&mut state);
-            let set = TrackedSetId(state.next_tracked_set_id - 1);
-            let oak = state.tracked_object_sets.get(&set).expect("staged set")[0];
-            state.lki_by_incarnation.clear();
-            let pumped = state.lki_cache.get(&oak).expect("staged pump").clone();
-            assert_eq!(pumped.power, Some(5), "staged pump shape");
-            state
-                .lki_by_incarnation
-                .entry(oak)
-                .or_default()
-                .insert(7, pumped);
-            // A ZoneChanged carrier still names incarnation 7, so the
-            // snapshot survives pruning in BOTH states even when no origin
-            // names it — the retained record the missing origin must not
-            // alias. Fixed ids keep the two states symmetric.
-            let mut record = crate::types::game_state::ZoneChangeRecord::test_minimal(
-                oak,
-                Some(Zone::Exile),
-                Zone::Battlefield,
-            );
-            record.entered_incarnation = Some(7);
-            let ability = crate::types::ability::ResolvedAbility::new(
-                crate::types::ability::Effect::Draw {
-                    count: QuantityExpr::Fixed { value: 1 },
-                    target: TargetFilter::Controller,
-                },
-                vec![],
-                ObjectId(5),
-                PlayerId(0),
-            );
-            state.stack.push_back(crate::types::game_state::StackEntry {
-                id: ObjectId(20),
-                source_id: ObjectId(5),
-                controller: PlayerId(0),
-                kind: crate::types::game_state::StackEntryKind::TriggeredAbility {
-                    source_id: ObjectId(5),
-                    ability: Box::new(ability),
-                    condition: None,
-                    trigger_event: Some(crate::types::events::GameEvent::ZoneChanged {
-                        object_id: oak,
-                        from: Some(Zone::Exile),
-                        to: Zone::Battlefield,
-                        record: Box::new(record),
-                    }),
-                    description: None,
-                    source_name: String::new(),
-                    subject_match_count: None,
-                    die_result: None,
-                    provenance: None,
-                },
-            });
-            state
-                .tracked_set_member_origins
-                .entry(set)
-                .or_default()
-                .insert(
-                    oak,
-                    TrackedMemberOrigin {
-                        departed_from: Zone::Battlefield,
-                        departure_incarnation: origin_incarnation,
-                    },
-                );
-            (state, source)
-        }
+        use crate::types::game_state::loop_states_equal;
 
         let power_sum = || QuantityExpr::Ref {
             qty: QuantityRef::PropertyAggregate(
@@ -22325,8 +22338,8 @@ mod tests {
                 .unwrap(),
             ),
         };
-        let (a, source_a) = staged_with_origin(1);
-        let (b, source_b) = staged_with_origin(7);
+        let (a, source_a) = stage_carrier_kept_snapshot_with_origin(1);
+        let (b, source_b) = stage_carrier_kept_snapshot_with_origin(7);
         assert_eq!(
             resolve_quantity(&a, &power_sum(), PlayerId(0), source_a),
             2,
@@ -22352,6 +22365,46 @@ mod tests {
         assert!(
             !loop_states_equal(&na, &nb),
             "states whose tracked reads differ (2 vs 5) must not compare loop-equal"
+        );
+    }
+
+    /// CR 608.2c + CR 400.7: a superseded origin naming a missing incarnation between a
+    /// carrier-kept snapshot and the live object takes a rank no snapshot holds, so it stays
+    /// distinct from an origin naming the snapshot.
+    #[test]
+    fn loop_normalization_keeps_missing_above_retained_distinct() {
+        use crate::types::game_state::loop_states_equal;
+
+        let normalized = |origin: u64| {
+            let (mut state, source) = stage_carrier_kept_snapshot_with_origin(origin);
+            let set = TrackedSetId(state.next_tracked_set_id - 1);
+            let oak = state.tracked_object_sets.get(&set).expect("staged set")[0];
+            state.objects.get_mut(&oak).unwrap().incarnation = 9;
+            let newer = TrackedSetId(state.next_tracked_set_id);
+            state.next_tracked_set_id += 1;
+            state.tracked_object_sets.insert(newer, vec![source]);
+            let state = state.normalize_for_loop();
+            let rank = state.tracked_set_member_origins[&set][&oak].departure_incarnation;
+            let names_snapshot = state.lki_by_incarnation[&oak].contains_key(&rank);
+            (state, names_snapshot)
+        };
+        let (missing, missing_names_snapshot) = normalized(8);
+        let (retained, retained_names_snapshot) = normalized(7);
+        assert!(
+            retained_names_snapshot,
+            "reach-guard: the origin naming the snapshot keeps naming it"
+        );
+        assert!(
+            !missing_names_snapshot,
+            "the missing origin must not take the snapshot's rank"
+        );
+        assert!(
+            loop_states_equal(&missing, &normalized(8).0),
+            "reach-guard: identical states stay loop-equal"
+        );
+        assert!(
+            !loop_states_equal(&missing, &retained),
+            "a missing origin must stay distinct from one naming a retained snapshot"
         );
     }
 
