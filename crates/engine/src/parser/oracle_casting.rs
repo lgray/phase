@@ -1030,8 +1030,8 @@ mod tests {
     use crate::types::ability::{
         AdditionalCostRepeatability, AggregateFunction, BeholdCostAction, CardSelectionMode,
         ChoiceType, Comparator, ControllerRef, CountScope, DiscardSelfScope, Effect, FilterProp,
-        ParsedCondition, PlayerScope, QuantityExpr, QuantityRef, SacrificeCost, TargetFilter,
-        TypeFilter, TypedFilter,
+        ParsedCondition, PlayerScope, QuantityExpr, QuantityRef, SacrificeCost,
+        SacrificeRequirement, TargetFilter, TypeFilter, TypedFilter,
     };
     use crate::types::keywords::Keyword;
     use crate::types::mana::{ManaColor, ManaCost};
@@ -3228,6 +3228,37 @@ Trample";
             CastingRestriction::SpendOnlyOnX {
                 colors: vec![ManaColor::Black, ManaColor::Red]
             }
+        );
+    }
+
+    /// CR 601.2f + CR 601.2h: Kaervek's Spite's "sacrifice all" and "discard
+    /// your hand" are both required.
+    #[test]
+    fn parse_additional_cost_sacrifice_all_and_discard_hand() {
+        let raw = "As an additional cost to cast this spell, sacrifice all permanents you control and discard your hand.";
+        let lower = raw.to_lowercase();
+        assert_eq!(
+            parse_additional_cost_line(&lower, raw),
+            Some(AdditionalCost::Required(AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Sacrifice(SacrificeCost::new(
+                        TargetFilter::Typed(
+                            TypedFilter::permanent().controller(ControllerRef::You)
+                        ),
+                        SacrificeRequirement::All,
+                    )),
+                    AbilityCost::Discard {
+                        count: QuantityExpr::Ref {
+                            qty: QuantityRef::HandSize {
+                                player: PlayerScope::Controller,
+                            },
+                        },
+                        filter: None,
+                        selection: CardSelectionMode::Chosen,
+                        self_scope: DiscardSelfScope::FromHand,
+                    },
+                ],
+            }))
         );
     }
 }

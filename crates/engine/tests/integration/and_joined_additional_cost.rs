@@ -8,7 +8,7 @@ use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{CastPaymentMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 use engine::types::TargetRef;
@@ -116,4 +116,49 @@ fn ruthless_disposal_without_a_creature_is_not_cast() {
     assert_eq!(state.objects[&board.spell].zone, Zone::Hand);
     assert!(state.stack.is_empty());
     assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
+}
+
+const KAERVEKS_SPITE: &str = "As an additional cost to cast this spell, sacrifice all permanents you control and discard your hand.\nTarget player loses 5 life.";
+
+#[test]
+fn kaerveks_spite_sacrifices_everything_and_discards_the_hand() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P0, "Kaervek's Spite", true, KAERVEKS_SPITE)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Black; 3],
+            generic: 0,
+        })
+        .id();
+    let hand = [
+        scenario.add_card_to_hand(P0, "H1"),
+        scenario.add_card_to_hand(P0, "H2"),
+    ];
+    let swamps: Vec<ObjectId> = (0..3)
+        .map(|_| scenario.add_basic_land(P0, ManaColor::Black))
+        .collect();
+    let bear = scenario.add_vanilla(P0, 2, 2);
+    let theirs = scenario.add_vanilla(P1, 2, 2);
+    let mut runner = scenario.build();
+
+    let outcome = runner
+        .cast(spell)
+        .target_player(P1)
+        .pay_cost_with(&hand)
+        .resolve();
+
+    // CR 601.2g + CR 601.2h: the Swamps tapped for {B}{B}{B} are still
+    // controlled when the cost is paid, so they are sacrificed too.
+    outcome.assert_zone(&swamps, Zone::Graveyard);
+    outcome.assert_zone(&[bear], Zone::Graveyard);
+    outcome.assert_zone(&hand, Zone::Graveyard);
+    outcome.assert_zone(&[spell], Zone::Graveyard);
+    assert_eq!(outcome.life_delta(P1), -5);
+    outcome.assert_zone(&[theirs], Zone::Battlefield);
+    assert!(matches!(
+        outcome.final_waiting_for(),
+        WaitingFor::Priority { .. }
+    ));
+    assert!(outcome.state().stack.is_empty());
 }
