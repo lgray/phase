@@ -34358,13 +34358,7 @@ impl GameState {
 
     /// CR 732.2a: record that an unbounded (net-progress) loop under `controller`
     /// pumps `axes`. The single write authority for `unbounded_resources` —
-    /// every producer routes through here, never mutating the map inline. Two
-    /// producers exist: the infinite-mana debug toggle
-    /// (`DebugAction::SetInfiniteMana`, ungated) and the live combo-detector at the
-    /// reconcile seam (`game::engine::reconcile_terminal_result`), which persists a
-    /// confirmed loop's `delta.unbounded_axes_for(winner)` — the same axes
-    /// `detect_loop` names in `LoopCertificate.unbounded` — but ONLY when the
-    /// user-controllable `GameState::loop_detection` gate is `On`. Idempotent
+    /// every producer routes through here, never mutating the map inline. Idempotent
     /// set-union: storing exactly the axes it is given
     /// (so a mana toggle stores its six `Mana(_)` axes, a drain certificate stores
     /// its `Life`/`DamageDealt` axes) without clobbering axes a prior producer
