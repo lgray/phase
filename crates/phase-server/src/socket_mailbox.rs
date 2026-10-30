@@ -15,6 +15,22 @@ pub(crate) enum RefusalError {
     Closed,
 }
 
+/// Why a correlated command was refused before reaching its handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefusalReason {
+    RateQuota,
+    GameBusy,
+}
+
+impl RefusalReason {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::RateQuota => "Command rate quota exceeded",
+            Self::GameBusy => "Server is still processing an earlier command",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ClientEnvelope {
     #[serde(flatten)]
