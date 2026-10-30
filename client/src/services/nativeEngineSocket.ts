@@ -5,6 +5,7 @@ import { normalizeLanEndpoint } from "./lan";
 
 type BridgeEvent =
   | { type: "message"; text: string }
+  | { type: "fragment"; text: string }
   | { type: "closed"; code: number; reason: string }
   | { type: "error"; detail: string };
 
@@ -37,6 +38,8 @@ export class NativeEngineSocket {
   private readonly closeListeners = new Map<CloseListener, boolean>();
   private readonly messageListeners = new Map<MessageListener, boolean>();
   private readonly pendingEvents: BridgeEvent[] = [];
+  // The shell splits a large text frame into fragments; the next message completes it.
+  private pendingText = "";
   private bridgeId: number | null = null;
   private _readyState = NativeEngineSocket.CONNECTING;
 
@@ -163,9 +166,14 @@ export class NativeEngineSocket {
 
   private dispatchBridgeEvent(event: BridgeEvent): void {
     switch (event.type) {
-      case "message":
+      case "fragment":
+        this.pendingText += event.text;
+        break;
+      case "message": {
+        const text = this.pendingText + event.text;
+        this.pendingText = "";
         if (this.readyState === NativeEngineSocket.OPEN) {
-          const message = new MessageEvent<string>("message", { data: event.text });
+          const message = new MessageEvent<string>("message", { data: text });
           this.onmessage?.(message);
           for (const [listener, once] of this.messageListeners) {
             listener(message);
@@ -173,6 +181,7 @@ export class NativeEngineSocket {
           }
         }
         break;
+      }
       case "error":
         if (this.readyState !== NativeEngineSocket.CLOSED) {
           this.onerror?.(new Event("error"));

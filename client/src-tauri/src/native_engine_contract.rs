@@ -120,6 +120,7 @@ pub enum NativeEngineError {
 #[cfg_attr(mobile, allow(dead_code))]
 pub enum BridgeEvent {
     Message { text: String },
+    Fragment { text: String },
     Closed { code: u16, reason: String },
     Error { detail: String },
 }
@@ -307,6 +308,10 @@ mod tests {
             })
             .unwrap(),
             r#"{"type":"message","text":"hello"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&BridgeEvent::Fragment { text: "hel".into() }).unwrap(),
+            r#"{"type":"fragment","text":"hel"}"#
         );
         assert_eq!(
             serde_json::to_string(&BridgeEvent::Closed {

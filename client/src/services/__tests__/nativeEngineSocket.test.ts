@@ -116,6 +116,29 @@ describe("NativeEngineSocket", () => {
     expect(messages).toEqual(["first", "second"]);
   });
 
+  it("dispatches one message per text reassembled from shell fragments", async () => {
+    const connection = deferred<number>();
+    invokeMock.mockImplementation((command: string) => {
+      return command === "connect_native_engine" ? connection.promise : Promise.resolve(undefined);
+    });
+    const socket = new NativeEngineSocket();
+    const messages: string[] = [];
+    socket.onmessage = (event) => messages.push(event.data);
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("connect_native_engine", expect.any(Object));
+    });
+
+    emitChannelEvent({ type: "fragment", text: "a" });
+    await resolveConnection(connection);
+    emitChannelEvent({ type: "message", text: "b" });
+    expect(messages).toEqual(["ab"]);
+
+    emitChannelEvent({ type: "fragment", text: "ab" });
+    emitChannelEvent({ type: "fragment", text: "c" });
+    emitChannelEvent({ type: "message", text: "d" });
+    expect(messages).toEqual(["ab", "abcd"]);
+  });
+
   it("finishes closing after a connection that was closed while connecting settles", async () => {
     const connection = deferred<number>();
     invokeMock.mockImplementation((command: string) => {
