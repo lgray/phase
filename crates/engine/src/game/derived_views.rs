@@ -981,8 +981,8 @@ pub struct DerivedViews {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub counter_display: HashMap<ObjectId, ObjectCounterDisplay>,
 
-    /// CR 119.3 + CR 732.2a: per-player life-readout magnitude; only non-`Finite` entries are
-    /// emitted.
+    /// CR 119.3 + CR 732.2a: per-player life-readout magnitude — `Unbounded` while some marked
+    /// `Life` axis for that seat is rising; only non-`Finite` entries are emitted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub life_magnitude: BTreeMap<PlayerId, DisplayMagnitude>,
 }
@@ -1930,13 +1930,16 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             {
                 continue;
             }
-            // CR 119.3 + CR 732.2a: the readout is the life total of the player the accepted
-            // shortcut adjusts; Life axes are unsigned, so only one under its own controller's key
-            // is provably growth, and any other (a drain victim) keeps its finite total.
-            if axis == ResourceAxis::Life(controller) {
-                views
-                    .life_magnitude
-                    .insert(controller, DisplayMagnitude::Unbounded);
+            // CR 119.3 + CR 732.2a: a seat's readout is ∞ while some controller's surviving row
+            // marks its life as rising.
+            if let ResourceAxis::Life(p) = axis {
+                if state
+                    .unbounded_rising
+                    .get(&controller)
+                    .is_some_and(|rising| rising.contains(&axis))
+                {
+                    views.life_magnitude.insert(p, DisplayMagnitude::Unbounded);
+                }
             }
             let player = attribution_player(axis, controller);
             let state_for_axis = if accepted_axes.contains(&axis) {
@@ -3487,7 +3490,11 @@ mod tests {
                 "Pentad Prism".to_string(),
                 Zone::Battlefield,
             );
-            state.mark_unbounded_loop(PlayerId(0), &[plus1_axis, generic_axis]);
+            state.mark_unbounded_loop(
+                PlayerId(0),
+                &[plus1_axis, generic_axis],
+                &[plus1_axis, generic_axis],
+            );
             // CR 701.34a: the registered backing is the GENERIC channel's, derived axis-blind.
             // Nothing here backs `plus1_axis` — that is the whole point.
             state.register_unbounded_counter_targets(
@@ -3567,7 +3574,11 @@ mod tests {
                 "Saproling".to_string(),
                 Zone::Battlefield,
             );
-            state.mark_unbounded_loop(p0, &[ResourceAxis::TokensCreated]);
+            state.mark_unbounded_loop(
+                p0,
+                &[ResourceAxis::TokensCreated],
+                &[ResourceAxis::TokensCreated],
+            );
             state.register_unbounded_loop_pile(p0, BTreeSet::from([token]));
             if accepted {
                 state.register_pending_materialization(
@@ -3652,7 +3663,7 @@ mod tests {
                 Zone::Battlefield,
             );
             let axis = collapsed_counter_axis(&state, prism, &charge);
-            state.mark_unbounded_loop(p0, &[axis]);
+            state.mark_unbounded_loop(p0, &[axis], &[axis]);
             state.register_unbounded_counter_targets(p0, vec![(prism, charge.clone())]);
             if accepted {
                 state.register_pending_materialization(
@@ -3770,7 +3781,7 @@ mod tests {
             "reach: a CREATURE bearer derives the Creature-classed axis — if this is `Other` the \
              rig lost its core_types and the drift below would be invisible"
         );
-        state.mark_unbounded_loop(p0, &[axis]);
+        state.mark_unbounded_loop(p0, &[axis], &[axis]);
         state.register_unbounded_counter_targets(p0, vec![(bearer, CounterType::Plus1Plus1)]);
 
         // BASELINE: the bearer leaves the battlefield but still EXISTS, so it still derives the
@@ -6916,8 +6927,8 @@ mod tests {
         let axis = ResourceAxis::Life(victim);
 
         // Both controllers run their own drain loop on the same victim.
-        state.mark_unbounded_loop(p0, &[axis]);
-        state.mark_unbounded_loop(p1, &[axis]);
+        state.mark_unbounded_loop(p0, &[axis], &[]);
+        state.mark_unbounded_loop(p1, &[axis], &[]);
         // Only P1's collapse has been accepted.
         state.register_pending_materialization(
             p1,
@@ -7021,8 +7032,8 @@ mod tests {
         // `Some(p1)` depending on iteration order — which is exactly the order-dependence the join
         // laws exist to forbid.
         let mut both = GameState::new(FormatConfig::commander(), 3, 42);
-        both.mark_unbounded_loop(p0, &[axis]);
-        both.mark_unbounded_loop(p1, &[axis]);
+        both.mark_unbounded_loop(p0, &[axis], &[]);
+        both.mark_unbounded_loop(p1, &[axis], &[]);
         for controller in [p0, p1] {
             both.register_pending_materialization(
                 controller,
@@ -7047,7 +7058,7 @@ mod tests {
         // MUTATION: emit `player` (the attribution seat) instead of `controller` ⇒ the `assert_ne!`
         // below reds, because on this rig `player` IS the victim.
         let mut agreed = GameState::new(FormatConfig::commander(), 3, 42);
-        agreed.mark_unbounded_loop(p1, &[axis]);
+        agreed.mark_unbounded_loop(p1, &[axis], &[]);
         agreed.register_pending_materialization(
             p1,
             PersistentAxisMaterialization::Life {
@@ -7099,7 +7110,11 @@ mod tests {
             "the controller has no Life axis — the drain is on the victim P1"
         );
 
-        state.mark_unbounded_loop(PlayerId(0), &cert_axes);
+        state.mark_unbounded_loop(
+            PlayerId(0),
+            &cert_axes,
+            &delta.rising_unbounded_axes_for(PlayerId(0)),
+        );
         let views = derive_views(&state, None);
         assert!(
             views.unbounded_resources.contains(&UnboundedResourceView {
@@ -7146,6 +7161,7 @@ mod tests {
                 ResourceAxis::DamageDealt(PlayerId(1)),
                 ResourceAxis::Life(PlayerId(1)),
             ],
+            &[ResourceAxis::DamageDealt(PlayerId(1))],
         );
 
         let views = derive_views(&state, None);
@@ -7212,7 +7228,11 @@ mod tests {
     #[test]
     fn non_mana_axis_projects_to_controller_hud() {
         let mut state = GameState::new(FormatConfig::standard(), 2, 42);
-        state.mark_unbounded_loop(PlayerId(0), &[ResourceAxis::TokensCreated]);
+        state.mark_unbounded_loop(
+            PlayerId(0),
+            &[ResourceAxis::TokensCreated],
+            &[ResourceAxis::TokensCreated],
+        );
 
         let views = derive_views(&state, None);
         assert!(
@@ -7306,7 +7326,7 @@ mod tests {
             if also_poison {
                 axes.push(ResourceAxis::Poison(p0));
             }
-            state.mark_unbounded_loop(p0, &axes);
+            state.mark_unbounded_loop(p0, &axes, &axes);
             // Only the counter axis is accepted; `Poison` is marked ∞ but unscheduled.
             state.register_pending_materialization(
                 p0,
@@ -7391,6 +7411,10 @@ mod tests {
         let mut state = GameState::new(FormatConfig::standard(), 2, 42);
         state.mark_unbounded_loop(
             p0,
+            &[
+                ResourceAxis::Mana(ManaType::Green),
+                ResourceAxis::Mana(ManaType::White),
+            ],
             &[
                 ResourceAxis::Mana(ManaType::Green),
                 ResourceAxis::Mana(ManaType::White),
@@ -7686,19 +7710,21 @@ mod tests {
         use crate::types::mana::ManaType;
 
         let mut state = GameState::new(FormatConfig::standard(), 2, 42);
-        state.mark_unbounded_loop(
-            PlayerId(0),
-            &[
-                ResourceAxis::Mana(ManaType::Red),
-                ResourceAxis::Life(PlayerId(1)),
-                // Victim-keyed poison axis (PlayerId-transparent wire shape).
-                ResourceAxis::Poison(PlayerId(1)),
-                // A non-poison Counter keeps the tuple externally-tagged wire shape covered.
-                ResourceAxis::Counter(CounterClass::Energy, ObjectClass::Player),
-                ResourceAxis::Trigger(TriggerKind::Proliferate),
-                ResourceAxis::TokensCreated,
-            ],
-        );
+        let axes = [
+            ResourceAxis::Mana(ManaType::Red),
+            ResourceAxis::Life(PlayerId(1)),
+            // Victim-keyed poison axis (PlayerId-transparent wire shape).
+            ResourceAxis::Poison(PlayerId(1)),
+            // A non-poison Counter keeps the tuple externally-tagged wire shape covered.
+            ResourceAxis::Counter(CounterClass::Energy, ObjectClass::Player),
+            ResourceAxis::Trigger(TriggerKind::Proliferate),
+            ResourceAxis::TokensCreated,
+        ];
+        let rising: Vec<ResourceAxis> = axes
+            .into_iter()
+            .filter(|axis| *axis != ResourceAxis::Life(PlayerId(1)))
+            .collect();
+        state.mark_unbounded_loop(PlayerId(0), &axes, &rising);
 
         let json =
             serde_json::to_string(&ClientGameStateRef::wrap(&state, None)).expect("serialize");
