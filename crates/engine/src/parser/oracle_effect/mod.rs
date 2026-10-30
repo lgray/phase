@@ -2780,19 +2780,24 @@ fn build_reflexive_coin_flip_trigger(is_win: bool, inner: AbilityDefinition) -> 
     }
 }
 
+/// `event_player` is the trigger's `valid_target`: the player the event is
+/// about ("you" for "when you next cast…"). A "you lose control of …" trigger
+/// passes `None`: its losing side is built into `ChangesController`, and its
+/// `valid_target` would name the player who GAINS control.
 fn build_when_next_delayed_trigger(
     mode: crate::types::triggers::TriggerMode,
     valid_card: TargetFilter,
+    event_player: Option<TargetFilter>,
     inner: AbilityDefinition,
     or_branch: Option<(crate::types::triggers::TriggerMode, TargetFilter)>,
 ) -> ParsedEffectClause {
     let mut trigger_def = crate::types::ability::TriggerDefinition::new(mode);
     trigger_def.valid_card = Some(valid_card);
-    trigger_def.valid_target = Some(TargetFilter::Controller);
+    trigger_def.valid_target = event_player.clone();
     let or_trigger = or_branch.map(|(or_mode, or_filter)| {
         let mut alt = crate::types::ability::TriggerDefinition::new(or_mode);
         alt.valid_card = Some(or_filter);
-        alt.valid_target = Some(TargetFilter::Controller);
+        alt.valid_target = event_player;
         Box::new(alt)
     });
     ParsedEffectClause {
@@ -2914,6 +2919,7 @@ fn try_parse_lose_control_delayed_trigger(
             side: ControlChangeSide::Loses,
         },
         valid_card,
+        None,
         inner,
         None,
     ))
@@ -3068,6 +3074,7 @@ fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
         return Some(build_when_next_delayed_trigger(
             TriggerMode::SpellCast,
             spell_filter,
+            Some(TargetFilter::Controller),
             inner,
             Some((TriggerMode::AbilityActivated, ability_filter)),
         ));
@@ -3386,6 +3393,7 @@ fn try_parse_copy_next_spell_when_cast(tp: TextPair) -> Option<ParsedEffectClaus
     Some(build_when_next_delayed_trigger(
         TriggerMode::SpellCast,
         combined_filter,
+        Some(TargetFilter::Controller),
         inner,
         None,
     ))

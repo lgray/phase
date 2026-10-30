@@ -16777,6 +16777,7 @@ mod where_x_tests {
                 qty: QuantityRef::Variable { name: "X".into() },
             },
             filter: Some(filter.clone()),
+            shared_quality: None,
         };
         let mut unbound = None;
         super::apply_where_x_to_ability_cost(&mut cost, Some(expression), &mut unbound);
@@ -16786,6 +16787,7 @@ mod where_x_tests {
             AbilityCost::Reveal {
                 count: expected,
                 filter: Some(filter),
+                shared_quality: None,
             }
         );
     }

@@ -7273,11 +7273,13 @@ fn surface_next_interactive_activation_cost_leg(
         }));
     }
 
-    if let Some(AbilityCost::Reveal { count, filter }) =
-        first_activation_cost_component_matching(cost, |cost| {
-            matches!(cost, AbilityCost::Reveal { .. })
-        })
-    {
+    if let Some(AbilityCost::Reveal {
+        count,
+        filter,
+        shared_quality,
+    }) = first_activation_cost_component_matching(cost, |cost| {
+        matches!(cost, AbilityCost::Reveal { .. })
+    }) {
         if let Some(filter) = filter {
             // CR 107.3a + CR 602.2b: the announced X is the number of cards revealed.
             let count =
@@ -7319,7 +7321,9 @@ fn surface_next_interactive_activation_cost_leg(
             );
             return Ok(Some(WaitingFor::PayCost {
                 player,
-                kind: PayCostKind::Reveal,
+                kind: PayCostKind::Reveal {
+                    shared_quality: shared_quality.clone(),
+                },
                 choices,
                 count,
                 min_count: 0,
@@ -11101,7 +11105,11 @@ fn pay_additional_cost_with_source(
                 },
             });
         }
-        AbilityCost::Reveal { count, filter } => {
+        AbilityCost::Reveal {
+            count,
+            filter,
+            shared_quality,
+        } => {
             let mut pending = pending;
             // CR 701.20a: A filter-less reveal is the spell revealing itself —
             // there is no choice to make, the object is already known.
@@ -11145,7 +11153,9 @@ fn pay_additional_cost_with_source(
             }
             return Ok(WaitingFor::PayCost {
                 player,
-                kind: PayCostKind::Reveal,
+                kind: PayCostKind::Reveal {
+                    shared_quality: shared_quality.clone(),
+                },
                 choices: eligible,
                 count,
                 min_count: 0,
@@ -11200,6 +11210,7 @@ fn pay_additional_cost_with_source(
 /// hand — revealing doesn't move it (CR 701.20b) — and becomes the
 /// resolving ability's cost-paid-object referent (CR 608.2k), backing
 /// references like "the revealed card's mana value".
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_reveal_for_cost(
     state: &mut GameState,
     player: PlayerId,
@@ -11207,6 +11218,7 @@ pub(crate) fn handle_reveal_for_cost(
     expected: usize,
     legal_cards: &[ObjectId],
     chosen: &[ObjectId],
+    shared_quality: Option<crate::types::ability::SharedQuality>,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     if chosen.len() != expected {
@@ -11228,6 +11240,17 @@ pub(crate) fn handle_reveal_for_cost(
             return Err(EngineError::InvalidAction(
                 "Selected card not in hand".to_string(),
             ));
+        }
+    }
+
+    // CR 701.20a: A shared-quality constraint ("two cards that share a color")
+    // travels with this Reveal leg's prompt, so spell and activation costs —
+    // and multiple Reveal legs — each validate against their own constraint.
+    if let Some(quality) = shared_quality {
+        if !super::cost_payability::cards_share_quality(state, chosen, &quality) {
+            return Err(EngineError::InvalidAction(format!(
+                "Revealed cards must share a {quality:?}"
+            )));
         }
     }
 
@@ -11425,23 +11448,29 @@ fn additional_cost_x_max(
             .unwrap_or(0),
         ),
         // CR 107.3a + CR 601.2h: X in a reveal count is announced before the
-        // reveal; the engine caps it at the matching cards in hand, since
-        // revealing more is an unpayable cost (CR 118.3).
+        // reveal; the engine caps it at the matching cards in hand (or, with a
+        // shared quality, the largest group sharing it), since revealing more
+        // is an unpayable cost (CR 118.3).
         AbilityCost::Reveal {
             count,
             filter: Some(filter),
-        } if is_bare_x_count(count) => Some(
-            super::casting::find_eligible_reveal_targets(
+            shared_quality,
+        } if is_bare_x_count(count) => {
+            let eligible = super::casting::find_eligible_reveal_targets(
                 state,
                 player,
                 source_id,
                 granting_object,
                 filter,
-            )
-            .len()
-            .try_into()
-            .unwrap_or(u32::MAX),
-        ),
+            );
+            let max = match shared_quality {
+                Some(quality) => {
+                    super::cost_payability::largest_shared_quality_group(state, &eligible, quality)
+                }
+                None => eligible.len(),
+            };
+            Some(max.try_into().unwrap_or(u32::MAX))
+        }
         AbilityCost::Sacrifice(cost)
             if cost.requirement == SacrificeRequirement::Count { count: u32::MAX } =>
         {
@@ -11591,6 +11620,7 @@ fn cost_needs_activation_x_announcement(cost: &AbilityCost) -> bool {
         AbilityCost::Reveal {
             count,
             filter: Some(_),
+            shared_quality: _,
         } => is_bare_x_count(count),
         AbilityCost::Composite { costs } => costs.iter().any(cost_needs_activation_x_announcement),
         _ => false,
@@ -30438,6 +30468,7 @@ its replicate cost was paid.)\nDraw a card.";
                 AbilityCost::Reveal {
                     count: QuantityExpr::Fixed { value: 1 },
                     filter: None,
+                    shared_quality: None,
                 },
             ),
             (
