@@ -26749,6 +26749,60 @@ mod tests {
         );
     }
 
+    /// CR 608.2c: a fresh set naming a different member leaves the prior set's live member
+    /// unstamped; its superseded origin keeps the rank it held while resolved.
+    #[test]
+    fn growth_remainder_covers_fresh_set_naming_a_different_live_member() {
+        use crate::types::ability::ThisWayCause;
+        use crate::types::game_state::TrackedMemberOrigin;
+        use crate::types::identifiers::{CardId, TrackedSetId};
+        use crate::types::zones::Zone;
+
+        fn live(state: &mut GameState, name: &str, incarnation: u64) -> ObjectId {
+            let id = crate::game::zones::create_object(
+                state,
+                CardId(1),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Graveyard,
+            );
+            state.objects.get_mut(&id).unwrap().incarnation = incarnation;
+            id
+        }
+        // A hand departure records no snapshot, so only the live object sits above the stamp.
+        fn stamp(state: &mut GameState, set: u64, member: ObjectId, incarnation: u64) {
+            let set = TrackedSetId(set);
+            state.tracked_object_sets.insert(set, vec![member]);
+            state.tracked_set_member_causes.insert(
+                set,
+                [(member, ThisWayCause::Discarded)].into_iter().collect(),
+            );
+            state
+                .tracked_set_member_origins
+                .entry(set)
+                .or_default()
+                .insert(
+                    member,
+                    TrackedMemberOrigin {
+                        departed_from: Zone::Hand,
+                        departure_incarnation: incarnation,
+                    },
+                );
+            state.next_tracked_set_id = state.next_tracked_set_id.max(set.0 + 1);
+        }
+
+        let mut prior = GameState::new_two_player(42);
+        let m = live(&mut prior, "M", 3);
+        let n = live(&mut prior, "N", 6);
+        stamp(&mut prior, 2, m, 2);
+        let mut current = prior.clone();
+        stamp(&mut current, 4, n, 5);
+        assert!(
+            eq_except_growable(&prior, &current, &HashSet::new()),
+            "a fresh set naming another member must leave the live member's stamp covered"
+        );
+    }
+
     /// CR 500.8: a run of identical self-resuming inserted units unwinds to the same step at any
     /// depth, so the history disjunct collapses the deeper run; a unit resuming elsewhere stays.
     #[test]

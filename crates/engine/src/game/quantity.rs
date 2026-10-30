@@ -22046,6 +22046,124 @@ mod tests {
         );
     }
 
+    /// CR 608.2c + CR 400.7: a superseded tracked-set origin naming nothing pooled keeps the rank
+    /// it held while its set was resolved, whether or not the newer set re-stamps its member, and
+    /// renormalizing reads the same ranks back.
+    #[test]
+    fn loop_normalization_ranks_superseded_origins_as_while_resolved() {
+        use crate::game::combat::BlockHistoryPair;
+        use crate::types::game_state::TrackedMemberOrigin;
+        use crate::types::identifiers::{CardId, ObjectIncarnationRef};
+
+        fn stamp(state: &mut GameState, set: u64, member: ObjectId, incarnation: u64) {
+            let set = TrackedSetId(set);
+            state.tracked_object_sets.insert(set, vec![member]);
+            state
+                .tracked_set_member_origins
+                .entry(set)
+                .or_default()
+                .insert(
+                    member,
+                    TrackedMemberOrigin {
+                        departed_from: Zone::Hand,
+                        departure_incarnation: incarnation,
+                    },
+                );
+        }
+        fn normalized(state: &GameState) -> GameState {
+            let mut state = state.clone();
+            state.canonicalize_loop_identities();
+            state
+        }
+        // Prior frame: set 2 = {M@`stale`} is the latest set; `live` is M's incarnation (None:
+        // M no longer exists) and `carrier` a block-history incarnation of M above the stamp.
+        // Current frame: the prior plus set 4, re-stamping M's departure from its prior live
+        // incarnation, or naming N instead.
+        let frames = |stale: u64, live: Option<u64>, carrier: Option<u64>, restamped: bool| {
+            let mut prior = GameState::new_two_player(42);
+            let mut create = |name: &str| {
+                crate::game::zones::create_object(
+                    &mut prior,
+                    CardId(1),
+                    PlayerId(0),
+                    name.to_string(),
+                    Zone::Graveyard,
+                )
+            };
+            let (m, n) = (create("M"), create("N"));
+            prior.objects.get_mut(&n).unwrap().incarnation = 6;
+            match live {
+                Some(incarnation) => prior.objects.get_mut(&m).unwrap().incarnation = incarnation,
+                None => {
+                    prior.objects.remove(&m);
+                }
+            }
+            if let Some(incarnation) = carrier {
+                prior
+                    .creature_blocked_attackers_this_turn
+                    .insert(BlockHistoryPair {
+                        blocker: ObjectIncarnationRef::of(m, incarnation),
+                        attacker: ObjectIncarnationRef::of(ObjectId(99), 0),
+                    });
+            }
+            stamp(&mut prior, 2, m, stale);
+            let mut current = prior.clone();
+            if restamped {
+                let departed = live.unwrap_or(3);
+                stamp(&mut current, 4, m, departed);
+                if let Some(object) = current.objects.get_mut(&m) {
+                    object.incarnation = departed + 1;
+                }
+            } else {
+                stamp(&mut current, 4, n, 5);
+            }
+            let rank = move |state: &GameState| {
+                state.tracked_set_member_origins[&TrackedSetId(2)][&m].departure_incarnation
+            };
+            (prior, current, rank)
+        };
+
+        let mut failures = Vec::new();
+        for (case, live, carrier, restamped, expected) in [
+            ("live, re-stamped", Some(3), None, true, u64::MAX - 1),
+            ("live, not re-stamped", Some(3), None, false, u64::MAX - 1),
+            ("not live, re-stamped", None, None, true, u64::MAX),
+            ("not live, not re-stamped", None, None, false, u64::MAX),
+            ("live, newer carrier", Some(4), Some(3), false, u64::MAX - 2),
+            (
+                "live, newer carrier, re-stamped",
+                Some(4),
+                Some(3),
+                true,
+                u64::MAX - 2,
+            ),
+        ] {
+            let (prior, current, rank) = frames(2, live, carrier, restamped);
+            for (frame, state) in [("prior", &prior), ("current", &current)] {
+                let once = normalized(state);
+                let twice = normalized(&once);
+                if rank(&once) != expected {
+                    failures.push(format!("{case} / {frame}: rank {}", u64::MAX - rank(&once)));
+                }
+                if twice.tracked_set_member_origins != once.tracked_set_member_origins {
+                    failures.push(format!(
+                        "{case} / {frame}: renormalized rank {}",
+                        u64::MAX - rank(&twice)
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "MAX minus: {failures:#?}");
+
+        let (_, stale_origin, rank) = frames(2, Some(3), None, false);
+        let (_, live_origin, _) = frames(3, Some(3), None, false);
+        assert_ne!(
+            rank(&normalized(&stale_origin)),
+            rank(&normalized(&live_origin)),
+            "a stale origin must stay distinct from one naming the live incarnation"
+        );
+    }
+
     /// B2 — STALE-ORIGIN totality: an origin naming an incarnation with no
     /// snapshot anywhere (legacy save, pruned history) must not panic
     /// canonicalization — origin references join the identity pool, so the

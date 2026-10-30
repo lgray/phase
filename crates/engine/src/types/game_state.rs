@@ -34076,8 +34076,8 @@ impl GameState {
     /// member, so the live incarnation anchors them: two positions minted at
     /// different times compare equal, while which incarnation each carrier
     /// names, relative to the live one, and whether a snapshot sits behind it,
-    /// is preserved. Other sets' origins name append-only history and take the
-    /// rank of the nearest pooled incarnation above them. The live incarnation
+    /// is preserved. A superseded set's origin naming nothing pooled keeps the
+    /// rank it held while its set was resolved. The live incarnation
     /// is rewritten through the same map, so normalizing a normalized state is
     /// a fixed point.
     fn canonicalize_lki_incarnations_for_loop(&mut self) {
@@ -34567,6 +34567,17 @@ impl GameState {
             generations.sort_unstable();
             generations.dedup();
         }
+        // Every live tracked member's incarnation is ranked, so a superseded origin's rank
+        // counts it and renormalizing reads the same rank back.
+        for member in self
+            .tracked_set_member_origins
+            .values()
+            .flat_map(|members| members.keys())
+        {
+            if self.objects.contains_key(member) {
+                present.entry(*member).or_default();
+            }
+        }
         for (object_id, incarnations) in present.iter_mut() {
             // An object named only by last known information may no longer exist.
             if let Some(object) = self.objects.get(object_id) {
@@ -34656,19 +34667,28 @@ impl GameState {
                     });
             }
         }
-        // CR 608.2c: an origin naming a pooled incarnation takes its exact rank. A
-        // non-resolved origin names append-only history and takes the rank of the
-        // nearest pooled incarnation above it, so it remaps like the resolved stamp
-        // that named the same departure one period earlier and the origins field
-        // converges below the window. With nothing pooled above it (no live object, or a
-        // member nothing else names) it takes the top rank.
+        // CR 608.2c: an origin naming a pooled incarnation takes its exact rank. A superseded
+        // origin naming nothing pooled keeps the rank it held while its set was resolved: it
+        // counts the member's pooled incarnations above it except the resolved set's re-stamp,
+        // which took the slot the live incarnation held then.
+        let restamps: HashMap<ObjectId, u64> = resolved_set
+            .and_then(|set| self.tracked_set_member_origins.get(&set))
+            .map(|members| {
+                members
+                    .iter()
+                    .map(|(member, origin)| (*member, origin.departure_incarnation))
+                    .collect()
+            })
+            .unwrap_or_default();
         let remap_origin = |member: ObjectId, incarnation: u64| {
             let pooled = present.get(&member).map_or(&[][..], Vec::as_slice);
             match pooled.binary_search(&incarnation) {
                 Ok(_) => canonical(member, incarnation),
-                Err(above) => pooled
-                    .get(above)
-                    .map_or(u64::MAX, |&next| canonical(member, next)),
+                Err(above) => {
+                    let restamp = restamps.get(&member);
+                    let ranked_above = pooled[above..].iter().filter(|&p| Some(p) != restamp);
+                    u64::MAX - ranked_above.count() as u64
+                }
             }
         };
         self.tracked_set_member_origins = std::mem::take(&mut self.tracked_set_member_origins)
