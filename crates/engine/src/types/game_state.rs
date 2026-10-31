@@ -34667,24 +34667,28 @@ impl GameState {
         };
         // CR 608.2c + CR 608.2h + CR 400.7: an origin is renamed by its read class: the kept
         // snapshot it selects, the live incarnation a recording departure would key next, or
-        // `UNANCHORED_ORIGIN`, read by `departed_from` alone; a superseded origin whose snapshot
-        // is not kept takes the snapshot the resolved set's origin selects for its member.
-        let read_class = |set: TrackedSetId, member: ObjectId, origin: &TrackedMemberOrigin| {
+        // `UNANCHORED_ORIGIN`, read by `departed_from` alone; an otherwise unanchored superseded
+        // origin reads what the resolved set reads for its member.
+        let live_anchored = |member: ObjectId, origin: &TrackedMemberOrigin| {
             let incarnation = origin.departure_incarnation;
-            snapshot(member, incarnation)
-                .or_else(|| {
-                    (crate::game::quantity::zone_departure_records_lki(origin.departed_from)
-                        && self
-                            .objects
-                            .get(&member)
-                            .is_some_and(|object| object.incarnation == incarnation))
-                    .then(|| canonical(member, incarnation))
-                })
+            (crate::game::quantity::zone_departure_records_lki(origin.departed_from)
+                && self
+                    .objects
+                    .get(&member)
+                    .is_some_and(|object| object.incarnation == incarnation))
+            .then(|| canonical(member, incarnation))
+        };
+        let read_class = |set: TrackedSetId, member: ObjectId, origin: &TrackedMemberOrigin| {
+            snapshot(member, origin.departure_incarnation)
+                .or_else(|| live_anchored(member, origin))
                 .or_else(|| {
                     (Some(set) != resolved)
                         .then(|| resolved_origins.and_then(|origins| origins.get(&member)))
                         .flatten()
-                        .and_then(|resolved| snapshot(member, resolved.departure_incarnation))
+                        .and_then(|resolved| {
+                            snapshot(member, resolved.departure_incarnation)
+                                .or_else(|| live_anchored(member, resolved))
+                        })
                 })
                 .unwrap_or(UNANCHORED_ORIGIN)
         };

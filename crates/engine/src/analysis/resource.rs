@@ -27155,6 +27155,30 @@ mod tests {
         assert_eq!(growth_covers(&prior, &current), (true, true));
     }
 
+    /// CR 608.2c + CR 400.7: a superseded in-place exile origin reads the live incarnation the
+    /// resolved set's in-place re-stamp anchors, so it stays covered once a step clears the LKI;
+    /// a re-stamp at the stale incarnation, with or without a snapshot, must refuse.
+    #[test]
+    fn growth_remainder_covers_an_in_place_exile_restamp_past_a_step() {
+        use crate::types::zones::Zone;
+
+        let restamp = |incarnation: u64, power: Option<i32>| {
+            let mut prior = GameState::new_two_player(42);
+            let m = live_graveyard_object(&mut prior, "M", 3);
+            stamp_departure(&mut prior, 2, m, 3, Zone::Exile, None);
+            let mut current = prior.clone();
+            stamp_departure(&mut current, 4, m, incarnation, Zone::Exile, power);
+            current.objects.get_mut(&m).unwrap().incarnation = 4;
+            growth_covers(&prior, &current)
+        };
+        assert_eq!(restamp(4, None), (true, true));
+        assert_eq!(
+            [restamp(3, None), restamp(3, Some(5))],
+            [(false, false); 2],
+            "(exile_inplace_then_unrecorded_move, exile_inplace_then_recorded_move) must refuse"
+        );
+    }
+
     /// CR 500.8: a run of identical self-resuming inserted units unwinds to the same step at any
     /// depth, so the history disjunct collapses the deeper run; a unit resuming elsewhere stays.
     #[test]
