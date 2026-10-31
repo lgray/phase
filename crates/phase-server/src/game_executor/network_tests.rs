@@ -2212,8 +2212,13 @@ mod oversized_publication {
     /// P0 has cast Ravenous Trap ("Exile target player's graveyard.") at P1's graveyard of
     /// [`GRAVEYARD`] Grizzly Bears, and P1 holds priority: P1's pass resolves it (CR 117.4).
     fn trap_on_the_stack() -> GameState {
+        trap_held_by(GameScenario::new(), P1)
+    }
+
+    /// Ravenous Trap cast by P0 at P1's graveyard; every seat before `holder` has passed, so
+    /// `holder`'s pass resolves it (CR 117.4).
+    fn trap_held_by(mut scenario: GameScenario, holder: PlayerId) -> GameState {
         let db = card_db();
-        let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);
         let trap = scenario.add_real_card(P0, "Ravenous Trap", Zone::Hand, &db);
         for _ in 0..4 {
@@ -2239,12 +2244,10 @@ mod oversized_publication {
                 target: Some(TargetRef::Player(P1)),
             },
         );
-        act(&mut runner, GameAction::PassPriority);
-        assert_eq!(runner.state().stack.len(), 1);
-        assert_eq!(
-            runner.state().waiting_for,
-            WaitingFor::Priority { player: P1 }
-        );
+        while runner.state().waiting_for != (WaitingFor::Priority { player: holder }) {
+            act(&mut runner, GameAction::PassPriority);
+            assert_eq!(runner.state().stack.len(), 1);
+        }
         runner.state().clone()
     }
 
@@ -2483,6 +2486,48 @@ mod oversized_publication {
             .await;
             table.server.abort();
             outcome.expect("the oversized concession was not published");
+            assert!(trim_warned(&table.key.game_code));
+        });
+    }
+
+    #[test]
+    fn oversized_ai_pass_on_reconnect_reaches_the_observer_trimmed() {
+        run_async_test(|| async {
+            capture_server_log();
+            const AI: PlayerId = PlayerId(2);
+            let table = NativeTable::seated(
+                GameExecutor::new(NonZeroUsize::MIN),
+                3,
+                FormatConfig::free_for_all(),
+            )
+            .await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut observer = table.connect(P0).await;
+                install(
+                    &table,
+                    trap_held_by(GameScenario::new_n_player(3, 42), AI),
+                    &[AI],
+                )
+                .await;
+                // P1's reconnect runs the AI seat, whose pass resolves the Trap; this handshake
+                // skips the keep-alive Ping (sent after 10 s) that `connect` panics on.
+                let _returning = table
+                    .connect_with_format(
+                        P1,
+                        Some(server_core::protocol::WireFormat::GzipEnvelopeV1),
+                    )
+                    .await;
+                let update = loop {
+                    let frame = receive_command_frame(&mut observer).await;
+                    if frame["type"] == "StateUpdate" {
+                        break frame;
+                    }
+                };
+                assert_trap_resolved(&update);
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized reconnect AI update was not published");
             assert!(trim_warned(&table.key.game_code));
         });
     }
