@@ -180,6 +180,90 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+/// A rarely-populated `BTreeMap` stored off `GameState`'s stack frame and
+/// allocated only while it holds an entry: `None` when empty (so cloning an
+/// empty table allocates nothing), collapsed back to `None` whenever it
+/// empties. Serializes exactly as the map it holds.
+// The box is the point: it keeps the map off the stack frame (the
+// `game_state_size` budget), and the `Option` keeps an empty one unallocated.
+#[allow(clippy::box_collection)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LazyBoxedMap<K, V>(Option<Box<BTreeMap<K, V>>>);
+
+impl<K, V> Default for LazyBoxedMap<K, V> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<K: Ord, V> LazyBoxedMap<K, V> {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |map| map.len())
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.0.as_ref()?.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.0.as_mut()?.get_mut(key)
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.0.iter().flat_map(|map| map.iter())
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.0.get_or_insert_with(Box::default).insert(key, value)
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let map = self.0.as_mut()?;
+        let removed = map.remove(key);
+        if map.is_empty() {
+            self.0 = None;
+        }
+        removed
+    }
+
+    pub fn retain(&mut self, keep: impl FnMut(&K, &mut V) -> bool) {
+        if let Some(map) = self.0.as_mut() {
+            map.retain(keep);
+            if map.is_empty() {
+                self.0 = None;
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl<K: Serialize, V: Serialize> Serialize for LazyBoxedMap<K, V> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.0 {
+            Some(map) => map.serialize(serializer),
+            None => BTreeMap::<K, V>::new().serialize(serializer),
+        }
+    }
+}
+
+impl<'de, K: Ord + Deserialize<'de>, V: Deserialize<'de>> Deserialize<'de> for LazyBoxedMap<K, V> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let map = BTreeMap::<K, V>::deserialize(deserializer)?;
+        Ok(Self((!map.is_empty()).then(|| Box::new(map))))
+    }
+}
+
 fn nonzero_delta_magnitude(delta: i32) -> Result<u32, ResolvedPlayerEditReplayInvariantError> {
     (delta != 0)
         .then_some(delta.unsigned_abs())
@@ -12099,8 +12183,14 @@ pub enum PayCostKind {
     /// CR 701.20a + CR 601.2b: Reveal a card from hand matching the cost's
     /// filter as an additional/alternative cast cost. The chosen card stays
     /// in hand (revealing doesn't move it) and becomes the resolving
-    /// ability's cost-paid-object referent (CR 608.2k).
-    Reveal,
+    /// ability's cost-paid-object referent (CR 608.2k). Carries the optional
+    /// shared-quality constraint (e.g., "two cards that share a color") so the
+    /// payment validator can enforce it per-leg without relying on the
+    /// activation_cost_snapshot.
+    Reveal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared_quality: Option<crate::types::ability::SharedQuality>,
+    },
     Sacrifice,
     ReturnToHand,
     /// Exile objects from the specified zone.
@@ -12215,6 +12305,41 @@ pub enum CostResume {
     /// CR 118.12: Resume a resolution-time `Effect::PayCost` after the payer
     /// selects objects for an interactive cost such as tapping creatures.
     Resolution,
+    /// CR 805.6 + CR 118.12: Resume a COLLECTIVE resolution-time
+    /// `TapCreatures` aggregate cost (Bow to My Command) after one hero
+    /// selects their contribution. Each teammate is prompted in seat order
+    /// for any subset (possibly empty) of their own untapped creatures; the
+    /// selections accumulate untapped and tap simultaneously only once the
+    /// combined signed power satisfies `aggregate` — mirroring the
+    /// single-payer path's validate-before-execute atomicity, so a shortfall
+    /// taps nothing. `remaining` holds the heroes still to prompt AFTER the
+    /// current prompt's player; creatureless heroes are skipped, never
+    /// prompted. Like `Resolution`, the resolving chain owns this payment's
+    /// rider (no `PendingCast`/`PendingManaAbility` rides along).
+    TeamTapPayment {
+        aggregate: crate::types::ability::TapCreaturesAggregate,
+        /// Team-wide gate-time eligible set (each member matched under
+        /// their own controller binding). Per-hero prompts slice this by
+        /// controller; the set is static across the session because no
+        /// resolution interleaves between prompts.
+        eligible: Vec<crate::types::identifiers::ObjectId>,
+        /// Accumulated selections from heroes who already answered, still
+        /// untapped until the combined check passes.
+        selected: Vec<crate::types::identifiers::ObjectId>,
+        /// Living teammates still to prompt after the current player, in
+        /// seat order.
+        remaining: Vec<crate::types::player::PlayerId>,
+        /// Gate-time cost filter and payer-adjusted resolving ability,
+        /// carried so departure reconciliation re-runs the SAME eligibility
+        /// authority as the gate
+        /// (`costs::find_eligible_team_tap_creatures_targets`) instead of a
+        /// hand-written liveness predicate that can drift from it (e.g.
+        /// missing the filter's creature-ness once an animation ends). Boxed:
+        /// `ResolvedAbility` is 5,264 B inline and this resume rides every
+        /// `WaitingFor::PayCost` (see `types/game_state_size.rs`).
+        filter: Box<crate::types::ability::TargetFilter>,
+        ability: Box<crate::types::ability::ResolvedAbility>,
+    },
     /// CR 702.37e + CR 116.2b + CR 118.1 + CR 118.3: Resumption context after paying a non-mana cost
     /// (e.g. ReturnToHand, Discard, PayLife, Reveal, Sacrifice) to turn a face-down permanent face up.
     TurnFaceUp {
@@ -19888,6 +20013,7 @@ impl WaitingFor {
                 } => Some(pending_cast),
                 CostResume::ManaAbility { .. }
                 | CostResume::Resolution
+                | CostResume::TeamTapPayment { .. }
                 | CostResume::TurnFaceUp { .. } => None,
             },
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_ref() {
@@ -19926,6 +20052,7 @@ impl WaitingFor {
                 } => Some(pending_cast),
                 CostResume::ManaAbility { .. }
                 | CostResume::Resolution
+                | CostResume::TeamTapPayment { .. }
                 | CostResume::TurnFaceUp { .. } => None,
             },
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_mut() {
@@ -20181,6 +20308,7 @@ impl WaitingFor {
                 CostResume::Spell { .. }
                 | CostResume::SpellCost { .. }
                 | CostResume::Resolution
+                | CostResume::TeamTapPayment { .. }
                 | CostResume::TurnFaceUp { .. } => None,
             },
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_ref() {
@@ -23616,10 +23744,10 @@ declare_game_state! {
     pub activated_abilities_this_turn: im::HashMap<(ObjectId, usize), u32>,
     #[serde(
         default,
-        skip_serializing_if = "HashMap::is_empty",
+        skip_serializing_if = "im::HashMap::is_empty",
         with = "tuple_key_map"
     )]
-    pub activated_abilities_this_game: HashMap<(ObjectId, usize), u32>,
+    pub activated_abilities_this_game: im::HashMap<(ObjectId, usize), u32>,
     /// CR 602.5b + CR 702.122: Vehicles whose crew ability has been activated this
     /// turn. Populated on a successful crew announcement; read to enforce an
     /// "Activate only once each turn" crew restriction. Crew is not an
@@ -24373,6 +24501,19 @@ declare_game_state! {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named_color_this_resolution: Option<crate::types::mana::ManaColor>,
 
+    /// CR 607.2d + CR 608.2c: the label the current resolution's most recent
+    /// labeled choice named, persisting or not ("target opponent chooses self
+    /// or others. If that player chooses self, …"). The named-choice
+    /// continuation for `AbilityCondition::ChosenLabelIs`: unlike the source's
+    /// `ChosenAttribute::Label` history (which CR 607.2d readers own and which
+    /// accumulates across resolutions, so a recycled scheme's first answer
+    /// would shadow every later one), this slot answers "what did the choice
+    /// earlier in THESE instructions name". Cleared at every top-level
+    /// resolution; a gate whose own resolution named no label reads `None`
+    /// and fails closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_label_this_resolution: Option<String>,
+
     /// CR 608.2c + CR 123.1: the sticker the current resolution's most recent
     /// PutSticker instruction placed ("that sticker"). Cleared at every
     /// top-level resolution and at the start of every PutSticker instruction,
@@ -24634,6 +24775,40 @@ declare_game_state! {
     /// survives authoritative save/restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clause_minimum_snapshot: Option<ClauseMinimumSnapshot>,
+
+    /// CR 608.2e + CR 603.10d: the immediately-before captures of fan-out
+    /// control-change instructions, keyed by the id their template's head
+    /// carries (`ControlChangeInstructionCarrier::Captured`). Kept here, not on
+    /// the ability, so no viewer copy can see it: the captured watcher contexts
+    /// and subject snapshots can carry hidden information (a face-down linked
+    /// exile), and `filter_state_for_viewer` drops this table. Removed when its
+    /// link completes. Only an allowlisted mandatory mass template is captured, and its
+    /// seats run without a pause, so no admitted link leaves an entry across a
+    /// pause; should one ever park, its entry is resolution-scoped residue,
+    /// cleared at the next turn (no resolution spans a turn boundary), and is
+    /// serialized so authoritative save/restore can't lose it.
+    /// Empty outside a resolution, so it is lazily boxed: off `GameState`'s
+    /// stack budget (`game_state_size`) and unallocated while empty.
+    #[serde(default, skip_serializing_if = "LazyBoxedMap::is_empty")]
+    pub control_change_captures: LazyBoxedMap<u64, crate::types::events::ControlChangeLink>,
+    /// The next `control_change_captures` key.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub next_control_change_capture_id: u64,
+    /// CR 603.10d: every published control change's immediately-before
+    /// observation, keyed by the id its `ControllerChanged` event carries
+    /// (`ControlChangeEvidence::Observed`). Held here, not in the event, so no
+    /// viewer copy of any event carrier can expose it: `filter_state_for_viewer`
+    /// drops this table. Matching reads it as events are collected; once each
+    /// action finishes, only entries a retained trigger-event carrier still
+    /// names are kept (`release_unreferenced_control_change_observations`). An
+    /// id with no entry authorizes nothing.
+    /// Lazily boxed, like `control_change_captures`.
+    #[serde(default, skip_serializing_if = "LazyBoxedMap::is_empty")]
+    pub control_change_observations:
+        LazyBoxedMap<u64, crate::types::events::ControlChangeObservation>,
+    /// The next `control_change_observations` key.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub next_control_change_observation_id: u64,
 
     /// CR 400.7 + CR 608.2c: Number of cards exiled from a hand by the most recent
     /// `Effect::ChangeZoneAll` resolution. Read by `QuantityRef::ExiledFromHandThisResolution`
@@ -24916,9 +25091,9 @@ declare_game_state! {
     /// public zone. Ordinary `LKISnapshot` is intentionally filter-shaped and
     /// does not carry ability definitions; copy effects need the complete
     /// copiable surface when the copy source later ceases to exist.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    #[serde(serialize_with = "crate::types::deterministic_serde::hash_map")]
-    pub lki_copiable_values: HashMap<ObjectId, CopiableValues>,
+    #[serde(default, skip_serializing_if = "im::HashMap::is_empty")]
+    #[serde(serialize_with = "crate::types::deterministic_serde::im_hash_map")]
+    pub lki_copiable_values: im::HashMap<ObjectId, CopiableValues>,
 
     /// CR 400.7 + CR 608.2h: LKI keyed by exact object incarnation. The legacy
     /// `lki_cache` remains the broad ObjectId-only authority for existing callers;
@@ -25199,6 +25374,12 @@ fn history_map_entries_unshared(original: &GameState, copy: &GameState) -> u64 {
         + original
             .activated_abilities_this_turn
             .unshared(&copy.activated_abilities_this_turn)
+        + original
+            .activated_abilities_this_game
+            .unshared(&copy.activated_abilities_this_game)
+        + original
+            .lki_copiable_values
+            .unshared(&copy.lki_copiable_values)
         + original
             .batched_zone_change_trigger_fired
             .unshared(&copy.batched_zone_change_trigger_fired)
@@ -25949,7 +26130,9 @@ fn visit_cost_resume_chains<'a>(
             visit_pending_mana_ability_chains(mana_ability, f)
         }
         // The resolving chain itself owns this payment's rider.
-        CostResume::Resolution | CostResume::TurnFaceUp { .. } => Ok(()),
+        CostResume::Resolution
+        | CostResume::TeamTapPayment { .. }
+        | CostResume::TurnFaceUp { .. } => Ok(()),
     }
 }
 
@@ -30476,6 +30659,80 @@ impl GameState {
             .map(|subject| subject.snapshot)
     }
 
+    /// CR 603.10d: the observation a `ControllerChanged`'s evidence names, when
+    /// it was recorded and is still held. `Unrecorded`, or an id with no entry,
+    /// authorizes nothing.
+    pub fn control_change_observation(
+        &self,
+        evidence: crate::types::events::ControlChangeEvidence,
+    ) -> Option<&crate::types::events::ControlChangeObservation> {
+        match evidence {
+            crate::types::events::ControlChangeEvidence::Unrecorded => None,
+            crate::types::events::ControlChangeEvidence::Observed(id) => {
+                self.control_change_observations.get(&id)
+            }
+        }
+    }
+
+    /// CR 603.10d: release every control-change observation no retained
+    /// trigger-event carrier still names. An observation is read only while its
+    /// event is collected, which happens during the action that published it or
+    /// from a carrier that holds the event for later collection
+    /// (`for_each_trigger_event_carrier_mut`, the same authority loop
+    /// normalization uses). Run once each action finishes, so the table holds
+    /// only what can still be matched.
+    pub(crate) fn release_unreferenced_control_change_observations(&mut self) {
+        if self.control_change_observations.is_empty() {
+            return;
+        }
+        let mut referenced = BTreeSet::new();
+        self.for_each_trigger_event_carrier_mut(&mut |event| {
+            if let GameEvent::ControllerChanged {
+                evidence: crate::types::events::ControlChangeEvidence::Observed(id),
+                ..
+            } = event
+            {
+                referenced.insert(*id);
+            }
+        });
+        self.control_change_observations
+            .retain(|id, _| referenced.contains(id));
+    }
+
+    /// Records one published control change's observation and returns the
+    /// evidence its event carries. Written only by
+    /// `gain_control::publish_controller_changed`.
+    pub(crate) fn record_control_change_observation(
+        &mut self,
+        observation: crate::types::events::ControlChangeObservation,
+    ) -> crate::types::events::ControlChangeEvidence {
+        let id = self.next_control_change_observation_id;
+        self.next_control_change_observation_id += 1;
+        self.control_change_observations.insert(id, observation);
+        crate::types::events::ControlChangeEvidence::Observed(id)
+    }
+
+    /// Test support: the evidence a control-change instruction affecting only
+    /// `object_id` would capture on this board, for a hand-built
+    /// `ControllerChanged`. Production evidence is written only by
+    /// `gain_control::capture_control_change_instruction` at an instruction's
+    /// boundary; this is never reachable from a production build.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn control_change_evidence_for_test(
+        &mut self,
+        object_id: ObjectId,
+    ) -> crate::types::events::ControlChangeEvidence {
+        match crate::game::effects::gain_control::capture_control_change_instruction(
+            self,
+            [object_id],
+        )
+        .observation_for(object_id)
+        {
+            Some(observation) => self.record_control_change_observation(observation),
+            None => crate::types::events::ControlChangeEvidence::Unrecorded,
+        }
+    }
+
     /// Clears the event-filtering sidecar at the next outer action boundary.
     pub(crate) fn clear_completed_hidden_search_audiences(&mut self) {
         self.completed_hidden_search_audiences.clear();
@@ -31860,7 +32117,7 @@ impl GameState {
         let players: Vec<Player> = (0..player_count)
             .map(|i| Player {
                 id: PlayerId(i),
-                life: config.starting_life_for_player(PlayerId(i)),
+                life: config.starting_life_for_player(PlayerId(i), usize::from(player_count)),
                 ..Player::default()
             })
             .collect();
@@ -32025,7 +32282,7 @@ impl GameState {
             triggers_fired_this_game: HashSet::new(),
             triggered_abilities_added_mana_this_turn: HashSet::new(),
             activated_abilities_this_turn: im::HashMap::new(),
-            activated_abilities_this_game: HashMap::new(),
+            activated_abilities_this_game: im::HashMap::new(),
             crew_activated_this_turn: HashSet::new(),
             crew_resolved_this_turn: HashSet::new(),
             crew_history_this_turn: HashSet::new(),
@@ -32126,6 +32383,7 @@ impl GameState {
             chosen_counter_kind_this_resolution: None,
             chosen_color_this_resolution: None,
             named_color_this_resolution: None,
+            named_label_this_resolution: None,
             placed_sticker_this_resolution: None,
             noted_numbers_this_resolution: Vec::new(),
             last_chosen_damage_source: None,
@@ -32152,6 +32410,10 @@ impl GameState {
             last_effect_count: None,
             last_effect_counts_by_player: HashMap::new(),
             clause_minimum_snapshot: None,
+            control_change_captures: LazyBoxedMap::default(),
+            next_control_change_capture_id: 0,
+            control_change_observations: LazyBoxedMap::default(),
+            next_control_change_observation_id: 0,
             exiled_from_hand_this_resolution: 0,
             monarch: None,
             city_blessing: HashSet::new(),
@@ -32180,7 +32442,7 @@ impl GameState {
             stack_trigger_event_batches: HashMap::new(),
             stack_trigger_firings: HashMap::new(),
             lki_cache: im::HashMap::new(),
-            lki_copiable_values: HashMap::new(),
+            lki_copiable_values: im::HashMap::new(),
             lki_by_incarnation: im::HashMap::new(),
             lki_copiable_values_by_incarnation: im::HashMap::new(),
             departed_stack_spells: im::HashMap::new(),
@@ -33282,6 +33544,7 @@ impl GameState {
         self.chosen_counter_kind_this_resolution.hash(&mut h);
         self.chosen_color_this_resolution.hash(&mut h);
         self.named_color_this_resolution.hash(&mut h);
+        self.named_label_this_resolution.hash(&mut h);
         // CR 608.2c: "that sticker" can change what a following instruction
         // reads (phase-2 quantity), so distinct live values must not share a
         // loop pre-filter fingerprint.
@@ -33334,6 +33597,11 @@ impl GameState {
         clone.next_delayed_trigger_token = 0;
         clone.next_delayed_trigger_instance = 0;
         clone.next_resolution_cast_offer_id = 0;
+        // CR 608.2e + CR 104.4b: fan-out control-change captures are
+        // resolution-scoped working memory keyed by a monotone id, not game
+        // position.
+        clone.control_change_captures.clear();
+        clone.next_control_change_capture_id = 0;
         // CR 104.4b + CR 732.2a: The instruction-result occurrence allocator
         // identifies past resolutions, not a difference in the game position.
         // Live frames and their references remain compared below; only this
@@ -33817,6 +34085,41 @@ impl GameState {
     pub(crate) fn canonicalize_loop_identities(&mut self) {
         self.canonicalize_spell_announcements_for_loop();
         self.canonicalize_lki_incarnations_for_loop();
+        self.canonicalize_control_change_evidence_for_loop();
+    }
+
+    /// See `normalize_for_loop`. Control-change observation ids are a monotone
+    /// key into `control_change_observations`, history read only while the
+    /// events are collected: rank them across the trigger-event carriers and
+    /// drop the table, so two positions minted at different times compare
+    /// equal.
+    fn canonicalize_control_change_evidence_for_loop(&mut self) {
+        let mut present: Vec<u64> = Vec::new();
+        self.for_each_trigger_event_carrier_mut(&mut |event| {
+            if let GameEvent::ControllerChanged {
+                evidence: crate::types::events::ControlChangeEvidence::Observed(id),
+                ..
+            } = event
+            {
+                present.push(*id);
+            }
+        });
+        present.sort_unstable();
+        present.dedup();
+        self.for_each_trigger_event_carrier_mut(&mut |event| {
+            if let GameEvent::ControllerChanged {
+                evidence: crate::types::events::ControlChangeEvidence::Observed(id),
+                ..
+            } = event
+            {
+                let rank = present
+                    .binary_search(id)
+                    .expect("every id was collected above");
+                *id = rank as u64 + 1;
+            }
+        });
+        self.control_change_observations.clear();
+        self.next_control_change_observation_id = 0;
     }
 
     /// See `normalize_for_loop`. Per object, rank-based over the retained
@@ -34202,7 +34505,10 @@ impl GameState {
     /// every parked resolution frame, the pre-roll die instruction, and a paused
     /// triggered mana ability. The one traversal `normalize_for_loop` uses for
     /// both LKI retention and identity canonicalization.
-    fn for_each_trigger_event_carrier_mut(&mut self, f: &mut impl FnMut(&mut GameEvent)) {
+    pub(crate) fn for_each_trigger_event_carrier_mut(
+        &mut self,
+        f: &mut impl FnMut(&mut GameEvent),
+    ) {
         for entry in self
             .stack
             .iter_mut()
@@ -35412,6 +35718,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         chosen_counter_kind_this_resolution: _,
         chosen_color_this_resolution: _,
         named_color_this_resolution: _,
+        named_label_this_resolution: _,
         placed_sticker_this_resolution: _,
         noted_numbers_this_resolution: _,
         last_chosen_damage_source: _,
@@ -35438,6 +35745,10 @@ fn _gamestate_partition_is_total(s: &GameState) {
         last_effect_count: _,
         last_effect_counts_by_player: _,
         clause_minimum_snapshot: _,
+        control_change_captures: _,
+        next_control_change_capture_id: _,
+        control_change_observations: _,
+        next_control_change_observation_id: _,
         exiled_from_hand_this_resolution: _,
         monarch: _,
         city_blessing: _,
@@ -35813,6 +36124,7 @@ impl PartialEq for GameState {
                 == other.chosen_counter_kind_this_resolution
             && self.chosen_color_this_resolution == other.chosen_color_this_resolution
             && self.named_color_this_resolution == other.named_color_this_resolution
+            && self.named_label_this_resolution == other.named_label_this_resolution
             && self.placed_sticker_this_resolution == other.placed_sticker_this_resolution
             && self.noted_numbers_this_resolution == other.noted_numbers_this_resolution
             && self.last_revealed_ids == other.last_revealed_ids
@@ -45467,6 +45779,108 @@ mod tests {
             loop_states_equal(&a.normalize_for_loop(), &b.normalize_for_loop()),
             "normalize_for_loop must zero trigger source across delayed_triggers + stack"
         );
+    }
+
+    /// CR 732.2a + CR 603.10d: a `ControllerChanged`'s evidence key is minted
+    /// from a monotone counter; two positions that differ only in that key are
+    /// the same position.
+    #[test]
+    fn normalize_for_loop_canonicalizes_control_change_evidence_keys() {
+        let mut state = GameState::new_two_player(7);
+        let subject = crate::game::zones::create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Subject".to_string(),
+            Zone::Battlefield,
+        );
+        let evidence = state.control_change_evidence_for_test(subject);
+        // The same observation, minted later under another key.
+        let later = state.control_change_evidence_for_test(subject);
+        assert!(
+            !evidence.is_unrecorded() && evidence != later,
+            "REACH: two observed keys"
+        );
+        let event =
+            |evidence: crate::types::events::ControlChangeEvidence| GameEvent::ControllerChanged {
+                object_id: subject,
+                old_controller: PlayerId(0),
+                new_controller: PlayerId(1),
+                evidence,
+            };
+        let with_trigger_event = |event: GameEvent| {
+            let mut position = state.clone();
+            position.stack.push_back(StackEntry {
+                id: ObjectId(20),
+                source_id: ObjectId(5),
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: ObjectId(5),
+                    ability: Box::new(ResolvedAbility::new(
+                        crate::types::ability::Effect::Draw {
+                            count: QuantityExpr::Fixed { value: 1 },
+                            target: TargetFilter::Controller,
+                        },
+                        vec![],
+                        ObjectId(5),
+                        PlayerId(0),
+                    )),
+                    condition: None,
+                    trigger_event: Some(event),
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+            position
+        };
+        let a = with_trigger_event(event(evidence));
+        let b = with_trigger_event(event(later));
+        assert_ne!(a, b, "REACH: the positions differ in the evidence alone");
+        assert_eq!(
+            a.normalize_for_loop(),
+            b.normalize_for_loop(),
+            "a minted evidence key is not position"
+        );
+    }
+
+    /// `LazyBoxedMap` holds no allocation while empty, collapses back to that
+    /// when emptied, and serializes as the plain map it holds.
+    #[test]
+    fn lazy_boxed_map_is_unallocated_while_empty() {
+        let mut map: LazyBoxedMap<u64, u32> = LazyBoxedMap::default();
+        assert!(map.0.is_none() && map.is_empty());
+        assert_eq!(map.remove(&1), None);
+        map.retain(|_, _| true);
+        assert!(map.0.is_none());
+
+        assert_eq!(map.insert(1, 10), None);
+        assert_eq!(map.insert(2, 20), None);
+        *map.get_mut(&2).unwrap() += 1;
+        assert!(map.contains_key(&1) && map.get(&2) == Some(&21) && map.len() == 2);
+        assert_eq!(serde_json::to_string(&map).unwrap(), r#"{"1":10,"2":21}"#);
+        let decoded: LazyBoxedMap<u64, u32> = serde_json::from_str(r#"{"1":10,"2":21}"#).unwrap();
+        assert_eq!(decoded, map);
+
+        assert_eq!(map.remove(&1), Some(10));
+        map.retain(|_, _| false);
+        assert!(map.0.is_none(), "emptied by retain: back to no allocation");
+        map.insert(3, 30);
+        map.clear();
+        assert!(map.0.is_none());
+
+        let empty: LazyBoxedMap<u64, u32> = serde_json::from_str("{}").unwrap();
+        assert!(empty.0.is_none(), "an empty map decodes unallocated");
+        assert!(GameState::new_two_player(7)
+            .control_change_captures
+            .0
+            .is_none());
+        assert!(GameState::new_two_player(7)
+            .control_change_observations
+            .0
+            .is_none());
     }
 
     /// CR 104.4b + CR 732.2a: repeated same-step zone cycles accumulate
