@@ -13,7 +13,7 @@ use server_core::session::GameSession;
 use server_core::FullSessionKey;
 
 use crate::game_submission_tests::{
-    basic_land_test_database, connect_and_hello, reconnect_started_game,
+    basic_land_test_database, connect_and_hello, connect_and_hello_with, reconnect_started_game,
 };
 use crate::issue_4548_full_create_tests::{recv_server_message, send_test_message, spawn_server};
 use crate::socket_test_hooks::run_async_test;
@@ -141,7 +141,23 @@ impl NativeTable {
     }
 
     async fn connect(&self, player: PlayerId) -> ClientSocket {
-        let mut socket = connect_and_hello(self.url.clone()).await;
+        self.dial(player, None).await
+    }
+
+    /// A seat whose socket takes frames of any size, as the desktop bridge's does.
+    async fn connect_uncapped(&self, player: PlayerId) -> ClientSocket {
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(None)
+            .max_frame_size(None);
+        self.dial(player, Some(config)).await
+    }
+
+    async fn dial(
+        &self,
+        player: PlayerId,
+        config: Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig>,
+    ) -> ClientSocket {
+        let mut socket = connect_and_hello_with(self.url.clone(), config).await;
         reconnect_started_game(
             &mut socket,
             &self.key.game_code,
@@ -1977,8 +1993,10 @@ mod oversized_publication {
     use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
     use engine::game::scenario_db::GameScenarioDbExt;
     use engine::types::ability::AbilityKind;
+    use engine::types::events::GameEvent;
     use engine::types::game_state::{CastPaymentMode, GameState, LoopDetectionMode, WaitingFor};
     use engine::types::identifiers::ObjectId;
+    use engine::types::log::{GameLogEntry, LogImportance, LogSegment};
     use engine::types::mana::{ManaCost, ManaCostShard};
     use engine::types::phase::Phase;
     use engine::types::zones::Zone;
@@ -2385,6 +2403,477 @@ mod oversized_publication {
             .await;
             table.server.abort();
             outcome.expect("a blocked game call closed or stalled its socket");
+        });
+    }
+
+    /// What one full-length take did to its sockets and what it published.
+    #[derive(Debug, Default)]
+    struct LegReport {
+        count: u32,
+        declare_hold: Option<Duration>,
+        /// Each accept's hold, in order; the last runs the take.
+        accept_holds: Vec<(PlayerId, Duration)>,
+        /// Each Ping: its seat, when it was sent after the declaration, and its Pong's delay.
+        pings: Vec<(PlayerId, Duration, Option<Duration>)>,
+        /// Each Close, read error or end of stream, with its seat and time.
+        broken: Vec<String>,
+        /// The answer to the correlated action sent after the burst.
+        refusal: Option<serde_json::Value>,
+        export: Option<Duration>,
+        /// The completion of the command the game held.
+        completion: Option<serde_json::Value>,
+        /// The declarer's first StateUpdate with legal actions after the hold began.
+        decision: Option<(Duration, serde_json::Value)>,
+    }
+
+    impl LegReport {
+        fn events(update: &serde_json::Value) -> Vec<GameEvent> {
+            serde_json::from_value(update["data"]["events"].clone()).unwrap()
+        }
+
+        fn markers(update: &serde_json::Value) -> Vec<(PlayerId, u32)> {
+            Self::events(update)
+                .into_iter()
+                .filter_map(|event| match event {
+                    GameEvent::ShortcutRepetition {
+                        controller,
+                        repetition,
+                    } => Some((controller, repetition)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The entries the game log's default view lists, as text.
+        fn timeline(update: &serde_json::Value) -> Vec<String> {
+            let entries: Vec<GameLogEntry> =
+                serde_json::from_value(update["data"]["log_entries"].clone()).unwrap_or_default();
+            entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.presentation.importance,
+                        LogImportance::Essential | LogImportance::Context
+                    )
+                })
+                .map(|entry| {
+                    entry
+                        .segments
+                        .iter()
+                        .map(|segment| match segment {
+                            LogSegment::Text(text) => text.clone(),
+                            LogSegment::CardName { name, .. }
+                            | LogSegment::PlayerName { name, .. } => name.clone(),
+                            LogSegment::Number(number) => number.to_string(),
+                            other => format!("{other:?}"),
+                        })
+                        .collect()
+                })
+                .collect()
+        }
+
+        fn unanswered_pings(&self) -> usize {
+            self.pings
+                .iter()
+                .filter(|(_, _, pong)| !pong.is_some_and(|delay| delay <= PONG_BUDGET))
+                .count()
+        }
+
+        fn line(&self) -> String {
+            let pings: Vec<String> = self
+                .pings
+                .iter()
+                .map(|(seat, sent, pong)| format!("P{}@{:.1?}:{pong:.1?}", seat.0, sent))
+                .collect();
+            let decision = self.decision.as_ref().map(|(at, update)| {
+                format!(
+                    "at {at:.1?}: markers {:?}, {} events, {} log entries, timeline {:?}",
+                    Self::markers(update),
+                    update["data"]["events"].as_array().map_or(0, Vec::len),
+                    update["data"]["log_entries"].as_array().map_or(0, Vec::len),
+                    Self::timeline(update),
+                )
+            });
+            format!(
+                "LegReport count={} declare_hold={:.1?} accept_holds={:.1?} pings=[{}] \
+                 unanswered={} broken={:?} refusal={} export={:.1?} decision={}",
+                self.count,
+                self.declare_hold,
+                self.accept_holds,
+                pings.join(" "),
+                self.unanswered_pings(),
+                self.broken,
+                self.refusal
+                    .as_ref()
+                    .map_or("none".to_string(), |frame| frame["data"]["message"]
+                        .to_string()),
+                self.export,
+                decision.unwrap_or_else(|| "none".to_string()),
+            )
+        }
+    }
+
+    /// The client's silence budget: a socket whose Ping goes unanswered this long is dropped.
+    const PONG_BUDGET: Duration = Duration::from_secs(45);
+    const FULL_LENGTH_BUDGET: Duration = Duration::from_secs(30 * 60);
+    const BURST: usize = 70;
+    const HELD_ACCEPT: u64 = 7;
+    const AFTER_BURST: u64 = 8;
+
+    /// A socket frame, or why the socket stopped.
+    async fn next_frame(socket: &mut ClientSocket) -> Result<serde_json::Value, String> {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => return Ok(serde_json::from_str(&text).unwrap()),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Close(frame))) => return Err(format!("close {frame:?}")),
+                Some(Ok(frame)) => return Err(format!("unexpected frame {frame:?}")),
+                Some(Err(error)) => return Err(format!("read error {error}")),
+                None => return Err("end of stream".to_string()),
+            }
+        }
+    }
+
+    /// The seat a StateUpdate asks to answer the shortcut, and whether others answer after it.
+    fn responder(update: &serde_json::Value) -> Option<(PlayerId, bool)> {
+        let waiting = &update["data"]["state"]["waiting_for"];
+        (waiting["type"] == "RespondToShortcut").then(|| {
+            let seat = waiting["data"]["player"].as_u64().unwrap();
+            let others = waiting["data"]["remaining_players"]
+                .as_array()
+                .is_some_and(|rest| !rest.is_empty());
+            (PlayerId(u8::try_from(seat).unwrap()), others)
+        })
+    }
+
+    /// The sockets of one full-length leg and what they have seen.
+    struct Leg {
+        seats: Vec<(PlayerId, ClientSocket)>,
+        report: LegReport,
+        started: tokio::time::Instant,
+        deadline: tokio::time::Instant,
+        /// When the held command was sent; the export, burst and decision belong to it.
+        hold: Option<tokio::time::Instant>,
+        /// Each correlated answer, by command id, with when it arrived.
+        answers: std::collections::HashMap<u64, (Duration, serde_json::Value)>,
+        /// Each unanswered Ping's index in the report, by timestamp.
+        pending: std::collections::HashMap<u64, usize>,
+        timestamp: u64,
+    }
+
+    impl Leg {
+        fn socket(&mut self, seat: PlayerId) -> &mut ClientSocket {
+            &mut self
+                .seats
+                .iter_mut()
+                .find(|(connected, _)| *connected == seat)
+                .expect("a connected seat")
+                .1
+        }
+
+        /// Sends `action` as `command` from `seat`; when it was sent.
+        async fn send(&mut self, seat: PlayerId, action: &GameAction, command: u64) -> Duration {
+            send_command_frame(self.socket(seat), action, command).await;
+            self.started.elapsed()
+        }
+
+        /// The answer to `command` and how long after `sent` it arrived.
+        fn answer(&self, command: u64, sent: Duration) -> Option<(Duration, serde_json::Value)> {
+            self.answers
+                .get(&command)
+                .map(|(at, frame)| (*at - sent, frame.clone()))
+        }
+
+        /// Whether the held command, the burst, the export and the declarer's decision are all
+        /// answered, and no Ping is still within its budget.
+        fn settled(&self, held: u64) -> bool {
+            let now = self.started.elapsed();
+            self.answers.contains_key(&held)
+                && self.answers.contains_key(&AFTER_BURST)
+                && self.report.export.is_some()
+                && self.report.decision.is_some()
+                && self
+                    .pending
+                    .values()
+                    .all(|index| now > self.report.pings[*index].1 + PONG_BUDGET)
+        }
+
+        /// Reads every socket, and pings each every 5 s, until `done` holds, a socket breaks or
+        /// the budget runs out; `burst` names the holder and its held command, and the holder
+        /// sends the burst and then the correlated action.
+        async fn pump(&mut self, burst: Option<(PlayerId, u64)>, done: impl Fn(&Self) -> bool) {
+            use futures_util::SinkExt;
+            use tokio_tungstenite::tungstenite::Message;
+
+            let emote = serde_json::to_string(&ClientMessage::Emote {
+                emote: "Hello".to_string(),
+            })
+            .unwrap();
+            let mut pings = tokio::time::interval(Duration::from_secs(5));
+            let mut tick = tokio::time::interval(Duration::from_millis(50));
+            let mut sent = 0;
+            while !done(self) && self.report.broken.is_empty() {
+                tokio::select! {
+                    () = tokio::time::sleep_until(self.deadline) => break,
+                    _ = pings.tick() => {
+                        let held = burst.is_some_and(|(_, held)| self.answers.contains_key(&held));
+                        if !held {
+                            self.ping().await;
+                        }
+                    }
+                    _ = tick.tick(), if burst.is_some() && sent <= BURST => {
+                        let (seat, _) = burst.unwrap();
+                        let socket = self.socket(seat);
+                        if sent < BURST {
+                            socket.send(Message::Text(emote.clone().into())).await.unwrap();
+                        } else {
+                            send_command_frame(socket, &GameAction::PassPriority, AFTER_BURST)
+                                .await;
+                        }
+                        sent += 1;
+                    }
+                    (seat, frame) = async {
+                        let reads = self.seats.iter_mut().map(|(seat, socket)| {
+                            Box::pin(async move { (*seat, next_frame(socket).await) })
+                        });
+                        futures_util::future::select_all(reads).await.0
+                    } => self.read(seat, frame),
+                }
+            }
+        }
+
+        async fn ping(&mut self) {
+            let at = self.started.elapsed();
+            for (seat, socket) in &mut self.seats {
+                self.timestamp += 1;
+                let ping = ClientMessage::Ping {
+                    timestamp: self.timestamp,
+                };
+                send_test_message(socket, &ping, false).await;
+                self.pending.insert(self.timestamp, self.report.pings.len());
+                self.report.pings.push((*seat, at, None));
+            }
+        }
+
+        fn read(&mut self, seat: PlayerId, frame: Result<serde_json::Value, String>) {
+            let at = self.started.elapsed();
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(why) => {
+                    self.report
+                        .broken
+                        .push(format!("P{} at {at:.1?}: {why}", seat.0));
+                    return;
+                }
+            };
+            if frame["type"] == "Pong" {
+                let stamp = frame["data"]["timestamp"].as_u64().unwrap();
+                if let Some(index) = self.pending.remove(&stamp) {
+                    let ping = &mut self.report.pings[index];
+                    ping.2 = Some(at - ping.1);
+                }
+                return;
+            }
+            if let Some(command) = frame.get("command_id").and_then(serde_json::Value::as_u64) {
+                self.answers.insert(command, (at, frame.clone()));
+            }
+            let Some(hold) = self.hold.filter(|_| seat == P0) else {
+                return;
+            };
+            if frame["type"] == "AuthoritativeStateExport" {
+                self.report.export = Some(hold.elapsed());
+            } else if self.report.decision.is_none()
+                && frame["type"] == "StateUpdate"
+                && frame["data"]["legal_actions"]
+                    .as_array()
+                    .is_some_and(|actions| !actions.is_empty())
+            {
+                self.report.decision = Some((hold.elapsed(), frame));
+            }
+        }
+
+        /// Sends the held command, then P0's export, and reads until everything is answered.
+        async fn run_held(
+            &mut self,
+            seat: PlayerId,
+            action: &GameAction,
+            command: u64,
+        ) -> Duration {
+            let sent = self.send(seat, action, command).await;
+            self.hold = Some(tokio::time::Instant::now());
+            send_test_message(
+                self.socket(P0),
+                &ClientMessage::ExportAuthoritativeState,
+                false,
+            )
+            .await;
+            self.pump(Some((seat, command)), |leg| leg.settled(command))
+                .await;
+            self.report.refusal = self.answer(AFTER_BURST, sent).map(|(_, frame)| frame);
+            sent
+        }
+    }
+
+    /// CR 732.2a + CR 732.2c: P0 declares the take of `offer` at `count` and every human seat
+    /// accepts it, while every connected seat reads its socket and pings each 5 s. During the
+    /// command that runs the take (the declaration when no human answers it, else the last
+    /// accept) P0 asks for an export and the holder sends a burst then a correlated action. The
+    /// report records what the sockets saw until each answer arrived or `budget` ran out.
+    async fn full_length_take(
+        table: &NativeTable,
+        offer: GameState,
+        ai: &[PlayerId],
+        count: u32,
+        budget: Duration,
+    ) -> LegReport {
+        let seats = offer.players.len();
+        install(table, offer, ai).await;
+        let session = crate::lock_session(&table.app.sessions, &table.key.game_code)
+            .await
+            .unwrap();
+        let (lease, ()) = table
+            .app
+            .context
+            .game_executor
+            .with_session(session, |session| {
+                session.hosting = server_core::session::HostingMode::SingleUser;
+            })
+            .await;
+        drop(lease);
+
+        let mut connected = vec![(P0, table.connect_uncapped(P0).await)];
+        for seat in (1..seats).map(|seat| PlayerId(u8::try_from(seat).unwrap())) {
+            if !ai.contains(&seat) {
+                connected.push((seat, table.connect_uncapped(seat).await));
+            }
+        }
+        let started = tokio::time::Instant::now();
+        let mut leg = Leg {
+            seats: connected,
+            report: LegReport {
+                count,
+                ..Default::default()
+            },
+            started,
+            deadline: started + budget,
+            hold: None,
+            answers: Default::default(),
+            pending: Default::default(),
+            timestamp: 0,
+        };
+        let declare = GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(count),
+            template: None,
+        };
+        let held = if leg.seats.len() == 1 {
+            let sent = leg.run_held(P0, &declare, 1).await;
+            leg.report.declare_hold = leg.answer(1, sent).map(|(hold, _)| hold);
+            1
+        } else {
+            let sent = leg.send(P0, &declare, 1).await;
+            leg.pump(None, |leg| leg.answers.contains_key(&1)).await;
+            let Some((hold, mut update)) = leg.answer(1, sent) else {
+                return leg.report;
+            };
+            leg.report.declare_hold = Some(hold);
+            let mut command = 100;
+            loop {
+                let (seat, others) = responder(&update).expect("a seat answers the shortcut");
+                if !others {
+                    let sent = leg.run_held(seat, &ACCEPT, HELD_ACCEPT).await;
+                    if let Some((hold, _)) = leg.answer(HELD_ACCEPT, sent) {
+                        leg.report.accept_holds.push((seat, hold));
+                    }
+                    break HELD_ACCEPT;
+                }
+                command += 1;
+                let sent = leg.send(seat, &ACCEPT, command).await;
+                leg.pump(None, |leg| leg.answers.contains_key(&command))
+                    .await;
+                let Some((hold, answer)) = leg.answer(command, sent) else {
+                    return leg.report;
+                };
+                leg.report.accept_holds.push((seat, hold));
+                update = answer;
+            }
+        };
+        leg.report.completion = leg.answers.remove(&held).map(|(_, frame)| frame);
+        leg.report
+    }
+
+    /// The shared assertions of a full-length leg: no socket dropped, every Ping answered in
+    /// time, the burst refused rather than closed, the export answered, and the decision made.
+    fn assert_full_length(report: &LegReport) {
+        assert!(report.broken.is_empty(), "{}", report.line());
+        assert!(!report.pings.is_empty(), "{}", report.line());
+        assert_eq!(report.unanswered_pings(), 0, "{}", report.line());
+        let refusal = report.refusal.as_ref().expect("the burst is answered");
+        assert_eq!(refusal["type"], "ActionFailed", "{}", report.line());
+        assert_eq!(
+            refusal["data"]["message"],
+            crate::socket_mailbox::RefusalReason::GameBusy.message()
+        );
+        assert!(report.export.is_some(), "{}", report.line());
+        assert!(report.decision.is_some(), "{}", report.line());
+    }
+
+    /// The offer's own count: what a player taking the default declares.
+    fn default_count(offer: &GameState) -> u32 {
+        let WaitingFor::LoopShortcut { schema, .. } = &offer.waiting_for else {
+            panic!("an offer");
+        };
+        let IterationCount::Fixed(count) = schema.iteration_count else {
+            panic!("a fixed default: {:?}", schema.iteration_count);
+        };
+        count
+    }
+
+    /// CR 732.2a: the default count of the Smaug the Impenetrable + Mayhem Devil loop, 1000,
+    /// taken in full by a human accept over real sockets. Each repetition is Mayhem Devil's 1
+    /// damage to Smaug (CR 120.3e), so Smaug's damage rises by 1000.
+    /// Run: `cargo nextest run -p phase-server --cargo-profile server-release --run-ignored only
+    /// --no-capture -E 'test(/full_length/)'`.
+    #[test]
+    #[ignore = "full length: minutes per leg"]
+    fn full_length_human_accept_keeps_every_socket() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let count = default_count(&offer);
+            assert_eq!(count, 1000);
+            let table = NativeTable::duel().await;
+            let report = full_length_take(&table, offer, &[], count, FULL_LENGTH_BUDGET).await;
+            table.server.abort();
+            println!("{}", report.line());
+            assert_full_length(&report);
+            let accepted = report.completion.as_ref().expect("the accept completes");
+            assert_eq!(accepted["type"], "StateUpdate", "{}", report.line());
+            assert_eq!(LegReport::markers(accepted), [(P0, 1), (P0, count)]);
+            assert!(LegReport::events(accepted).len() < MAX_SNAPSHOT_EVENTS);
+            assert_eq!(smaug_damage(accepted), before + u64::from(count));
+        });
+    }
+
+    /// The same take accepted by an AI seat: the game holds P0's declaration while the AI accepts.
+    /// Run as [`full_length_human_accept_keeps_every_socket`].
+    #[test]
+    #[ignore = "full length: minutes per leg"]
+    fn full_length_ai_accept_keeps_every_socket() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let count = default_count(&offer);
+            assert_eq!(count, 1000);
+            let table = NativeTable::duel().await;
+            let report = full_length_take(&table, offer, &[P1], count, FULL_LENGTH_BUDGET).await;
+            table.server.abort();
+            println!("{}", report.line());
+            assert_full_length(&report);
+            let (_, decision) = report.decision.as_ref().expect("the declarer decides");
+            assert_eq!(LegReport::markers(decision), [(P0, 1), (P0, count)]);
+            assert_eq!(smaug_damage(decision), before + u64::from(count));
         });
     }
 }

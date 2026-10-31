@@ -19032,7 +19032,15 @@ mod game_submission_tests {
     pub(super) async fn connect_and_hello(
         url: String,
     ) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {
-        let (mut socket, _) = tokio_tungstenite::connect_async(url)
+        connect_and_hello_with(url, None).await
+    }
+
+    /// [`connect_and_hello`] with the client socket's own limits.
+    pub(super) async fn connect_and_hello_with(
+        url: String,
+        config: Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig>,
+    ) -> WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>> {
+        let (mut socket, _) = tokio_tungstenite::connect_async_with_config(url, config, false)
             .await
             .expect("connect");
 
