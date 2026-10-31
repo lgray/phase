@@ -1521,7 +1521,7 @@ function GamePageContent({
         </div>
       )}
 
-      {/* Server-authored reason, shown raw; non-interactive so the menu stays reachable. */}
+      {/* Adapter-supplied reason, shown raw; non-interactive so the menu stays reachable. */}
       {stateWithheld && (
         <div
           className="pointer-events-none fixed left-0 right-0 top-0 z-30 select-none bg-amber-600 px-4 py-1 text-center text-xs font-bold text-white shadow-md"
