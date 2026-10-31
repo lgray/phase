@@ -2868,7 +2868,13 @@ mod oversized_publication {
             })
             .unwrap();
             let mut pings = tokio::time::interval(Duration::from_secs(5));
-            let mut tick = tokio::time::interval(Duration::from_millis(50));
+            // Only frames within the rate quota are retained toward the command budget, and the
+            // held command spends one; pacing two under the quota keeps every window inside it.
+            let mut tick = tokio::time::interval(
+                Duration::from_secs(crate::RATE_LIMIT_WINDOW_SECS)
+                    / (crate::RATE_LIMIT_MESSAGES - 2),
+            );
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut sent = 0;
             while !done(self) && self.report.broken.is_empty() {
                 tokio::select! {
