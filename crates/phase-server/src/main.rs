@@ -1008,6 +1008,8 @@ const DEFAULT_MAX_GAMES: usize = 100;
 struct Limits {
     max_connections: u32,
     max_games: usize,
+    /// Largest application frame a socket's encoder writes.
+    max_frame_bytes: usize,
 }
 
 impl Default for Limits {
@@ -1015,6 +1017,7 @@ impl Default for Limits {
         Self {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_games: DEFAULT_MAX_GAMES,
+            max_frame_bytes: server_core::game_state_snapshot_wire_guard::MAX_SERVER_FRAME_BYTES,
         }
     }
 }
@@ -2996,6 +2999,7 @@ async fn serve() {
         limits: Limits {
             max_connections: cli.max_connections,
             max_games: cli.max_games,
+            ..Limits::default()
         },
         replica_ordinal: cli.replica_ordinal,
         metrics: Arc::new(metrics::ServerMetrics::default()),
@@ -5040,6 +5044,7 @@ async fn handle_socket(
             replies: tx.clone(),
             metrics: context.metrics.clone(),
             executor: context.game_executor.clone(),
+            max_frame_bytes: context.limits.max_frame_bytes,
             #[cfg(test)]
             hooks: context.socket_hooks.clone(),
         },

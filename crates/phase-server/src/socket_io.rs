@@ -8,14 +8,16 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use server_core::game_state_snapshot_wire_guard::guard_frame_bytes;
 use server_core::protocol::{ServerMessage, WireFormat};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::socket_control::{CloseOrigin, Control, ControlLane, Encoding, Liveness};
 use crate::socket_disconnect::{Cause, Death, Disconnect};
 use crate::socket_ingress::{Admission, IngressBudget, MAX_COMMANDS, MAX_INGRESS_FRAMES};
+use crate::socket_mailbox::OverBound;
 use crate::wire;
 
 const PING_INTERVAL: Duration = Duration::from_secs(10);
@@ -86,14 +88,8 @@ impl PendingWrite {
         metrics: &Arc<PendingMetrics>,
     ) -> Self {
         let payload_bytes = match &operation {
-            WriteOperation::Frame(Message::Text(text)) => text.len(),
-            WriteOperation::Frame(
-                Message::Binary(bytes) | Message::Ping(bytes) | Message::Pong(bytes),
-            ) => bytes.len(),
-            WriteOperation::Frame(Message::Close(close))
-            | WriteOperation::FinishPeerClose(close) => {
-                close.as_ref().map_or(0, |close| 2 + close.reason.len())
-            }
+            WriteOperation::Frame(frame) => payload_len(frame),
+            WriteOperation::FinishPeerClose(close) => close_len(close),
         };
         metrics.frames.fetch_add(1, Ordering::Relaxed);
         metrics
@@ -108,6 +104,18 @@ impl PendingWrite {
             flush_gate: None,
         }
     }
+}
+
+fn payload_len(frame: &Message) -> usize {
+    match frame {
+        Message::Text(text) => text.len(),
+        Message::Binary(bytes) | Message::Ping(bytes) | Message::Pong(bytes) => bytes.len(),
+        Message::Close(close) => close_len(close),
+    }
+}
+
+fn close_len(close: &Option<CloseFrame>) -> usize {
+    close.as_ref().map_or(0, |close| 2 + close.reason.len())
 }
 
 impl Drop for PendingWrite {
@@ -287,6 +295,7 @@ pub(crate) struct SocketConfig {
     pub(crate) replies: crate::socket_mailbox::Sender,
     pub(crate) metrics: Arc<crate::metrics::ServerMetrics>,
     pub(crate) executor: crate::game_executor::GameExecutor,
+    pub(crate) max_frame_bytes: usize,
     #[cfg(test)]
     pub(crate) hooks: crate::socket_test_hooks::Hooks,
 }
@@ -303,6 +312,7 @@ pub(crate) fn start(
     #[cfg(test)]
     let hooks = config.hooks;
     let executor = config.executor;
+    let max_frame_bytes = config.max_frame_bytes;
     let connection = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
     let (sink, stream) = socket.split();
     let death = Death::new(config.metrics, connection);
@@ -371,6 +381,7 @@ pub(crate) fn start(
                     &executor,
                     message,
                     control.encoding() == Encoding::GzipEnvelope,
+                    max_frame_bytes,
                 );
                 tokio::pin!(encoding);
                 let frame = loop {
@@ -382,7 +393,16 @@ pub(crate) fn start(
                     }
                 };
                 let frame = match frame {
-                    Ok(frame) => frame,
+                    Ok((frame, replaced)) => {
+                        if let Some(reason) = replaced {
+                            warn!(connection, %reason, "WebSocket application frame over the bound; sent its replacement");
+                        }
+                        frame
+                    }
+                    Err(EncodingFailure::OverBound(reason)) => {
+                        error!(connection, %reason, "WebSocket application frame over the bound cannot shrink; skipped");
+                        continue;
+                    }
                     Err(EncodingFailure::Serialization(error)) => {
                         // Preserve the old mailbox's serialization-error policy:
                         // skip that application frame, not the whole connection.
@@ -732,13 +752,17 @@ async fn response_timeout(deadline: Option<tokio::time::Instant>) {
 enum EncodingFailure {
     Serialization(serde_json::Error),
     Transport(String),
+    OverBound(String),
 }
 
+/// Encodes one envelope, replacing it while its frame exceeds `max_frame_bytes`;
+/// the first over-bound reason comes back with the frame actually sent.
 async fn encode_application(
     executor: &crate::game_executor::GameExecutor,
     message: crate::socket_mailbox::Envelope,
     envelope: bool,
-) -> Result<Message, EncodingFailure> {
+    max_frame_bytes: usize,
+) -> Result<(Message, Option<String>), EncodingFailure> {
     let envelope = envelope && !matches!(&message.message, ServerMessage::ServerHello { .. });
     let state_bearing = matches!(
         &message.message,
@@ -747,8 +771,21 @@ async fn encode_application(
             | ServerMessage::AuthoritativeStateExport { .. }
     );
     let encode = move || {
-        let json = serde_json::to_string(&message).map_err(EncodingFailure::Serialization)?;
-        wire::encode_json_message_sync(json, envelope).map_err(EncodingFailure::Transport)
+        let mut message = message;
+        let mut replaced = None;
+        loop {
+            let json = serde_json::to_string(&message).map_err(EncodingFailure::Serialization)?;
+            let frame = wire::encode_json_message_sync(json, envelope)
+                .map_err(EncodingFailure::Transport)?;
+            let Err(reason) = guard_frame_bytes(payload_len(&frame), max_frame_bytes) else {
+                return Ok((frame, replaced));
+            };
+            replaced.get_or_insert_with(|| reason.clone());
+            match message.over_bound(reason) {
+                OverBound::Retry(next) => message = *next,
+                OverBound::Skip(reason) => return Err(EncodingFailure::OverBound(reason)),
+            }
+        }
     };
     // Each connection still encodes exactly one FIFO frame at a time. Metadata
     // has an independent blocking lane; it never waits behind game CPU permits.

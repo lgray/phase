@@ -40,6 +40,7 @@ const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const BRIDGE_FRAGMENT_BYTES: usize = 1 << 20;
 
 /// Largest message or frame the bridge reads: headroom over the largest game-state export.
+/// Equals server-core's `MAX_SERVER_FRAME_BYTES`, which the server never exceeds.
 const MAX_BRIDGE_MESSAGE_BYTES: usize = 256 << 20;
 
 impl NativeEngineBridgeError {
@@ -1111,6 +1112,14 @@ mod tests {
             assert!(events.try_recv().is_err());
             peer.await.unwrap();
         });
+    }
+
+    #[test]
+    fn the_bridge_reads_every_frame_the_server_may_send() {
+        let server =
+            include_str!("../../../crates/server-core/src/game_state_snapshot_wire_guard.rs");
+        assert!(server.contains("pub const MAX_SERVER_FRAME_BYTES: usize = 256 << 20;"));
+        assert_eq!(MAX_BRIDGE_MESSAGE_BYTES, 256 << 20);
     }
 
     #[test]

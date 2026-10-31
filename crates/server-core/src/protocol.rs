@@ -686,6 +686,13 @@ fn default_true() -> bool {
     true
 }
 
+/// Which frame a [`ServerMessage::StateWithheld`] replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WithheldFrame {
+    GameStarted,
+    StateUpdate,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
@@ -874,6 +881,15 @@ pub enum ServerMessage {
     /// transition. The submitting adapter resolves its pending request without
     /// caching or publishing a replacement snapshot.
     ActionNoOp,
+    /// Sent in place of a `GameStarted` or `StateUpdate` over the frame bound.
+    /// The action it answers applied; only its state was not delivered.
+    StateWithheld {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        full_key: Option<FullSessionKey>,
+        state_revision: u64,
+        withheld: WithheldFrame,
+        reason: String,
+    },
     /// Acknowledges a host-authorized permanent game cleanup.
     GameAbandoned {
         game_code: String,
@@ -4081,6 +4097,48 @@ mod tests {
         assert!(matches!(
             serde_json::from_str::<ServerMessage>(&json).unwrap(),
             ServerMessage::ActionNoOp
+        ));
+    }
+
+    #[test]
+    fn server_message_state_withheld_wire_shape_roundtrips() {
+        let msg = ServerMessage::StateWithheld {
+            full_key: None,
+            state_revision: 6,
+            withheld: WithheldFrame::StateUpdate,
+            reason: "too large".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "StateWithheld",
+                "data": { "state_revision": 6, "withheld": "StateUpdate", "reason": "too large" },
+            })
+        );
+        assert!(matches!(
+            serde_json::from_value::<ServerMessage>(json).unwrap(),
+            ServerMessage::StateWithheld {
+                full_key: None,
+                state_revision: 6,
+                withheld: WithheldFrame::StateUpdate,
+                ..
+            }
+        ));
+        let started = serde_json::to_string(&ServerMessage::StateWithheld {
+            full_key: None,
+            state_revision: 2,
+            withheld: WithheldFrame::GameStarted,
+            reason: String::new(),
+        })
+        .unwrap();
+        assert!(started.contains(r#""withheld":"GameStarted""#));
+        assert!(matches!(
+            serde_json::from_str::<ServerMessage>(&started).unwrap(),
+            ServerMessage::StateWithheld {
+                withheld: WithheldFrame::GameStarted,
+                ..
+            }
         ));
     }
 

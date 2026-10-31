@@ -76,11 +76,28 @@ impl NativeTable {
         .await
     }
 
+    /// A duel whose encoder writes no application frame over `max_frame_bytes`.
+    async fn capped_duel(max_frame_bytes: usize) -> Self {
+        let context = crate::ServerContext {
+            limits: crate::Limits {
+                max_frame_bytes,
+                ..Default::default()
+            },
+            game_executor: GameExecutor::new(NonZeroUsize::MIN),
+            ..Default::default()
+        };
+        Self::in_context(context, 2, FormatConfig::standard()).await
+    }
+
     async fn seated(game_executor: GameExecutor, seats: u8, format: FormatConfig) -> Self {
         let context = crate::ServerContext {
             game_executor,
             ..Default::default()
         };
+        Self::in_context(context, seats, format).await
+    }
+
+    async fn in_context(context: crate::ServerContext, seats: u8, format: FormatConfig) -> Self {
         let (url, server, directory, app) = spawn_server(
             crate::ServerMode::Full,
             crate::draft_pools::DraftPools::default(),
@@ -150,6 +167,11 @@ impl NativeTable {
             .max_message_size(None)
             .max_frame_size(None);
         self.dial(player, Some(config)).await
+    }
+
+    /// A seat whose socket refuses frames over `cap`, as the desktop bridge's does.
+    async fn connect_bridged(&self, player: PlayerId, cap: usize) -> ClientSocket {
+        self.dial(player, Some(bridge_config(cap))).await
     }
 
     async fn dial(
@@ -237,6 +259,12 @@ impl NativeTable {
             .await;
         drop(lease);
     }
+}
+
+fn bridge_config(cap: usize) -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(cap))
+        .max_frame_size(Some(cap))
 }
 
 fn enable_ai(session: &mut GameSession, players: impl IntoIterator<Item = PlayerId>) {
@@ -3156,6 +3184,450 @@ mod oversized_publication {
             let (_, decision) = report.decision.as_ref().expect("the declarer decides");
             assert_eq!(LegReport::markers(decision), [(P0, 1), (P0, count)]);
             assert_eq!(smaug_damage(decision), before + u64::from(count));
+        });
+    }
+
+    /// The frame bound the Smaug legs run at: the offer's frames fit under it, every frame of
+    /// the turn after the take does not.
+    const SMAUG_CAP: usize = 512 * 1024;
+
+    async fn session_read<T: Send + 'static>(
+        table: &NativeTable,
+        read: impl FnOnce(&mut crate::game_executor::SessionJob<'_>) -> T + Send + 'static,
+    ) -> T {
+        let session = crate::lock_session(&table.app.sessions, &table.key.game_code)
+            .await
+            .unwrap();
+        let (lease, value) = table
+            .app
+            .context
+            .game_executor
+            .with_session(session, read)
+            .await;
+        drop(lease);
+        value
+    }
+
+    async fn server_revision(table: &NativeTable) -> u64 {
+        session_read(table, |session| session.state_revision).await
+    }
+
+    async fn server_smaug_damage(table: &NativeTable) -> u64 {
+        session_read(table, |session| smaug_damage_in(&session.state)).await
+    }
+
+    async fn until_type(socket: &mut ClientSocket, kind: &str) -> serde_json::Value {
+        loop {
+            let frame = receive_command_frame(socket).await;
+            if frame["type"] == kind {
+                return frame;
+            }
+        }
+    }
+
+    /// Reads `socket` until a frame of `kind` at `revision` arrives.
+    async fn at_revision(
+        socket: &mut ClientSocket,
+        kind: &str,
+        revision: u64,
+    ) -> serde_json::Value {
+        loop {
+            let frame = until_type(socket, kind).await;
+            if frame["data"]["state_revision"] == revision {
+                return frame;
+            }
+        }
+    }
+
+    async fn ping_pong(socket: &mut ClientSocket, timestamp: u64) {
+        send_test_message(socket, &ClientMessage::Ping { timestamp }, false).await;
+        while until_type(socket, "Pong").await["data"]["timestamp"] != timestamp {}
+    }
+
+    /// The revision of a withheld-`StateUpdate` notice.
+    fn withheld_update(frame: &serde_json::Value) -> u64 {
+        assert_eq!(frame["type"], "StateWithheld", "{frame}");
+        assert_eq!(frame["data"]["withheld"], "StateUpdate", "{frame}");
+        assert_eq!(
+            frame["data"]["reason"],
+            crate::socket_mailbox::STATE_UPDATE_WITHHELD
+        );
+        frame["data"]["state_revision"].as_u64().unwrap()
+    }
+
+    async fn request_takeback(requester: &mut ClientSocket) {
+        send_test_message(requester, &ClientMessage::RequestTakeback(None), false).await;
+    }
+
+    async fn approve_takeback(approver: &mut ClientSocket) {
+        send_test_message(
+            approver,
+            &ClientMessage::RespondTakeback { approve: true },
+            false,
+        )
+        .await;
+    }
+
+    async fn assert_requested(socket: &mut ClientSocket, requester: PlayerId) {
+        let requested = until_type(socket, "TakebackRequested").await;
+        assert_eq!(requested["data"]["requester"], requester.0, "{requested}");
+    }
+
+    /// Plain text length and value of the next application frame.
+    async fn receive_sized(socket: &mut ClientSocket) -> (usize, serde_json::Value) {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+        loop {
+            match socket.next().await.expect("live").expect("valid frame") {
+                Message::Text(text) => return (text.len(), serde_json::from_str(&text).unwrap()),
+                Message::Ping(_) | Message::Pong(_) => {}
+                frame => panic!("expected plain JSON, got {frame:?}"),
+            }
+        }
+    }
+
+    fn stripped_len(update: &serde_json::Value) -> usize {
+        let mut update = update.clone();
+        update["data"]["events"] = serde_json::json!([]);
+        update["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("log_entries");
+        serde_json::to_string(&update).unwrap().len()
+    }
+
+    async fn server_exiled_bears(table: &NativeTable) -> usize {
+        session_read(table, |session| {
+            session
+                .state
+                .objects
+                .values()
+                .filter(|object| object.name == "Grizzly Bears" && object.zone == Zone::Exile)
+                .count()
+        })
+        .await
+    }
+
+    /// Ravenous Trap's resolution arrives whole but stripped of events and log.
+    fn assert_trap_stripped(update: &serde_json::Value, revision: u64, exiled: usize) {
+        assert_eq!(update["type"], "StateUpdate", "{update}");
+        assert_eq!(update["data"]["state_revision"], revision);
+        assert_eq!(update["data"]["events"], serde_json::json!([]));
+        assert!(update["data"].get("log_entries").is_none());
+        let bears = objects_named(update, "Grizzly Bears");
+        assert_eq!(bears.len(), GRAVEYARD);
+        assert!(bears.iter().all(|card| card["zone"] == "Exile"));
+        assert_eq!(bears.len(), exiled);
+    }
+
+    /// CR 732.2a + CR 732.2c: the take an accept runs, at a bound its frames exceed.
+    async fn declare_and_accept_withheld(
+        table: &NativeTable,
+        declarer: &mut ClientSocket,
+        accepter: &mut ClientSocket,
+        before: u64,
+    ) -> u64 {
+        declare(declarer).await;
+        send_command_frame(accepter, &ACCEPT, 7).await;
+        let revision = withheld_update(&completion(accepter, 7).await);
+        assert_eq!(revision, server_revision(table).await);
+        assert_eq!(server_smaug_damage(table).await, before + u64::from(TAKE));
+        let seen = at_revision(declarer, "StateWithheld", revision).await;
+        assert_eq!(withheld_update(&seen), revision);
+        assert!(seen.get("command_id").is_none());
+        revision
+    }
+
+    async fn pass_withheld(
+        table: &NativeTable,
+        passer: &mut ClientSocket,
+        other: &mut ClientSocket,
+        command: u64,
+    ) {
+        send_command_frame(passer, &GameAction::PassPriority, command).await;
+        let revision = withheld_update(&completion(passer, command).await);
+        assert_eq!(revision, server_revision(table).await);
+        withheld_update(&at_revision(other, "StateWithheld", revision).await);
+    }
+
+    #[test]
+    fn over_bound_export_is_refused_and_the_socket_kept() {
+        run_async_test(|| async {
+            const CAP: usize = 2 * 1024 * 1024;
+            let table = NativeTable::capped_duel(CAP).await;
+            install(&table, smaug_offer(), &[]).await;
+            session_read(&table, |session| {
+                session.hosting = server_core::session::HostingMode::SingleUser;
+            })
+            .await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut host = table.connect_bridged(P0, CAP).await;
+                let mut accepter = table.connect_bridged(P1, CAP).await;
+                let export = ClientMessage::ExportAuthoritativeState;
+                send_test_message(&mut host, &export, false).await;
+                until_type(&mut host, "AuthoritativeStateExport").await;
+                declare(&mut host).await;
+                send_command_frame(&mut accepter, &ACCEPT, 7).await;
+                completion(&mut accepter, 7).await;
+                for _ in 0..2 {
+                    send_test_message(&mut host, &export, false).await;
+                    let refused = until_type(&mut host, "AuthoritativeStateExportFailed").await;
+                    let message = refused["data"]["message"].as_str().unwrap();
+                    assert!(message.starts_with("too large to send: "), "{message}");
+                    assert!(message.contains("at most 2097152 allowed"), "{message}");
+                }
+                ping_pong(&mut host, 11).await;
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the over-bound export closed or stalled its socket");
+        });
+    }
+
+    #[test]
+    fn over_bound_update_arrives_stripped_of_events_and_log() {
+        run_async_test(|| async {
+            let measured = NativeTable::duel().await;
+            let sizes = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut caster = measured.connect_uncapped(P0).await;
+                let mut passer = measured.connect_uncapped(P1).await;
+                install(&measured, trap_on_the_stack(), &[]).await;
+                send_command_frame(&mut passer, &GameAction::PassPriority, 7).await;
+                let (passer_len, resolved) = loop {
+                    let (len, frame) = receive_sized(&mut passer).await;
+                    if owns_command_completion(&frame, 7) {
+                        break (len, frame);
+                    }
+                };
+                let revision = resolved["data"]["state_revision"].as_u64().unwrap();
+                let (caster_len, seen) = loop {
+                    let (len, frame) = receive_sized(&mut caster).await;
+                    if frame["type"] == "StateUpdate" && frame["data"]["state_revision"] == revision
+                    {
+                        break (len, frame);
+                    }
+                };
+                let full = passer_len.min(caster_len);
+                let stripped = stripped_len(&resolved).max(stripped_len(&seen));
+                assert!(stripped < full, "stripped {stripped} vs full {full}");
+                (stripped + full) / 2
+            })
+            .await;
+            measured.server.abort();
+            let cap = sizes.expect("the measuring table did not publish");
+
+            let table = NativeTable::capped_duel(cap).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut caster = table.connect_bridged(P0, cap).await;
+                let mut passer = table.connect_bridged(P1, cap).await;
+                install(&table, trap_on_the_stack(), &[]).await;
+                send_command_frame(&mut passer, &GameAction::PassPriority, 7).await;
+                let resolved = completion(&mut passer, 7).await;
+                let revision = server_revision(&table).await;
+                let exiled = server_exiled_bears(&table).await;
+                assert_trap_stripped(&resolved, revision, exiled);
+                let seen = at_revision(&mut caster, "StateUpdate", revision).await;
+                assert_trap_stripped(&seen, revision, exiled);
+                ping_pong(&mut passer, 21).await;
+                ping_pong(&mut caster, 22).await;
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the stripped update was not delivered");
+        });
+    }
+
+    #[test]
+    fn consecutive_over_bound_updates_are_withheld_until_the_turn_passes() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let table = NativeTable::capped_duel(SMAUG_CAP).await;
+            install(&table, offer, &[]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut p0 = table.connect_bridged(P0, SMAUG_CAP).await;
+                let mut p1 = table.connect_bridged(P1, SMAUG_CAP).await;
+                let mut previous =
+                    declare_and_accept_withheld(&table, &mut p0, &mut p1, before).await;
+                let start_turn = session_read(&table, |session| session.state.turn_number).await;
+                let mut withheld = 0;
+                let mut timestamp = 30;
+                let mut sockets = [p0, p1];
+                for command in 100.. {
+                    assert!(command < 150, "the turn did not pass");
+                    let waiting =
+                        session_read(&table, |session| session.state.waiting_for.clone()).await;
+                    let (actor, action) = match waiting {
+                        WaitingFor::Priority { player } => (player, GameAction::PassPriority),
+                        WaitingFor::DeclareAttackers { player, .. } => (
+                            player,
+                            GameAction::DeclareAttackers {
+                                attacks: vec![],
+                                bands: vec![],
+                            },
+                        ),
+                        other => panic!("unexpected decision {other:?}"),
+                    };
+                    let [s0, s1] = &mut sockets;
+                    let (mine, other) = if actor == P0 { (s0, s1) } else { (s1, s0) };
+                    send_command_frame(mine, &action, command).await;
+                    let answer = completion(mine, command).await;
+                    let revision = answer["data"]["state_revision"].as_u64().unwrap();
+                    assert_eq!(revision, server_revision(&table).await);
+                    assert_eq!(revision, previous + 1);
+                    previous = revision;
+                    if answer["type"] == "StateUpdate" {
+                        assert_eq!(answer["data"]["state"]["turn_number"], start_turn + 1);
+                        at_revision(other, "StateUpdate", revision).await;
+                        break;
+                    }
+                    withheld_update(&answer);
+                    withheld_update(&at_revision(other, "StateWithheld", revision).await);
+                    withheld += 1;
+                    if withheld <= 2 {
+                        for socket in [&mut *mine, &mut *other] {
+                            timestamp += 1;
+                            ping_pong(socket, timestamp).await;
+                        }
+                    }
+                }
+                assert!(withheld >= 2, "only {withheld} withheld updates");
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the withheld turn closed or stalled a socket");
+        });
+    }
+
+    #[test]
+    fn over_bound_reconnect_stays_attached_and_recovers_by_takeback() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let before = smaug_damage_in(&offer);
+            let table = NativeTable::capped_duel(SMAUG_CAP).await;
+            install(&table, offer, &[]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut p0 = table.connect_bridged(P0, SMAUG_CAP).await;
+                let mut p1 = table.connect_bridged(P1, SMAUG_CAP).await;
+                declare_and_accept_withheld(&table, &mut p0, &mut p1, before).await;
+                let mut fresh =
+                    connect_and_hello_with(table.url.clone(), Some(bridge_config(SMAUG_CAP))).await;
+                send_test_message(
+                    &mut fresh,
+                    &ClientMessage::Reconnect {
+                        game_code: table.key.game_code.clone(),
+                        player_token: table.tokens[0].clone(),
+                        full_key: table.key.clone(),
+                    },
+                    false,
+                )
+                .await;
+                let notice = loop {
+                    let frame = receive_command_frame(&mut fresh).await;
+                    assert_ne!(frame["type"], "GameStarted", "{frame}");
+                    if frame["type"] == "StateWithheld" {
+                        break frame;
+                    }
+                };
+                assert_eq!(notice["data"]["withheld"], "GameStarted", "{notice}");
+                assert_eq!(
+                    notice["data"]["reason"],
+                    crate::socket_mailbox::GAME_STARTED_WITHHELD
+                );
+                assert_eq!(
+                    notice["data"]["state_revision"],
+                    server_revision(&table).await
+                );
+                request_takeback(&mut fresh).await;
+                assert_requested(&mut p1, P0).await;
+                approve_takeback(&mut p1).await;
+                let restored = until_type(&mut fresh, "StateUpdate").await;
+                assert_eq!(
+                    restored["data"]["state_revision"],
+                    server_revision(&table).await
+                );
+                assert_eq!(smaug_damage(&restored), before);
+                assert_eq!(server_smaug_damage(&table).await, before);
+                ping_pong(&mut fresh, 41).await;
+                drop(p0);
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the withheld reconnect did not recover");
+        });
+    }
+
+    #[test]
+    fn takeback_recovers_from_consecutive_withheld_updates() {
+        run_async_test(|| async {
+            let offer = smaug_offer();
+            let pre = smaug_damage_in(&offer);
+            let table = NativeTable::capped_duel(SMAUG_CAP).await;
+            install(&table, offer, &[]).await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut p0 = table.connect_bridged(P0, SMAUG_CAP).await;
+                let mut p1 = table.connect_bridged(P1, SMAUG_CAP).await;
+                declare_and_accept_withheld(&table, &mut p0, &mut p1, pre).await;
+                assert_eq!(
+                    session_read(&table, |session| session.state.waiting_for.clone()).await,
+                    WaitingFor::Priority { player: P0 }
+                );
+                pass_withheld(&table, &mut p0, &mut p1, 8).await;
+
+                request_takeback(&mut p1).await;
+                assert_requested(&mut p1, P1).await;
+                assert_requested(&mut p0, P1).await;
+                approve_takeback(&mut p0).await;
+                for socket in [&mut p0, &mut p1] {
+                    let restored = until_type(socket, "StateUpdate").await;
+                    assert!(restored.get("command_id").is_none());
+                    assert_eq!(restored["data"]["events"], serde_json::json!([]));
+                    assert_eq!(
+                        restored["data"]["state_revision"],
+                        server_revision(&table).await
+                    );
+                    assert_eq!(smaug_damage(&restored), pre);
+                    let resolved = until_type(socket, "TakebackResolved").await;
+                    assert_eq!(
+                        resolved["data"],
+                        serde_json::json!({ "approved": true, "resolved_by": 0 })
+                    );
+                }
+                assert_eq!(server_smaug_damage(&table).await, pre);
+                ping_pong(&mut p0, 51).await;
+                ping_pong(&mut p1, 52).await;
+
+                // P0's own last action is then the post-take pass: its first rollback is still
+                // over the bound, its second reaches its proposal.
+                send_command_frame(&mut p1, &ACCEPT, 9).await;
+                let revision = withheld_update(&completion(&mut p1, 9).await);
+                withheld_update(&at_revision(&mut p0, "StateWithheld", revision).await);
+                pass_withheld(&table, &mut p0, &mut p1, 10).await;
+                request_takeback(&mut p0).await;
+                assert_requested(&mut p1, P0).await;
+                approve_takeback(&mut p1).await;
+                for socket in [&mut p0, &mut p1] {
+                    let notice = until_type(socket, "StateWithheld").await;
+                    assert!(notice.get("command_id").is_none());
+                    assert_eq!(withheld_update(&notice), server_revision(&table).await);
+                    until_type(socket, "TakebackResolved").await;
+                }
+                request_takeback(&mut p0).await;
+                assert_requested(&mut p1, P0).await;
+                approve_takeback(&mut p1).await;
+                for socket in [&mut p0, &mut p1] {
+                    let restored = until_type(socket, "StateUpdate").await;
+                    assert_eq!(
+                        restored["data"]["state_revision"],
+                        server_revision(&table).await
+                    );
+                    assert_eq!(smaug_damage(&restored), pre);
+                }
+                assert_eq!(server_smaug_damage(&table).await, pre);
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the takeback did not recover the withheld game");
         });
     }
 }
