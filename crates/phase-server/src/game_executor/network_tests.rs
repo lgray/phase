@@ -1992,7 +1992,7 @@ mod oversized_publication {
     use engine::analysis::loop_check::ShortcutResponse;
     use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
     use engine::game::scenario_db::GameScenarioDbExt;
-    use engine::types::ability::AbilityKind;
+    use engine::types::ability::{AbilityKind, TargetRef};
     use engine::types::events::GameEvent;
     use engine::types::game_state::{CastPaymentMode, GameState, LoopDetectionMode, WaitingFor};
     use engine::types::identifiers::ObjectId;
@@ -2048,20 +2048,22 @@ mod oversized_publication {
         panic!("the Smaug board did not settle");
     }
 
-    /// Smaug + Mayhem Devil with Treasure mana: each Treasure sacrificed for
-    /// mana deals Smaug 1 damage, which creates a Treasure, until the engine
-    /// offers a loop shortcut.
-    fn smaug_offer() -> GameState {
+    fn card_db() -> engine::database::card_db::CardDatabase {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../engine/tests/fixtures/integration_cards.json.gz"
         );
-        let db = engine::database::card_db::CardDatabase::from_export_reader(
-            flate2::read::GzDecoder::new(std::io::BufReader::new(
-                std::fs::File::open(path).unwrap(),
-            )),
-        )
-        .unwrap();
+        engine::database::card_db::CardDatabase::from_export_reader(flate2::read::GzDecoder::new(
+            std::io::BufReader::new(std::fs::File::open(path).unwrap()),
+        ))
+        .unwrap()
+    }
+
+    /// Smaug + Mayhem Devil with Treasure mana: each Treasure sacrificed for
+    /// mana deals Smaug 1 damage, which creates a Treasure, until the engine
+    /// offers a loop shortcut.
+    fn smaug_offer() -> GameState {
+        let db = card_db();
         let mut scenario = GameScenario::new();
         scenario.at_phase(Phase::PreCombatMain);
         let smaug = scenario.add_real_card(P0, SMAUG, Zone::Battlefield, &db);
@@ -2138,15 +2140,112 @@ mod oversized_publication {
             .unwrap()
     }
 
-    fn smaug_damage(update: &serde_json::Value) -> u64 {
+    fn objects_named<'a>(update: &'a serde_json::Value, name: &str) -> Vec<&'a serde_json::Value> {
         let objects = &update["data"]["state"]["objects"];
         let mut all = objects
             .as_object()
             .map(|map| map.values().collect::<Vec<_>>())
             .or_else(|| objects.as_array().map(|list| list.iter().collect()))
             .unwrap();
-        all.retain(|object| object["name"] == SMAUG);
-        all[0]["damage_marked"].as_u64().unwrap()
+        all.retain(|object| object["name"] == name);
+        all
+    }
+
+    fn smaug_damage(update: &serde_json::Value) -> u64 {
+        objects_named(update, SMAUG)[0]["damage_marked"]
+            .as_u64()
+            .unwrap()
+    }
+
+    static SERVER_LOG: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+    struct ServerLog;
+
+    impl std::io::Write for ServerLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            SERVER_LOG.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Sends this process's tracing output to [`SERVER_LOG`]; the server's worker threads
+    /// only see a global subscriber.
+    fn capture_server_log() {
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            tracing_subscriber::fmt()
+                .with_writer(|| ServerLog)
+                .with_ansi(false)
+                .init();
+        });
+    }
+
+    fn trim_warned(game_code: &str) -> bool {
+        String::from_utf8_lossy(&SERVER_LOG.lock().unwrap())
+            .lines()
+            .any(|line| {
+                line.contains("events/log trimmed to broadcast bounds") && line.contains(game_code)
+            })
+    }
+
+    /// Ravenous Trap resolved: P1's whole graveyard is in exile and the update carries only the
+    /// newest MAX_SNAPSHOT_EVENTS events.
+    fn assert_trap_resolved(update: &serde_json::Value) {
+        assert_eq!(update["type"], "StateUpdate", "{update}");
+        assert_eq!(
+            update["data"]["events"].as_array().unwrap().len(),
+            MAX_SNAPSHOT_EVENTS
+        );
+        let exiled = objects_named(update, "Grizzly Bears");
+        assert_eq!(exiled.len(), GRAVEYARD);
+        assert!(exiled.iter().all(|card| card["zone"] == "Exile"));
+    }
+
+    /// Enough cards in P1's graveyard that exiling it, and P1's concession (CR 104.3a), each
+    /// emit more than MAX_SNAPSHOT_EVENTS events.
+    const GRAVEYARD: usize = 2_000;
+
+    /// P0 has cast Ravenous Trap ("Exile target player's graveyard.") at P1's graveyard of
+    /// [`GRAVEYARD`] Grizzly Bears, and P1 holds priority: P1's pass resolves it (CR 117.4).
+    fn trap_on_the_stack() -> GameState {
+        let db = card_db();
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let trap = scenario.add_real_card(P0, "Ravenous Trap", Zone::Hand, &db);
+        for _ in 0..4 {
+            scenario.add_real_card(P0, "Swamp", Zone::Battlefield, &db);
+        }
+        for _ in 0..GRAVEYARD {
+            scenario.add_real_card(P1, "Grizzly Bears", Zone::Graveyard, &db);
+        }
+        let mut runner = scenario.build();
+        let card_id = runner.state().objects[&trap].card_id;
+        act(
+            &mut runner,
+            GameAction::CastSpell {
+                object_id: trap,
+                card_id,
+                targets: vec![],
+                payment_mode: CastPaymentMode::Auto,
+            },
+        );
+        act(
+            &mut runner,
+            GameAction::ChooseTarget {
+                target: Some(TargetRef::Player(P1)),
+            },
+        );
+        act(&mut runner, GameAction::PassPriority);
+        assert_eq!(runner.state().stack.len(), 1);
+        assert_eq!(
+            runner.state().waiting_for,
+            WaitingFor::Priority { player: P1 }
+        );
+        runner.state().clone()
     }
 
     async fn install(table: &NativeTable, state: GameState, ai: &[PlayerId]) {
@@ -2189,9 +2288,11 @@ mod oversized_publication {
         }
     }
 
-    fn assert_trimmed_take(update: &serde_json::Value, before: u64) {
+    /// Repetition elision keeps the take under MAX_SNAPSHOT_EVENTS, first and last marker included.
+    fn assert_whole_take(update: &serde_json::Value, before: u64) {
         assert_eq!(update["type"], "StateUpdate", "{update}");
-        assert!(update["data"]["events"].as_array().unwrap().len() <= MAX_SNAPSHOT_EVENTS);
+        assert!(LegReport::events(update).len() < MAX_SNAPSHOT_EVENTS);
+        assert_eq!(LegReport::markers(update), [(P0, 1), (P0, TAKE)]);
         assert_eq!(smaug_damage(update), before + u64::from(TAKE));
     }
 
@@ -2213,7 +2314,7 @@ mod oversized_publication {
     };
 
     #[test]
-    fn oversized_human_accept_reaches_both_humans_trimmed() {
+    fn human_accept_reaches_both_humans_whole() {
         run_async_test(|| async {
             let offer = smaug_offer();
             let before = smaug_damage_in(&offer);
@@ -2224,7 +2325,7 @@ mod oversized_publication {
                 let mut accepter = table.connect(P1).await;
                 declare(&mut declarer).await;
                 send_command_frame(&mut accepter, &ACCEPT, 7).await;
-                assert_trimmed_take(&completion(&mut accepter, 7).await, before);
+                assert_whole_take(&completion(&mut accepter, 7).await, before);
                 let decision = next_decision(&mut declarer).await;
                 assert_eq!(smaug_damage(&decision), before + u64::from(TAKE));
             })
@@ -2235,7 +2336,7 @@ mod oversized_publication {
     }
 
     #[test]
-    fn oversized_ai_accept_reaches_the_declarer_trimmed() {
+    fn ai_accept_reaches_the_declarer_whole() {
         run_async_test(|| async {
             let offer = smaug_offer();
             let before = smaug_damage_in(&offer);
@@ -2244,11 +2345,7 @@ mod oversized_publication {
             let outcome = tokio::time::timeout(Duration::from_secs(120), async {
                 let mut declarer = table.connect(P0).await;
                 declare(&mut declarer).await;
-                let decision = next_decision(&mut declarer).await;
-                assert!(
-                    decision["data"]["events"].as_array().unwrap().len() <= MAX_SNAPSHOT_EVENTS
-                );
-                assert_eq!(smaug_damage(&decision), before + u64::from(TAKE));
+                assert_whole_take(&next_decision(&mut declarer).await, before);
             })
             .await;
             table.server.abort();
@@ -2257,7 +2354,7 @@ mod oversized_publication {
     }
 
     #[test]
-    fn oversized_human_accept_with_an_ai_followup_is_published_trimmed() {
+    fn human_accept_with_an_ai_followup_is_published_whole() {
         run_async_test(|| async {
             let offer = smaug_offer();
             let before = smaug_damage_in(&offer);
@@ -2279,7 +2376,7 @@ mod oversized_publication {
                 drop(lease);
                 send_command_frame(&mut accepter, &ACCEPT, 7).await;
                 let accepted = completion(&mut accepter, 7).await;
-                assert_trimmed_take(&accepted, before);
+                assert_whole_take(&accepted, before);
                 assert_eq!(accepted["data"]["legal_actions"], serde_json::json!([]));
                 let revision = accepted["data"]["state_revision"].as_u64().unwrap();
                 loop {
@@ -2293,6 +2390,100 @@ mod oversized_publication {
             .await;
             table.server.abort();
             outcome.expect("the oversized take with an AI follow-up was not published");
+        });
+    }
+
+    #[test]
+    fn oversized_exile_reaches_both_humans_trimmed() {
+        run_async_test(|| async {
+            capture_server_log();
+            let table = NativeTable::duel().await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut caster = table.connect(P0).await;
+                let mut passer = table.connect(P1).await;
+                install(&table, trap_on_the_stack(), &[]).await;
+                send_command_frame(&mut passer, &GameAction::PassPriority, 7).await;
+                let resolved = completion(&mut passer, 7).await;
+                assert_trap_resolved(&resolved);
+                let revision = &resolved["data"]["state_revision"];
+                let seen = loop {
+                    let frame = receive_command_frame(&mut caster).await;
+                    if frame["type"] == "StateUpdate"
+                        && frame["data"]["state_revision"] == *revision
+                    {
+                        break frame;
+                    }
+                };
+                assert_trap_resolved(&seen);
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized exile was not published");
+            assert!(trim_warned(&table.key.game_code));
+        });
+    }
+
+    #[test]
+    fn oversized_exile_with_an_ai_followup_is_published_trimmed() {
+        run_async_test(|| async {
+            capture_server_log();
+            let table = NativeTable::duel().await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut passer = table.connect(P1).await;
+                install(&table, trap_on_the_stack(), &[P0]).await;
+                send_command_frame(&mut passer, &GameAction::PassPriority, 7).await;
+                let resolved = completion(&mut passer, 7).await;
+                assert_trap_resolved(&resolved);
+                assert_eq!(resolved["data"]["legal_actions"], serde_json::json!([]));
+                let revision = resolved["data"]["state_revision"].as_u64().unwrap();
+                loop {
+                    let frame = receive_command_frame(&mut passer).await;
+                    if frame["type"] == "StateUpdate" {
+                        assert!(frame["data"]["state_revision"].as_u64().unwrap() > revision);
+                        break;
+                    }
+                }
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized exile with an AI follow-up was not published");
+            assert!(trim_warned(&table.key.game_code));
+        });
+    }
+
+    #[test]
+    fn oversized_concession_reaches_the_opponent_trimmed() {
+        run_async_test(|| async {
+            capture_server_log();
+            let table = NativeTable::duel().await;
+            let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+                let mut opponent = table.connect(P0).await;
+                let mut conceder = table.connect(P1).await;
+                install(&table, trap_on_the_stack(), &[]).await;
+                send_test_message(&mut conceder, &ClientMessage::Concede, false).await;
+                let update = loop {
+                    let frame = receive_command_frame(&mut opponent).await;
+                    match frame["type"].as_str() {
+                        Some("StateUpdate")
+                            if frame["data"]["eliminated_players"] == serde_json::json!([P1]) =>
+                        {
+                            break frame;
+                        }
+                        Some("Conceded" | "TerminalResult" | "ActionFailed" | "Error") => {
+                            panic!("no concession update before {frame}")
+                        }
+                        _ => {}
+                    }
+                };
+                assert_eq!(
+                    update["data"]["events"].as_array().unwrap().len(),
+                    MAX_SNAPSHOT_EVENTS
+                );
+            })
+            .await;
+            table.server.abort();
+            outcome.expect("the oversized concession was not published");
+            assert!(trim_warned(&table.key.game_code));
         });
     }
 
