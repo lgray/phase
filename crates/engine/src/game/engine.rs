@@ -1503,6 +1503,8 @@ fn apply_action_boundary_core(
     // immediately preceding action. Drop it before a new outer action starts;
     // the active search itself remains the sole authority during the prompt.
     state.clear_completed_hidden_search_audiences();
+    // Taken once per action, so every field a replayed cycle grows must be a structurally shared
+    // container.
     let boundary_snapshot = std::sync::Arc::new(state.clone());
     let cast_undo_boundary =
         super::engine_casting::CastUndoBoundaryGuard::enter(boundary_snapshot.clone());
@@ -8622,6 +8624,7 @@ pub(crate) fn drive_persistent_axis_collapse(
     events: &mut Vec<GameEvent>,
 ) -> Result<u32, EngineError> {
     let _guard = SimulationProbeGuard::enter(); // held across the whole drive
+    let _take = super::engine_casting::ConfirmedTakeGuard::enter();
     #[cfg(feature = "test-support")]
     let mut take_cost = crate::game::perf_counters::TakeCostRecorder::begin(n);
     // One rollback snapshot per take: every cycle drives `state` in place, and a failed cycle
