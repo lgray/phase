@@ -415,6 +415,7 @@ mod emrakul_control_turn_crash;
 #[cfg(feature = "proptest")]
 mod engine_invariants;
 mod enlightened_tutor_regression;
+mod entering_transformed_is_not_a_transform;
 mod equipment_attach_event_context;
 mod equipment_etb_attach_parent_target;
 mod erratic_mutation;
