@@ -779,6 +779,9 @@ class NativeP2PBridge {
     const revision = this.pendingHostTerminalRevision;
     if (revision === null || this.deliveredRevision < revision) return;
     this.pendingHostTerminalRevision = null;
+    // A host withheld at its terminal is handed its Full final view here, whatever the later commit's outcome.
+    const finalView = this.terminalDeliveries.get(0)?.finalView;
+    if (finalView && this.withheldNotices.get(0)?.revision === revision) this.seedTerminalView(0, finalView, revision);
     await this.onHostTerminalDelivery(revision);
   }
 
@@ -893,9 +896,9 @@ class NativeP2PBridge {
       // seat whose state frame at this revision was withheld, has no loopback
       // view of the terminal revision to cross-check. Its recipient-bound
       // Full final view is the only authority for it: `readTerminalDeliveries`
-      // already bound it to this terminal revision, display and Full key. The
-      // view is retained (`retainSuspendedTerminalViews`) only once the caller's
-      // commit succeeds. Every other seat keeps the strict check below.
+      // already bound it to this terminal revision, display and Full key. A
+      // guest's view is retained (`retainSuspendedTerminalViews`) only once the
+      // caller's commit succeeds. Every other seat keeps the strict check below.
       if (
         this.finalViewIsSeatAuthority(playerId, revision)
         && delivery.terminalRevision === revision
@@ -3332,11 +3335,7 @@ export class P2PHostAdapter implements EngineAdapter {
       if (report.kind === "withheld") {
         // A seat client without a snapshot fails a withheld GameStarted instead of reporting it.
         if (this.nativeInitialSetupPending) continue;
-        sends.push(this.send(session, {
-          type: "state_withheld",
-          revision,
-          reason: report.notice.reason,
-        }));
+        sends.push(this.send(session, { type: "state_withheld", revision }));
         continue;
       }
       const { update } = report;
@@ -3376,7 +3375,10 @@ export class P2PHostAdapter implements EngineAdapter {
     }
     if (hostReport.kind === "withheld") {
       // `commitWithheldHostTerminal` commits a terminal from the host's Full delivery.
-      this.emit({ type: "stateDelivery", withheld: hostReport.notice });
+      this.emit({
+        type: "stateDelivery",
+        withheld: { revision: hostReport.notice.revision, reason: i18n.t("multiplayer:p2pStateWithheld") },
+      });
       return;
     }
     const hostUpdate = hostReport.update;
@@ -4060,7 +4062,7 @@ export class P2PHostAdapter implements EngineAdapter {
       const withheld = this.nativeWithheldSeats.get(pid);
       if (withheld) {
         // A lost notice heals into the notice, never into the seat's older board.
-        await this.send(session, { type: "state_withheld", revision: withheld.revision, reason: withheld.reason });
+        await this.send(session, { type: "state_withheld", revision: withheld.revision });
         return;
       }
       const handoff = await this.reconnectHandoff(pid);
@@ -6144,7 +6146,7 @@ export class P2PGuestAdapter implements EngineAdapter {
         }
         this.cachedRevision = msg.revision;
         this.sendStateAck();
-        this.withheldState = { revision: msg.revision, reason: msg.reason };
+        this.withheldState = { revision: msg.revision, reason: i18n.t("multiplayer:p2pStateWithheld") };
         this.emit({ type: "stateDelivery", withheld: this.withheldState });
         // Withheld means applied: the parked action committed.
         this.settlePendingSubmission({ kind: "resolve", result: { events: [], log_entries: [] } });

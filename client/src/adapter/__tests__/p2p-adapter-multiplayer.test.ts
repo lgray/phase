@@ -1079,6 +1079,8 @@ const NATIVE_HOST_ATTACHMENT = {
   fullKey: "native-full-key",
 };
 
+const P2P_WITHHELD_REASON = "The game state after this action is too large to send, so this board is out of date. Peer-to-peer games have no takeback; the board updates when a later state is small enough to send.";
+
 const NATIVE_GUEST_ATTACHMENT = {
   playerId: 1,
   playerToken: "native-guest-token",
@@ -5854,17 +5856,17 @@ describe("P2PHostAdapter — 3-4p multiplayer", () => {
     let settled: unknown = null;
     void adapter.submitAction({ type: "PassPriority" }, 1).then((result) => { settled = result; });
 
-    await conn.simulateData({ type: "state_withheld", revision: 4, reason: "stale notice" });
+    await conn.simulateData({ type: "state_withheld", revision: 4 });
     await flushPromises();
     expect((await acks()).slice(-1)[0]).toBe(5);
     expect(emitted.filter((e) => e.type === "stateDelivery")).toEqual([]);
     expect(settled).toBeNull();
 
-    await conn.simulateData({ type: "state_withheld", revision: 6, reason: "current notice" });
+    await conn.simulateData({ type: "state_withheld", revision: 6 });
     await flushPromises();
     expect((await acks()).slice(-1)[0]).toBe(6);
     expect(emitted.filter((e) => e.type === "stateDelivery")).toEqual([
-      { type: "stateDelivery", withheld: { revision: 6, reason: "current notice" } },
+      { type: "stateDelivery", withheld: { revision: 6, reason: P2P_WITHHELD_REASON } },
     ]);
     expect(settled).toEqual({ events: [], log_entries: [] });
 
@@ -5878,7 +5880,7 @@ describe("P2PHostAdapter — 3-4p multiplayer", () => {
     });
     expect(emitted.filter((e) => e.type === "stateDelivery").slice(-1)[0]).toEqual({ type: "stateDelivery", withheld: null });
 
-    await conn.simulateData({ type: "state_withheld", revision: 8, reason: "current notice" });
+    await conn.simulateData({ type: "state_withheld", revision: 8 });
     await conn.simulateData({
       type: "game_setup",
       wireProtocolVersion: WIRE_PROTOCOL_VERSION,
@@ -5890,7 +5892,7 @@ describe("P2PHostAdapter — 3-4p multiplayer", () => {
       ...wire,
     });
     expect(emitted.filter((e) => e.type === "stateDelivery").slice(-2)).toEqual([
-      { type: "stateDelivery", withheld: { revision: 8, reason: "current notice" } },
+      { type: "stateDelivery", withheld: { revision: 8, reason: P2P_WITHHELD_REASON } },
       { type: "stateDelivery", withheld: null },
     ]);
     adapter.dispose();
@@ -8115,6 +8117,7 @@ describe("P2PHostAdapter — host emission precedes the guest fan-out", () => {
 describe("P2PHostAdapter — native withheld delivery", () => {
   const REASON = "State update exceeds the delivery bound";
   const notice = (revision: number) => ({ revision, reason: REASON });
+  const p2pNotice = (revision: number) => ({ revision, reason: P2P_WITHHELD_REASON });
   const GAME_FRAMES = new Set(["game_setup", "state_update", "state_withheld", "terminal_result"]);
 
   beforeEach(() => {
@@ -8227,7 +8230,8 @@ describe("P2PHostAdapter — native withheld delivery", () => {
         for (const seat of seats) seat(withheldReport(revision));
         await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(revision));
         const frame = (await gameFrames(conn))[revision - 1];
-        expect(frame).toMatchObject({ type: "state_withheld", revision, reason: REASON });
+        expect(frame).toMatchObject({ type: "state_withheld", revision });
+        expect(frame).not.toHaveProperty("reason");
         await real.feed([frame]);
         await flushPromises();
         expect(parked).toEqual({ settled: true, value: { events: [], log_entries: [] } });
@@ -8235,12 +8239,12 @@ describe("P2PHostAdapter — native withheld delivery", () => {
       }
       expect((await gameFrames(conn)).map((m) => m.type)).toEqual(["game_setup", "state_withheld", "state_withheld"]);
       expect(deliveries(real.events)).toEqual([
-        { type: "stateDelivery", withheld: notice(2) },
-        { type: "stateDelivery", withheld: notice(3) },
+        { type: "stateDelivery", withheld: p2pNotice(2) },
+        { type: "stateDelivery", withheld: p2pNotice(3) },
       ]);
       expect(deliveries(hostEvents)).toEqual([
-        { type: "stateDelivery", withheld: notice(2) },
-        { type: "stateDelivery", withheld: notice(3) },
+        { type: "stateDelivery", withheld: p2pNotice(2) },
+        { type: "stateDelivery", withheld: p2pNotice(3) },
       ]);
       expect(hostEvents.some((e) => e.type === "stateChanged")).toBe(false);
 
@@ -8282,7 +8286,7 @@ describe("P2PHostAdapter — native withheld delivery", () => {
       seats[0](withheldReport(2));
       seats[1](viewReport(2, "guest view"));
       await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]).toMatchObject({ type: "state_update", revision: 2 }));
-      await vi.waitFor(() => expect(deliveries(hostEvents)).toEqual([{ type: "stateDelivery", withheld: notice(2) }]));
+      await vi.waitFor(() => expect(deliveries(hostEvents)).toEqual([{ type: "stateDelivery", withheld: p2pNotice(2) }]));
       expect(hostEvents.some((e) => e.type === "stateChanged" || e.type === "terminalUnavailable")).toBe(false);
       expect((adapter as unknown as { terminalResult: unknown }).terminalResult).toBeNull();
     } finally {
@@ -8312,7 +8316,8 @@ describe("P2PHostAdapter — native withheld delivery", () => {
       seats[1](withheldReport(2));
       await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(2));
       await sweepAndWaitFor(async () => expect(await gameFrames(conn)).toHaveLength(3));
-      expect((await gameFrames(conn))[2]).toMatchObject({ type: "state_withheld", revision: 2, reason: REASON });
+      expect((await gameFrames(conn))[2]).toMatchObject({ type: "state_withheld", revision: 2 });
+      expect((await gameFrames(conn))[2]).not.toHaveProperty("reason");
 
       await conn.simulateData({ type: "state_ack", revision: 2 });
       await vi.advanceTimersByTimeAsync(5_000);
@@ -8366,7 +8371,7 @@ describe("P2PHostAdapter — native withheld delivery", () => {
       const before = (await gameFrames(second)).length;
       await sweepAndWaitFor(async () => expect((await gameFrames(second)).length).toBeGreaterThan(before));
       expect((await gameFrames(second)).slice(before)).toEqual([
-        expect.objectContaining({ type: "state_withheld", revision: 2, reason: REASON }),
+        expect.objectContaining({ type: "state_withheld", revision: 2 }),
       ]);
     } finally {
       adapter.dispose();
@@ -8399,12 +8404,89 @@ describe("P2PHostAdapter — native withheld delivery", () => {
       expect(bridge.reconcileConcede).toHaveBeenCalledWith(1);
 
       const sent = (await gameFrames(second)).slice(before);
-      expect(sent).toContainEqual(expect.objectContaining({ type: "state_withheld", revision: 2, reason: REASON }));
+      expect(sent).toContainEqual(expect.objectContaining({ type: "state_withheld", revision: 2 }));
       expect(sent.filter((m) => m.type === "state_update").map((m) => (m as { state: { label?: string } }).state.label))
         .not.toContain("started");
     } finally {
       adapter.dispose();
     }
+  });
+
+  describe("when the host was withheld at the terminal a later concede reconciliation reads", () => {
+    const terminal: EngineSnapshot = snapshotOf({
+      ...remoteState("terminal"),
+      eliminated_players: [1],
+      waiting_for: { type: "GameOver", data: { winner: 0 } },
+    } as unknown as GameState);
+    const terminalDelivery = (pid: number) => ({
+      key: {},
+      terminalRevision: 2,
+      deliveryId: `delivery-${pid}`,
+      credential: `credential-${pid}`,
+      display: { winner: 0, reason: "Full terminal reason" },
+      finalView: terminal.state,
+    }) as unknown as FullTerminalDelivery;
+    const label = (e: P2PAdapterEvent) =>
+      e.type === "stateDelivery" ? `stateDelivery:${e.withheld ? "notice" : "null"}` : e.type;
+
+    /** Seat 1 drops; reconciling its unknown Concede lands GameOver at revision 2, where the host's frame was withheld. */
+    async function concedeIntoWithheldHostTerminal() {
+      const { adapter, hostEvents, guests: [first], seats } = await startMockedNativeGame(3);
+      const bridge = (adapter as unknown as { nativeBridge: { reconcileConcede: (pid: number) => Promise<unknown> } })
+        .nativeBridge;
+      const commits = vi.spyOn(
+        adapter as unknown as { commitTerminalIfComplete: () => Promise<boolean> },
+        "commitTerminalIfComplete",
+      );
+      nativeTerminalMocks.bootstrap.mockImplementation(async (_url, _key, playerToken) =>
+        ({ "native-guest-token": terminalDelivery(1), "native-guest-2": terminalDelivery(2) })[playerToken ?? ""] ?? null);
+      first.simulateClose();
+      await flushPromises(20);
+      vi.spyOn(bridge, "reconcileConcede").mockImplementation(async () => {
+        seats[0](withheldReport(2));
+        // Seat 1's reattachment for the Concede reports too, so the barrier releases revision 2 here.
+        const calls = nativeWebSocketMocks.onEvent.mock.calls;
+        const reattached = calls[calls.length - 1][0] as (event: WsAdapterEvent) => void;
+        for (const seat of [reattached, seats[2]]) seat({ type: "stateChanged", snapshot: terminal, events: [], serverRevision: 2 });
+        seats[0]({ type: "terminalDelivery", delivery: terminalDelivery(0) } as unknown as WsAdapterEvent);
+        await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(1));
+        await commits.mock.results[0].value;
+        return { snapshot: terminal, events: [], revision: 2 };
+      });
+      nativeWebSocketMocks.initializePregame.mockResolvedValue(NATIVE_GUEST_ATTACHMENT);
+      nativeWebSocketMocks.submitAction.mockRejectedValueOnce(new Error("response lost after send"));
+      await adapter.concedeDisconnected(1);
+      await flushPromises(20);
+      return { adapter, hostEvents, commits };
+    }
+
+    it("retries a failed commit instead of re-announcing the notice over the terminal", async () => {
+      terminalMocks.commitP2PTerminalResult.mockResolvedValueOnce(false);
+      const { adapter, hostEvents, commits } = await concedeIntoWithheldHostTerminal();
+      try {
+        expect(hostEvents).toContainEqual(expect.objectContaining({ type: "playerConceded", playerId: 1 }));
+        expect(hostEvents.filter((e) => e.type === "stateDelivery" || e.type === "stateChanged").map(label))
+          .toEqual(["stateDelivery:notice", "stateDelivery:null", "stateChanged"]);
+        expect(commits).toHaveBeenCalledTimes(2);
+        expect(terminalMocks.commitP2PTerminalResult).toHaveBeenCalledTimes(2);
+        expect((adapter as unknown as { terminalResult: { revision: number } | null }).terminalResult?.revision).toBe(2);
+      } finally {
+        adapter.dispose();
+      }
+    });
+
+    it("does not re-announce the notice over a committed terminal", async () => {
+      const { adapter, hostEvents, commits } = await concedeIntoWithheldHostTerminal();
+      try {
+        expect(hostEvents).toContainEqual(expect.objectContaining({ type: "playerConceded", playerId: 1 }));
+        expect(hostEvents.filter((e) => e.type === "stateDelivery" || e.type === "stateChanged").map(label))
+          .toEqual(["stateDelivery:notice", "stateDelivery:null", "stateChanged"]);
+        expect(commits).toHaveBeenCalledTimes(2);
+        expect(terminalMocks.commitP2PTerminalResult).toHaveBeenCalledTimes(1);
+      } finally {
+        adapter.dispose();
+      }
+    });
   });
 
   describe("at the GameOver revision", () => {
@@ -8506,7 +8588,7 @@ describe("P2PHostAdapter — native withheld delivery", () => {
         expect(events.some((e) => e.type === "terminalUnavailable")).toBe(false);
         const frames = await gameFrames(conn);
         expect(frames.slice(1).map((m) => m.type)).toEqual(["state_withheld", "state_update", "terminal_result"]);
-        expect(frames[1]).toMatchObject({ revision: 2, reason: REASON });
+        expect(frames[1]).toMatchObject({ type: "state_withheld", revision: 2 });
         expect(frames[2]).toMatchObject({ revision: 2, state: guestFinal });
         expect((frames[3] as Extract<P2PMessage, { type: "terminal_result" }>).result.finalStateCommitment)
           .toBe(await p2pFinalStateCommitment(guestFinal));

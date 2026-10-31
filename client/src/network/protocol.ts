@@ -796,7 +796,7 @@ export type P2PMessage = P2PAuthorityWire & (
   | { type: "state_ack"; revision: number }
   /** Host → guest: the host applied this revision for the recipient but could
    * not send it; it answers a pending action as applied. */
-  | { type: "state_withheld"; revision: number; reason: string }
+  | { type: "state_withheld"; revision: number }
   | { type: "action_rejected"; rejection: ActionRejection }
   | { type: "action_failed"; message: string }
   | { type: "action_noop" }
