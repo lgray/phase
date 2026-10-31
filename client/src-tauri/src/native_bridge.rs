@@ -39,6 +39,9 @@ const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// longer frames are split so no single IPC message depends on a webview's size limit.
 const BRIDGE_FRAGMENT_BYTES: usize = 1 << 20;
 
+/// Largest message or frame the bridge reads: headroom over the largest game-state export.
+const MAX_BRIDGE_MESSAGE_BYTES: usize = 256 << 20;
+
 impl NativeEngineBridgeError {
     fn internal(detail: impl Into<String>) -> Self {
         Self::Internal {
@@ -163,8 +166,6 @@ pub fn native_engine_bridge_close(id: u64) -> Result<(), NativeEngineBridgeError
     }
 }
 
-/// The server bounds snapshots by count, not bytes; a cap here turns a large
-/// snapshot into a disconnect.
 async fn dial<R: IntoClientRequest + Unpin>(
     request: R,
 ) -> Result<
@@ -175,8 +176,8 @@ async fn dial<R: IntoClientRequest + Unpin>(
     tungstenite::Error,
 > {
     let config = WebSocketConfig::default()
-        .max_message_size(None)
-        .max_frame_size(None);
+        .max_message_size(Some(MAX_BRIDGE_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_BRIDGE_MESSAGE_BYTES));
     connect_async_with_config(request, Some(config), false).await
 }
 
@@ -1047,10 +1048,11 @@ mod tests {
     }
 
     #[test]
-    fn a_dialed_bridge_forwards_a_frame_over_the_default_size_cap() {
+    fn a_dialed_bridge_forwards_a_frame_the_size_of_the_largest_export() {
         tauri::async_runtime::block_on(async {
             let (listener, port) = bound_listener().await;
-            let large = "x".repeat(17 << 20);
+            const SPROUT_SWARM_THOUSAND_EXPORT_BYTES: usize = 128_817_409;
+            let large = "x".repeat(SPROUT_SWARM_THOUSAND_EXPORT_BYTES);
             let sent = large.clone();
             let peer = tauri::async_runtime::spawn(async move {
                 let (tcp, _) = listener.accept().await.unwrap();
@@ -1108,6 +1110,56 @@ mod tests {
             );
             assert!(events.try_recv().is_err());
             peer.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn a_dialed_bridge_refuses_a_frame_over_the_bound_before_its_payload() {
+        tauri::async_runtime::block_on(async {
+            let (listener, port) = bound_listener().await;
+            let size = MAX_BRIDGE_MESSAGE_BYTES + 1;
+            let peer = tauri::async_runtime::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                // RFC 6455 §5.2: a final text frame's header with a 64-bit length and no payload.
+                let mut header = vec![0x81, 127];
+                header.extend_from_slice(&u64::try_from(size).unwrap().to_be_bytes());
+                socket.get_mut().write_all(&header).await.unwrap();
+                socket
+            });
+            let (socket, _) = dial(format!("ws://127.0.0.1:{port}/")).await.unwrap();
+            let (on_event, mut events) = capture_events();
+            let (_outbound, receiver) = mpsc::unbounded_channel();
+            let (_abort, registration) = AbortHandle::new_pair();
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                forward_bridge(
+                    1,
+                    socket,
+                    receiver,
+                    registration,
+                    on_event,
+                    Some(BridgeTextDelivery::Fragments),
+                    |_| {},
+                ),
+            )
+            .await
+            .unwrap();
+            let refused =
+                tungstenite::Error::Capacity(tungstenite::error::CapacityError::MessageTooLong {
+                    size,
+                    max_size: MAX_BRIDGE_MESSAGE_BYTES,
+                });
+            assert_eq!(
+                events.try_recv().unwrap(),
+                serde_json::json!({ "type": "error", "detail": refused.to_string() })
+            );
+            assert_eq!(
+                events.try_recv().unwrap(),
+                serde_json::json!({ "type": "closed", "code": 1006, "reason": "" })
+            );
+            assert!(events.try_recv().is_err());
+            drop(peer.await.unwrap());
         });
     }
 
