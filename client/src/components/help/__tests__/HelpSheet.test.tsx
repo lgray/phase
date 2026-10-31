@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import i18n from "i18next";
 
 import { AdapterError, type EngineAdapter, type GameState } from "../../../adapter/types";
 import type { DownloadResult } from "../../../services/fileDownload";
@@ -46,6 +47,19 @@ describe("HelpSheet state export status", () => {
     expect(await clickExportState()).toHaveTextContent(
       "Could not export game state. too large to send: 300 bytes; at most 200 allowed",
     );
+  });
+
+  it("renders the refusal reason through the detail translation", async () => {
+    const key = "help.status.exportFailedDetail";
+    const shipped = i18n.getResource("en", "common", key) as string;
+    i18n.addResource("en", "common", key, "Export refused ({{detail}}) — retry");
+    try {
+      exportAuthoritativeGameStateZip.mockRejectedValue(new AdapterError("REQUEST_FAILED", "too large to send", true));
+
+      expect(await clickExportState()).toHaveTextContent("Export refused (too large to send) — retry");
+    } finally {
+      i18n.addResource("en", "common", key, shipped);
+    }
   });
 
   it("still reports where a saved export landed", async () => {

@@ -741,7 +741,12 @@ class FakeOpenableConnection extends FakeDataConnection {
     // `simulateClose()`; dispatching an ack into a torn-down session would
     // model something a real guest never does.
     if (!this.open) return;
-    if (msg.type !== "game_setup" && msg.type !== "state_update" && msg.type !== "reconnect_ack") {
+    if (
+      msg.type !== "game_setup"
+      && msg.type !== "state_update"
+      && msg.type !== "reconnect_ack"
+      && msg.type !== "state_withheld"
+    ) {
       return;
     }
     // `revision` is optional on `state_update` and `reconnect_ack`; only
@@ -5817,6 +5822,80 @@ describe("P2PHostAdapter — 3-4p multiplayer", () => {
     expect(emitted).not.toHaveBeenCalled();
   });
 
+  it("answers a stale withheld notice like a stale state, and clears a notice on reconnect", async () => {
+    const { peer } = createFakePeer();
+    const conn = new FakeDataConnection();
+    const adapter = new P2PGuestAdapter(
+      { player: { main_deck: [], sideboard: [] } },
+      peer as unknown as Peer,
+      "host-peer",
+      conn as unknown as DataConnection,
+    );
+    const emitted: P2PAdapterEvent[] = [];
+    adapter.onEvent((event) => emitted.push(event));
+    await adapter.initialize();
+    const acks = async () => ((await conn.getSentMessages()) as P2PMessage[])
+      .filter((m): m is Extract<P2PMessage, { type: "state_ack" }> => m.type === "state_ack")
+      .map((m) => m.revision);
+    const wire = { legalActions: [], autoPassRecommended: false, manaPaymentShortcutActions: [] };
+    await conn.simulateData({
+      type: "game_setup",
+      wireProtocolVersion: WIRE_PROTOCOL_VERSION,
+      assignedPlayerId: 1,
+      playerToken: "seat-token",
+      revision: 4,
+      state: remoteState("setup"),
+      events: [],
+      ...wire,
+    });
+    await adapter.initializeGame();
+    await conn.simulateData({ type: "state_update", revision: 5, state: remoteState("current"), events: [], ...wire });
+    emitted.length = 0;
+    let settled: unknown = null;
+    void adapter.submitAction({ type: "PassPriority" }, 1).then((result) => { settled = result; });
+
+    await conn.simulateData({ type: "state_withheld", revision: 4, reason: "stale notice" });
+    await flushPromises();
+    expect((await acks()).slice(-1)[0]).toBe(5);
+    expect(emitted.filter((e) => e.type === "stateDelivery")).toEqual([]);
+    expect(settled).toBeNull();
+
+    await conn.simulateData({ type: "state_withheld", revision: 6, reason: "current notice" });
+    await flushPromises();
+    expect((await acks()).slice(-1)[0]).toBe(6);
+    expect(emitted.filter((e) => e.type === "stateDelivery")).toEqual([
+      { type: "stateDelivery", withheld: { revision: 6, reason: "current notice" } },
+    ]);
+    expect(settled).toEqual({ events: [], log_entries: [] });
+
+    await conn.simulateData({
+      type: "reconnect_ack",
+      wireProtocolVersion: WIRE_PROTOCOL_VERSION,
+      assignedPlayerId: 1,
+      revision: 7,
+      state: remoteState("resumed"),
+      ...wire,
+    });
+    expect(emitted.filter((e) => e.type === "stateDelivery").slice(-1)[0]).toEqual({ type: "stateDelivery", withheld: null });
+
+    await conn.simulateData({ type: "state_withheld", revision: 8, reason: "current notice" });
+    await conn.simulateData({
+      type: "game_setup",
+      wireProtocolVersion: WIRE_PROTOCOL_VERSION,
+      assignedPlayerId: 1,
+      playerToken: "seat-token",
+      revision: 9,
+      state: remoteState("set up again"),
+      events: [],
+      ...wire,
+    });
+    expect(emitted.filter((e) => e.type === "stateDelivery").slice(-2)).toEqual([
+      { type: "stateDelivery", withheld: { revision: 8, reason: "current notice" } },
+      { type: "stateDelivery", withheld: null },
+    ]);
+    adapter.dispose();
+  });
+
   it("acks the revision the guest has applied, including the held one on a stale drop", async () => {
     const { peer } = createFakePeer();
     const conn = new FakeDataConnection();
@@ -8102,6 +8181,463 @@ describe("P2PHostAdapter — host emission precedes the guest fan-out", () => {
  *
  * Every test in this block is red under at least one probe.
  */
+describe("P2PHostAdapter — native withheld delivery", () => {
+  const REASON = "State update exceeds the delivery bound";
+  const notice = (revision: number) => ({ revision, reason: REASON });
+  const GAME_FRAMES = new Set(["game_setup", "state_update", "state_withheld", "terminal_result"]);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function snapshotOf(state: GameState): EngineSnapshot {
+    return { state, legalResult: { actions: [], autoPassRecommended: false }, seq: 1 };
+  }
+  const withheldReport = (revision: number): WsAdapterEvent => ({ type: "stateDelivery", withheld: notice(revision) });
+  const viewReport = (revision: number, label: string): WsAdapterEvent => ({
+    type: "stateChanged",
+    snapshot: snapshotOf(remoteState(label)),
+    events: [],
+    serverRevision: revision,
+  });
+
+  async function gameFrames(conn: FakeDataConnection): Promise<P2PMessage[]> {
+    return ((await conn.getSentMessages()) as P2PMessage[]).filter((m) => GAME_FRAMES.has(m.type));
+  }
+
+  function track<T>(promise: Promise<T>): { settled: boolean; value?: T; error?: unknown } {
+    const tracked: { settled: boolean; value?: T; error?: unknown } = { settled: false };
+    promise.then(
+      (value) => Object.assign(tracked, { settled: true, value }),
+      (error: unknown) => Object.assign(tracked, { settled: true, error }),
+    );
+    return tracked;
+  }
+
+  /** A production `P2PGuestAdapter` that is fed the exact frames the host sent its seat. */
+  async function realGuest() {
+    const conn = new FakeDataConnection();
+    const guest = new P2PGuestAdapter(
+      { player: { main_deck: [], sideboard: [] } },
+      createFakePeer().peer as unknown as Peer,
+      "host-peer",
+      conn as unknown as DataConnection,
+    );
+    const events: P2PAdapterEvent[] = [];
+    guest.onEvent((event) => events.push(event));
+    await guest.initialize();
+    const feed = async (frames: P2PMessage[]) => {
+      for (const frame of frames) await conn.simulateData(frame);
+    };
+    const acks = async () => ((await conn.getSentMessages()) as P2PMessage[])
+      .filter((m): m is Extract<P2PMessage, { type: "state_ack" }> => m.type === "state_ack")
+      .map((m) => m.revision);
+    return { guest, conn, events, feed, acks };
+  }
+
+  const deliveries = (events: P2PAdapterEvent[]) => events.filter((e) => e.type === "stateDelivery");
+
+  async function startMockedNativeGame(playerCount: 2 | 3) {
+    const { adapter, emitConnection } = makeNativeHost(playerCount);
+    const hostEvents: P2PAdapterEvent[] = [];
+    adapter.onEvent((event) => hostEvents.push(event));
+    nativeWebSocketMocks.waitForPlayerSlots.mockResolvedValue([]);
+    nativeWebSocketMocks.initializePregame
+      .mockResolvedValueOnce(NATIVE_HOST_ATTACHMENT)
+      .mockResolvedValueOnce(NATIVE_GUEST_ATTACHMENT);
+    if (playerCount === 3) {
+      nativeWebSocketMocks.initializePregame.mockResolvedValueOnce({
+        ...NATIVE_GUEST_ATTACHMENT,
+        playerId: 2,
+        playerToken: "native-guest-2",
+      });
+    }
+    await adapter.initialize();
+    const guests: FakeOpenableConnection[] = [];
+    for (let seat = 1; seat < playerCount; seat++) {
+      guests.push(await joinGuest(emitConnection, {
+        type: "guest_deck",
+        deckData: { player: { main_deck: ["Plains"], sideboard: [] } },
+      }));
+    }
+    const start = adapter.initializeGame();
+    await vi.waitFor(() => expect(nativeWebSocketMocks.sendSeatMutation).toHaveBeenCalledWith({ type: "Start" }));
+    const seats = nativeWebSocketMocks.onEvent.mock.calls.map(([listener]) => listener as (event: WsAdapterEvent) => void);
+    expect(seats).toHaveLength(playerCount);
+    for (const seat of seats) seat(viewReport(1, "started"));
+    await start;
+    for (const guest of guests) {
+      await vi.waitFor(async () => expect((await gameFrames(guest)).map((m) => m.type)).toEqual(["game_setup"]));
+    }
+    hostEvents.length = 0;
+    return { adapter, hostEvents, guests, seats };
+  }
+
+  /** Advance one redelivery sweep, then wait for `check` on real time without reaching the next tick. */
+  async function sweepAndWaitFor(check: () => void | Promise<void>): Promise<void> {
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(check, { interval: 10, timeout: 2_000 });
+  }
+
+  it("settles guest actions withheld for every seat, through consecutive revisions, until a view clears it", async () => {
+    const { adapter, hostEvents, guests: [conn], seats } = await startMockedNativeGame(2);
+    const real = await realGuest();
+    try {
+      await real.feed(await gameFrames(conn));
+      await real.guest.initializeGame();
+      real.events.length = 0;
+
+      for (const revision of [2, 3]) {
+        const parked = track(real.guest.submitAction({ type: "PassPriority" }, 1));
+        await conn.simulateData({ type: "action", senderPlayerId: 1, action: { type: "PassPriority" } });
+        for (const seat of seats) seat(withheldReport(revision));
+        await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(revision));
+        const frame = (await gameFrames(conn))[revision - 1];
+        expect(frame).toMatchObject({ type: "state_withheld", revision, reason: REASON });
+        await real.feed([frame]);
+        await flushPromises();
+        expect(parked).toEqual({ settled: true, value: { events: [], log_entries: [] } });
+        expect(await real.acks()).toContain(revision);
+      }
+      expect((await gameFrames(conn)).map((m) => m.type)).toEqual(["game_setup", "state_withheld", "state_withheld"]);
+      expect(deliveries(real.events)).toEqual([
+        { type: "stateDelivery", withheld: notice(2) },
+        { type: "stateDelivery", withheld: notice(3) },
+      ]);
+      expect(deliveries(hostEvents)).toEqual([
+        { type: "stateDelivery", withheld: notice(2) },
+        { type: "stateDelivery", withheld: notice(3) },
+      ]);
+      expect(hostEvents.some((e) => e.type === "stateChanged")).toBe(false);
+
+      // Both notices were acked, so the sweep owes the seat nothing (V3 is the unacked pair).
+      await vi.advanceTimersByTimeAsync(2 * 5_000);
+      await flushPromises(20);
+      expect(await gameFrames(conn)).toHaveLength(3);
+
+      for (const seat of seats) seat(viewReport(4, "delivered"));
+      await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(4));
+      const delivered = (await gameFrames(conn))[3];
+      expect(delivered).toMatchObject({ type: "state_update", revision: 4 });
+      await real.feed([delivered]);
+      expect(deliveries(real.events).slice(-1)[0]).toEqual({ type: "stateDelivery", withheld: null });
+      expect(hostEvents.slice(-2).map((e) => e.type === "stateDelivery" ? `stateDelivery:${e.withheld}` : e.type))
+        .toEqual(["stateDelivery:null", "stateChanged"]);
+    } finally {
+      real.guest.dispose();
+      adapter.dispose();
+    }
+  });
+
+  it("delivers the host's view while the guest's is withheld at the same revision", async () => {
+    const { adapter, hostEvents, guests: [conn], seats } = await startMockedNativeGame(2);
+    try {
+      seats[0](viewReport(2, "host view"));
+      seats[1](withheldReport(2));
+      await vi.waitFor(() => expect(hostEvents.some((e) => e.type === "stateChanged")).toBe(true));
+      expect(deliveries(hostEvents)).toEqual([]);
+      await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]).toMatchObject({ type: "state_withheld", revision: 2 }));
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  it("delivers the guest's view while the host's is withheld at a live revision", async () => {
+    const { adapter, hostEvents, guests: [conn], seats } = await startMockedNativeGame(2);
+    try {
+      seats[0](withheldReport(2));
+      seats[1](viewReport(2, "guest view"));
+      await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]).toMatchObject({ type: "state_update", revision: 2 }));
+      await vi.waitFor(() => expect(deliveries(hostEvents)).toEqual([{ type: "stateDelivery", withheld: notice(2) }]));
+      expect(hostEvents.some((e) => e.type === "stateChanged" || e.type === "terminalUnavailable")).toBe(false);
+      expect((adapter as unknown as { terminalResult: unknown }).terminalResult).toBeNull();
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  it("withholds only the seat whose frame was withheld at a three-seat table", async () => {
+    const { adapter, hostEvents, guests: [first, second], seats } = await startMockedNativeGame(3);
+    try {
+      seats[0](viewReport(2, "host view"));
+      seats[1](viewReport(2, "guest 1 view"));
+      seats[2](withheldReport(2));
+      await vi.waitFor(async () => expect((await gameFrames(first)).slice(-1)[0]).toMatchObject({ type: "state_update", revision: 2 }));
+      await vi.waitFor(async () => expect((await gameFrames(second)).slice(-1)[0]).toMatchObject({ type: "state_withheld", revision: 2 }));
+      await vi.waitFor(() => expect(hostEvents.some((e) => e.type === "stateChanged")).toBe(true));
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  it("resends a lost notice as the notice, not the seat's older board", async () => {
+    const { adapter, guests: [conn], seats } = await startMockedNativeGame(2);
+    try {
+      conn.stopAcking();
+      seats[0](viewReport(2, "host view"));
+      seats[1](withheldReport(2));
+      await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(2));
+      await sweepAndWaitFor(async () => expect(await gameFrames(conn)).toHaveLength(3));
+      expect((await gameFrames(conn))[2]).toMatchObject({ type: "state_withheld", revision: 2, reason: REASON });
+
+      await conn.simulateData({ type: "state_ack", revision: 2 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flushPromises(20);
+      expect(await gameFrames(conn)).toHaveLength(3);
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  it("redelivers a view, not a stale notice, once the seat was delivered a later revision", async () => {
+    const { adapter, guests: [conn], seats } = await startMockedNativeGame(2);
+    try {
+      seats[0](viewReport(2, "host view"));
+      seats[1](withheldReport(2));
+      await vi.waitFor(async () => expect(conn.acksSent.slice(-1)[0]).toMatchObject({ type: "state_ack", revision: 2 }));
+      conn.stopAcking();
+      for (const seat of seats) seat(viewReport(3, "delivered"));
+      await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(3));
+      await sweepAndWaitFor(async () => expect(await gameFrames(conn)).toHaveLength(4));
+      expect((await gameFrames(conn))[3]).toMatchObject({ type: "state_update", revision: 3 });
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  describe("at the GameOver revision", () => {
+    // The commitment digest is a real macrotask; leave headroom for a loaded runner.
+    const TERMINAL_WAIT = { interval: 10, timeout: 2_000 };
+    const fullKey = { game_code: "WITHHELD", generation: 1 };
+    const token = (pid: number) => `withheld-native-${pid}`;
+    const finalView = (pid: number) => ({
+      ...remoteState(`final view ${pid}`),
+      waiting_for: { type: "GameOver", data: { winner: 0 } },
+      filteredFor: pid,
+    }) as unknown as GameState;
+    const delivery = (pid: number, view: GameState | undefined): FullTerminalDelivery => ({
+      key: fullKey,
+      terminalRevision: 2,
+      deliveryId: `delivery-${pid}`,
+      credential: `credential-${pid}`,
+      display: { winner: 0, reason: "Full terminal reason" },
+      ...(view ? { finalView: view } : {}),
+    });
+
+    async function startRealNativeGame(gameId: string) {
+      nativeWebSocketMocks.real = true;
+      const { adapter, emitConnection } = makeNativeHost(2, { gameId, roomCode: "ABCDE" });
+      const events: P2PAdapterEvent[] = [];
+      adapter.onEvent((event) => events.push(event));
+      const attach = async (pid: number) => {
+        await vi.waitFor(() => expect(AuditSocket.sockets).toHaveLength(pid + 1));
+        const socket = AuditSocket.sockets[pid];
+        await flushPromises(20);
+        socket.frame("ServerHello", { server_version: "0.0.0-test", build_commit: "testhash", protocol_version: PROTOCOL_VERSION, mode: "Full" });
+        await vi.waitFor(() => expect(socket.sent.length).toBeGreaterThan(0));
+        socket.frame("SessionAttached", { game_code: fullKey.game_code, player_id: pid, player_token: token(pid), full_key: fullKey });
+        for (const s of AuditSocket.sockets) s.frame("PlayerSlotsUpdate", { slots: [], full_key: fullKey });
+      };
+      const init = adapter.initialize();
+      await attach(0);
+      await init;
+      const joining = joinGuest(emitConnection, { type: "guest_deck", deckData: { player: { main_deck: ["Plains"], sideboard: [] } } });
+      await attach(1);
+      const conn = await joining;
+      const start = adapter.initializeGame();
+      await vi.waitFor(() => expect(AuditSocket.sockets[0].sent.some((m) => m.type === "SeatMutate")).toBe(true));
+      for (const [pid, s] of AuditSocket.sockets.entries()) {
+        s.frame("GameStarted", { state_revision: 1, state: remoteState("live"), your_player: pid, full_key: fullKey });
+      }
+      AuditSocket.sockets[0].frame("PlayerSlotsUpdate", { slots: [], full_key: fullKey });
+      await start;
+      await vi.waitFor(async () => expect((await gameFrames(conn)).map((m) => m.type)).toEqual(["game_setup"]));
+      events.length = 0;
+      const [hostSocket, guestSocket] = AuditSocket.sockets;
+      return { adapter, events, conn, hostSocket, guestSocket };
+    }
+
+    function serveDeliveries(byPid: Map<number, FullTerminalDelivery>): void {
+      nativeTerminalMocks.bootstrap.mockImplementation(async (_url, _key, playerToken) =>
+        [...byPid].find(([pid]) => token(pid) === playerToken)?.[1] ?? null);
+    }
+    const withheldFrame = (socket: AuditSocket) => socket.frame("StateWithheld", {
+      full_key: fullKey,
+      state_revision: 2,
+      withheld: { type: "StateUpdate" },
+      reason: REASON,
+    });
+    const stateFrame = (socket: AuditSocket, state: GameState) =>
+      socket.frame("StateUpdate", { state_revision: 2, state, events: [], full_key: fullKey });
+    const terminalFrame = (socket: AuditSocket, terminal: FullTerminalDelivery) =>
+      socket.frame("TerminalResult", { delivery: terminal });
+    const hostTerminal = (adapter: P2PHostAdapter) =>
+      (adapter as unknown as { terminalResult: { revision: number } | null }).terminalResult;
+    const label = (e: P2PAdapterEvent) => e.type === "stateDelivery" ? `stateDelivery:${e.withheld ? "notice" : "null"}` : e.type;
+
+    /** Feed the guest's frames to a real guest and wait for its terminal outcome. */
+    async function settleRealGuest(frames: P2PMessage[]) {
+      const real = await realGuest();
+      await real.feed(frames);
+      await vi.waitFor(
+        () => expect(real.events.some((e) => e.type === "terminalResult" || e.type === "terminalUnavailable")).toBe(true),
+        TERMINAL_WAIT,
+      );
+      real.guest.dispose();
+      return real.events;
+    }
+
+    it("commits when the guest was withheld, sending its final view before its statement", async () => {
+      const { adapter, events, conn, hostSocket, guestSocket } = await startRealNativeGame("withheld-guest");
+      try {
+        const hostFinal = finalView(0);
+        const guestFinal = finalView(1);
+        const byPid = new Map([[0, delivery(0, hostFinal)], [1, delivery(1, guestFinal)]]);
+        serveDeliveries(byPid);
+        withheldFrame(guestSocket);
+        stateFrame(hostSocket, hostFinal);
+        terminalFrame(guestSocket, byPid.get(1)!);
+        terminalFrame(hostSocket, byPid.get(0)!);
+
+        await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]?.type).toBe("terminal_result"), TERMINAL_WAIT);
+        expect(hostTerminal(adapter)?.revision).toBe(2);
+        expect(events.some((e) => e.type === "terminalUnavailable")).toBe(false);
+        const frames = await gameFrames(conn);
+        expect(frames.slice(1).map((m) => m.type)).toEqual(["state_withheld", "state_update", "terminal_result"]);
+        expect(frames[1]).toMatchObject({ revision: 2, reason: REASON });
+        expect(frames[2]).toMatchObject({ revision: 2, state: guestFinal });
+        expect((frames[3] as Extract<P2PMessage, { type: "terminal_result" }>).result.finalStateCommitment)
+          .toBe(await p2pFinalStateCommitment(guestFinal));
+        const bridge = (adapter as unknown as {
+          nativeBridge: { retainedTerminalView: (pid: number) => { revision: number; snapshot: EngineSnapshot } | null };
+        }).nativeBridge;
+        expect(bridge.retainedTerminalView(1)).toMatchObject({ revision: 2, snapshot: { state: guestFinal } });
+
+        const guestEvents = await settleRealGuest(frames);
+        expect(guestEvents.filter((e) => e.type === "stateDelivery" || e.type.startsWith("terminal")).map(label))
+          .toEqual(["stateDelivery:notice", "stateDelivery:null", "terminalResult"]);
+      } finally {
+        adapter.dispose();
+      }
+    });
+
+    it.each(["guest view first", "host terminal first"] as const)(
+      "commits from the host's Full delivery when the host was withheld (%s)",
+      async (order) => {
+        const { adapter, events, conn, hostSocket, guestSocket } = await startRealNativeGame(`withheld-host-${order}`);
+        try {
+          const hostFinal = finalView(0);
+          const guestFinal = finalView(1);
+          const byPid = new Map([[0, delivery(0, hostFinal)], [1, delivery(1, guestFinal)]]);
+          serveDeliveries(byPid);
+          withheldFrame(hostSocket);
+          if (order === "host terminal first") {
+            terminalFrame(hostSocket, byPid.get(0)!);
+            await flushPromises(20);
+            stateFrame(guestSocket, guestFinal);
+            terminalFrame(guestSocket, byPid.get(1)!);
+          } else {
+            stateFrame(guestSocket, guestFinal);
+            // The terminal arrives after the revision's fan-out has completed.
+            await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]).toMatchObject({ type: "state_update", revision: 2 }));
+            terminalFrame(guestSocket, byPid.get(1)!);
+            terminalFrame(hostSocket, byPid.get(0)!);
+          }
+
+          await vi.waitFor(() => expect(events.some((e) => e.type === "terminalResult")).toBe(true), TERMINAL_WAIT);
+          expect(hostTerminal(adapter)?.revision).toBe(2);
+          expect(events.filter((e) => e.type !== "playerLatencies").map(label))
+            .toEqual(["stateDelivery:notice", "stateDelivery:null", "stateChanged", "terminalResult"]);
+          const changed = events.find((e) => e.type === "stateChanged") as Extract<P2PAdapterEvent, { type: "stateChanged" }>;
+          expect(changed.snapshot.state).toEqual(hostFinal);
+          await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]?.type).toBe("terminal_result"), TERMINAL_WAIT);
+          expect((await gameFrames(conn)).slice(1).map((m) => m.type)).toEqual(["state_update", "terminal_result"]);
+        } finally {
+          adapter.dispose();
+        }
+      },
+    );
+
+    it("commits when every seat was withheld, giving the guest its final view and then its statement", async () => {
+      const { adapter, events, conn, hostSocket, guestSocket } = await startRealNativeGame("withheld-all");
+      try {
+        const hostFinal = finalView(0);
+        const guestFinal = finalView(1);
+        const byPid = new Map([[0, delivery(0, hostFinal)], [1, delivery(1, guestFinal)]]);
+        serveDeliveries(byPid);
+        withheldFrame(hostSocket);
+        withheldFrame(guestSocket);
+        terminalFrame(guestSocket, byPid.get(1)!);
+        terminalFrame(hostSocket, byPid.get(0)!);
+
+        await vi.waitFor(async () => expect((await gameFrames(conn)).slice(-1)[0]?.type).toBe("terminal_result"), TERMINAL_WAIT);
+        expect(hostTerminal(adapter)?.revision).toBe(2);
+        expect(events.some((e) => e.type === "terminalUnavailable")).toBe(false);
+        const frames = await gameFrames(conn);
+        expect(frames.slice(1).map((m) => m.type)).toEqual(["state_withheld", "state_update", "terminal_result"]);
+        expect(frames[2]).toMatchObject({ revision: 2, state: guestFinal });
+
+        const guestEvents = await settleRealGuest(frames);
+        expect(guestEvents.filter((e) => e.type === "stateDelivery" || e.type.startsWith("terminal")).map(label))
+          .toEqual(["stateDelivery:notice", "stateDelivery:null", "terminalResult"]);
+      } finally {
+        adapter.dispose();
+      }
+    });
+
+    it("reports the terminal unavailable when a withheld guest's final view was stripped", async () => {
+      const { adapter, events, conn, hostSocket, guestSocket } = await startRealNativeGame("withheld-stripped-guest");
+      try {
+        const hostFinal = finalView(0);
+        const byPid = new Map([[0, delivery(0, hostFinal)], [1, delivery(1, undefined)]]);
+        serveDeliveries(byPid);
+        withheldFrame(guestSocket);
+        stateFrame(hostSocket, hostFinal);
+        terminalFrame(guestSocket, byPid.get(1)!);
+        terminalFrame(hostSocket, byPid.get(0)!);
+
+        await vi.waitFor(() => expect(events).toContainEqual({
+          type: "terminalUnavailable",
+          message: "Full terminal authority is invalid for seat 1",
+        }));
+        expect(hostTerminal(adapter)).toBeNull();
+        await vi.advanceTimersByTimeAsync(2 * 5_000);
+        await flushPromises(20);
+        expect((await gameFrames(conn)).slice(1)).toEqual([
+          expect.objectContaining({ type: "state_withheld", revision: 2 }),
+        ]);
+      } finally {
+        adapter.dispose();
+      }
+    });
+
+    it("reports the terminal unavailable when a withheld host's final view was stripped", async () => {
+      const { adapter, events, hostSocket, guestSocket } = await startRealNativeGame("withheld-stripped-host");
+      try {
+        const guestFinal = finalView(1);
+        const byPid = new Map([[0, delivery(0, undefined)], [1, delivery(1, guestFinal)]]);
+        serveDeliveries(byPid);
+        withheldFrame(hostSocket);
+        stateFrame(guestSocket, guestFinal);
+        terminalFrame(guestSocket, byPid.get(1)!);
+        terminalFrame(hostSocket, byPid.get(0)!);
+
+        await vi.waitFor(() => expect(events).toContainEqual({
+          type: "terminalUnavailable",
+          message: "Full terminal authority is invalid for seat 0",
+        }));
+        expect(events.some((e) => e.type === "stateChanged")).toBe(false);
+        expect(hostTerminal(adapter)).toBeNull();
+      } finally {
+        adapter.dispose();
+      }
+    });
+  });
+});
+
 describe("P2PHostAdapter — per-guest eventual state delivery", () => {
   beforeEach(() => {
     vi.useFakeTimers();

@@ -263,7 +263,7 @@ export function HelpSheet() {
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
         const detail = err instanceof Error ? err.message : String(err);
-        setStatus(`${t("help.status.exportFailed")} ${detail}`);
+        setStatus(t("help.status.exportFailedDetail", { detail }));
       });
   };
 
