@@ -23,6 +23,10 @@ const THRABEN_GARGOYLE: &str = "Defender\n{6}: Transform this creature.";
 /// Jill, Shiva's Dominant's activation paragraph; her ETB paragraph is not under test.
 const JILL_RETURN_TRANSFORMED: &str = "{3}{U}{U}, {T}: Exile Jill, then return it to the battlefield transformed under its owner's control. Activate only as a sorcery.";
 
+const LUNARCH_VETERAN: &str = "Whenever another creature you control enters, you gain 1 life.\nDisturb {1}{W} (You may cast this card from your graveyard transformed for its disturb cost.)";
+
+const STARTLED_AWAKE: &str = "Target opponent mills thirteen cards.\n{3}{U}{U}: Put this card from your graveyard onto the battlefield transformed. Activate only as a sorcery.";
+
 const TAVERN_RUFFIAN: &str =
     "Daybound (If a player casts no spells during their own turn, it becomes night next turn.)";
 
@@ -168,6 +172,101 @@ fn daybound_entering_at_night_is_not_a_transform() {
             && entered.transformed
             && entered.name == "Tavern Smasher",
         "reach: the daybound creature entered nightbound face up"
+    );
+    assert_eq!(
+        wolves(&runner),
+        0,
+        "entering transformed is not a transform"
+    );
+}
+
+/// CR 702.146b: a disturbed spell resolves back face up, and that entry is not a
+/// transform.
+#[test]
+fn disturb_resolving_back_face_up_is_not_a_transform() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_creature_from_oracle(P0, "Cult of the Waxing Moon", 5, 4, CULT_OF_THE_WAXING_MOON);
+    let veteran = scenario
+        .add_creature_to_graveyard(P0, "Lunarch Veteran", 1, 1)
+        .from_oracle_text_with_keywords(&["Disturb"], LUNARCH_VETERAN)
+        .id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&veteran)
+        .unwrap()
+        .back_face = Some(non_human_creature_face(
+        "Luminous Phantom",
+        1,
+        1,
+        &["Spirit", "Cleric"],
+    ));
+    for kind in [ManaType::Colorless, ManaType::White] {
+        runner
+            .state_mut()
+            .add_mana_to_pool(P0, ManaUnit::new(kind, ObjectId(0), false, vec![]));
+    }
+
+    let card_id = runner.state().objects[&veteran].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: veteran,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("cast Lunarch Veteran with disturb");
+    resolve_stack(&mut runner);
+    let entered = &runner.state().objects[&veteran];
+    assert!(
+        entered.zone == Zone::Battlefield
+            && entered.transformed
+            && entered.name == "Luminous Phantom",
+        "reach: the disturbed spell entered back face up"
+    );
+    assert_eq!(
+        wolves(&runner),
+        0,
+        "entering transformed is not a transform"
+    );
+}
+
+/// CR 712.14a: Startled Awake put onto the battlefield transformed enters back face
+/// up, and that entry is not a transform.
+#[test]
+fn put_onto_the_battlefield_transformed_is_not_a_transform() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_creature_from_oracle(P0, "Cult of the Waxing Moon", 5, 4, CULT_OF_THE_WAXING_MOON);
+    let startled = scenario
+        .add_spell_to_graveyard(P0, "Startled Awake", false)
+        .from_oracle_text(STARTLED_AWAKE)
+        .id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&startled)
+        .unwrap()
+        .back_face = Some(non_human_creature_face(
+        "Persistent Nightmare",
+        1,
+        1,
+        &["Nightmare"],
+    ));
+
+    let mut mana = vec![ManaType::Colorless; 3];
+    mana.extend([ManaType::Blue; 2]);
+    activate_only_ability(&mut runner, startled, &mana);
+    resolve_stack(&mut runner);
+    let entered = &runner.state().objects[&startled];
+    assert!(
+        entered.zone == Zone::Battlefield
+            && entered.transformed
+            && entered.name == "Persistent Nightmare",
+        "reach: Startled Awake entered back face up"
     );
     assert_eq!(
         wolves(&runner),
