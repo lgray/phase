@@ -234,6 +234,10 @@ type NativeSeatReport =
   | { kind: "view"; update: NativeViewerUpdate }
   | { kind: "withheld"; notice: StateWithheldNotice };
 
+function seatReportRevision(report: NativeSeatReport): number {
+  return report.kind === "view" ? report.update.revision : report.notice.revision;
+}
+
 /** The view a reattached seat is sent, with the engine revision it belongs to. */
 type NativeResumedView = { revision: number; snapshot: EngineSnapshot };
 
@@ -260,8 +264,8 @@ class NativeP2PBridge {
   private readonly latestViews = new Map<PlayerId, NativeViewerUpdate>();
   private readonly terminalDeliveries = new Map<PlayerId, FullTerminalDelivery>();
   private readonly pendingViews = new Map<number, Map<PlayerId, NativeSeatReport>>();
-  /** Revision of each seat's latest withheld report; `latestViews` cannot reach that revision. */
-  private readonly withheldRevisions = new Map<PlayerId, number>();
+  /** Each seat's latest withheld notice; `latestViews` cannot reach its revision. */
+  private readonly withheldNotices = new Map<PlayerId, StateWithheldNotice>();
   private readonly startWaiters: Array<(update: NativeViewerUpdate) => void> = [];
   /** Suspended seats being reattached, each waiting for its first view of the game. */
   private readonly resumeWaiters = new Map<
@@ -576,7 +580,7 @@ class NativeP2PBridge {
 
   /** No loopback view of `revision` exists to cross-check for a suspended guest or a seat withheld at it. */
   private finalViewIsSeatAuthority(playerId: PlayerId, revision: number): boolean {
-    return (playerId !== 0 && !this.clients.has(playerId)) || this.withheldRevisions.get(playerId) === revision;
+    return (playerId !== 0 && !this.clients.has(playerId)) || this.withheldNotices.get(playerId)?.revision === revision;
   }
 
   /**
@@ -624,7 +628,7 @@ class NativeP2PBridge {
     this.clients.delete(playerId);
     this.playerTokens.delete(playerId);
     this.latestViews.delete(playerId);
-    this.withheldRevisions.delete(playerId);
+    this.withheldNotices.delete(playerId);
   }
 
   dispose(): void {
@@ -634,7 +638,7 @@ class NativeP2PBridge {
     this.clients.clear();
     this.playerTokens.clear();
     this.latestViews.clear();
-    this.withheldRevisions.clear();
+    this.withheldNotices.clear();
     this.pendingViews.clear();
     this.resumeWaiters.clear();
   }
@@ -681,7 +685,7 @@ class NativeP2PBridge {
         // The clear arrives as the seat's next delivered view, which already crosses the barrier.
         const playerId = client.playerId;
         if (!event.withheld || playerId === null || event.withheld.revision <= this.deliveredRevision) return;
-        this.withheldRevisions.set(playerId, event.withheld.revision);
+        this.withheldNotices.set(playerId, event.withheld);
         this.recordSeatReport(playerId, event.withheld.revision, { kind: "withheld", notice: event.withheld });
         return;
       }
@@ -696,7 +700,7 @@ class NativeP2PBridge {
         revision,
       };
       this.latestViews.set(playerId, update);
-      this.withheldRevisions.delete(playerId);
+      this.withheldNotices.delete(playerId);
       const resume = this.resumeWaiters.get(playerId);
       if (resume) {
         this.resumeWaiters.delete(playerId);
@@ -791,8 +795,16 @@ class NativeP2PBridge {
     };
   }
 
-  viewerUpdates(): Map<PlayerId, NativeViewerUpdate> {
-    return new Map(this.latestViews);
+  /** Each seat's latest outcome: its notice when that is newer than its last view, else the view. */
+  seatReports(): Map<PlayerId, NativeSeatReport> {
+    const reports = new Map<PlayerId, NativeSeatReport>();
+    for (const [playerId, update] of this.latestViews) reports.set(playerId, { kind: "view", update });
+    for (const [playerId, notice] of this.withheldNotices) {
+      if (notice.revision > (this.latestViews.get(playerId)?.revision ?? -1)) {
+        reports.set(playerId, { kind: "withheld", notice });
+      }
+    }
+    return reports;
   }
 
   playerIds(): PlayerId[] {
@@ -2444,9 +2456,10 @@ export class P2PHostAdapter implements EngineAdapter {
           if (this.isResume && this.gameStarted) {
             const snapshot = await this.nativeBridge.getSnapshot();
             this.reconcileEliminatedSeats(snapshot);
-            for (const [playerId, update] of this.nativeBridge.viewerUpdates()) {
-              this.recordNativeSeatOutcome(playerId, update.revision, { kind: "view", update });
-              this.authoritativeRevision = Math.max(this.authoritativeRevision, update.revision);
+            for (const [playerId, report] of this.nativeBridge.seatReports()) {
+              const revision = seatReportRevision(report);
+              this.recordNativeSeatOutcome(playerId, revision, report);
+              this.authoritativeRevision = Math.max(this.authoritativeRevision, revision);
             }
             this.resumeGameState = null;
           } else {
@@ -5186,19 +5199,22 @@ export class P2PHostAdapter implements EngineAdapter {
         };
         return {
           authoritative,
-          views: new Map<PlayerId, NativeViewerUpdate>([[0, authoritative]]),
+          views: new Map<PlayerId, NativeSeatReport>([[0, { kind: "view", update: authoritative }]]),
           fanoutAlreadyCompleted: false,
         };
       }
       const authoritative = await bridge.reconcileConcede(pid);
       if (this.disposed || !this.ownsAuthority()) throw new Error("Host authority was superseded");
-      const views = bridge.viewerUpdates();
-      const fanoutAlreadyCompleted = views.size > 0 && [...views].every(([playerId, update]) =>
-        this.nativeDeliveredViews.get(playerId)?.revision === update.revision,
+      const views = bridge.seatReports();
+      const fanoutAlreadyCompleted = views.size > 0 && [...views].every(([playerId, report]) =>
+        (report.kind === "view"
+          ? this.nativeDeliveredViews.get(playerId)?.revision
+          : this.nativeWithheldSeats.get(playerId)?.revision) === seatReportRevision(report),
       );
-      for (const [playerId, update] of views) {
-        this.recordNativeSeatOutcome(playerId, update.revision, { kind: "view", update });
-        this.authoritativeRevision = Math.max(this.authoritativeRevision, update.revision);
+      for (const [playerId, report] of views) {
+        const revision = seatReportRevision(report);
+        this.recordNativeSeatOutcome(playerId, revision, report);
+        this.authoritativeRevision = Math.max(this.authoritativeRevision, revision);
       }
       return { authoritative, views, fanoutAlreadyCompleted };
     };
@@ -5236,19 +5252,17 @@ export class P2PHostAdapter implements EngineAdapter {
         await this.runAiLoop();
       } else if (terminal) {
         try {
-          const hostUpdate = views.get(0);
-          if (!hostUpdate) throw new Error("Full terminal host view is unavailable");
-          if (fanoutAlreadyCompleted) {
-            await this.commitTerminalIfComplete(hostUpdate.snapshot, authoritative.revision, reason);
-          } else {
+          const hostReport = views.get(0);
+          if (!hostReport) throw new Error("Full terminal host view is unavailable");
+          if (!fanoutAlreadyCompleted) {
             // A2 restored the complete recipient views outside the ordinary
             // revision barrier. Run them through the same state fan-out so
             // each P2P seat receives final state before its terminal statement.
-            await this.handleNativeRevision(
-              authoritative.revision,
-              new Map([...views].map(([playerId, update]) => [playerId, { kind: "view", update } as const])),
-              reason,
-            );
+            await this.handleNativeRevision(authoritative.revision, views, reason);
+          } else if (hostReport.kind === "view") {
+            await this.commitTerminalIfComplete(hostReport.update.snapshot, authoritative.revision, reason);
+          } else {
+            await this.commitWithheldHostTerminal(authoritative.revision);
           }
         } catch {
           this.emit({

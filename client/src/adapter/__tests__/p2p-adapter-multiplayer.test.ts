@@ -8112,75 +8112,6 @@ describe("P2PHostAdapter — host emission precedes the guest fan-out", () => {
   });
 });
 
-/**
- * #7924, delivery contract: an applied action must reach every guest
- * EVENTUALLY, not just when the immediate fan-out succeeds.
- *
- * The immediate fan-out isolates a failed per-guest viewer read, but that
- * alone still strands the seat: its adapter cache never receives the applied
- * state, and the guest watchdog compares the screen against exactly that
- * cache. Two host-side structures plus the 5s redelivery sweep close the gap:
- * `guestAckedRevisions` (how far along each seat is) and
- * `terminalResultReceipts` (which guests durably committed their statements).
- * `shouldRedeliver` reads both, and BOTH lag checks — the sweep's nomination
- * and `redeliverGuestState`'s own re-check — go through it.
- *
- * `guestAckedRevisions` uses two different signals on purpose, because the two
- * failure directions are not symmetric. It ADVANCES only on the seat's own
- * `state_ack`: a `send` resolving true only means the bytes reached the
- * channel (peerjs parks anything past its buffered-amount budget in a buffer
- * `close()` discards), so a ledger that advanced on transmission marked a seat
- * delivered while the host was still waiting on that seat to act, and the
- * sweep skipped the very seat that deadlocked the match. It is CREATED on an
- * accepted handshake send — `game_setup` or `reconnect_ack`, never
- * `state_update` — because a seat with no entry is one the sweep can never
- * nominate. The asymmetry is one-sided: a false negative disarms the sweep for
- * good, while a false positive is merely no worse than the handshake never
- * having been sent — a parked handshake never authenticates the guest, so the
- * redelivered `state_update`s it would receive are discarded anyway.
- *
- * A consequence worth stating, because it changes what "duplicate frame"
- * means here: a seat nominated ONLY by the terminal clause still runs the full
- * `redeliverGuestState`, so it gets a state frame at its CURRENT revision
- * before the terminal frame. That duplicate is expected and harmless — the
- * guest's stale guard is a strict `<`, so an equal-revision frame passes
- * through, settles `pendingResolve` and produces a fresh ack.
- *
- * Measured, so the claim stays honest. Each probe below was applied to
- * `p2p-adapter.ts` alone and the whole frontend suite re-run; the counts are
- * that run's, not an inference:
- *
- *   P1  no-op `queueLaggingRedeliveries`      → 10 of the 13 tests here red.
- *       The three left green are the two setup tests and the
- *       reconnect-stops-nominating one, all NEGATIVE claims about the sweep.
- *   P2  drop the rethrow after the setup loop → both setup tests red.
- *   P3  drop `shouldRedeliver`'s create-guard → "does not adopt a seat that
- *       never took its game_setup" reds, and only it. That test's seat never
- *       gets a `game_setup` send at all (its viewer read throws), so no
- *       accepted send seeds it and the guard stays the only thing standing
- *       between it and the terminal clause.
- *   P4  leave `redeliverGuestState`'s own re-check on the lag-only inline
- *       form                                  → the two terminal-clause tests
- *       red ("heals a seat whose terminal-close viewer read rejected" and
- *       "re-sends a terminal statement whose bytes never reached the
- *       channel"): the seat is nominated and then returns before sending.
- *   P5  restore TRANSMISSION semantics on the state fan-out (advance the
- *       entry when `send` resolves true)      → 4 red: "resyncs a seat whose
- *       channel took the frame but never applied it", "ignores a guest ack
- *       claiming a revision the host never reached", and both new tests
- *       below, each of which needs a seat that a true send does NOT make
- *       current. This probe IS the shipped bug.
- *   P6  treat reconnect channel acceptance as terminal delivery without a
- *       receipt → the terminal retention assertions fail.
- *   P7  drop `seedGuestEntry` from the setup fan-out → "heals a seat whose
- *       handshake ack never reached the host" reds, and only it: with no
- *       entry the create-guard disarms the sweep, and the seat cannot ack its
- *       way back in because the frame that would let it never arrives.
- *   P8  drop `recordGuestAck`'s `Number.isInteger` gate → "ignores a guest ack
- *       whose revision is not a number" reds, and only it.
- *
- * Every test in this block is red under at least one probe.
- */
 describe("P2PHostAdapter — native withheld delivery", () => {
   const REASON = "State update exceeds the delivery bound";
   const notice = (revision: number) => ({ revision, reason: REASON });
@@ -8403,6 +8334,74 @@ describe("P2PHostAdapter — native withheld delivery", () => {
       await vi.waitFor(async () => expect(await gameFrames(conn)).toHaveLength(3));
       await sweepAndWaitFor(async () => expect(await gameFrames(conn)).toHaveLength(4));
       expect((await gameFrames(conn))[3]).toMatchObject({ type: "state_update", revision: 3 });
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  it("keeps a withheld seat's notice through another seat's concede reconciliation", async () => {
+    const { adapter, guests: [first, second], seats } = await startMockedNativeGame(3);
+    const bridge = (adapter as unknown as {
+      nativeBridge: { reconcileConcede: (pid: number) => Promise<unknown> };
+    }).nativeBridge;
+    try {
+      second.stopAcking();
+      seats[0](viewReport(2, "host view"));
+      seats[1](viewReport(2, "guest 1 view"));
+      seats[2](withheldReport(2));
+      await vi.waitFor(async () => expect((await gameFrames(second)).slice(-1)[0]).toMatchObject({ type: "state_withheld", revision: 2 }));
+      first.simulateClose();
+      await flushPromises(20);
+      // The bridge's last view for seat 2 is still its revision-1 board.
+      vi.spyOn(bridge, "reconcileConcede").mockResolvedValue({
+        snapshot: snapshotOf(remoteState("guest 1 view")),
+        events: [],
+        revision: 2,
+      });
+      nativeWebSocketMocks.initializePregame.mockResolvedValue(NATIVE_GUEST_ATTACHMENT);
+      nativeWebSocketMocks.submitAction.mockRejectedValueOnce(new Error("response lost after send"));
+      await adapter.concedeDisconnected(1);
+      expect(bridge.reconcileConcede).toHaveBeenCalledWith(1);
+
+      const before = (await gameFrames(second)).length;
+      await sweepAndWaitFor(async () => expect((await gameFrames(second)).length).toBeGreaterThan(before));
+      expect((await gameFrames(second)).slice(before)).toEqual([
+        expect.objectContaining({ type: "state_withheld", revision: 2, reason: REASON }),
+      ]);
+    } finally {
+      adapter.dispose();
+    }
+  });
+
+  it("fans a terminal concede's notice, not the older board, out to a withheld seat", async () => {
+    const { adapter, guests: [first, second], seats } = await startMockedNativeGame(3);
+    const bridge = (adapter as unknown as { nativeBridge: { reconcileConcede: (pid: number) => Promise<unknown> } })
+      .nativeBridge;
+    const terminal: EngineSnapshot = snapshotOf({
+      ...remoteState("terminal"),
+      eliminated_players: [1],
+      waiting_for: { type: "GameOver", data: { winner: 0 } },
+    } as unknown as GameState);
+    try {
+      second.stopAcking();
+      first.simulateClose();
+      await flushPromises(20);
+      // Seat 1's reattachment holds revision 2 back, so the concede, not the fan-out, delivers it.
+      vi.spyOn(bridge, "reconcileConcede").mockImplementation(async () => {
+        seats[0]({ type: "stateChanged", snapshot: terminal, events: [], serverRevision: 2 });
+        seats[2](withheldReport(2));
+        return { snapshot: terminal, events: [], revision: 2 };
+      });
+      nativeWebSocketMocks.initializePregame.mockResolvedValue(NATIVE_GUEST_ATTACHMENT);
+      nativeWebSocketMocks.submitAction.mockRejectedValueOnce(new Error("response lost after send"));
+      const before = (await gameFrames(second)).length;
+      await adapter.concedeDisconnected(1);
+      expect(bridge.reconcileConcede).toHaveBeenCalledWith(1);
+
+      const sent = (await gameFrames(second)).slice(before);
+      expect(sent).toContainEqual(expect.objectContaining({ type: "state_withheld", revision: 2, reason: REASON }));
+      expect(sent.filter((m) => m.type === "state_update").map((m) => (m as { state: { label?: string } }).state.label))
+        .not.toContain("started");
     } finally {
       adapter.dispose();
     }
@@ -8638,6 +8637,75 @@ describe("P2PHostAdapter — native withheld delivery", () => {
   });
 });
 
+/**
+ * #7924, delivery contract: an applied action must reach every guest
+ * EVENTUALLY, not just when the immediate fan-out succeeds.
+ *
+ * The immediate fan-out isolates a failed per-guest viewer read, but that
+ * alone still strands the seat: its adapter cache never receives the applied
+ * state, and the guest watchdog compares the screen against exactly that
+ * cache. Two host-side structures plus the 5s redelivery sweep close the gap:
+ * `guestAckedRevisions` (how far along each seat is) and
+ * `terminalResultReceipts` (which guests durably committed their statements).
+ * `shouldRedeliver` reads both, and BOTH lag checks — the sweep's nomination
+ * and `redeliverGuestState`'s own re-check — go through it.
+ *
+ * `guestAckedRevisions` uses two different signals on purpose, because the two
+ * failure directions are not symmetric. It ADVANCES only on the seat's own
+ * `state_ack`: a `send` resolving true only means the bytes reached the
+ * channel (peerjs parks anything past its buffered-amount budget in a buffer
+ * `close()` discards), so a ledger that advanced on transmission marked a seat
+ * delivered while the host was still waiting on that seat to act, and the
+ * sweep skipped the very seat that deadlocked the match. It is CREATED on an
+ * accepted handshake send — `game_setup` or `reconnect_ack`, never
+ * `state_update` — because a seat with no entry is one the sweep can never
+ * nominate. The asymmetry is one-sided: a false negative disarms the sweep for
+ * good, while a false positive is merely no worse than the handshake never
+ * having been sent — a parked handshake never authenticates the guest, so the
+ * redelivered `state_update`s it would receive are discarded anyway.
+ *
+ * A consequence worth stating, because it changes what "duplicate frame"
+ * means here: a seat nominated ONLY by the terminal clause still runs the full
+ * `redeliverGuestState`, so it gets a state frame at its CURRENT revision
+ * before the terminal frame. That duplicate is expected and harmless — the
+ * guest's stale guard is a strict `<`, so an equal-revision frame passes
+ * through, settles `pendingResolve` and produces a fresh ack.
+ *
+ * Measured, so the claim stays honest. Each probe below was applied to
+ * `p2p-adapter.ts` alone and the whole frontend suite re-run; the counts are
+ * that run's, not an inference:
+ *
+ *   P1  no-op `queueLaggingRedeliveries`      → 10 of the 13 tests here red.
+ *       The three left green are the two setup tests and the
+ *       reconnect-stops-nominating one, all NEGATIVE claims about the sweep.
+ *   P2  drop the rethrow after the setup loop → both setup tests red.
+ *   P3  drop `shouldRedeliver`'s create-guard → "does not adopt a seat that
+ *       never took its game_setup" reds, and only it. That test's seat never
+ *       gets a `game_setup` send at all (its viewer read throws), so no
+ *       accepted send seeds it and the guard stays the only thing standing
+ *       between it and the terminal clause.
+ *   P4  leave `redeliverGuestState`'s own re-check on the lag-only inline
+ *       form                                  → the two terminal-clause tests
+ *       red ("heals a seat whose terminal-close viewer read rejected" and
+ *       "re-sends a terminal statement whose bytes never reached the
+ *       channel"): the seat is nominated and then returns before sending.
+ *   P5  restore TRANSMISSION semantics on the state fan-out (advance the
+ *       entry when `send` resolves true)      → 4 red: "resyncs a seat whose
+ *       channel took the frame but never applied it", "ignores a guest ack
+ *       claiming a revision the host never reached", and both new tests
+ *       below, each of which needs a seat that a true send does NOT make
+ *       current. This probe IS the shipped bug.
+ *   P6  treat reconnect channel acceptance as terminal delivery without a
+ *       receipt → the terminal retention assertions fail.
+ *   P7  drop `seedGuestEntry` from the setup fan-out → "heals a seat whose
+ *       handshake ack never reached the host" reds, and only it: with no
+ *       entry the create-guard disarms the sweep, and the seat cannot ack its
+ *       way back in because the frame that would let it never arrives.
+ *   P8  drop `recordGuestAck`'s `Number.isInteger` gate → "ignores a guest ack
+ *       whose revision is not a number" reds, and only it.
+ *
+ * Every test in this block is red under at least one probe.
+ */
 describe("P2PHostAdapter — per-guest eventual state delivery", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -10929,7 +10997,7 @@ describe("P2PHostAdapter — contest input", () => {
           isGuestAttached: (playerId: number) => boolean;
           reattachGuest: (playerId: number) => Promise<void>;
           reconcileConcede: (playerId: number) => Promise<unknown>;
-          viewerUpdates: () => Map<number, unknown>;
+          seatReports: () => Map<number, unknown>;
           suspendGuest: (playerId: number) => void;
         };
         disconnectedSeats: Map<number, unknown>;
@@ -10959,7 +11027,7 @@ describe("P2PHostAdapter — contest input", () => {
         await bridge.reattachGuest(playerId);
         return terminal;
       });
-      vi.spyOn(bridge, "viewerUpdates").mockReturnValue(new Map([[0, terminal]]));
+      vi.spyOn(bridge, "seatReports").mockReturnValue(new Map([[0, { kind: "view", update: terminal }]]));
       nativeWebSocketMocks.initializePregame.mockResolvedValue(NATIVE_GUEST_ATTACHMENT);
       nativeWebSocketMocks.submitAction.mockRejectedValueOnce(new Error("response lost after send"));
       // Reattaching for the send is what the authority would see; the terminal
