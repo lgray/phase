@@ -2322,15 +2322,29 @@ describe("WebSocketAdapter", () => {
         expect(subject.tryReconnect(session)).toBe(true);
         const socket = await completeHandshake(subject);
         expect(socket.send).toHaveBeenCalledWith(expect.stringContaining('"type":"Reconnect"'));
-        socket.dispatchSynthetic("message", BOOTSTRAP_WITHHELD);
+        const seatOneNotice = JSON.parse(BOOTSTRAP_WITHHELD) as { data: Record<string, unknown> };
+        seatOneNotice.data.your_player = 1;
+        socket.dispatchSynthetic("message", JSON.stringify(seatOneNotice));
+        const types = events.mock.calls.map(([event]) => (event as { type: string }).type);
+        expect(types.indexOf("playerIdentity")).toBeGreaterThan(-1);
+        expect(types.indexOf("playerIdentity")).toBeLessThan(types.indexOf("reconnectFailed"));
+        expect(events).toHaveBeenCalledWith({ type: "playerIdentity", playerId: 1, opponentName: null });
+        expect(subject.playerId).toBe(1);
         expect(events).toHaveBeenCalledWith({ type: "reconnectFailed" });
         expect(events).toHaveBeenCalledWith({ type: "operationFailed", message: "The game state is too large to send." });
         expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
         expect(events).not.toHaveBeenCalledWith({ type: "sessionChanged", session: null });
         expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ type: "reconnected" }));
 
-        socket.dispatchSynthetic("message", TAKEBACK_REQUESTED);
-        expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "takebackRequested", requester: 1 }));
+        socket.dispatchSynthetic("message", JSON.stringify({
+          type: "TakebackRequested", data: { requester: 0, requester_name: "host" },
+        }));
+        const request = events.mock.calls
+          .map(([event]) => event as { type: string; requester?: number })
+          .find((event) => event.type === "takebackRequested");
+        // GamePage compares the requester with the announced seat: seat 0's request is approvable here.
+        expect(request?.requester).toBe(0);
+        expect(subject.playerId).toBe(1);
         socket.dispatchSynthetic("message", RESTORED);
         expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "stateChanged", serverRevision: 4 }));
         expect(events).toHaveBeenCalledWith({ type: "reconnected", inGame: true });
@@ -2669,6 +2683,18 @@ describe("WebSocketAdapter", () => {
       deliverWithheld(6);
       expect(await outcome()).toBe("never settled");
       expect(deliveries(events)).toEqual([{ revision: 6, reason: WITHHELD_REASON }]);
+    });
+
+    it("settles a stale withheld notice's command without reporting the newer board withheld", async () => {
+      deliverOwnershipStateUpdate(socket, "cached", 5);
+      const events = vi.fn();
+      subject.onEvent(events);
+      const outcome = trackRejection(subject.submitAction({ type: "PassPriority" }, 0));
+      deliverWithheld(4, lastSubmissionCommandId(socket));
+      await expect(outcome()).resolves.toEqual({ resolvedWith: { events: [], log_entries: [] } });
+      expect(deliveries(events)).toEqual([]);
+      deliverWithheld(5);
+      expect(deliveries(events)).toEqual([{ revision: 5, reason: WITHHELD_REASON }]);
     });
 
     it("drops a withheld notice for another Full session", () => {

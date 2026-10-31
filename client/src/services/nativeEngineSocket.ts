@@ -42,7 +42,7 @@ export class NativeEngineSocket {
   private readonly closeListeners = new Map<CloseListener, boolean>();
   private readonly messageListeners = new Map<MessageListener, boolean>();
   private readonly pendingEvents: BridgeEvent[] = [];
-  // The shell splits a large text frame into fragments; the next message completes it.
+  // The shell splits one received message into fragments, so `pendingText` never exceeds the bridge's `MAX_BRIDGE_MESSAGE_BYTES`.
   private pendingText = "";
   private bridgeId: number | null = null;
   private _readyState = NativeEngineSocket.CONNECTING;

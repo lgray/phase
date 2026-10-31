@@ -888,6 +888,9 @@ pub enum ServerMessage {
         full_key: Option<FullSessionKey>,
         state_revision: u64,
         withheld: WithheldFrame,
+        /// The recipient's seat, present for a withheld `GameStarted`, the only seat assignment a board-less client receives.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        your_player: Option<PlayerId>,
         reason: String,
     },
     /// Acknowledges a host-authorized permanent game cleanup.
@@ -4106,6 +4109,7 @@ mod tests {
             full_key: None,
             state_revision: 6,
             withheld: WithheldFrame::StateUpdate,
+            your_player: None,
             reason: "too large".to_string(),
         };
         let json = serde_json::to_value(&msg).unwrap();
@@ -4129,14 +4133,17 @@ mod tests {
             full_key: None,
             state_revision: 2,
             withheld: WithheldFrame::GameStarted,
+            your_player: Some(PlayerId(1)),
             reason: String::new(),
         })
         .unwrap();
         assert!(started.contains(r#""withheld":"GameStarted""#));
+        assert!(started.contains(r#""your_player":1"#));
         assert!(matches!(
             serde_json::from_str::<ServerMessage>(&started).unwrap(),
             ServerMessage::StateWithheld {
                 withheld: WithheldFrame::GameStarted,
+                your_player: Some(PlayerId(1)),
                 ..
             }
         ));

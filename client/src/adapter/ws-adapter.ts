@@ -3082,10 +3082,16 @@ export class WebSocketAdapter implements EngineAdapter {
           full_key?: FullSessionKey;
           state_revision: number;
           withheld: "GameStarted" | "StateUpdate";
+          your_player?: PlayerId;
           reason: string;
         };
         // Without a delivered board the seat cannot reach the menu: fail the join recoverably.
         if (data.withheld === "GameStarted" && this.snapshot === null) {
+          // The notice is this client's only seat assignment; GamePage resets the reconnect state on it, so it precedes the failure.
+          if (data.your_player !== undefined) {
+            this._playerId = data.your_player;
+            this.emit({ type: "playerIdentity", playerId: data.your_player, opponentName: null });
+          }
           this.rejectInitialization(new AdapterError(AdapterErrorCode.REQUEST_FAILED, data.reason, true));
           if (this.reconnectInFlight) {
             this.failReconnect("failed");
@@ -3104,6 +3110,8 @@ export class WebSocketAdapter implements EngineAdapter {
             this.emit({ type: "actionPendingChanged", pending: false });
           }
         }
+        // A stale notice still answers its command but must not report a newer board as withheld.
+        if (this.cachedStateRevision !== null && data.state_revision < this.cachedStateRevision) break;
         this.withheldState = { revision: data.state_revision, reason: data.reason };
         this.emit({ type: "stateDelivery", withheld: this.withheldState });
         break;
