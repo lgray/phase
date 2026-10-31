@@ -12551,7 +12551,17 @@ fn bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat() {
         let mut doctored = state.clone();
         let n = u32::try_from(first_crossing).expect("fits");
 
-        r6a_declare_and_accept_all(&mut doctored, proposer, n);
+        let result = take_recorded(&mut doctored, n);
+
+        // CR 732.1b + CR 704.5a: each repetition is Dina, Soul Steeper's "Whenever you gain life,
+        // each opponent loses 1 life." answered by Bloodthirsty Conqueror's "Whenever an opponent
+        // loses life, you gain that much life."; all `n` commit, the n-th taking the first victim
+        // to 0, and the record keeps the first and the n-th.
+        assert_eq!(
+            markers(&result.events),
+            [(proposer, 1), (proposer, n)],
+            "n={n}"
+        );
 
         // (a) EXACTLY the unique first crosser is eliminated. Not zero (the terminal cycle
         //     COMMITS) and not the whole table (that is the mirror row's arm).
@@ -14385,7 +14395,17 @@ fn the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_las
          vs crossing {crossing}"
     );
 
-    r6a_declare_and_accept_all(&mut state, proposer, honest);
+    let result = take_recorded(&mut state, honest);
+
+    // CR 732.1b + CR 104.2a: each repetition is Psychosis Crawler's "Whenever you draw a card,
+    // each opponent loses 1 life." answered by a draw, as Kefka, Ruler of Ruin's "Whenever an
+    // opponent loses life during your turn, you draw that many cards." does on P0's turn at a
+    // loss of 1; the crossing repetition ends the game, and the record keeps the first and it.
+    let crossing = u32::try_from(crossing).expect("fits");
+    assert_eq!(
+        markers(&result.events),
+        [(proposer, 1), (proposer, crossing)]
+    );
 
     assert_eq!(
         state.waiting_for,

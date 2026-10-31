@@ -2417,8 +2417,10 @@ mod oversized_publication {
         pings: Vec<(PlayerId, Duration, Option<Duration>)>,
         /// Each Close, read error or end of stream, with its seat and time.
         broken: Vec<String>,
-        /// The answer to the correlated action sent after the burst.
-        refusal: Option<serde_json::Value>,
+        /// The answer to the correlated action sent after the burst, and when it arrived.
+        refusal: Option<(Duration, serde_json::Value)>,
+        /// When the held command was sent and when its answer arrived.
+        held: Option<(Duration, Option<Duration>)>,
         export: Option<Duration>,
         /// The completion of the command the game held.
         completion: Option<serde_json::Value>,
@@ -2479,6 +2481,19 @@ mod oversized_publication {
                 .count()
         }
 
+        /// Whether each Ping sent during the hold, until `PONG_RACE` before its answer, had its
+        /// Pong before that answer.
+        fn pongs_during_hold(&self) -> Vec<bool> {
+            let Some((sent, Some(answered))) = self.held else {
+                return Vec::new();
+            };
+            self.pings
+                .iter()
+                .filter(|(_, at, _)| *at >= sent && *at + PONG_RACE < answered)
+                .map(|(_, at, pong)| pong.is_some_and(|delay| *at + delay < answered))
+                .collect()
+        }
+
         fn line(&self) -> String {
             let pings: Vec<String> = self
                 .pings
@@ -2496,7 +2511,7 @@ mod oversized_publication {
             });
             format!(
                 "LegReport count={} declare_hold={:.1?} accept_holds={:.1?} pings=[{}] \
-                 unanswered={} broken={:?} refusal={} export={:.1?} decision={}",
+                 unanswered={} broken={:?} refusal={} held={:.1?} export={:.1?} decision={}",
                 self.count,
                 self.declare_hold,
                 self.accept_holds,
@@ -2505,8 +2520,11 @@ mod oversized_publication {
                 self.broken,
                 self.refusal
                     .as_ref()
-                    .map_or("none".to_string(), |frame| frame["data"]["message"]
-                        .to_string()),
+                    .map_or("none".to_string(), |(at, frame)| format!(
+                        "{} at {at:.1?}",
+                        frame["data"]["message"]
+                    )),
+                self.held,
                 self.export,
                 decision.unwrap_or_else(|| "none".to_string()),
             )
@@ -2515,6 +2533,8 @@ mod oversized_publication {
 
     /// The client's silence budget: a socket whose Ping goes unanswered this long is dropped.
     const PONG_BUDGET: Duration = Duration::from_secs(45);
+    /// A Ping sent this close to the held answer may see its Pong cross that answer on the wire.
+    const PONG_RACE: Duration = Duration::from_secs(1);
     const FULL_LENGTH_BUDGET: Duration = Duration::from_secs(30 * 60);
     const BURST: usize = 70;
     const HELD_ACCEPT: u64 = 7;
@@ -2711,7 +2731,8 @@ mod oversized_publication {
             .await;
             self.pump(Some((seat, command)), |leg| leg.settled(command))
                 .await;
-            self.report.refusal = self.answer(AFTER_BURST, sent).map(|(_, frame)| frame);
+            self.report.refusal = self.answers.get(&AFTER_BURST).cloned();
+            self.report.held = Some((sent, self.answers.get(&command).map(|(at, _)| *at)));
             sent
         }
     }
@@ -2804,12 +2825,31 @@ mod oversized_publication {
     }
 
     /// The shared assertions of a full-length leg: no socket dropped, every Ping answered in
-    /// time, the burst refused rather than closed, the export answered, and the decision made.
+    /// time and each Pong during the hold before the held answer, the burst refused rather than
+    /// closed, the export answered, and the decision made.
     fn assert_full_length(report: &LegReport) {
         assert!(report.broken.is_empty(), "{}", report.line());
         assert!(!report.pings.is_empty(), "{}", report.line());
         assert_eq!(report.unanswered_pings(), 0, "{}", report.line());
-        let refusal = report.refusal.as_ref().expect("the burst is answered");
+        let pongs = report.pongs_during_hold();
+        assert!(
+            !pongs.is_empty(),
+            "no Ping during the hold: {}",
+            report.line()
+        );
+        assert!(
+            pongs.iter().all(|before| *before),
+            "a Pong waited for the held answer: {}",
+            report.line()
+        );
+        let (_, held) = report.held.expect("a command is held");
+        let held = held.expect("the held command is answered");
+        let (refused, refusal) = report.refusal.as_ref().expect("the burst is answered");
+        assert!(
+            *refused < held,
+            "precondition: the hold must outlast the burst; {}",
+            report.line()
+        );
         assert_eq!(refusal["type"], "ActionFailed", "{}", report.line());
         assert_eq!(
             refusal["data"]["message"],
