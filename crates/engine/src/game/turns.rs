@@ -9,7 +9,6 @@ use crate::types::ability::{
 };
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
-use crate::types::format::GameFormat;
 use crate::types::game_state::{
     AutoPassMode, EmptyPoolLifeLossCause, ExtraPhase, ExtraTurn, GameState, InsertedPhaseResume,
     LoopCollapseAxis, PayableResource, PendingCounterAddition, PendingEffectResolved,
@@ -1768,6 +1767,9 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // once-per-turn tracking (Assemble the Players, Johann, Apprentice Sorcerer).
     state.top_of_library_cast_permissions_used.clear();
     state.cards_exiled_with_source_this_turn.clear();
+    // CR 608.2e: a paused fan-out's control-change capture outlives its link
+    // only until its resolution ends, and no resolution spans a turn boundary.
+    state.control_change_captures.clear();
     // CR 702.94a: Reset per-player first-card-drawn-this-turn tracking for miracle.
     state.first_card_drawn_this_turn.clear();
     state.cards_drawn_this_turn.clear();
@@ -1892,7 +1894,23 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // CR 614.1c: Pending ETB counters are turn-scoped (e.g., "this turn" effects).
     state.pending_etb_counters.clear();
     state.modal_modes_chosen_this_turn.clear();
+    // CR 603.4: the completed turn just ended for its shared-turn key, so
+    // every recipient's "since your last turn ended" window restarts empty.
+    // Other players' windows keep accumulating. Degrades to the completed
+    // player alone when the format has no shared team turns.
+    let window_reset_key = completed_turn_key;
+    let window_reset: Vec<PlayerId> = state
+        .players
+        .iter()
+        .map(|candidate| candidate.id)
+        .filter(|id| {
+            super::topology::normalize_shared_turn_recipient(state, *id) == window_reset_key
+        })
+        .collect();
     for player in &mut state.players {
+        if window_reset.contains(&player.id) {
+            player.opponent_spells_cast_since_own_last_turn = 0;
+        }
         player.has_drawn_this_turn = false;
         player.lands_played_this_turn = 0;
         player.life_gained_this_turn = 0;
@@ -1900,6 +1918,9 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
         player.life_lost_last_turn = player.life_lost_this_turn;
         player.life_lost_this_turn = 0;
         player.descended_this_turn = false;
+        // CR 603.4: Snapshot draws before reset for "if you drew a card last
+        // turn" conditions, mirroring the life-lost snapshot above.
+        player.cards_drawn_last_turn = player.cards_drawn_this_turn;
         player.cards_drawn_this_turn = 0;
         // CR 121.1 + CR 504.1: Per-step counter is also reset at turn start so
         // a fresh turn always begins with `cards_drawn_this_step == 0` (the
@@ -2865,7 +2886,12 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     // control of that <permanent> this turn" delayed triggers (Stolen Uniform)
     // observe the loss. The gain side already emits this event; the silent
     // layer-2 revert did not, so the loss trigger could never fire.
-    let control_reverting: Vec<(ObjectId, PlayerId)> = state
+    //
+    // CR 514.2 + CR 603.10d: every "until end of turn" effect ends in one
+    // simultaneous action, so the reversion is one instruction: fix its
+    // population, settle, and capture the look-back watchers and subjects
+    // before any effect is pruned.
+    let control_reverting: Vec<ObjectId> = state
         .transient_continuous_effects
         .iter()
         .filter(|e| {
@@ -2878,12 +2904,19 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
                 })
         })
         .filter_map(|e| match &e.affected {
-            TargetFilter::SpecificObject { id } => {
-                state.objects.get(id).map(|o| (*id, o.controller))
-            }
+            TargetFilter::SpecificObject { id } => state.objects.contains_key(id).then_some(*id),
             _ => None,
         })
         .collect();
+    let control_revert_boundary = (!control_reverting.is_empty()).then(|| {
+        super::layers::flush_layers(state);
+        super::effects::gain_control::InstructionBoundary::Own(
+            super::effects::gain_control::capture_control_change_instruction(
+                state,
+                control_reverting.iter().copied(),
+            ),
+        )
+    });
 
     // CR 514.2: Prune "until end of turn" transient continuous effects.
     super::layers::prune_end_of_turn_effects(state);
@@ -2898,22 +2931,32 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
 
     // CR 613.1b: recompute layer-2 control now the effect is gone, then emit the
     // loss event for every object whose controller actually reverted.
-    if !control_reverting.is_empty() {
+    if let Some(boundary) = control_revert_boundary {
+        // CR 514.2: the members' pre-revert evidence was fixed above, before
+        // the prune; read it now, then publish against the reverted board.
+        let members: Vec<_> = control_reverting
+            .iter()
+            .map(|object_id| {
+                super::effects::gain_control::instruction_member(state, &boundary, *object_id)
+            })
+            .collect();
         super::layers::flush_layers(state);
         let mut seen_reverting = HashSet::new();
-        for (object_id, old_controller) in control_reverting {
+        for (object_id, member) in control_reverting.into_iter().zip(members) {
             if !seen_reverting.insert(object_id) {
                 continue;
             }
-            if let Some(new_controller) = state.objects.get(&object_id).map(|o| o.controller) {
-                if new_controller != old_controller {
-                    events.push(GameEvent::ControllerChanged {
-                        object_id,
-                        old_controller,
-                        new_controller,
-                    });
-                }
-            }
+            let (Some(member), Some(new_controller)) =
+                (member, state.objects.get(&object_id).map(|o| o.controller))
+            else {
+                continue;
+            };
+            super::effects::gain_control::publish_controller_changed(
+                state,
+                events,
+                member,
+                new_controller,
+            );
         }
 
         // CR 514.3a: a triggered ability that triggers during cleanup (the
@@ -3323,11 +3366,13 @@ pub fn finish_cleanup_discard(
 /// game per CR 903.2 (Commander supports both two-player and multiplayer
 /// setups) — the skip rule applies to it.
 ///
-/// The team case intentionally checks the format enum rather than the broader
+/// The team case intentionally checks the 2HG family rather than the broader
 /// `team_based` axis: CR 103.8b names Two-Headed Giant specifically, while
 /// CR 805 shared-team-turns can be used by other multiplayer variants.
+/// 2HG Commander is a Two-Headed Giant game (two teams of two per CR 810.1),
+/// so its starting team skips too.
 fn first_player_skips_first_draw(state: &GameState) -> bool {
-    matches!(state.format_config.format, GameFormat::TwoHeadedGiant) || state.players.len() == 2
+    state.format_config.format.is_two_headed_giant_family() || state.players.len() == 2
 }
 
 /// CR 103.8 + CR 614.1b + CR 614.10: Whether the active player should skip
@@ -4108,6 +4153,27 @@ mod tests {
         let mut state = GameState::new_two_player(42);
         state.turn_number = 1;
         state
+    }
+
+    #[test]
+    fn first_draw_skip_covers_the_2hg_family_but_not_other_team_play() {
+        use crate::types::format::FormatConfig;
+
+        // CR 103.8b: both 2HG variants' starting teams skip.
+        let two_hg = GameState::new(FormatConfig::two_headed_giant(), 4, 42);
+        assert!(first_player_skips_first_draw(&two_hg));
+        let two_hg_commander = GameState::new(FormatConfig::two_headed_giant_commander(), 4, 42);
+        assert!(first_player_skips_first_draw(&two_hg_commander));
+        // CR 103.8c: all other multiplayer games — including shared-turns
+        // Archenemy — do not skip.
+        let commander = GameState::new(FormatConfig::commander(), 4, 42);
+        assert!(!first_player_skips_first_draw(&commander));
+        let archenemy = GameState::new(FormatConfig::archenemy(), 4, 42);
+        assert!(!first_player_skips_first_draw(&archenemy));
+        // CR 904.13 is not a Two-Headed Giant game (CR 810.1), so the
+        // CR 103.8b skip does not reach Archenemy Commander either.
+        let archenemy_commander = GameState::new(FormatConfig::archenemy_commander(), 4, 42);
+        assert!(!first_player_skips_first_draw(&archenemy_commander));
     }
 
     fn stun_removal_commands(state: &GameState, object_id: ObjectId) -> usize {
@@ -6428,6 +6494,65 @@ card into your hand at the beginning of your next end step.";
         assert_eq!(state.turn_number, 2);
         assert_eq!(state.active_player, PlayerId(1));
         assert_eq!(state.priority_player, PlayerId(1));
+    }
+
+    /// CR 121.1 + CR 603.4: turn start snapshots each player's draws into
+    /// `cards_drawn_last_turn` before zeroing this-turn (Mine Is the Only
+    /// Truth's "if you drew a card last turn"). Mirrors the life-lost
+    /// snapshot in the same loop.
+    ///
+    /// DISCRIMINATION: drop the snapshot line and the previous turn's draws
+    /// are lost at the boundary, so the upkeep condition can never fire.
+    #[test]
+    fn start_next_turn_snapshots_draws_into_last_turn() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.turn_number = 1;
+        state.players[0].cards_drawn_this_turn = 3;
+        state.players[1].cards_drawn_this_turn = 0;
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+
+        assert_eq!(
+            state.players[0].cards_drawn_last_turn, 3,
+            "previous turn's draws must survive as last-turn snapshot"
+        );
+        assert_eq!(
+            state.players[0].cards_drawn_this_turn, 0,
+            "this-turn counter must reset"
+        );
+        assert_eq!(
+            state.players[1].cards_drawn_last_turn, 0,
+            "a player who drew nothing snapshots zero"
+        );
+    }
+
+    /// CR 603.4: ending a turn restarts that player's "since your last turn
+    /// ended" window empty while other players' windows keep accumulating
+    /// (I Bask in Your Silent Awe).
+    ///
+    /// DISCRIMINATION: drop the reset and a stale window survives the
+    /// boundary, so the upkeep condition wrongly stays silent.
+    #[test]
+    fn start_next_turn_resets_only_completed_player_since_window() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.turn_number = 1;
+        state.players[0].opponent_spells_cast_since_own_last_turn = 2;
+        state.players[1].opponent_spells_cast_since_own_last_turn = 5;
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+
+        assert_eq!(
+            state.players[0].opponent_spells_cast_since_own_last_turn, 0,
+            "completed player's window must restart empty"
+        );
+        assert_eq!(
+            state.players[1].opponent_spells_cast_since_own_last_turn, 5,
+            "other player's window must keep accumulating"
+        );
     }
 
     /// T-U7c. CR 500.8 + CR 603.7b: a "that combat" trigger whose combat never

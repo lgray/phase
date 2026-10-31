@@ -64,6 +64,7 @@ use crate::types::resolution::{
 use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
+pub mod abandon_scheme;
 pub mod adapt;
 pub mod add_restriction;
 pub mod add_target_replacement;
@@ -438,17 +439,19 @@ pub fn matches_player_scope(
                 && match scope {
                     PlayerFilter::Controller => p.id == controller,
                     PlayerFilter::All => true,
-                    // CR 608.2c + CR 109.4: predicate form — a player matches
-                    // unless it matches the `exclude` anchor. Exact for excludes
-                    // resolvable without ability targets (Controller, Opponent,
-                    // …); ability-target-dependent anchors
+                    // CR 608.2c + CR 109.4: predicate form — a player
+                    // matching the base `relation` matches unless it matches
+                    // the `exclude` anchor. Exact for excludes resolvable
+                    // without ability targets (Controller, Opponent, …);
+                    // ability-target-dependent anchors
                     // (ParentObjectTargetController) return `false` from this
                     // generic predicate, so the player_scope driver routes
                     // `AllExcept` through the ability-aware
                     // `speed_effects::players_for_filter` instead, which is
                     // authoritative for `AllExcept` effect-iteration.
-                    PlayerFilter::AllExcept { exclude } => {
-                        !matches_player_scope(state, p.id, exclude, controller, source_id)
+                    PlayerFilter::AllExcept { exclude, relation } => {
+                        crate::game::players::matches_relation(state, p.id, controller, *relation)
+                            && !matches_player_scope(state, p.id, exclude, controller, source_id)
                     }
                     // CR 102.1 + CR 608.2c: predicate form of the union — a
                     // player matches when any member names it.
@@ -785,6 +788,16 @@ pub(crate) fn candidate_player_scalar(p: &Player, attr: &QuantityRef) -> Option<
         QuantityRef::CardsDrawnThisTurn { .. } => {
             Some(u32_to_i32_saturating(p.cards_drawn_this_turn))
         }
+        // CR 121.1 + CR 603.4: cards drawn during the previous turn, read
+        // from the turn-start snapshot per candidate player.
+        QuantityRef::CardsDrawnLastTurn { .. } => {
+            Some(u32_to_i32_saturating(p.cards_drawn_last_turn))
+        }
+        // CR 601.2i + CR 603.4: spells cast by opponents since the
+        // candidate's last turn ended, read from the per-player window.
+        QuantityRef::OpponentSpellsCastSinceLastTurn { .. } => Some(u32_to_i32_saturating(
+            p.opponent_spells_cast_since_own_last_turn,
+        )),
         // CR 101.4 + CR 608.2d: the number this candidate secretly chose during
         // the current resolution. `None` for a player who chose nothing, which
         // fails the candidate predicate CLOSED — "each player who didn't choose
@@ -1264,7 +1277,10 @@ impl AcceptedOptionalMove {
 /// The result is read only from this producer's event slice (`producer_events`),
 /// restricted to the occurrences it selected and its requested destination. A
 /// completed instruction that moved nothing consumes its immediate dependent
-/// return locally with `NoOp` and clears that node's forwarded context; an
+/// return locally with `NoOp` and clears that node's forwarded context (a
+/// defensive fallback: a `SelfRef` move whose source can no longer move is
+/// declined before it is offered, CR 608.2d + CR 400.7, so no current fixture
+/// reaches this arm); an
 /// independent later sibling still resolves. An ineligible delivery (a
 /// replacement, or no completion witness) keeps its pre-existing route.
 ///
@@ -5218,6 +5234,9 @@ fn effect_enters_battlefield(effect: &Effect) -> bool {
         Effect::Encore => false,
         // not a co-entry ContinuationStep: it selects cards and moves nothing itself.
         Effect::ChooseFromZone { .. } => false,
+        // not a co-entry ContinuationStep: abandoning turns a scheme face
+        // down (or returns it to the scheme deck), never onto the battlefield.
+        Effect::AbandonScheme => false,
         Effect::StartYourEngines { .. }
         | Effect::ChangeSpeed { .. }
         | Effect::DealDamage { .. }
@@ -7230,11 +7249,16 @@ fn settle_shared_continuation_gate(ability: &ResolvedAbility) -> Option<Resolved
 ///   sub survives) or leave CR 603.4 unenforced (declining a body whose sub does
 ///   not).
 ///
-/// The two classes: a CR 603.12 performed/reflexive gate, whose truth is only
-/// knowable at resolution and is re-evaluated on its own; and a CR 615.5
+/// The three classes: a CR 603.12 performed/reflexive gate, whose truth is only
+/// knowable at resolution and is re-evaluated on its own; a CR 615.5
 /// INDEPENDENT per-event gate (Comeuppance's mutually-exclusive
 /// creature/noncreature reflection riders), which references the event rather
-/// than the parent's effect.
+/// than the parent's effect; and a CR 607.2d chosen-label gate (the
+/// self-or-others "If the player chooses others" branch), which references
+/// the paused choice's answer rather than the parent's gate — mutually
+/// exclusive with its sibling by construction, exactly like the Comeuppance
+/// riders. Without this, a deferred label gate that re-evaluates false on the
+/// drain would suppress its sibling instead of handing off to it.
 ///
 /// NOT included, deliberately: an unconditional `SequentialSibling` (it also
 /// runs on the false path, but as the next clause of the SAME gated sentence —
@@ -7247,6 +7271,7 @@ pub(crate) fn condition_survives_false_parent_gate(condition: &AbilityCondition)
         || matches!(
             condition,
             AbilityCondition::PostReplacementDamageSourceMatchesFilter { .. }
+                | AbilityCondition::ChosenLabelIs { .. }
         )
 }
 
@@ -7607,6 +7632,7 @@ fn instruction_outlives_declined_gate(
         parent_target_missing_reason: _,
         activation_cost_reduction: _,
         activation_record: _,
+        control_change_instruction: _,
     } = node;
     let unbound = condition.is_none()
         && declares_chosen_group
@@ -8005,6 +8031,7 @@ fn audit_later_instruction(effect: &Effect) -> LaterInstructionAudit<'_> {
         | Effect::TakeTheInitiative
         | Effect::ArrangePlanarDeckTop { .. }
         | Effect::Planeswalk
+        | Effect::AbandonScheme
         | Effect::ChaosEnsues
         | Effect::ReverseTurnOrder
         | Effect::RedistributeLifeTotals
@@ -8328,6 +8355,9 @@ fn referent_exists_without_gated_action(
         | TargetFilter::EventTargetController
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
+        // CR 108.3 + CR 508.1d: per-member owner anchor — not an anaphor of a
+        // resolution result this gate looks for.
+        | TargetFilter::AffectedObjectOwner
         | TargetFilter::SourceChosenPlayer
         | TargetFilter::OriginalController
         | TargetFilter::OriginalSource
@@ -8543,7 +8573,8 @@ fn condition_reads_filter_population(
         | AbilityCondition::DayNightIsNeither
         | AbilityCondition::DayNightIs { .. }
         | AbilityCondition::AbilityUseCountThisTurn { .. }
-        | AbilityCondition::SourceLacksKeyword { .. } => false,
+        | AbilityCondition::SourceLacksKeyword { .. }
+        | AbilityCondition::ChosenLabelIs { .. } => false,
     }
 }
 
@@ -9345,7 +9376,8 @@ fn effect_fields_read_filter_population(
         | Effect::SetDayNight { .. }
         | Effect::Intensify { .. }
         | Effect::DraftFromSpellbook { .. }
-        | Effect::Unimplemented { .. } => false,
+        | Effect::Unimplemented { .. }
+        | Effect::AbandonScheme => false,
     }
 }
 
@@ -11292,6 +11324,7 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             // optional-decline branch selector — it reads the flip, not the
             // declined effect.
             | AbilityCondition::CoinFlipOutcome { .. }
+            | AbilityCondition::ChosenLabelIs { .. }
             // The frozen trigger-event damage/exploit read is independent of an
             // optional-effect decision, so it cannot select a decline branch.
             | AbilityCondition::TriggerEventTargetDamagedBySourceThisTurn
@@ -11650,7 +11683,9 @@ fn scope_keeps_scoped_whole_hand_shuffle_local(scope: &PlayerFilter) -> bool {
         // `player_filter_references_tracked_set`'s treatment of the same variant.
         // Behaviour-identical while every arm above is `true`; recursing keeps it
         // from silently disagreeing with its anchor the moment one is not.
-        PlayerFilter::AllExcept { exclude } => scope_keeps_scoped_whole_hand_shuffle_local(exclude),
+        PlayerFilter::AllExcept { exclude, .. } => {
+            scope_keeps_scoped_whole_hand_shuffle_local(exclude)
+        }
         // The union keeps the pair local only when every member does.
         PlayerFilter::AnyOf { filters } => filters
             .iter()
@@ -11893,7 +11928,7 @@ fn detach_after_player_scope_local_chain(
     }
 }
 
-fn split_player_scope_chain(
+pub(crate) fn split_player_scope_chain(
     ability: &ResolvedAbility,
     scope: &PlayerFilter,
 ) -> (ResolvedAbility, Option<Box<ResolvedAbility>>) {
@@ -11902,6 +11937,310 @@ fn split_player_scope_chain(
     let tail = detach_after_player_scope_local_chain(&mut scoped, scope, false);
     scoped.detached_remainder = detached_remainder_verdict(tail.as_deref());
     (scoped, tail)
+}
+
+/// CR 608.2e + CR 603.10d: whether `effect` changes control of an object, i.e.
+/// publishes `ControllerChanged`.
+fn is_control_change_effect(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::GainControl { .. }
+            | Effect::GainControlAll { .. }
+            | Effect::GiveControl { .. }
+            | Effect::ExchangeControl { .. }
+    )
+}
+
+fn control_change_node_count(node: &ResolvedAbility) -> usize {
+    usize::from(is_control_change_effect(&node.effect))
+        + node
+            .sub_ability
+            .as_deref()
+            .map_or(0, control_change_node_count)
+        + node
+            .else_ability
+            .as_deref()
+            .map_or(0, control_change_node_count)
+}
+
+/// CR 608.2e + CR 603.10d: how the control-change actions of one fan-out
+/// template (the per-seat chain a driver resolves once per player) meet the
+/// action's immediately-before boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FanOutControlBoundary {
+    /// No control-change action: nothing to capture.
+    NoControl,
+    /// The template is one allowlisted printed shape (`fan_out_head_is_allowlisted`):
+    /// a mandatory mass control action over one of the printed producers' exact
+    /// parsed populations, with no executable modifier and no retained node. The
+    /// board before the first seat is every seat's immediately-before board.
+    Head,
+    /// Anything else, including every shape no printed producer on the
+    /// allowlist has: no single pre-seat capture is proven to be the boundary of
+    /// every seat's action. Fails closed:
+    /// `Unrecorded` evidence at runtime, and coverage marks the producer
+    /// unsupported (`coverage::PLAYER_SCOPE_CONTROL_BOUNDARY_GAP`).
+    Unobservable,
+}
+
+pub(crate) fn fan_out_control_boundary(template: &ResolvedAbility) -> FanOutControlBoundary {
+    match (
+        is_control_change_effect(&template.effect),
+        control_change_node_count(template),
+    ) {
+        (_, 0) => FanOutControlBoundary::NoControl,
+        (true, 1) if fan_out_head_is_allowlisted(template) => FanOutControlBoundary::Head,
+        _ => FanOutControlBoundary::Unobservable,
+    }
+}
+
+/// CR 608.2e + CR 603.10d: the exact parsed populations of the printed "each
+/// player gains control" producers whose fan-out is captured exactly. A closed
+/// allowlist, not a classifier: any other population, however similar, fails
+/// closed. Keyed on the typed shape the parser emits for each card, so a
+/// reprint or another card with the identical shape shares the entry, and a
+/// new shape stays unsupported until it's added here with its receipt
+/// (`coverage::tests::printed_scoped_control_producers_have_a_head_boundary`).
+///
+/// Each entry partitions the action's members by recipient on its own (each
+/// seat takes what that seat owns), so a seat's population is exactly what the
+/// printed text hands that seat. A population that drops the selected
+/// recipient (Aminatou's −6 "controlled by the next player in the chosen
+/// direction", Scrambleverse's "for which they were chosen") would publish
+/// changes no printed instruction makes, so those producers stay unsupported
+/// (CR 608.2c, CR 608.2e).
+pub(crate) fn allowlisted_fan_out_control_populations() -> [TargetFilter; 4] {
+    use crate::types::ability::{ControllerRef, FilterProp, TypedFilter};
+    let owned_by_seat = || FilterProp::Owned {
+        controller: ControllerRef::ScopedPlayer,
+    };
+    [
+        // Homeward Path, Trostani Discordant, Alicia Masters: "all creatures
+        // they own".
+        TargetFilter::Typed(TypedFilter::creature().properties(vec![owned_by_seat()])),
+        // Brooding Saurian: "all nontoken permanents they own".
+        TargetFilter::Typed(
+            TypedFilter::permanent().properties(vec![FilterProp::NonToken, owned_by_seat()]),
+        ),
+        // The Fall of Lord Konda, chapter II: "all permanents they own".
+        TargetFilter::Typed(TypedFilter::permanent().properties(vec![owned_by_seat()])),
+        // Herald of Leshrac: "each land they own that you control".
+        TargetFilter::Typed(
+            TypedFilter::land()
+                .controller(ControllerRef::You)
+                .properties(vec![owned_by_seat()]),
+        ),
+    ]
+}
+
+/// CR 608.2e + CR 611.2c: whether a fan-out template is one allowlisted printed
+/// shape: a mandatory `GainControlAll` over an allowlisted population
+/// (`allowlisted_fan_out_control_populations`), retaining no node and carrying
+/// no executable modifier, whether choice-bearing
+/// (`resolution_prompt::node_modifiers_offer_choice`: optional, unless-pay (CR
+/// 118.12a), choosers, timing, modal, repeat prompts) or evaluated per seat (a
+/// condition, a repeat, a "for as long as" duration). Every printed producer on
+/// the allowlist has exactly this shape.
+///
+/// The `ResolvedAbility` destructure is EXHAUSTIVE with no `..`: a future field
+/// fails to compile here until classified for the per-seat question.
+fn fan_out_head_is_allowlisted(head: &ResolvedAbility) -> bool {
+    let ResolvedAbility {
+        // ---- the action and its retained chain ----
+        effect,
+        sub_ability,
+        else_ability,
+        // ---- per-seat evaluated: folded into the verdict below ----
+        condition,
+        repeat_until,
+        repeat_for,
+        duration,
+        entry_onset,
+        // ---- choice-bearing: classified by node_modifiers_offer_choice ----
+        optional: _,
+        optional_for: _,
+        optional_targeting: _,
+        unless_pay: _,
+        target_chooser: _,
+        target_choice_timing: _,
+        modal: _,
+        mode_abilities: _,
+        // ---- inert for a seat: bound `_` with a one-line justification ----
+        optional_player: _, // selects the optional actor; `optional` records the choice
+        sibling_condition: _, // replication marker for `condition`, evaluates nothing itself
+        player_scope: _,    // cleared on the per-seat template by the split
+        starting_with: _,   // APNAP start of the fan-out, fixed before the first seat
+        announced_x: _,     // announce-time count
+        multi_target: _,    // announce-time target-count bounds
+        target_constraints: _, // announce-time cross-target legality
+        distribution: _,    // announce-time portions
+        distribute: _,      // announce-time division
+        targets: _,         // announced targets, already resolved
+        declares_chosen_group: _, // announce-time identity
+        reads_chosen_group: _, // bound selected targets
+        declares_return_result: _, // publication marker
+        reads_return_result: _, // consumes a settled value
+        source_id: _,       // object id
+        cast_occurrence: _, // cast provenance
+        source_incarnation: _, // self-transform epoch latch
+        announced_source_incarnation: _, // announcement-time source epoch
+        chosen_target_slots: _, // CR 115.1 announced-target record
+        noted_mana_payment: _, // activation-payment snapshot
+        trigger_source: _,  // trigger provenance
+        trigger_definition_ref: _, // trigger provenance
+        delayed_origin: _,  // delayed-trigger identity
+        force_block_attacker: _, // force-block referent
+        target_incarnations: _, // CR 400.7 referent pins
+        target_pins: _,     // CR 400.7 selected-target pins
+        legacy_selected_target_incarnations: _,
+        illegal_target_slots: _,         // CR 608.2b legality stamp
+        unjudged_target_slots: _,        // CR 608.2b legality stamp
+        illegal_local_target_slots: _,   // CR 608.2b legality stamp
+        controller: _,                   // player id
+        original_controller: _,          // player id
+        scoped_player: _,                // the seat's binding
+        kind: _,                         // AbilityKind tag
+        context: _,                      // cast-time fact snapshot
+        description: _,                  // display string
+        selected_mode_labels: _,         // display strings
+        modal_instruction_ordinal: _,    // mode-root position marker
+        detached_remainder: _, // split-remainder marker; the tail runs once, after every seat
+        min_x_value: _,        // u32
+        cant_be_copied: _,     // bool
+        illegal_targets_disposition: _, // CR 608.2b disposition
+        copy_count_status: _,  // status tag
+        forward_result: _,     // bool
+        chosen_x: _,           // announce-time X
+        cost_paid_object: _,   // captured snapshot
+        cost_paid_objects: _,  // captured membership records
+        effect_context_object: _, // captured snapshot
+        amassed_army_object: _, // captured snapshot
+        ability_index: _,      // provenance
+        may_trigger_origin: _, // provenance tag
+        target_selection_mode: _, // announce-time tag
+        chosen_players: _,     // already-chosen player ids
+        replacement_applied: _, // replacement provenance
+        sub_link: _,           // link kind of this node to its parent
+        target_reads: _,       // announce-time tag
+        parent_target_missing_reason: _, // seam flag
+        activation_cost_reduction: _, // activation-time provenance
+        activation_record: _,  // activation-time provenance
+        control_change_instruction: _, // the carrier this classification stamps
+    } = head;
+    let Effect::GainControlAll { target } = effect else {
+        return false;
+    };
+    allowlisted_fan_out_control_populations().contains(target)
+        && sub_ability.is_none()
+        && else_ability.is_none()
+        && condition.is_none()
+        && repeat_until.is_none()
+        && repeat_for.is_none()
+        && !duration
+            .as_ref()
+            .is_some_and(crate::types::ability::Duration::is_for_as_long_as)
+        && *entry_onset == crate::types::ability::ContinuousEffectOnset::WhenFollowed
+        && !crate::game::resolution_prompt::node_modifiers_offer_choice(head)
+}
+
+/// The boundary of a `player_scope` link: classified on the exact template the
+/// driver resolves per seat (`split_player_scope_chain`), so coverage and the
+/// runtime share one authority. `None` when `ability` isn't a scoped link.
+pub(crate) fn player_scope_control_boundary(
+    ability: &ResolvedAbility,
+) -> Option<FanOutControlBoundary> {
+    let scope = ability.player_scope.as_ref()?;
+    if control_change_node_count(ability) == 0 {
+        return Some(FanOutControlBoundary::NoControl);
+    }
+    Some(fan_out_control_boundary(
+        &split_player_scope_chain(ability, scope).0,
+    ))
+}
+
+/// The boundary of an "each target player" fan-out link
+/// (`split_multi_target_player_chain`). `None` when `ability` isn't one.
+pub(crate) fn multi_target_player_control_boundary(
+    ability: &ResolvedAbility,
+) -> Option<FanOutControlBoundary> {
+    if !resolves_for_each_target_player(ability) {
+        return None;
+    }
+    if control_change_node_count(ability) == 0 {
+        return Some(FanOutControlBoundary::NoControl);
+    }
+    Some(fan_out_control_boundary(
+        &split_multi_target_player_chain(ability).0,
+    ))
+}
+
+/// Mark every control-change node in `node`'s chain `Unobservable`.
+fn mark_control_changes_unobservable(node: &mut ResolvedAbility) {
+    if is_control_change_effect(&node.effect) {
+        node.control_change_instruction =
+            Some(crate::types::events::ControlChangeInstructionCarrier::Unobservable);
+    }
+    if let Some(sub) = node.sub_ability.as_deref_mut() {
+        mark_control_changes_unobservable(sub);
+    }
+    if let Some(else_ability) = node.else_ability.as_deref_mut() {
+        mark_control_changes_unobservable(else_ability);
+    }
+}
+
+/// CR 608.2e + CR 603.10d: an `Unobservable` fan-out link resolves with every
+/// control-change action in its chain marked, whichever coordinator then
+/// owns its seats. `None` when the link has no such shape (no clone).
+fn fail_closed_unobservable_fan_out(
+    boundary: Option<FanOutControlBoundary>,
+    ability: &ResolvedAbility,
+) -> Option<ResolvedAbility> {
+    (boundary == Some(FanOutControlBoundary::Unobservable)).then(|| {
+        let mut marked = ability.clone();
+        mark_control_changes_unobservable(&mut marked);
+        marked
+    })
+}
+
+/// CR 608.2e + CR 603.10d: a `Head` template's single control-change action is
+/// processed for every seat simultaneously, so its immediately-before board is
+/// the board before the first seat. Settle once, capture every object that
+/// has a controller (battlefield and stack; any later member is among them,
+/// since nothing mutates before the head), and carry the capture's id on the
+/// head: every seat publishes against it. Returns the id, so the driver can
+/// release it when the link completes.
+fn stamp_fan_out_head_capture(
+    state: &mut GameState,
+    template: &mut ResolvedAbility,
+) -> Option<u64> {
+    if fan_out_control_boundary(template) != FanOutControlBoundary::Head {
+        return None;
+    }
+    crate::game::layers::flush_layers(state);
+    let population: Vec<ObjectId> = state
+        .objects
+        .iter()
+        .filter(|(_, object)| {
+            matches!(
+                object.zone,
+                crate::types::zones::Zone::Battlefield | crate::types::zones::Zone::Stack
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    let capture = gain_control::capture_control_change_instruction(state, population);
+    let id = state.next_control_change_capture_id;
+    state.next_control_change_capture_id += 1;
+    state.control_change_captures.insert(
+        id,
+        crate::types::events::ControlChangeLink {
+            capture,
+            published: Default::default(),
+        },
+    );
+    template.control_change_instruction =
+        Some(crate::types::events::ControlChangeInstructionCarrier::Captured(id));
+    Some(id)
 }
 
 /// CR 608.2c: classify a detached chain remainder for the publish gate. The walk
@@ -12927,6 +13266,7 @@ fn resolve_legacy_effect(
         Effect::TakeTheInitiative => venture::resolve_take_initiative(state, ability, events),
         Effect::ArrangePlanarDeckTop { .. } => arrange_planar_deck::resolve(state, ability, events),
         Effect::Planeswalk => planeswalk::resolve(state, ability, events),
+        Effect::AbandonScheme => abandon_scheme::resolve(state, ability, events),
         Effect::ChaosEnsues => chaos_ensues::resolve(state, ability, events),
         Effect::ReverseTurnOrder => reverse_turn_order::resolve(state, ability, events),
         Effect::OpenAttractions { .. } | Effect::RollToVisitAttractions => {
@@ -13571,6 +13911,23 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
             return true;
         }
     }
+    // CR 608.2c + CR 108.3: `ForceAttack` with scope `All` ("Each of those
+    // creatures attacks its owner", The Dead Shall Serve) carries its
+    // subject in `target`, which `Effect::target_filter()` deliberately
+    // hides (no creature slot is announced for the broadcast scope). A
+    // `TrackedSet`-bound rider still consumes the moved set, so inspect
+    // the field directly — without this the producer never publishes and
+    // the rider grafts nothing.
+    if let Effect::ForceAttack {
+        scope: EffectScope::All,
+        target,
+        ..
+    } = effect
+    {
+        if filter_references_tracked_set(target) {
+            return true;
+        }
+    }
     false
 }
 
@@ -13685,7 +14042,9 @@ fn player_filter_references_tracked_set(filter: &PlayerFilter) -> bool {
         | PlayerFilter::PlayerAttribute { .. } => false,
         // The negation wrapper inherits its inner filter's consumption: an
         // "all except <tracked-set possessor>" scope still needs the set.
-        PlayerFilter::AllExcept { exclude } => player_filter_references_tracked_set(exclude),
+        PlayerFilter::AllExcept { exclude, .. } => {
+            player_filter_references_tracked_set(exclude)
+        }
         // The union needs the set when any member does.
         PlayerFilter::AnyOf { filters } => filters.iter().any(player_filter_references_tracked_set),
     }
@@ -16115,9 +16474,11 @@ fn optional_pay_cost_affordability_is_decidable(cost: &AbilityCost) -> bool {
 /// CR 608.2d: "A player can't choose an impossible option." An optional effect
 /// whose only reachable outcome is a no-op must not be offered as a "you may"
 /// prompt at all. Each arm below proves infeasibility through its authoritative
-/// typed state: a missing chosen counter kind, no removable matching counter, or
-/// an exact `ParentTarget` hand-off that records no produced object. Suppressing
-/// the prompt lets the effect resolve as its defined no-op instead.
+/// typed state: a missing chosen counter kind, no removable matching counter,
+/// an exact `ParentTarget` hand-off that records no produced object, a
+/// self-referent or event-referent move whose object can no longer move, or a
+/// reveal of a library top that would reveal no card. Suppressing the prompt
+/// lets the effect resolve as its defined no-op instead.
 fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -> bool {
     match &ability.effect {
         Effect::PutSticker { .. } => stickers::optional_is_infeasible(state, ability),
@@ -16204,6 +16565,41 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
             target: TargetFilter::ParentTarget,
             ..
         } => ability.parent_target_missing_reason.is_some(),
+        // CR 608.2d + CR 400.7: "you may return this card from your graveyard to
+        // the battlefield" is impossible once the source can no longer move.
+        // Hydrate event-context targets first, exactly as resolution does.
+        Effect::ChangeZone {
+            origin,
+            target: TargetFilter::SelfRef,
+            ..
+        } => {
+            let effective = hydrate_event_context_targets(state, ability);
+            change_zone::optional_self_move_is_infeasible(state, effective.as_ref(), *origin)
+        }
+        // CR 608.2d + CR 400.7: "you may put that card onto the battlefield"
+        // (The Reaper, King No More) / "you may exile it. If you do, …" (Academy
+        // Rector) is impossible once the event's object has left the zone the
+        // event put it in. Hydrate event-context targets first, exactly as
+        // resolution does.
+        Effect::ChangeZone {
+            origin,
+            target: TargetFilter::TriggeringSource,
+            ..
+        } => {
+            let effective = hydrate_event_context_targets(state, ability);
+            change_zone::optional_triggering_source_move_is_infeasible(
+                state,
+                effective.as_ref(),
+                *origin,
+            )
+        }
+        // CR 608.2d + CR 701.20a: "you may reveal the top card of your library"
+        // (Priority Boarding) is impossible when it would reveal no card. Hydrate
+        // event-context targets first, exactly as resolution does.
+        Effect::RevealTop { .. } => {
+            let effective = hydrate_event_context_targets(state, ability);
+            reveal_top::optional_reveal_is_infeasible(state, effective.as_ref())
+        }
         // CR 608.2d: "The player can’t choose an option that’s illegal or impossible".
         // An optional placement from a private zone (e.g. Fire Prophecy / Volcanic Spite:
         // "You may put a card from your hand on the bottom of your library. If
@@ -17210,6 +17606,11 @@ fn resolve_context_player(
             return player;
         }
     }
+    // CR 108.3 + CR 508.1d: `AffectedObjectOwner` is deliberately unresolved
+    // here. It names no one player — only `force_attack::resolve`'s per-member
+    // graft consumes it, before this resolver could ever see it. If this
+    // anchor ever reaches this function, that caller is missing its per-member
+    // expansion: do not "fix" it by returning a concrete player here.
     ability.controller
 }
 
@@ -20891,6 +21292,10 @@ fn reset_top_level_resolution_state(state: &mut GameState) {
     state.chosen_color_this_resolution = None;
     // CR 608.2c: nor a prior resolution's "that color".
     state.named_color_this_resolution = None;
+    // CR 607.2d + CR 608.2c: nor a prior resolution's "that label" — a
+    // recycled self-or-others scheme's fresh answer must not inherit the label
+    // an earlier resolution named.
+    state.named_label_this_resolution = None;
     // CR 608.2c: "that sticker" names a sticker this resolution's own PutSticker
     // instruction placed; a new top-level resolution cannot inherit a prior one's.
     state.placed_sticker_this_resolution = None;
@@ -21425,6 +21830,14 @@ fn resolve_chain_body(
             // by the preceding "each target player" subject. Keep that tail
             // outside the per-target template so Wheel and Deal's final
             // "Draw a card" is performed once by its controller.
+            let unobservable = fail_closed_unobservable_fan_out(
+                multi_target_player_control_boundary(ability),
+                ability,
+            );
+            let ability = unobservable.as_ref().unwrap_or(ability);
+            // A control-change effect's target is an object, never the player
+            // filter this fan-out keys on, so it can't be this template's head:
+            // a retained control action here is always `Unobservable` above.
             let (per_target, after_fanout) = split_multi_target_player_chain(ability);
             // CR 601.2c: "any number of target players" permits zero targets.
             // CR 608.2c: An ability resolving with zero chosen player targets
@@ -21645,6 +22058,11 @@ fn resolve_chain_body(
             controller,
         );
         let matching_players = player_scope_members(state, scope, ability, apnap);
+        // CR 608.2e + CR 603.10d: an `Unobservable` scoped control shape fails
+        // closed before any coordinator below takes its seats.
+        let unobservable =
+            fail_closed_unobservable_fan_out(player_scope_control_boundary(ability), ability);
+        let ability = unobservable.as_ref().unwrap_or(ability);
         // CR 101.4 + CR 118.12a: A scoped token instruction whose
         // each player may avert the result by sacrificing has one aggregate
         // outcome, not one token creation per iteration. Let its dedicated
@@ -21665,7 +22083,7 @@ fn resolve_chain_body(
         let ability = wheel.as_ref().unwrap_or(ability);
         let scoped_search_delivery_is_safe =
             scoped_library_search::has_only_detachable_shuffle_tail(ability);
-        let (scoped_template, mut after_scope) = split_player_scope_chain(ability, scope);
+        let (mut scoped_template, mut after_scope) = split_player_scope_chain(ability, scope);
         // CR 608.2c + CR 118.12: the detached remainder is the instruction
         // printed after this clause, so it receives this clause's chain hand-off
         // before any route takes it (the linearized route already got it from
@@ -21679,6 +22097,9 @@ fn resolve_chain_body(
         // split time, before any completion route (sync, sidecar, sacrifice,
         // search, draw, discard batch) takes the tail.
         mark_co_scoped_created_referent_consumer(&scoped_template, scope, &mut after_scope);
+        // CR 608.2e + CR 603.10d: a `Head` control-change template captures its
+        // boundary now, before any seat (or coordinator) mutates.
+        let head_capture = stamp_fan_out_head_capture(state, &mut scoped_template);
         let after_scope_needs_linked_exile = after_scope.as_ref().is_some_and(|tail| {
             crate::game::exile_links::ability_contains_linked_exile_consumer(tail)
         });
@@ -22035,6 +22456,11 @@ fn resolve_chain_body(
             // tail is another `player_scope` clause, that recursive entry will
             // capture its own fresh snapshot against the post-this-clause board.
             state.clause_minimum_snapshot = None;
+            // Every seat has published against the link's control-change
+            // capture; no parked seat references it.
+            if let Some(id) = head_capture {
+                state.control_change_captures.remove(&id);
+            }
             // CR 608.2c + CR 608.2f: one action ⇒ one created referent — every
             // token this clause created, for every seat. CR 608.2e: the tail
             // also receives each seat's own result for a co-scoped second
@@ -22377,6 +22803,13 @@ fn resolve_chain_body(
     // tail semantics: dependent "if you do" riders stay gated while independent
     // sequential siblings and explicit decline branches continue. Other
     // infeasible optional effects retain their established resolver no-op.
+    //
+    // CR 118.12: `ChangeZone` covers every referent shape, so an impossible
+    // self- or event-referent move declines and its "If you do" rider stays
+    // gated. `RevealTop` is deliberately absent (CR 608.2c): its resolver's
+    // empty-library no-op publishes the empty reveal and the `Dig` missing
+    // reason that later "it"/revealed-card instructions read, which the decline
+    // path would skip.
     let auto_decline_infeasible_optional = matches!(
         &ability.effect,
         Effect::CastFromZone { .. }
@@ -26835,6 +27268,19 @@ pub(crate) fn evaluate_condition(
         AbilityCondition::CoinFlipOutcome { result } => state
             .resolution_coin_flip
             .is_some_and(|f| f.flipper == ability.controller && f.result == *result),
+        // CR 607.2d + CR 608.2c: "If [that|the] player chooses <label>" — the
+        // label THIS resolution's labeled choice named matches the anchor word
+        // (case-insensitive). Reads the named-choice continuation
+        // (`named_label_this_resolution`, written by the preceding `Choose {
+        // Labeled }` head's bind), NOT the source's persisted label history:
+        // labels accumulate across resolutions, so a recycled scheme's first
+        // answer would otherwise shadow every later one (CR 608.2c: follow
+        // the instructions in the order written). The static/trigger mirrors
+        // keep reading the persisted anchor via `eval_chosen_label_is`.
+        AbilityCondition::ChosenLabelIs { label } => state
+            .named_label_this_resolution
+            .as_deref()
+            .is_some_and(|chosen| chosen.eq_ignore_ascii_case(label)),
         // CR 603.12: A reflexive triggered ability ("when you do") triggers
         // "based on whether the trigger event or events occurred earlier during
         // the resolution" of the parent. Two independent ways the parent event
@@ -27692,11 +28138,14 @@ fn scoped_player_matches_filter(
         // controller nor an opponent.
         PlayerFilter::Opponent => crate::game::players::is_opponent(state, controller, candidate),
         PlayerFilter::All => true,
-        // CR 608.2c + CR 109.4: candidate matches unless it matches the anchor.
-        // Recursive against the same printed-controller-relative predicate;
-        // ability-target anchors fall through to the fail-closed arm below.
-        PlayerFilter::AllExcept { exclude } => {
-            !scoped_player_matches_filter(state, ability, candidate, exclude)
+        // CR 608.2c + CR 109.4 (+ CR 102.2/102.3 for an opponents base):
+        // a candidate matching the base relation matches unless it matches
+        // the anchor. Recursive against the same
+        // printed-controller-relative predicate; ability-target anchors fall
+        // through to the fail-closed arm below.
+        PlayerFilter::AllExcept { exclude, relation } => {
+            crate::game::players::matches_relation(state, candidate, controller, *relation)
+                && !scoped_player_matches_filter(state, ability, candidate, exclude)
         }
         PlayerFilter::AnyOf { filters } => filters
             .iter()
@@ -34175,6 +34624,62 @@ mod tests {
         assert_eq!(state.players[1].life, life_before - 2);
     }
 
+    /// CR 102.2 + CR 108.3: the player-scope fan-out driver routes
+    /// `AllExcept` through the ability-aware authority, so the owner-anchor
+    /// `Opponent` relation holds end to end: departed owner P0 excluded,
+    /// caster P1 not their own opponent, only P2 pays. Dropping `relation`
+    /// in the helper fans out to P1 too.
+    #[test]
+    fn owner_anchor_opponent_scope_fans_out_only_to_opponents() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::standard(), 3, 0);
+        let moved = ObjectId(7);
+        state.current_trigger_event = Some(GameEvent::ZoneChanged {
+            object_id: moved,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                owner: PlayerId(0),
+                arrival: crate::types::game_state::ArrivalIdentity {
+                    owner: PlayerId(0),
+                    controller: PlayerId(1),
+                },
+                controller: PlayerId(1),
+                ..ZoneChangeRecord::test_minimal(moved, Some(Zone::Battlefield), Zone::Graveyard)
+            }),
+        });
+        let mut ability = ResolvedAbility::new(
+            Effect::LoseLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                target: None,
+            },
+            Vec::new(),
+            ObjectId(900),
+            PlayerId(1),
+        );
+        ability.player_scope = Some(PlayerFilter::AllExcept {
+            exclude: Box::new(PlayerFilter::ParentObjectTargetOwner),
+            relation: PlayerRelation::Opponent,
+        });
+        let life_before: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+        let mut events = Vec::new();
+        let progress = resolve_chain_body(&mut state, &ability, &mut events, 0, None)
+            .expect("scoped fan-out resolves");
+        assert!(
+            matches!(progress, ResolutionProgress::Complete),
+            "no prompt expected, got {progress:?}"
+        );
+        assert_eq!(state.players[0].life, life_before[0], "owner excluded");
+        assert_eq!(
+            state.players[1].life, life_before[1],
+            "caster is not their own opponent"
+        );
+        assert_eq!(
+            state.players[2].life,
+            life_before[2] - 1,
+            "only the non-owner opponent pays"
+        );
+    }
+
     #[test]
     fn random_reflexive_materializes_on_stack_before_effect() {
         let mut state = GameState::new_two_player(42);
@@ -38811,6 +39316,7 @@ mod tests {
         );
         let ability = ResolvedAbility::new(
             Effect::Choose {
+                chooser: crate::types::ability::ControllerRef::You,
                 choice_type: ChoiceType::Keyword {
                     options: vec![],
                     count: 1,
@@ -46430,6 +46936,7 @@ mod tests {
         );
         let choice = ResolvedAbility::new(
             Effect::Choose {
+                chooser: ControllerRef::You,
                 choice_type: ChoiceType::color(),
                 persist: false,
                 selection: TargetSelectionMode::Chosen,
@@ -49401,6 +49908,7 @@ mod tests {
                     "PlayerCount(AllExcept(ControlsCount))".to_string(),
                     gain(player_count(PlayerFilter::AllExcept {
                         exclude: Box::new(controls(anaphor.clone(), one())),
+                        relation: crate::types::ability::PlayerRelation::All,
                     })),
                 ),
                 (
@@ -50417,6 +50925,7 @@ mod tests {
                 Box::new(move |filter: TargetFilter| {
                     ResolvedAbility::new(
                         Effect::Choose {
+                            chooser: ControllerRef::You,
                             choice_type: ChoiceType::Opponent {
                                 restriction: Some(Box::new(controls(filter))),
                                 distinctness: PlayerChoiceDistinctness::Independent,
@@ -51753,6 +52262,7 @@ mod tests {
         // iteration and must not re-enter the fan-out driver mid-instruction.
         let mut choose_return = ResolvedAbility::new(
             Effect::Choose {
+                chooser: crate::types::ability::ControllerRef::You,
                 choice_type: ChoiceType::creature_type(),
                 persist: true,
                 selection: TargetSelectionMode::Chosen,
@@ -56208,6 +56718,136 @@ mod tests {
         assert!(state.objects[&attacker].counters.is_empty());
     }
 
+    /// An optional `ChangeZone` of `target` onto the battlefield under P0's
+    /// control, from source `source` controlled by P0.
+    fn optional_referent_move(
+        target: TargetFilter,
+        origin: Option<Zone>,
+        source: ObjectId,
+    ) -> ResolvedAbility {
+        let mut ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin,
+                destination: Zone::Battlefield,
+                target,
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: Some(ControllerRef::You),
+                enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                face_down_profile: None,
+                enters_modified_if: None,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.optional = true;
+        ability
+    }
+
+    /// CR 608.2d + CR 400.7 + CR 701.20a: the "would it prompt" authority
+    /// (`upfront_optional_gate` with `Probe`) agrees with production's
+    /// feasibility arms for an impossible event-referent move, an impossible
+    /// self-referent move, and an impossible library-top reveal — and still
+    /// opens for each feasible twin.
+    #[test]
+    fn upfront_optional_gate_agrees_an_impossible_move_or_reveal_is_not_offered() {
+        // (a) "you may put that card onto the battlefield": the died card was
+        // exiled from the graveyard the event put it in.
+        let died = |exiled: bool| {
+            let mut state = GameState::new_two_player(42);
+            let card = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(1),
+                "Died Card".to_string(),
+                Zone::Graveyard,
+            );
+            state.current_trigger_event = Some(GameEvent::ZoneChanged {
+                object_id: card,
+                from: Some(Zone::Battlefield),
+                to: Zone::Graveyard,
+                record: Box::new(ZoneChangeRecord::test_minimal(
+                    card,
+                    Some(Zone::Battlefield),
+                    Zone::Graveyard,
+                )),
+            });
+            if exiled {
+                crate::game::zones::move_to_zone(&mut state, card, Zone::Exile, &mut Vec::new());
+            }
+            state
+        };
+        let return_that_card =
+            optional_referent_move(TargetFilter::TriggeringSource, None, ObjectId(100));
+        assert!(
+            upfront_optional_gate(&died(false), &return_that_card, OptionalFeasibility::Probe)
+                .is_some(),
+            "reach: the card still in the graveyard can be returned"
+        );
+        assert!(
+            upfront_optional_gate(&died(true), &return_that_card, OptionalFeasibility::Probe)
+                .is_none(),
+            "a card exiled from the graveyard can't be returned"
+        );
+
+        // (b) "you may return this card from your graveyard to the battlefield":
+        // the source is a stale incarnation.
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Graveyard Source".to_string(),
+            Zone::Graveyard,
+        );
+        let incarnation = state.objects[&source].incarnation;
+        let mut return_this_card =
+            optional_referent_move(TargetFilter::SelfRef, Some(Zone::Graveyard), source);
+        return_this_card.source_incarnation = Some(incarnation);
+        assert!(
+            upfront_optional_gate(&state, &return_this_card, OptionalFeasibility::Probe).is_some(),
+            "reach: the exact source in the graveyard can be returned"
+        );
+        return_this_card.source_incarnation = Some(incarnation + 1);
+        assert!(
+            upfront_optional_gate(&state, &return_this_card, OptionalFeasibility::Probe).is_none(),
+            "a stale source names nothing to return"
+        );
+
+        // (c) "you may reveal the top card of your library" with an empty library.
+        let mut reveal = ResolvedAbility::new(
+            Effect::RevealTop {
+                player: TargetFilter::Controller,
+                count: 1,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        reveal.optional = true;
+        let mut state = GameState::new_two_player(42);
+        assert!(
+            upfront_optional_gate(&state, &reveal, OptionalFeasibility::Probe).is_none(),
+            "an empty library has no top card to reveal"
+        );
+        create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Library Card".to_string(),
+            Zone::Library,
+        );
+        assert!(
+            upfront_optional_gate(&state, &reveal, OptionalFeasibility::Probe).is_some(),
+            "reach: one library card makes the reveal offerable"
+        );
+    }
+
     /// CR 118.3: "you may discard two cards. If you do, draw three cards." with one
     /// card in hand can't be paid in full, so it is not offered: the card stays in
     /// hand and the "If you do" draw does not happen. Two cards make it offerable.
@@ -58250,6 +58890,8 @@ mod tests {
             object_id: ObjectId(1),
             old_controller: PlayerId(0),
             new_controller: PlayerId(1),
+            // The rider gate reads only that control moved, never the evidence.
+            evidence: crate::types::events::ControlChangeEvidence::Unrecorded,
         }];
         assert!(
             mandatory_parent_effect_performed(&give, &transferred),
@@ -58271,6 +58913,8 @@ mod tests {
             object_id: ObjectId(1),
             old_controller: PlayerId(0),
             new_controller: PlayerId(1),
+            // The rider gate reads only that control moved, never the evidence.
+            evidence: crate::types::events::ControlChangeEvidence::Unrecorded,
         }];
         let mut ability =
             ResolvedAbility::new(exchange_control_effect(), vec![], ObjectId(9), PlayerId(0));
@@ -58336,11 +58980,15 @@ mod tests {
                 object_id: ObjectId(1),
                 old_controller: PlayerId(0),
                 new_controller: PlayerId(1),
+                // The rider gate reads only that control moved, never the evidence.
+                evidence: crate::types::events::ControlChangeEvidence::Unrecorded,
             },
             GameEvent::ControllerChanged {
                 object_id: ObjectId(2),
                 old_controller: PlayerId(1),
                 new_controller: PlayerId(0),
+                // The rider gate reads only that control moved, never the evidence.
+                evidence: crate::types::events::ControlChangeEvidence::Unrecorded,
             },
             GameEvent::EffectResolved {
                 kind: EffectKind::ExchangeControl,
@@ -58403,6 +59051,8 @@ mod tests {
             object_id: ObjectId(2),
             old_controller: PlayerId(1),
             new_controller: PlayerId(0),
+            // The rider gate reads only that control moved, never the evidence.
+            evidence: crate::types::events::ControlChangeEvidence::Unrecorded,
         }];
 
         // (1) The fix: a CR 701.12b no-op suppresses the reflexive trigger.
@@ -58572,6 +59222,8 @@ mod tests {
             object_id: ObjectId(2),
             old_controller: PlayerId(1),
             new_controller: PlayerId(0),
+            // The rider gate reads only that control moved, never the evidence.
+            evidence: crate::types::events::ControlChangeEvidence::Unrecorded,
         }];
         let mut performed = build();
         let verdict = resolver_performed_outcome(&performed, &success)
@@ -60663,6 +61315,7 @@ mod tests {
             PlayerFilter::Opponent,
             PlayerFilter::AllExcept {
                 exclude: Box::new(PlayerFilter::Controller),
+                relation: crate::types::ability::PlayerRelation::All,
             },
             PlayerFilter::TrackedSetPossessor {
                 relation: crate::types::ability::PlayerRelation::Opponent,

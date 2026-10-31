@@ -25,7 +25,7 @@ import { AdapterError, AdapterErrorCode, isCustomGameFormat } from "../adapter/t
 import { isFormatConfigShape } from "../adapter/format-config-shape";
 import { findSavedCustomFormat } from "../services/customFormats";
 import { AI_DIFFICULTIES } from "../constants/ai";
-import { FORMAT_REGISTRY } from "../data/formatRegistry";
+import { FORMAT_REGISTRY, isPlanechaseFamilyFormat } from "../data/formatRegistry";
 import {
   MIN_LOBBY_PROTOCOL_FOR_MATCH_TYPE,
   MIN_LOBBY_PROTOCOL_FOR_RECOVERABLE_ROTATION,
@@ -206,7 +206,7 @@ function aiSeatRequest(seat: AiSeatConfig) {
 }
 
 function effectiveAiSeats(settings: HostingSettings): AiSeatConfig[] {
-  return settings.formatConfig.team_based || settings.formatConfig.format === "Planechase"
+  return settings.formatConfig.team_based || isPlanechaseFamilyFormat(settings.formatConfig.format)
     ? []
     : settings.aiSeats;
 }
@@ -3544,10 +3544,13 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           });
 
           for (const seat of aiSeats) {
+            // An admitted human keeps this seat; a stale AI assignment succeeds
+            // without seating that AI, and setup continues with the other seats.
             await p2pAdapter.applySeatMutation({
               type: "SetKind",
               data: {
                 seatIndex: seat.seatIndex,
+                expectedKind: { type: "WaitingHuman" },
                 kind: {
                   type: "Ai",
                   data: {
