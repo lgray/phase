@@ -2257,7 +2257,8 @@ describe("WebSocketAdapter", () => {
     const BOOTSTRAP_WITHHELD = JSON.stringify({
       type: "StateWithheld",
       data: {
-        full_key: REPLY_OWNERSHIP_FULL_KEY, state_revision: 3, withheld: "GameStarted",
+        full_key: REPLY_OWNERSHIP_FULL_KEY, state_revision: 3,
+        withheld: { type: "GameStarted", data: { your_player: 0 } },
         reason: "The game state is too large to send.",
       },
     });
@@ -2323,7 +2324,7 @@ describe("WebSocketAdapter", () => {
         const socket = await completeHandshake(subject);
         expect(socket.send).toHaveBeenCalledWith(expect.stringContaining('"type":"Reconnect"'));
         const seatOneNotice = JSON.parse(BOOTSTRAP_WITHHELD) as { data: Record<string, unknown> };
-        seatOneNotice.data.your_player = 1;
+        seatOneNotice.data.withheld = { type: "GameStarted", data: { your_player: 1 } };
         socket.dispatchSynthetic("message", JSON.stringify(seatOneNotice));
         const types = events.mock.calls.map(([event]) => (event as { type: string }).type);
         expect(types.indexOf("playerIdentity")).toBeGreaterThan(-1);
@@ -2633,7 +2634,7 @@ describe("WebSocketAdapter", () => {
       socket.dispatchSynthetic("message", JSON.stringify({
         type: "StateWithheld",
         command_id: commandId,
-        data: { full_key: fullKey, state_revision: revision, withheld: "StateUpdate", reason: WITHHELD_REASON },
+        data: { full_key: fullKey, state_revision: revision, withheld: { type: "StateUpdate" }, reason: WITHHELD_REASON },
       }));
     }
 

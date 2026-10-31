@@ -117,14 +117,13 @@ impl Envelope {
             command_id,
             ..
         } = self;
-        let withheld = |full_key: &mut Option<_>, state_revision: u64, frame, your_player| {
+        let withheld = |full_key: &mut Option<_>, state_revision: u64, frame| {
             Some(ServerMessage::StateWithheld {
                 full_key: full_key.take(),
                 state_revision,
                 withheld: frame,
-                your_player,
                 reason: match frame {
-                    WithheldFrame::GameStarted => GAME_STARTED_WITHHELD,
+                    WithheldFrame::GameStarted { .. } => GAME_STARTED_WITHHELD,
                     WithheldFrame::StateUpdate => STATE_UPDATE_WITHHELD,
                 }
                 .to_string(),
@@ -144,7 +143,7 @@ impl Envelope {
                 full_key,
                 state_revision,
                 ..
-            } => withheld(full_key, *state_revision, WithheldFrame::StateUpdate, None),
+            } => withheld(full_key, *state_revision, WithheldFrame::StateUpdate),
             ServerMessage::GameStarted {
                 full_key,
                 state_revision,
@@ -153,8 +152,9 @@ impl Envelope {
             } => withheld(
                 full_key,
                 *state_revision,
-                WithheldFrame::GameStarted,
-                Some(*your_player),
+                WithheldFrame::GameStarted {
+                    your_player: *your_player,
+                },
             ),
             ServerMessage::TerminalResult {
                 delivery: Some(delivery),
@@ -502,7 +502,6 @@ mod tests {
             full_key,
             state_revision,
             withheld,
-            your_player,
             reason,
         } = notice.message
         else {
@@ -511,7 +510,6 @@ mod tests {
         assert_eq!(full_key.unwrap().game_code, "BOUND1");
         assert_eq!(state_revision, 6);
         assert_eq!(withheld, WithheldFrame::StateUpdate);
-        assert_eq!(your_player, None);
         assert_eq!(reason, STATE_UPDATE_WITHHELD);
 
         let again = envelope(state_update(0), None).over_bound("r".to_string());
@@ -562,8 +560,9 @@ mod tests {
             ServerMessage::StateWithheld {
                 full_key: None,
                 state_revision: 4,
-                withheld: WithheldFrame::GameStarted,
-                your_player: Some(engine::types::player::PlayerId(1)),
+                withheld: WithheldFrame::GameStarted {
+                    your_player: engine::types::player::PlayerId(1)
+                },
                 ref reason,
             } if reason == GAME_STARTED_WITHHELD
         ));
@@ -637,7 +636,6 @@ mod tests {
                 full_key: None,
                 state_revision: 1,
                 withheld: WithheldFrame::StateUpdate,
-                your_player: None,
                 reason: STATE_UPDATE_WITHHELD.to_string(),
             },
         ] {

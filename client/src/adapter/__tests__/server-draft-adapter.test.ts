@@ -1676,7 +1676,7 @@ describe("ServerDraftAdapter game-command correlation", () => {
         const withheld = (commandId: number) => socket.dispatchSynthetic("message", JSON.stringify({
           type: "StateWithheld",
           command_id: commandId,
-          data: { full_key: FULL_KEY, state_revision: 6, withheld: "StateUpdate", reason: "too large to deliver" },
+          data: { full_key: FULL_KEY, state_revision: 6, withheld: { type: "StateUpdate" }, reason: "too large to deliver" },
         }));
         withheld(id + 1);
         expect(await outcome()).toBe("never settled");

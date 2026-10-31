@@ -12,6 +12,7 @@ import type {
   ObjectId,
   PlayerId,
   SubmitResult,
+  WithheldFrame,
 } from "./types";
 import type {
   InteractionPreview,
@@ -1046,10 +1047,10 @@ export class ServerDraftAdapter implements EngineAdapter {
       case "StateWithheld": {
         const data = msg.data as {
           full_key?: FullSessionKey;
-          withheld: "GameStarted" | "StateUpdate";
+          withheld: WithheldFrame;
           reason: string;
         };
-        if (data.withheld === "StateUpdate" && fullSessionKeysEqual(data.full_key, this.acceptedFullKey)) {
+        if (data.withheld.type === "StateUpdate" && fullSessionKeysEqual(data.full_key, this.acceptedFullKey)) {
           const pending = this.submission.take(msg.command_id);
           if (pending) {
             pending.resolve({ events: [], log_entries: [] });

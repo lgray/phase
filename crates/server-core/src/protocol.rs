@@ -688,8 +688,12 @@ fn default_true() -> bool {
 
 /// Which frame a [`ServerMessage::StateWithheld`] replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
 pub enum WithheldFrame {
-    GameStarted,
+    /// Carries the recipient's seat, the only seat assignment a board-less client receives.
+    GameStarted {
+        your_player: PlayerId,
+    },
     StateUpdate,
 }
 
@@ -888,9 +892,6 @@ pub enum ServerMessage {
         full_key: Option<FullSessionKey>,
         state_revision: u64,
         withheld: WithheldFrame,
-        /// The recipient's seat, present for a withheld `GameStarted`, the only seat assignment a board-less client receives.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        your_player: Option<PlayerId>,
         reason: String,
     },
     /// Acknowledges a host-authorized permanent game cleanup.
@@ -4109,7 +4110,6 @@ mod tests {
             full_key: None,
             state_revision: 6,
             withheld: WithheldFrame::StateUpdate,
-            your_player: None,
             reason: "too large".to_string(),
         };
         let json = serde_json::to_value(&msg).unwrap();
@@ -4117,7 +4117,11 @@ mod tests {
             json,
             serde_json::json!({
                 "type": "StateWithheld",
-                "data": { "state_revision": 6, "withheld": "StateUpdate", "reason": "too large" },
+                "data": {
+                    "state_revision": 6,
+                    "withheld": { "type": "StateUpdate" },
+                    "reason": "too large",
+                },
             })
         );
         assert!(matches!(
@@ -4129,21 +4133,32 @@ mod tests {
                 ..
             }
         ));
-        let started = serde_json::to_string(&ServerMessage::StateWithheld {
+        let started = serde_json::to_value(ServerMessage::StateWithheld {
             full_key: None,
             state_revision: 2,
-            withheld: WithheldFrame::GameStarted,
-            your_player: Some(PlayerId(1)),
+            withheld: WithheldFrame::GameStarted {
+                your_player: PlayerId(1),
+            },
             reason: String::new(),
         })
         .unwrap();
-        assert!(started.contains(r#""withheld":"GameStarted""#));
-        assert!(started.contains(r#""your_player":1"#));
+        assert_eq!(
+            started,
+            serde_json::json!({
+                "type": "StateWithheld",
+                "data": {
+                    "state_revision": 2,
+                    "withheld": { "type": "GameStarted", "data": { "your_player": 1 } },
+                    "reason": "",
+                },
+            })
+        );
         assert!(matches!(
-            serde_json::from_str::<ServerMessage>(&started).unwrap(),
+            serde_json::from_value::<ServerMessage>(started).unwrap(),
             ServerMessage::StateWithheld {
-                withheld: WithheldFrame::GameStarted,
-                your_player: Some(PlayerId(1)),
+                withheld: WithheldFrame::GameStarted {
+                    your_player: PlayerId(1)
+                },
                 ..
             }
         ));

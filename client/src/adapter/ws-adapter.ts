@@ -23,6 +23,7 @@ import type {
   StateWithheldNotice,
   SubmitResult,
   FormatConfig,
+  WithheldFrame,
 } from "./types";
 import type {
   InteractionPreview,
@@ -3081,17 +3082,15 @@ export class WebSocketAdapter implements EngineAdapter {
         const data = msg.data as {
           full_key?: FullSessionKey;
           state_revision: number;
-          withheld: "GameStarted" | "StateUpdate";
-          your_player?: PlayerId;
+          withheld: WithheldFrame;
           reason: string;
         };
         // Without a delivered board the seat cannot reach the menu: fail the join recoverably.
-        if (data.withheld === "GameStarted" && this.snapshot === null) {
+        if (data.withheld.type === "GameStarted" && this.snapshot === null) {
           // The notice is this client's only seat assignment; GamePage resets the reconnect state on it, so it precedes the failure.
-          if (data.your_player !== undefined) {
-            this._playerId = data.your_player;
-            this.emit({ type: "playerIdentity", playerId: data.your_player, opponentName: null });
-          }
+          const seat = data.withheld.data.your_player;
+          this._playerId = seat;
+          this.emit({ type: "playerIdentity", playerId: seat, opponentName: null });
           this.rejectInitialization(new AdapterError(AdapterErrorCode.REQUEST_FAILED, data.reason, true));
           if (this.reconnectInFlight) {
             this.failReconnect("failed");
@@ -3101,7 +3100,7 @@ export class WebSocketAdapter implements EngineAdapter {
           break;
         }
         if (!this.acceptFollowUpFullSessionKey(data.full_key)) break;
-        if (data.withheld === "GameStarted") {
+        if (data.withheld.type === "GameStarted") {
           if (this.reconnectInFlight) this.completeReconnect(true);
         } else {
           const pending = this.submission.take(msg.command_id);

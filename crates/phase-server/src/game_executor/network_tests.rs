@@ -3247,7 +3247,11 @@ mod oversized_publication {
     /// The revision of a withheld-`StateUpdate` notice.
     fn withheld_update(frame: &serde_json::Value) -> u64 {
         assert_eq!(frame["type"], "StateWithheld", "{frame}");
-        assert_eq!(frame["data"]["withheld"], "StateUpdate", "{frame}");
+        assert_eq!(
+            frame["data"]["withheld"],
+            serde_json::json!({ "type": "StateUpdate" }),
+            "{frame}"
+        );
         assert_eq!(
             frame["data"]["reason"],
             crate::socket_mailbox::STATE_UPDATE_WITHHELD
@@ -3529,7 +3533,11 @@ mod oversized_publication {
                         break frame;
                     }
                 };
-                assert_eq!(notice["data"]["withheld"], "GameStarted", "{notice}");
+                assert_eq!(
+                    notice["data"]["withheld"],
+                    serde_json::json!({ "type": "GameStarted", "data": { "your_player": P0 } }),
+                    "{notice}"
+                );
                 assert_eq!(
                     notice["data"]["reason"],
                     crate::socket_mailbox::GAME_STARTED_WITHHELD

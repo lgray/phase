@@ -4969,6 +4969,11 @@ export const AdapterErrorCode = {
   REQUEST_FAILED: "REQUEST_FAILED",
 } as const;
 
+/** Which frame a `StateWithheld` replaced; a withheld `GameStarted` carries the recipient's seat. */
+export type WithheldFrame =
+  | { type: "GameStarted"; data: { your_player: PlayerId } }
+  | { type: "StateUpdate" };
+
 /** The server applied a state it could not send (`StateWithheld`). */
 export interface StateWithheldNotice {
   revision: number;
